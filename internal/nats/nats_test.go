@@ -1,0 +1,262 @@
+package nats
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"jetricks/internal/config"
+	"jetricks/internal/game"
+	"jetricks/internal/testutil"
+)
+
+func setupJS(t *testing.T) jetstream.JetStream {
+	t.Helper()
+	url, _ := testutil.StartServer(t)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return js
+}
+
+func TestEnsureGameStream(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	gameID := "test-game-1"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+	// Verify stream exists
+	s, err := js.Stream(ctx, config.GameStream(gameID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := s.CachedInfo()
+	if !info.Config.AllowAtomicPublish {
+		t.Error("AllowAtomicPublish should be true")
+	}
+	if !info.Config.AllowDirect {
+		t.Error("AllowDirect should be true")
+	}
+}
+
+func TestEnsureLobbyChatStream(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	if err := EnsureLobbyChatStream(ctx, js); err != nil {
+		t.Fatal(err)
+	}
+	s, err := js.Stream(ctx, config.LobbyChatStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := s.CachedInfo()
+	if info.Config.MaxAge != config.LobbyChatMaxAge {
+		t.Errorf("MaxAge = %v, want %v", info.Config.MaxAge, config.LobbyChatMaxAge)
+	}
+}
+
+func TestEnsureLobbyKV(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	kv, err := EnsureLobbyKV(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Put and verify expiry
+	_, err = kv.Put(ctx, "test-key", []byte("value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := kv.Get(ctx, "test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(entry.Value()) != "value" {
+		t.Error("KV value mismatch")
+	}
+}
+
+func TestPublishMetaCAS(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	gameID := "test-meta-cas"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := config.GameMeta{GameID: gameID, Status: config.GameStatusCreated}
+	data, _ := json.Marshal(meta)
+
+	// First publish with seq 0
+	if err := PublishMeta(ctx, js, gameID, data, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second publish with wrong seq should fail
+	if err := PublishMeta(ctx, js, gameID, data, 0); err != ErrCASFailure {
+		t.Errorf("expected ErrCASFailure, got %v", err)
+	}
+}
+
+func TestFetchGameMeta(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	gameID := "test-fetch-meta"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := config.GameMeta{GameID: gameID, Status: config.GameStatusCreated, Seed: 12345}
+	data, _ := json.Marshal(meta)
+	if err := PublishMeta(ctx, js, gameID, data, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got, seq, err := FetchGameMeta(ctx, js, gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GameID != gameID || got.Seed != 12345 {
+		t.Errorf("meta mismatch: %+v", got)
+	}
+	if seq == 0 {
+		t.Error("expected non-zero sequence")
+	}
+}
+
+func TestPublishAndFetchRows(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	gameID := "test-rows"
+	playerID := "test-player"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Publish a few rows individually
+	for i := 0; i < 3; i++ {
+		row := game.NewRow(config.StandardWidth)
+		row.Cells[0] = game.Cell{Occupied: true, PieceType: game.PieceT}
+		data, _ := row.Marshal()
+		err := PublishSingleRow(ctx, js, gameID, RowUpdate{
+			Row:           i,
+			PlayerID:      playerID,
+			Payload:       data,
+			ExpectLastSeq: 0,
+		})
+		if err != nil {
+			t.Fatalf("row %d: %v", i, err)
+		}
+	}
+
+	// Fetch playfield state
+	rows, err := FetchPlayfieldState(ctx, js, gameID, playerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+	for _, r := range rows {
+		if r.Seq == 0 {
+			t.Error("expected non-zero sequence")
+		}
+	}
+}
+
+func TestOrderedConsumer(t *testing.T) {
+	js := setupJS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	gameID := "test-consumer"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start consumer
+	ch, consCancel, err := NewOrderedConsumer(ctx, js, OrderedConsumerConfig{
+		Stream:        config.GameStream(gameID),
+		FilterSubject: config.GameSubjectFilter(gameID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consCancel()
+
+	// Publish a message
+	row := game.NewRow(config.StandardWidth)
+	data, _ := row.Marshal()
+	_, err = js.Publish(ctx, config.RowSubject(gameID, "test-player", 0), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read from consumer
+	select {
+	case msg := <-ch:
+		if msg == nil {
+			t.Fatal("received nil message")
+		}
+		if msg.Subject() != config.RowSubject(gameID, "test-player", 0) {
+			t.Errorf("unexpected subject: %s", msg.Subject())
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for message")
+	}
+}
+
+func TestSealGameStream(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	gameID := "test-seal"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Publish one message first
+	_, err := js.Publish(ctx, config.MetaSubject(gameID), []byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SealGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Further publishes should fail
+	_, err = js.Publish(ctx, config.MetaSubject(gameID), []byte("{}"))
+	if err == nil {
+		t.Error("expected publish to sealed stream to fail")
+	}
+}
+
+func TestListGameStreams(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+
+	// Create a couple game streams
+	EnsureGameStream(ctx, js, "game-a")
+	EnsureGameStream(ctx, js, "game-b")
+	// Also create the lobby chat stream (should not appear)
+	EnsureLobbyChatStream(ctx, js)
+
+	names, err := ListGameStreams(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 {
+		t.Errorf("expected 2 game streams, got %d: %v", len(names), names)
+	}
+}

@@ -1,0 +1,75 @@
+package nats
+
+import (
+	"context"
+
+	"github.com/nats-io/nats.go/jetstream"
+
+	"jetricks/internal/config"
+)
+
+// EnsureGameStream creates the per-game stream if it does not exist.
+func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error {
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:               config.GameStream(gameID),
+		Subjects:           []string{config.GameSubjectFilter(gameID)},
+		AllowAtomicPublish: true,
+		AllowDirect:        true,
+		Storage:            jetstream.FileStorage,
+		Retention:          jetstream.LimitsPolicy,
+	})
+	return err
+}
+
+// EnsureLobbyChatStream creates the lobby chat stream.
+func EnsureLobbyChatStream(ctx context.Context, js jetstream.JetStream) error {
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     config.LobbyChatStream,
+		Subjects: []string{config.LobbyChatSubject},
+		MaxAge:   config.LobbyChatMaxAge,
+		Storage:  jetstream.FileStorage,
+	})
+	return err
+}
+
+// EnsureArchiveStream creates the game archive stream.
+func EnsureArchiveStream(ctx context.Context, js jetstream.JetStream) error {
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     config.ArchiveStream,
+		Subjects: []string{config.ArchiveSubject},
+		Storage:  jetstream.FileStorage,
+	})
+	return err
+}
+
+// SealGameStream sets Sealed: true on a game stream.
+func SealGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error {
+	name := config.GameStream(gameID)
+	s, err := js.Stream(ctx, name)
+	if err != nil {
+		return err
+	}
+	info := s.CachedInfo()
+	cfg := info.Config
+	cfg.Sealed = true
+	_, err = js.UpdateStream(ctx, cfg)
+	return err
+}
+
+// DeleteGameStream deletes a game stream entirely.
+func DeleteGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error {
+	return js.DeleteStream(ctx, config.GameStream(gameID))
+}
+
+// ListGameStreams returns names of all streams matching the JETRICKS_GAME_ prefix.
+func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, error) {
+	sl := js.StreamNames(ctx, jetstream.WithStreamListSubject("jetricks.game.>"))
+	var names []string
+	for name := range sl.Name() {
+		names = append(names, name)
+	}
+	if err := sl.Err(); err != nil {
+		return nil, err
+	}
+	return names, nil
+}

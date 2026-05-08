@@ -1,0 +1,28 @@
+package lobby
+
+import "time"
+
+// LobbyUpdateKind identifies the type of lobby update.
+type LobbyUpdateKind int
+
+const (
+	LobbyUpdatePlayers LobbyUpdateKind = iota
+	LobbyUpdateGames
+	LobbyUpdateChat
+	LobbyUpdateArchive
+)
+
+// LobbyUpdate is sent from the lobby to the UI.
+type LobbyUpdate struct {
+	Kind    LobbyUpdateKind
+	ChatMsg *ChatMessage
+}
+
+// ChatMessage represents a chat message in the lobby or game.
+type ChatMessage struct {
+	PlayerID  string    `json:"player_id"`
+	Name      string    `json:"name"`
+	Text      string    `json:"text"`
+	Timestamp time.Time `json:"timestamp"`
+	Spectator bool      `json:"spectator,omitempty"`
+}

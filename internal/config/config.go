@@ -7,9 +7,12 @@ import (
 )
 
 type Config struct {
-	NATSContext string
-	Port        int
-	Webview     bool
+	NATSContext  string
+	NATSURL      string
+	NATSUser     string
+	NATSPassword string
+	Port         int
+	Webview      bool
 }
 
 // ValidatePlayerName checks that a player name is valid for use as a

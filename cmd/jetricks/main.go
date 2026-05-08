@@ -11,6 +11,9 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"jetricks/internal/config"
 	natspkg "jetricks/internal/nats"
 	"jetricks/internal/ui"
@@ -24,7 +27,7 @@ func main() {
 	defer cancel()
 
 	// 2. Connect NATS
-	nc, js, _, err := natspkg.Connect(cfg.NATSContext)
+	nc, js, err := connectNATS(cfg)
 	if err != nil {
 		log.Fatalf("connect NATS: %v", err)
 	}
@@ -73,11 +76,22 @@ func parseFlags() config.Config {
 	cfg := config.Config{}
 
 	flag.StringVar(&cfg.NATSContext, "context", "", "NATS context name (empty = default)")
+	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL (overrides --context when set)")
+	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
+	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
 	flag.IntVar(&cfg.Port, "port", 7777, "HTTP server port")
 	flag.BoolVar(&cfg.Webview, "webview", false, "Launch as webview")
 	flag.Parse()
 
 	return cfg
+}
+
+func connectNATS(cfg config.Config) (*nats.Conn, jetstream.JetStream, error) {
+	if cfg.NATSURL != "" {
+		return natspkg.ConnectURL(cfg.NATSURL, cfg.NATSUser, cfg.NATSPassword)
+	}
+	nc, js, _, err := natspkg.Connect(cfg.NATSContext)
+	return nc, js, err
 }
 
 func openBrowser(url string) {

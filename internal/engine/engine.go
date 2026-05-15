@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -300,9 +302,32 @@ func (e *Engine) spawnPiece(ctx context.Context) {
 		return
 	}
 
-	e.playfield.SetActivePieceForPlayer(p, e.playerIdx)
-	e.hadActivePiece = true
-	e.publishPlayfieldRows(ctx, e.playfield.RowsWithActiveCellsForPlayer(e.playerIdx))
+	// In-memory state is updated only when the consumer echoes the published
+	// rows back (see runConsumer). Here we just compute the projection and
+	// publish; the consumer will set hadActivePiece via the lock-in detector.
+	affected := make([]int, 0, 4)
+	seen := make(map[int]bool, 4)
+	for _, c := range p.Cells() {
+		if !seen[c[0]] {
+			seen[c[0]] = true
+			affected = append(affected, c[0])
+		}
+	}
+	rows := e.playfield.ProjectMove(affected, &p, e.playerIdx)
+	if e.gameMode == config.ModeCooperative {
+		// In coop both players write the same shared row subjects, so two
+		// near-simultaneous spawns (e.g. when meta transitions to
+		// in_progress) race for the same headroom rows. Spawning MUST
+		// succeed — the loser must not be left without a piece — so we
+		// merge-retry on CAS failure: refetch the latest row from the
+		// stream, overlay our piece cells on top, retry. This is the only
+		// CAS path in the engine that retries; player moves never do.
+		e.publishProjectedRowsWithMergeRetry(ctx, rows)
+		return
+	}
+	// Competitive: each player writes their own subjects, so no race.
+	// flashOnFailure=false because this isn't a player input.
+	e.publishProjectedRows(ctx, rows, false)
 }
 
 func (e *Engine) PlayerIdx() int       { return e.playerIdx }
@@ -373,88 +398,230 @@ func (e *Engine) transitionGameToFinished(ctx context.Context) {
 	}
 }
 
-func (e *Engine) publishPlayfieldRows(ctx context.Context, rowIndices []int) {
-	e.publishPlayfieldRowsRetry(ctx, rowIndices, e.gameMode == config.ModeCooperative)
+// publishProjectedRows publishes pre-computed row payloads as a SINGLE atomic
+// batch with per-subject CAS expectations sourced from e.playfield.LastSeq[r]
+// (Nats-Expected-Last-Subject-Sequence). Either every row in the move
+// commits or none does; consumers never see a torn intermediate state.
+//
+// e.playfield is not mutated — the consumer (runConsumer) is the single writer
+// to e.playfield via pf.Apply. On CAS failure the move is DROPPED in both
+// competitive and cooperative modes; the player is signalled with a local-only
+// rainbow flash on their own piece outline so they know to retry the input
+// themselves. The retryOnCAS parameter is retained for callers that don't
+// want a flash (e.g. spawn races, where a flash would be misleading).
+func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row, flashOnFailure bool) {
+	if len(rows) == 0 {
+		return
+	}
+	playerID := e.effectivePlayerID()
+	updates, err := e.buildBatchUpdates(playerID, rows)
+	if err != nil {
+		log.Printf("build batch: %v", err)
+		return
+	}
+
+	if err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, updates); err == nil {
+		return
+	} else if !errors.Is(err, natspkg.ErrCASFailure) {
+		log.Printf("publish batch: %v", err)
+		return
+	}
+
+	// CAS failure: drop the move. Signal the player with a local-only
+	// rainbow flash on their own piece. We do NOT publish anything to the
+	// other players — a CAS failure is information for the player who
+	// authored the move, not for spectators or other players. The player
+	// must retry the input themselves.
+	if flashOnFailure && e.mode == ModePlayer {
+		e.emitLocalCASFlash()
+	}
 }
 
-// publishPlayfieldRowsNoCAS publishes rows without CAS checks.
-// Used for line clears where the cleared state is authoritative and must not
-// be merged with stale NATS data.
-func (e *Engine) publishPlayfieldRowsNoCAS(ctx context.Context, rowIndices []int) {
+// publishProjectedRowsNoCAS publishes pre-computed rows as a SINGLE atomic
+// batch without CAS expectations. Used for authoritative state changes (lock,
+// hard-drop landing, line-clear, shrink) where the publisher's view is the
+// new ground truth. Either every row commits or none does.
+func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]game.Row) {
+	if len(rows) == 0 {
+		return
+	}
 	playerID := e.effectivePlayerID()
-	for _, r := range rowIndices {
-		data, err := e.playfield.Rows[r].Marshal()
+	updates := make([]natspkg.RowUpdate, 0, len(rows))
+	for r, row := range rows {
+		data, err := row.Marshal()
 		if err != nil {
 			log.Printf("marshal row %d: %v", r, err)
-			continue
+			return
 		}
-		seq, err := natspkg.PublishSingleRowNoCAS(ctx, e.js, e.gameID, natspkg.RowUpdate{
+		updates = append(updates, natspkg.RowUpdate{
 			Row:      r,
 			PlayerID: playerID,
 			Payload:  data,
 		})
-		if err != nil {
-			log.Printf("publish row %d (no-cas): %v", r, err)
-			continue
-		}
-		// Update LastSeq so subsequent CAS publishes use the correct sequence
-		e.playfield.LastSeq[r] = seq
+	}
+	sort.Slice(updates, func(i, j int) bool { return updates[i].Row < updates[j].Row })
+	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, e.gameID, updates); err != nil {
+		log.Printf("publish batch (no-cas): %v", err)
 	}
 }
 
-func (e *Engine) publishPlayfieldRowsRetry(ctx context.Context, rowIndices []int, retry bool) {
+// publishProjectedRowsSliceNoCAS publishes rows[fromRow:toRow) as a SINGLE
+// atomic batch without CAS. Used for whole-playfield projections (line clear,
+// shrink).
+func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game.Row, fromRow, toRow int) {
+	if fromRow >= toRow {
+		return
+	}
 	playerID := e.effectivePlayerID()
-	hadCASFailure := false
-	for _, r := range rowIndices {
-		if retry {
-			e.publishSingleRowWithRetry(ctx, playerID, r)
-		} else {
-			if !e.publishSingleRowNoRetry(ctx, playerID, r) {
-				hadCASFailure = true
-			}
+	updates := make([]natspkg.RowUpdate, 0, toRow-fromRow)
+	for r := fromRow; r < toRow && r < len(rows); r++ {
+		data, err := rows[r].Marshal()
+		if err != nil {
+			log.Printf("marshal row %d: %v", r, err)
+			return
 		}
+		updates = append(updates, natspkg.RowUpdate{
+			Row:      r,
+			PlayerID: playerID,
+			Payload:  data,
+		})
 	}
-	// Publish CAS flash event if any rows failed (visual feedback for all players)
-	if hadCASFailure && e.mode == ModePlayer {
-		e.publishCASFlash(ctx)
+	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, e.gameID, updates); err != nil {
+		log.Printf("publish slice batch (no-cas): %v", err)
 	}
 }
 
-// publishSingleRowNoRetry returns true on success, false on CAS failure.
-func (e *Engine) publishSingleRowNoRetry(ctx context.Context, playerID string, r int) bool {
-	data, err := e.playfield.Rows[r].Marshal()
-	if err != nil {
-		return true // not a CAS failure
-	}
-	err = natspkg.PublishSingleRow(ctx, e.js, e.gameID, natspkg.RowUpdate{
-		Row:           r,
-		PlayerID:      playerID,
-		Payload:       data,
-		ExpectLastSeq: e.playfield.LastSeq[r],
-	})
-	if err != nil {
-		// CAS failure — fetch latest row from NATS to correct in-memory state
-		subject := config.RowSubject(e.gameID, playerID, r)
-		stream, sErr := e.js.Stream(ctx, config.GameStream(e.gameID))
-		if sErr != nil {
-			return false
+// buildBatchUpdates converts a row projection map into a sorted RowUpdate
+// slice (ascending row index) with per-subject CAS expectations sourced from
+// e.playfield.LastSeq.
+func (e *Engine) buildBatchUpdates(playerID string, rows map[int]game.Row) ([]natspkg.RowUpdate, error) {
+	updates := make([]natspkg.RowUpdate, 0, len(rows))
+	for r, row := range rows {
+		data, err := row.Marshal()
+		if err != nil {
+			return nil, err
 		}
+		updates = append(updates, natspkg.RowUpdate{
+			Row:           r,
+			PlayerID:      playerID,
+			Payload:       data,
+			ExpectLastSeq: e.playfield.LastSeq[r],
+		})
+	}
+	sort.Slice(updates, func(i, j int) bool { return updates[i].Row < updates[j].Row })
+	return updates, nil
+}
+
+// publishProjectedRowsWithMergeRetry publishes a projection that MUST succeed
+// even under concurrent writers — used by the coop spawn path where both
+// players write the same shared row subjects. On CAS failure, refetches each
+// affected row from the stream, overlays our cells on top of the latest
+// stream state, and retries the batch with refreshed per-subject CAS
+// expectations. e.playfield is NOT mutated here; the consumer applies the
+// final committed state on echo.
+//
+// This is the only CAS path that retries. Player moves use publishProjectedRows
+// (no retry, drop+rainbow flash on failure).
+func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows map[int]game.Row) {
+	if len(rows) == 0 {
+		return
+	}
+	playerID := e.effectivePlayerID()
+
+	// Snapshot the cells we want to keep so we can re-project them on top of
+	// refetched stream state. saved[r] is the row we originally projected.
+	saved := make(map[int][]game.Cell, len(rows))
+	for r, row := range rows {
+		cellsCopy := make([]game.Cell, len(row.Cells))
+		copy(cellsCopy, row.Cells)
+		saved[r] = cellsCopy
+	}
+
+	// First attempt uses in-memory LastSeq.
+	updates, err := e.buildBatchUpdates(playerID, rows)
+	if err != nil {
+		log.Printf("build batch: %v", err)
+		return
+	}
+	if err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, updates); err == nil {
+		return
+	} else if !errors.Is(err, natspkg.ErrCASFailure) {
+		log.Printf("publish batch: %v", err)
+		return
+	}
+
+	const maxRetries = 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		merged, ok := e.refetchAndMerge(ctx, playerID, saved)
+		if !ok {
+			return
+		}
+		err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, merged)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, natspkg.ErrCASFailure) {
+			log.Printf("publish batch retry: %v", err)
+			return
+		}
+	}
+	log.Printf("publish batch: gave up after %d retries", maxRetries)
+}
+
+// refetchAndMerge fetches the latest stream message for each row in saved,
+// overlays the saved cells on top, and returns a fresh batch with refreshed
+// per-subject CAS expectations. Used by the merge-retry path.
+func (e *Engine) refetchAndMerge(ctx context.Context, playerID string, saved map[int][]game.Cell) ([]natspkg.RowUpdate, bool) {
+	stream, sErr := e.js.Stream(ctx, config.GameStream(e.gameID))
+	if sErr != nil {
+		return nil, false
+	}
+	merged := make([]natspkg.RowUpdate, 0, len(saved))
+	for r, cells := range saved {
+		subject := config.RowSubject(e.gameID, playerID, r)
 		msg, gErr := stream.GetLastMsgForSubject(ctx, subject)
 		if gErr != nil {
-			return false
+			return nil, false
 		}
 		latestRow, uErr := game.UnmarshalRow(msg.Data)
 		if uErr != nil {
-			return false
+			return nil, false
 		}
-		e.playfield.Rows[r] = latestRow
-		e.playfield.LastSeq[r] = msg.Sequence
-		return false
+		// Overlay our saved cells. We only re-place cells that are OURS
+		// (active for this player) or new locked cells (Occupied && !Active);
+		// other cells from the latest stream state are preserved.
+		for i, sc := range cells {
+			if i >= len(latestRow.Cells) {
+				break
+			}
+			if sc.Active && sc.PlayerIdx == e.playerIdx {
+				latestRow.Cells[i] = sc
+			} else if sc.Occupied && !sc.Active {
+				latestRow.Cells[i] = sc
+			}
+		}
+		data, mErr := latestRow.Marshal()
+		if mErr != nil {
+			return nil, false
+		}
+		merged = append(merged, natspkg.RowUpdate{
+			Row:           r,
+			PlayerID:      playerID,
+			Payload:       data,
+			ExpectLastSeq: msg.Sequence,
+		})
 	}
-	return true
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Row < merged[j].Row })
+	return merged, true
 }
 
-func (e *Engine) publishCASFlash(ctx context.Context) {
+// emitLocalCASFlash signals the LOCAL player that their last move was
+// rejected by per-subject CAS — typically because another writer (in coop
+// mode) updated one of the rows the move touched. It pushes an EngineUpdate
+// directly to e.Updates without publishing to NATS: a CAS failure is
+// information for the player who authored the move, not for the other
+// players. The player must retry the input themselves.
+func (e *Engine) emitLocalCASFlash() {
 	e.mu.Lock()
 	var flashCells [][2]int
 	if p := e.playfield.ActivePieceForPlayer(e.playerIdx); p != nil {
@@ -464,75 +631,11 @@ func (e *Engine) publishCASFlash(ctx context.Context) {
 	if len(flashCells) == 0 {
 		return
 	}
-	ev := GameEvent{
-		Kind:           EventCASFlash,
-		PlayerID:       e.playerID,
+	e.emitUpdate(EngineUpdate{
+		Kind:           UpdateCASFlash,
 		FlashCells:     flashCells,
 		FlashPlayerIdx: e.playerIdx,
-	}
-	data, _ := json.Marshal(ev)
-	_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
-}
-
-func (e *Engine) publishSingleRowWithRetry(ctx context.Context, playerID string, r int) {
-	// Save the cells we want to publish (our changes are applied in-memory)
-	savedCells := make([]game.Cell, len(e.playfield.Rows[r].Cells))
-	copy(savedCells, e.playfield.Rows[r].Cells)
-
-	const maxRetries = 5
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		data, err := e.playfield.Rows[r].Marshal()
-		if err != nil {
-			log.Printf("marshal row %d: %v", r, err)
-			return
-		}
-		err = natspkg.PublishSingleRow(ctx, e.js, e.gameID, natspkg.RowUpdate{
-			Row:           r,
-			PlayerID:      playerID,
-			Payload:       data,
-			ExpectLastSeq: e.playfield.LastSeq[r],
-		})
-		if err == nil {
-			return
-		}
-		if e.gameMode != config.ModeCooperative {
-			log.Printf("publish row %d: %v", r, err)
-			return
-		}
-		// CAS conflict in cooperative mode — fetch latest row state directly
-		// from the stream and merge our cells on top.
-		subject := config.RowSubject(e.gameID, playerID, r)
-		stream, sErr := e.js.Stream(ctx, config.GameStream(e.gameID))
-		if sErr != nil {
-			log.Printf("publish row %d: get stream: %v", r, sErr)
-			return
-		}
-		msg, gErr := stream.GetLastMsgForSubject(ctx, subject)
-		if gErr != nil {
-			log.Printf("publish row %d: get last msg: %v", r, gErr)
-			return
-		}
-		// Apply the latest NATS state to our in-memory row
-		latestRow, uErr := game.UnmarshalRow(msg.Data)
-		if uErr != nil {
-			log.Printf("publish row %d: unmarshal: %v", r, uErr)
-			return
-		}
-		e.playfield.Rows[r] = latestRow
-		e.playfield.LastSeq[r] = msg.Sequence
-		// Merge our saved cells back onto the latest state
-		for i, sc := range savedCells {
-			if i >= len(e.playfield.Rows[r].Cells) {
-				break
-			}
-			if sc.Active && sc.PlayerIdx == e.playerIdx {
-				e.playfield.Rows[r].Cells[i] = sc
-			} else if sc.Occupied && !sc.Active {
-				e.playfield.Rows[r].Cells[i] = sc
-			}
-		}
-	}
-	log.Printf("publish row %d: gave up after %d retries", r, maxRetries)
+	})
 }
 
 func (e *Engine) publishPieceIdxUpdate(pieceIdx uint64) {

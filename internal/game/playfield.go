@@ -207,3 +207,188 @@ func (pf *Playfield) RowsWithActiveCells() []int {
 	}
 	return rows
 }
+
+// Projection helpers below build new Row values without mutating pf. They are
+// used by the engine to compute the row payloads that should be published to
+// NATS; the in-memory playfield is only updated when the consumer echoes the
+// published rows back via Apply.
+
+func projectClearActiveCellsForPlayer(src Row, playerIdx int) Row {
+	cells := make([]Cell, len(src.Cells))
+	copy(cells, src.Cells)
+	for j := range cells {
+		if cells[j].Active && cells[j].PlayerIdx == playerIdx {
+			cells[j] = Cell{}
+		}
+	}
+	return Row{Cells: cells}
+}
+
+func projectLockActiveCellsForPlayer(src Row, playerIdx int) Row {
+	cells := make([]Cell, len(src.Cells))
+	copy(cells, src.Cells)
+	for j := range cells {
+		c := &cells[j]
+		if c.Active && c.PlayerIdx == playerIdx {
+			c.Active = false
+			c.Occupied = true
+			c.Orientation = 0
+			c.AnchorRow = 0
+			c.AnchorCol = 0
+			// PlayerIdx preserved so locked cells retain player color.
+		}
+	}
+	return Row{Cells: cells}
+}
+
+func projectPlaceActivePieceCells(rows map[int]Row, p Piece, playerIdx int, width int) {
+	for _, c := range p.Cells() {
+		r, col := c[0], c[1]
+		row, ok := rows[r]
+		if !ok || col < 0 || col >= width {
+			continue
+		}
+		row.Cells[col].Active = true
+		row.Cells[col].PieceType = p.Type
+		row.Cells[col].Orientation = p.Orientation
+		row.Cells[col].AnchorRow = p.Row
+		row.Cells[col].AnchorCol = p.Col
+		row.Cells[col].PlayerIdx = playerIdx
+		rows[r] = row
+	}
+}
+
+// ProjectMove returns rowIdx -> Row showing the result of clearing playerIdx's
+// active cells from each affected row and (if newPiece != nil) placing the new
+// piece's active cells on top. The playfield is not mutated.
+func (pf *Playfield) ProjectMove(affectedRows []int, newPiece *Piece, playerIdx int) map[int]Row {
+	out := make(map[int]Row, len(affectedRows))
+	for _, r := range affectedRows {
+		if r < 0 || r >= pf.Height {
+			continue
+		}
+		out[r] = projectClearActiveCellsForPlayer(pf.Rows[r], playerIdx)
+	}
+	if newPiece != nil {
+		projectPlaceActivePieceCells(out, *newPiece, playerIdx, pf.Width)
+	}
+	return out
+}
+
+// ProjectLock returns rowIdx -> Row with the player's active cells converted
+// to locked cells in each affected row. The playfield is not mutated.
+func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row {
+	out := make(map[int]Row, len(affectedRows))
+	for _, r := range affectedRows {
+		if r < 0 || r >= pf.Height {
+			continue
+		}
+		out[r] = projectLockActiveCellsForPlayer(pf.Rows[r], playerIdx)
+	}
+	return out
+}
+
+// ProjectHardDrop returns rowIdx -> Row showing the result of clearing
+// playerIdx's old active cells from `affectedRows` and placing `dest` either as
+// locked cells (lockOnLand=true) or as active cells (lockOnLand=false).
+func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row {
+	out := make(map[int]Row, len(affectedRows))
+	for _, r := range affectedRows {
+		if r < 0 || r >= pf.Height {
+			continue
+		}
+		out[r] = projectClearActiveCellsForPlayer(pf.Rows[r], playerIdx)
+	}
+	for _, c := range dest.Cells() {
+		r, col := c[0], c[1]
+		row, ok := out[r]
+		if !ok || col < 0 || col >= pf.Width {
+			continue
+		}
+		if lockOnLand {
+			row.Cells[col] = Cell{
+				Occupied:  true,
+				PieceType: dest.Type,
+				PlayerIdx: playerIdx,
+			}
+		} else {
+			row.Cells[col] = Cell{
+				Active:      true,
+				PieceType:   dest.Type,
+				Orientation: dest.Orientation,
+				AnchorRow:   dest.Row,
+				AnchorCol:   dest.Col,
+				PlayerIdx:   playerIdx,
+			}
+		}
+		out[r] = row
+	}
+	return out
+}
+
+// ProjectClearRows returns the full set of rows after removing `completed`
+// rows and shifting non-cleared rows down (empty rows prepended to top).
+// If shiftAnchors is true, all active cells in the returned rows have
+// AnchorRow incremented by len(completed) (used in cooperative mode where
+// other players' active pieces need anchor adjustment after the shift).
+func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row {
+	cleared := make(map[int]bool, len(completed))
+	for _, r := range completed {
+		cleared[r] = true
+	}
+	var newRows []Row
+	for i := 0; i < pf.Height; i++ {
+		if !cleared[i] {
+			cells := make([]Cell, pf.Width)
+			copy(cells, pf.Rows[i].Cells)
+			newRows = append(newRows, Row{Cells: cells})
+		}
+	}
+	for len(newRows) < pf.Height {
+		newRows = append([]Row{NewRow(pf.Width)}, newRows...)
+	}
+	if shiftAnchors {
+		for i := range newRows {
+			for j := range newRows[i].Cells {
+				if newRows[i].Cells[j].Active {
+					newRows[i].Cells[j].AnchorRow += len(completed)
+				}
+			}
+		}
+	}
+	return newRows
+}
+
+// ProjectShrink returns the full new set of rows after shifting the playfield
+// up by rowsToAdd (existing pieces move up) and adding rowsToAdd permanent
+// adversarial rows tagged with causerIdx at the bottom. AnchorRow values in
+// remaining active cells are decremented by rowsToAdd.
+func (pf *Playfield) ProjectShrink(rowsToAdd int, causerIdx int) []Row {
+	out := make([]Row, pf.Height)
+	for i := 0; i < pf.Height-rowsToAdd; i++ {
+		cells := make([]Cell, pf.Width)
+		copy(cells, pf.Rows[i+rowsToAdd].Cells)
+		out[i] = Row{Cells: cells}
+	}
+	for i := pf.Height - rowsToAdd; i < pf.Height; i++ {
+		cells := make([]Cell, pf.Width)
+		for c := range cells {
+			cells[c] = Cell{
+				Occupied:    true,
+				PieceType:   PieceO,
+				Adversarial: true,
+				PlayerIdx:   causerIdx,
+			}
+		}
+		out[i] = Row{Cells: cells}
+	}
+	for i := range out {
+		for j := range out[i].Cells {
+			c := &out[i].Cells[j]
+			if c.Active {
+				c.AnchorRow -= rowsToAdd
+			}
+		}
+	}
+	return out
+}

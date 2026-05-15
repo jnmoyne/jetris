@@ -41,22 +41,24 @@ const (
 	EventShrink        EventKind = "shrink"
 	EventGameOver      EventKind = "game_over"
 	EventCoopLineClear EventKind = "coop_line_clear"
-	EventCASFlash      EventKind = "cas_flash"
 )
 
 // GameEvent is the JSON payload published to the events subject.
+//
+// Note: CAS-failure feedback is intentionally NOT modelled as a published
+// event. CAS failures are local information for the player who authored the
+// move; they surface as an UpdateCASFlash on the local engine's Updates
+// channel only and never round-trip through NATS.
 type GameEvent struct {
-	Kind           EventKind `json:"kind"`
-	PlayerID       string    `json:"player_id"`
-	LinesCleared   int       `json:"lines_cleared,omitempty"`
-	TargetPlayer   string    `json:"target_player,omitempty"`
-	RowsRemoved    int       `json:"rows_removed,omitempty"`
-	ClearedRows    []int     `json:"cleared_rows,omitempty"`
-	Score          int       `json:"score,omitempty"`
-	PieceCount     uint64    `json:"piece_count,omitempty"`
-	FlashCells     [][2]int  `json:"flash_cells,omitempty"`
-	FlashPlayerIdx int       `json:"flash_player_idx,omitempty"`
-	PlayerIdx      int       `json:"player_idx,omitempty"` // causer's index for EventShrink
+	Kind         EventKind `json:"kind"`
+	PlayerID     string    `json:"player_id"`
+	LinesCleared int       `json:"lines_cleared,omitempty"`
+	TargetPlayer string    `json:"target_player,omitempty"`
+	RowsRemoved  int       `json:"rows_removed,omitempty"`
+	ClearedRows  []int     `json:"cleared_rows,omitempty"`
+	Score        int       `json:"score,omitempty"`
+	PieceCount   uint64    `json:"piece_count,omitempty"`
+	PlayerIdx    int       `json:"player_idx,omitempty"` // causer's index for EventShrink
 }
 
 // MoveType represents a player move.

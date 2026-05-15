@@ -284,19 +284,29 @@ Any player in the lobby can spectate an in-progress game:
 
 ## 8. CAS (Compare-And-Swap) Strategy
 
-All playfield state is stored in JetStream. Concurrent writes are managed via CAS:
+All playfield state is stored in JetStream. Concurrent writes are managed via per-subject CAS (`Nats-Expected-Last-Subject-Sequence`) on atomic batch publishes — a multi-row move either commits all rows or none, never a torn intermediate.
 
-### Moves (left, right, down, rotate)
+### Player-initiated moves (left, right, down, rotate, hard drop)
 
-CAS failure = **move is dropped**. No retry. The player must try another move. If the CAS fails, the engine fetches the latest row from NATS to correct its in-memory state (prevents display desync). Also if the CAS fails, that is expressed by flashing down the outline of the player's stone (at the same time the outline of all the other player's stones flashes up)
+CAS failure = **move is dropped, no retry, in either game mode**. The player must press the input again. The engine signals the failure with a **rainbow flash on the outline of the player's own piece** — cells of the active piece cycle through the seven spectrum colors over ~600 ms with a matching glow, then revert. The flash is local-only: it is emitted directly to the local engine's UI Updates channel and is **not published to NATS**, so the other players see nothing.
 
-### State changes (lock-in, spawn)
+This is intentional in cooperative mode where two players share one playfield: CAS rejections are routine and a silent server-side retry would mask conflicts from the player and make their input timing feel non-deterministic. Loud, immediate, local-only feedback gives the player full agency over how to recover.
 
-CAS with retry. On failure, the engine fetches the latest row from NATS, merges its own cells back on top, and keeps retrying until success.
+The flash only ever fires for player-initiated moves. Engine-driven moves (gravity ticks, piece spawns) never flash.
 
-### Line clears
+### Engine-driven state changes (gravity, spawn, lock-in)
 
-**No CAS.** The cleared state is published without sequence checks (authoritative). This prevents the merge logic from restoring old occupied cells from stale NATS data. After publishing, `LastSeq` is updated from the publish acknowledgment.
+Gravity ticks and piece spawns must succeed even under contention — a dropped gravity tick would make the piece visibly freeze for one tick, and a dropped spawn would leave the player pieceless. Neither was player-initiated, so a flash would be misleading.
+
+In **competitive mode** neither can race because each player owns their row subjects.
+
+In **cooperative mode** both share the same row subjects with the other player. On CAS failure the engine refetches each affected row from the stream, overlays this player's cells on top of the latest stream state, and retries the atomic batch with refreshed per-subject CAS expectations (up to 5 attempts).
+
+Locks are published as no-CAS authoritative writes (see below) and so cannot fail CAS.
+
+### Authoritative writes (lock, hard-drop landing, line clear, opponent-shrink application)
+
+**No CAS.** The publisher's view is the new ground truth. Published as a single atomic no-CAS batch via `PublishRowsAtomicallyNoCAS` so consumers either see the entire authoritative state change at once or not at all.
 
 ---
 

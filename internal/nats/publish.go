@@ -23,7 +23,12 @@ type RowUpdate struct {
 // ErrCASFailure indicates a CAS sequence expectation was not met.
 var ErrCASFailure = errors.New("CAS sequence expectation not met")
 
-// PublishMoveAtomically publishes a set of row updates as an atomic batch.
+// PublishMoveAtomically publishes a set of row updates as an atomic batch with
+// per-subject CAS expectations (Nats-Expected-Last-Subject-Sequence). Consumers
+// never observe a torn intermediate state — either every row is committed or
+// none is. CAS is enforced per row subject, so concurrent writes to other rows
+// (e.g. another player's playfield in cooperative mode) don't cause spurious
+// rejections.
 func PublishMoveAtomically(
 	ctx context.Context,
 	js jetstream.JetStream,
@@ -75,6 +80,50 @@ func PublishMoveAtomically(
 	}
 
 	return nil
+}
+
+// PublishRowsAtomicallyNoCAS publishes a set of row updates as an atomic batch
+// without CAS expectations. Used for authoritative state changes (lock,
+// hard-drop landing, line-clear, shrink) where the publisher's view is the
+// new ground truth and partial writes must not be visible to consumers.
+func PublishRowsAtomicallyNoCAS(
+	ctx context.Context,
+	js jetstream.JetStream,
+	gameID string,
+	updates []RowUpdate,
+) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	batch, err := jetstreamext.NewBatchPublisher(js)
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < len(updates)-1; i++ {
+		u := updates[i]
+		subject := config.RowSubject(gameID, u.PlayerID, u.Row)
+		msg := &natsclient.Msg{
+			Subject: subject,
+			Data:    u.Payload,
+			Header:  natsclient.Header{},
+		}
+		if err := batch.AddMsg(msg); err != nil {
+			_ = batch.Discard()
+			return err
+		}
+	}
+
+	last := updates[len(updates)-1]
+	subject := config.RowSubject(gameID, last.PlayerID, last.Row)
+	commitMsg := &natsclient.Msg{
+		Subject: subject,
+		Data:    last.Payload,
+		Header:  natsclient.Header{},
+	}
+	_, err = batch.CommitMsg(ctx, commitMsg)
+	return err
 }
 
 // PublishSingleRow publishes a single row update with CAS.

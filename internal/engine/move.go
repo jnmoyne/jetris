@@ -16,21 +16,48 @@ func (e *Engine) runMoves(ctx context.Context) {
 			if e.mode != ModePlayer {
 				continue
 			}
-			_ = e.attemptMove(ctx, move)
+			// Player input — drop+flash on CAS failure.
+			_ = e.attemptMove(ctx, move, false)
 		}
 	}
 }
 
-func (e *Engine) attemptMove(ctx context.Context, move MoveType) error {
+// attemptMove runs a move. internal=true marks the move as engine-driven (e.g.
+// gravity ticks): on CAS failure such moves use merge-retry in coop mode (so
+// the piece keeps falling under contention) and never trigger the rainbow
+// flash (the player didn't press a key). internal=false is for player input
+// and uses the drop+flash path.
+func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
 	e.mu.Lock()
 
 	if e.gameMode == config.ModeCooperative {
-		return e.attemptMoveCoop(ctx, move)
+		return e.attemptMoveCoop(ctx, move, internal)
 	}
-	return e.attemptMoveStandard(ctx, move)
+	return e.attemptMoveStandard(ctx, move, internal)
 }
 
-func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType) error {
+// affectedRowsUnion returns the union of row indices touched by oldPiece and
+// newPiece (either may be nil).
+func affectedRowsUnion(oldPiece, newPiece *game.Piece) []int {
+	seen := make(map[int]bool, 8)
+	if oldPiece != nil {
+		for _, c := range oldPiece.Cells() {
+			seen[c[0]] = true
+		}
+	}
+	if newPiece != nil {
+		for _, c := range newPiece.Cells() {
+			seen[c[0]] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for r := range seen {
+		out = append(out, r)
+	}
+	return out
+}
+
+func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, internal bool) error {
 	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {
 		e.mu.Unlock()
@@ -66,41 +93,29 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType) error {
 
 	if !valid {
 		if move == MoveDown {
-			e.playfield.LockActivePieceForPlayer(e.playerIdx)
-			affectedRows := getAffectedRows(*p)
-			// Lock is authoritative — use NoCAS to prevent concurrent shrink from overwriting
-			e.publishPlayfieldRowsNoCAS(ctx, affectedRows)
+			affected := affectedRowsUnion(p, nil)
+			rows := e.playfield.ProjectLock(affected, e.playerIdx)
 			e.mu.Unlock()
+			// Lock is authoritative — NoCAS so it can't be overridden by stale moves.
+			e.publishProjectedRowsNoCAS(ctx, rows)
 			return nil
 		}
 		e.mu.Unlock()
 		return nil
 	}
 
-	oldCells := p.Cells()
-	newCells := newPiece.Cells()
-	affectedMap := make(map[int]bool)
-	for _, c := range oldCells {
-		affectedMap[c[0]] = true
-	}
-	for _, c := range newCells {
-		affectedMap[c[0]] = true
-	}
-
-	e.playfield.ClearActiveCellsForPlayer(e.playerIdx)
-	e.playfield.SetActivePieceForPlayer(newPiece, e.playerIdx)
+	affected := affectedRowsUnion(p, &newPiece)
+	rows := e.playfield.ProjectMove(affected, &newPiece, e.playerIdx)
 	e.mu.Unlock()
-
-	affected := make([]int, 0, len(affectedMap))
-	for r := range affectedMap {
-		affected = append(affected, r)
-	}
-	e.publishPlayfieldRows(ctx, affected)
-
+	// In competitive mode each player owns their row subjects, so this CAS
+	// publish cannot race with another player. The flashOnFailure flag
+	// distinguishes player input (flash on rare CAS conflicts caused by
+	// stale local LastSeq) from internal gravity moves (no flash).
+	e.publishProjectedRows(ctx, rows, !internal)
 	return nil
 }
 
-func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType) error {
+func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bool) error {
 	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {
 		e.mu.Unlock()
@@ -129,7 +144,6 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType) error {
 		newPiece.Row++
 		valid = game.CanPlaceCoop(newPiece, e.playfield, e.playerIdx)
 	case RotateCW:
-		// For rotation in coop, we need to check with CanPlaceCoop
 		newPiece, valid = game.RotateCoop(*p, true, e.playfield, e.playerIdx)
 	case RotateCCW:
 		newPiece, valid = game.RotateCoop(*p, false, e.playfield, e.playerIdx)
@@ -137,52 +151,42 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType) error {
 
 	if !valid {
 		if move == MoveDown {
-			// Check WHY it can't move down:
-			// - If blocked by locked cells or out-of-bounds → lock the piece
-			// - If blocked only by the other player's active piece → don't lock,
-			//   gravity will try again next tick (the obstacle is temporary)
+			// Distinguish: blocked by locked/bounds (lock now) vs. blocked
+			// only by other player's active piece (wait for next gravity tick).
 			downPiece := *p
 			downPiece.Row++
 			if game.CanPlace(downPiece, e.playfield) {
-				// CanPlace passes (ignores all active cells) but CanPlaceCoop
-				// fails → blocked by other player's active piece only.
-				// Don't lock, just wait.
 				e.mu.Unlock()
 				return nil
 			}
-			// Blocked by locked cells or bounds → lock
-			e.playfield.LockActivePieceForPlayer(e.playerIdx)
-			affectedRows := getAffectedRows(*p)
-			// Lock is authoritative — use NoCAS
-			e.publishPlayfieldRowsNoCAS(ctx, affectedRows)
+			affected := affectedRowsUnion(p, nil)
+			rows := e.playfield.ProjectLock(affected, e.playerIdx)
 			e.mu.Unlock()
+			e.publishProjectedRowsNoCAS(ctx, rows)
 			return nil
 		}
 		e.mu.Unlock()
 		return nil
 	}
 
-	oldCells := p.Cells()
-	newCells := newPiece.Cells()
-	affectedMap := make(map[int]bool)
-	for _, c := range oldCells {
-		affectedMap[c[0]] = true
-	}
-	for _, c := range newCells {
-		affectedMap[c[0]] = true
-	}
-
-	e.playfield.ClearActiveCellsForPlayer(e.playerIdx)
-	e.playfield.SetActivePieceForPlayer(newPiece, e.playerIdx)
+	affected := affectedRowsUnion(p, &newPiece)
+	rows := e.playfield.ProjectMove(affected, &newPiece, e.playerIdx)
 	e.mu.Unlock()
 
-	affected := make([]int, 0, len(affectedMap))
-	for r := range affectedMap {
-		affected = append(affected, r)
+	if internal {
+		// Gravity tick (engine-driven): the piece must keep falling even
+		// when the other player is concurrently writing the same shared
+		// rows. Use merge-retry — refetch+overlay+retry on CAS failure.
+		// No flash either way: the player did not press a key.
+		e.publishProjectedRowsWithMergeRetry(ctx, rows)
+		return nil
 	}
-	// Moves don't retry on CAS failure — the move is dropped
-	e.publishPlayfieldRowsRetry(ctx, affected, false)
-
+	// Player-initiated move: CAS conflict (typical in coop where two
+	// players share the playfield) drops the move and surfaces a local
+	// rainbow flash on the player's piece. We do not retry; the player
+	// must retry the input themselves, and we do NOT publish anything to
+	// the other players.
+	e.publishProjectedRows(ctx, rows, true)
 	return nil
 }
 
@@ -195,29 +199,13 @@ func (e *Engine) publishHardDrop(ctx context.Context) error {
 	}
 
 	dest := game.HardDropDestination(*p, e.playfield)
-
-	oldCells := p.Cells()
-	destCells := dest.Cells()
-	affectedMap := make(map[int]bool)
-	for _, c := range oldCells {
-		affectedMap[c[0]] = true
-	}
-	for _, c := range destCells {
-		affectedMap[c[0]] = true
-	}
-
-	e.playfield.ClearActiveCellsForPlayer(e.playerIdx)
-	e.playfield.SetActivePieceForPlayer(dest, e.playerIdx)
-	e.playfield.LockActivePieceForPlayer(e.playerIdx)
-
-	affected := make([]int, 0, len(affectedMap))
-	for r := range affectedMap {
-		affected = append(affected, r)
-	}
-	// Lock is authoritative — use NoCAS to prevent shrink events from overwriting it
-	e.publishPlayfieldRowsNoCAS(ctx, affected)
+	affected := affectedRowsUnion(p, &dest)
+	rows := e.playfield.ProjectHardDrop(affected, dest, e.playerIdx, true)
 	e.mu.Unlock()
 
+	// Hard drop landing is authoritative — NoCAS to prevent shrink/move
+	// echoes from overwriting it.
+	e.publishProjectedRowsNoCAS(ctx, rows)
 	return nil
 }
 
@@ -229,53 +217,19 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 		return nil
 	}
 
-	// Drop to lowest valid position (stops at other player's active piece too)
 	dest := game.HardDropDestinationCoop(*p, e.playfield, e.playerIdx)
 
-	// Check if the piece landed on the other player's active piece or on
-	// locked cells / bounds. If the position one row below the destination
-	// would be valid ignoring active cells (CanPlace), then the obstacle is
-	// the other player's active piece → don't lock, let gravity take over.
+	// If the cell below the destination is valid ignoring active cells
+	// (CanPlace), then dest is touching the OTHER player's active piece, not
+	// locked cells/bounds — don't lock, gravity will retry.
 	below := dest
 	below.Row++
 	landedOnActivePiece := game.CanPlace(below, e.playfield)
 
-	oldCells := p.Cells()
-	destCells := dest.Cells()
-	affectedMap := make(map[int]bool)
-	for _, c := range oldCells {
-		affectedMap[c[0]] = true
-	}
-	for _, c := range destCells {
-		affectedMap[c[0]] = true
-	}
-
-	e.playfield.ClearActiveCellsForPlayer(e.playerIdx)
-	e.playfield.SetActivePieceForPlayer(dest, e.playerIdx)
-	if !landedOnActivePiece {
-		// Landed on locked cells or bounds → lock immediately
-		e.playfield.LockActivePieceForPlayer(e.playerIdx)
-	}
-
-	affected := make([]int, 0, len(affectedMap))
-	for r := range affectedMap {
-		affected = append(affected, r)
-	}
-	// Use NoCAS — hard drop result is authoritative
-	e.publishPlayfieldRowsNoCAS(ctx, affected)
+	affected := affectedRowsUnion(p, &dest)
+	rows := e.playfield.ProjectHardDrop(affected, dest, e.playerIdx, !landedOnActivePiece)
 	e.mu.Unlock()
 
+	e.publishProjectedRowsNoCAS(ctx, rows)
 	return nil
-}
-
-func getAffectedRows(p game.Piece) []int {
-	rowMap := make(map[int]bool)
-	for _, c := range p.Cells() {
-		rowMap[c[0]] = true
-	}
-	rows := make([]int, 0, len(rowMap))
-	for r := range rowMap {
-		rows = append(rows, r)
-	}
-	return rows
 }

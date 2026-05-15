@@ -31,6 +31,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var signals struct {
 		PlayerName string `json:"playerName"`
+		ForceLogin bool   `json:"forceLogin"`
 	}
 	if err := datastar.ReadSignals(r, &signals); err != nil {
 		log.Printf("login read signals: %v", err)
@@ -47,6 +48,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the user did not already confirm, check whether another active
+	// player in the lobby is using the same name and ask the user to
+	// confirm before proceeding. Stale presence entries (LastSeen older
+	// than 3× heartbeat) are ignored so a previous unclean exit doesn't
+	// block re-entry.
+	if !signals.ForceLogin {
+		checkCtx, checkCancel := context.WithTimeout(r.Context(), 2*time.Second)
+		inUse, err := lobby.IsNameInUse(checkCtx, s.kv, name)
+		checkCancel()
+		if err != nil {
+			log.Printf("login: name-in-use check: %v", err)
+			// Fall through — don't block login on a transient KV error.
+		}
+		if inUse {
+			sse := datastar.NewSSE(w, r)
+			_ = sse.PatchElements(
+				renderNameCollisionPopup(name),
+				datastar.WithSelectorID("name-collision"),
+			)
+			return
+		}
+	}
+
 	if err := s.initLobby(name); err != nil {
 		sse := datastar.NewSSE(w, r)
 		_ = sse.PatchElements(
@@ -58,6 +82,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	sse := datastar.NewSSE(w, r)
 	_ = sse.ExecuteScript(`window.location.href = '/'`)
+}
+
+// renderNameCollisionPopup builds the modal asking the user to confirm
+// joining the lobby under a name that's already taken by another active
+// player. Confirming sets forceLogin=true and re-posts /login. Cancelling
+// closes the popup so the user can pick a different name.
+func renderNameCollisionPopup(name string) string {
+	return fmt.Sprintf(`<div id="name-collision" class="modal-overlay">
+  <div class="modal">
+    <p>looks like there is already a user with this name in the lobby, are you sure you want to join with this name?</p>
+    <p class="hint" style="margin-top:8px;color:#888">Name: <strong>%s</strong></p>
+    <div style="margin-top:18px;display:flex;gap:10px;justify-content:center">
+      <button class="btn" data-on:click="$forceLogin = true; @post('/login')">Yes, join</button>
+      <button class="btn btn-secondary" data-on:click="$forceLogin = false; document.getElementById('name-collision').innerHTML = ''">Cancel</button>
+    </div>
+  </div>
+</div>`, htmlEscape(name))
 }
 
 func (s *Server) handleGamePage(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +232,11 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				continue
 			}
-			// Re-render ready list when game listing changes (new player joined, ready toggled)
+			// Re-render ready list AND refresh s.gamePlayers/legend when the
+			// game listing changes (new player joined, ready toggled, etc).
+			// During the ready phase we MUST track late-arriving players so
+			// the legend on every screen reflects the current roster, not
+			// the snapshot taken at handleJoinGame time.
 			if lobbyUpdate.Kind == lobby.LobbyUpdateGames {
 				eng := s.getEngine()
 				if eng != nil && eng.Mode() == engine.ModePlayer {
@@ -199,6 +244,14 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 						games := lb.Games()
 						if g, ok := games[eng.GameID()]; ok && g.Status != config.GameStatusInProgress {
 							_ = sse.PatchElements(renderReadyList(g.Players), datastar.WithSelectorID("ready-list"))
+							s.mu.Lock()
+							s.gamePlayers = g.Players
+							s.mu.Unlock()
+							if eng.GameMode() == config.ModeCompetitive {
+								_ = sse.PatchElements(renderCompetitivePlayerStatus(s.getGamePlayers(), eng), datastar.WithSelectorID("player-legend"))
+							} else {
+								_ = sse.PatchElements(renderPlayerLegend(s.getGamePlayers(), eng.GameMode()), datastar.WithSelectorID("player-legend"))
+							}
 						}
 					}
 				}
@@ -284,9 +337,11 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 				}
 			case engine.UpdateCASFlash:
 				cellsJSON, _ := json.Marshal(update.FlashCells)
-				// Flash DOWN the CAS-failing player's cells (briefly remove outline)
-				// Flash UP all other active cells on the board (briefly show outline)
-				_ = sse.ExecuteScript(fmt.Sprintf(`(function(){var cs=%s;var fs={};cs.forEach(function(c){fs[c[0]+','+c[1]]=1;});cs.forEach(function(c){var r=document.getElementById('row-'+c[0]);if(r&&r.cells[c[1]]){var t=r.cells[c[1]];t.style.outline='none';setTimeout(function(){t.style.outline='';},300);}});var b=document.getElementById('game-board');if(b){var rs=b.getElementsByTagName('tr');for(var i=0;i<rs.length;i++){for(var j=0;j<rs[i].cells.length;j++){var td=rs[i].cells[j];if(td.classList.contains('cell-active')&&!fs[rs[i].id.replace('row-','')+','+j]){td.style.outline='3px solid white';td.style.outlineOffset='-1px';td.style.zIndex='2';td.style.position='relative';(function(t){setTimeout(function(){t.style.outline='';t.style.outlineOffset='';t.style.zIndex='';t.style.position='';},300);})(td);}}}}})()`, string(cellsJSON)))
+				// Local rainbow flash on the player's own piece outline.
+				// CAS rejected the move; the player needs to retry the
+				// input themselves. Cycles through 7 spectrum colors over
+				// ~600ms so the failure is unmistakable.
+				_ = sse.ExecuteScript(fmt.Sprintf(`(function(){var cs=%s;var rb=['#ff0000','#ff7f00','#ffff00','#00cc00','#0099ff','#4b0082','#9400d3'];var ts=cs.map(function(c){var r=document.getElementById('row-'+c[0]);return r?r.cells[c[1]]:null;}).filter(Boolean);var saved=ts.map(function(t){return {ol:t.style.outline,oo:t.style.outlineOffset,bs:t.style.boxShadow,z:t.style.zIndex,p:t.style.position};});var step=0,maxSteps=12;var iv=setInterval(function(){var col=rb[step%%rb.length];ts.forEach(function(t){t.style.outline='3px solid '+col;t.style.outlineOffset='-1px';t.style.boxShadow='0 0 8px '+col;t.style.zIndex='3';t.style.position='relative';});step++;if(step>=maxSteps){clearInterval(iv);ts.forEach(function(t,i){t.style.outline=saved[i].ol;t.style.outlineOffset=saved[i].oo;t.style.boxShadow=saved[i].bs;t.style.zIndex=saved[i].z;t.style.position=saved[i].p;});}},50);})()`, string(cellsJSON)))
 			case engine.UpdatePlayerEliminated:
 				// Re-render competitive player status list
 				if eng.GameMode() == config.ModeCompetitive {
@@ -443,9 +498,20 @@ func (s *Server) handleJoinGame(w http.ResponseWriter, r *http.Request) {
 	)
 	// Set archive callback — runs when game finishes regardless of browser connection
 	e.OnGameFinished = func() { s.archiveAndCleanup(e) }
-	s.mu.Lock()
-	s.gamePlayers = g.Players
-	s.mu.Unlock()
+	// Refetch the listing AFTER JoinGame so s.gamePlayers includes the
+	// player who just joined. The `g` snapshot above was taken before
+	// JoinGame appended us to the KV roster, so reusing it here would leave
+	// the in-game player legend stale (showing only the pre-existing
+	// players) until UpdateGameStatus=in_progress refreshes it.
+	if g2, ok := s.getLobby().Games()[gameID]; ok {
+		s.mu.Lock()
+		s.gamePlayers = g2.Players
+		s.mu.Unlock()
+	} else {
+		s.mu.Lock()
+		s.gamePlayers = g.Players
+		s.mu.Unlock()
+	}
 	s.AttachEngine(e)
 
 	if err := e.Start(); err != nil {
@@ -733,20 +799,25 @@ h1 { color: #00ff88; font-size: 3em; margin-bottom: 30px; }
 .login-form input:focus { outline: none; border-color: #00ff88; }
 .btn { display: inline-block; background: #00ff88; color: #0a0a0a; border: none; padding: 12px 30px; cursor: pointer; font-family: inherit; font-weight: bold; font-size: 1.1em; border-radius: 4px; }
 .btn:hover { background: #00cc66; }
+.btn-secondary { background: #444; color: #e0e0e0; }
+.btn-secondary:hover { background: #555; }
 .error { color: #ff4444; padding: 10px; background: #1a0000; border: 1px solid #440000; border-radius: 4px; margin-top: 10px; }
 .hint { color: #666; font-size: 0.85em; margin-top: 5px; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: #1a1a1a; border: 1px solid #00ff88; border-radius: 8px; padding: 24px; max-width: 420px; text-align: center; box-shadow: 0 0 30px rgba(0,255,136,0.25); }
 </style>
 </head>
 <body>
-<div class="login-box" data-signals="{playerName: ''}">
+<div class="login-box" data-signals="{playerName: '', forceLogin: false}">
   <h1>JETRICKS</h1>
   <div class="login-form">
     <input type="text" data-bind="playerName" placeholder="Enter your player name" autocomplete="off"
-           data-on:keydown="evt.key === 'Enter' && @post('/login')">
-    <button class="btn" data-on:click="@post('/login')">Play</button>
+           data-on:keydown="evt.key === 'Enter' && (($forceLogin = false), @post('/login'))">
+    <button class="btn" data-on:click="$forceLogin = false; @post('/login')">Play</button>
     <div class="hint">No spaces, dots, or wildcards allowed</div>
     <div id="login-error"></div>
   </div>
+  <div id="name-collision"></div>
 </div>
 </body>
 </html>`

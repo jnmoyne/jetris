@@ -98,28 +98,15 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		}
 		e.score += scoreDelta
 
-		game.ClearRows(e.playfield, completed)
-
-		// After ClearRows shifts rows down, update AnchorRow in all remaining
-		// active cells (other player's pieces in coop mode) to reflect the shift.
-		// Without this, ActivePieceForPlayer returns a piece at the stale position.
-		if e.gameMode == config.ModeCooperative {
-			for i := range e.playfield.Rows {
-				for j := range e.playfield.Rows[i].Cells {
-					c := &e.playfield.Rows[i].Cells[j]
-					if c.Active {
-						c.AnchorRow += len(completed)
-					}
-				}
-			}
-		}
+		// Compute the cleared/shifted projection without mutating e.playfield.
+		// The consumer will apply the published rows on echo. In coop mode,
+		// remaining active cells get their AnchorRow shifted by len(completed)
+		// so other players' pieces land in the right anchor position.
+		shiftAnchors := e.gameMode == config.ModeCooperative
+		projected := e.playfield.ProjectClearRows(completed, shiftAnchors)
 
 		// Publish only visible rows (not empty headroom) — reduces NATS round trips.
-		visibleRows := make([]int, 0, e.playfield.Height-e.visibleRowStart)
-		for r := e.visibleRowStart; r < e.playfield.Height; r++ {
-			visibleRows = append(visibleRows, r)
-		}
-		e.publishPlayfieldRowsNoCAS(ctx, visibleRows)
+		e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
 
 		// Update level in cooperative mode
 		if e.gameMode == config.ModeCooperative {
@@ -130,7 +117,9 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			}
 		}
 
-		// Emit a single update with ALL visible rows
+		// Emit a single update with ALL visible rows. The UI re-renders from
+		// e.playfield, which the consumer will populate as the published rows
+		// echo back; the changed-row hint is just a render trigger.
 		allVisibleRows := make([]int, 0, e.playfield.Height-e.visibleRowStart)
 		for r := e.visibleRowStart; r < e.playfield.Height; r++ {
 			allVisibleRows = append(allVisibleRows, r)
@@ -282,12 +271,6 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			e.score += ev.Score
 			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: e.score})
 		}
-	case EventCASFlash:
-		e.emitUpdate(EngineUpdate{
-			Kind:           UpdateCASFlash,
-			FlashCells:     ev.FlashCells,
-			FlashPlayerIdx: ev.FlashPlayerIdx,
-		})
 	case EventShrink:
 		// Apply shrink from any OTHER player (not ourselves)
 		if ev.PlayerID != e.playerID {
@@ -343,75 +326,35 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerIdx int) {
 	e.mu.Lock()
 
-	// Shift playfield up by rowsToAdd (existing pieces move up)
-	for i := 0; i < e.playfield.Height-rowsToAdd; i++ {
-		e.playfield.Rows[i] = e.playfield.Rows[i+rowsToAdd]
-	}
-	// Add fully occupied permanent adversarial rows at the bottom, tagged with
-	// the causer's player index so the UI can render them in that player's color.
-	for i := e.playfield.Height - rowsToAdd; i < e.playfield.Height; i++ {
-		e.playfield.Rows[i] = game.NewRow(e.playfield.Width)
-		for c := 0; c < e.playfield.Width; c++ {
-			e.playfield.Rows[i].Cells[c] = game.Cell{Occupied: true, PieceType: game.PieceO, Adversarial: true, PlayerIdx: causerIdx}
-		}
-	}
+	// Compute the post-shrink projection without mutating e.playfield. The
+	// consumer will update e.playfield when our published rows echo back.
+	projected := e.playfield.ProjectShrink(rowsToAdd, causerIdx)
 
-	// Update AnchorRow in all active cells to reflect the upward shift.
-	// Without this, ActivePiece() reconstructs the piece at the stale
-	// pre-shift position, causing false top-out detection.
-	for i := range e.playfield.Rows {
-		for j := range e.playfield.Rows[i].Cells {
-			c := &e.playfield.Rows[i].Cells[j]
-			if c.Active {
-				c.AnchorRow -= rowsToAdd
-			}
-		}
+	// Top-out check uses the projection, not the in-memory playfield. Build a
+	// temporary Playfield wrapping the projected rows for collision checks.
+	tmpPF := &game.Playfield{
+		Width:  e.playfield.Width,
+		Height: e.playfield.Height,
+		Rows:   projected,
 	}
-
-	// Check if the shift caused a top-out (active piece pushed out of bounds)
 	topOut := false
-	if p := e.playfield.ActivePieceForPlayer(e.playerIdx); p != nil {
+	if p := tmpPF.ActivePieceForPlayer(e.playerIdx); p != nil {
 		if p.Row < 0 {
 			topOut = true
 		} else if e.gameMode == config.ModeCooperative {
-			if !game.CanPlaceCoop(*p, e.playfield, e.playerIdx) {
+			if !game.CanPlaceCoop(*p, tmpPF, e.playerIdx) {
 				topOut = true
 			}
 		} else {
-			if !game.CanPlace(*p, e.playfield) {
+			if !game.CanPlace(*p, tmpPF) {
 				topOut = true
 			}
 		}
 	}
-	// Snapshot row data WHILE holding the mutex to avoid racing with
-	// move operations that temporarily clear active cells.
-	type rowSnapshot struct {
-		data []byte
-		row  int
-	}
-	// Only snapshot visible rows (not empty headroom) to reduce NATS round trips
-	snapshots := make([]rowSnapshot, 0, e.playfield.Height-e.visibleRowStart)
-	for r := e.visibleRowStart; r < e.playfield.Height; r++ {
-		data, err := e.playfield.Rows[r].Marshal()
-		if err != nil {
-			continue
-		}
-		snapshots = append(snapshots, rowSnapshot{data: data, row: r})
-	}
 	e.mu.Unlock()
 
-	// Publish snapshots with NoCAS — the shrink is authoritative.
-	playerID := e.effectivePlayerID()
-	for _, s := range snapshots {
-		seq, err := natspkg.PublishSingleRowNoCAS(ctx, e.js, e.gameID, natspkg.RowUpdate{
-			Row:      s.row,
-			PlayerID: playerID,
-			Payload:  s.data,
-		})
-		if err == nil {
-			e.playfield.LastSeq[s.row] = seq
-		}
-	}
+	// Publish only visible rows (not empty headroom) NoCAS — shrink is authoritative.
+	e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
 
 	if topOut {
 		e.handleTopOut(ctx)

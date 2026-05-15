@@ -356,10 +356,11 @@ Validation is implemented in `config.ValidatePlayerName(name) error`.
 ### Flow
 
 1. Browser opens → login page is served (no lobby exists yet)
-2. Player enters a name → `POST /login` validates and creates the lobby
-3. On success, the browser redirects to the lobby page
+2. Player enters a name → `POST /login` validates the name shape (`config.ValidatePlayerName`) and then checks the lobby KV (`lobby.IsNameInUse`) for an active player presence entry with the same display name (case-insensitive, whitespace-trimmed). Stale presence entries — `LastSeen` older than 3× `config.PresenceHeartbeat` — are ignored so unclean shutdowns don't permanently block the name.
+3. If the name collides with an active player, the server returns a confirmation modal ("looks like there is already a user with this name in the lobby, are you sure you want to join with this name?") with **Yes, join** / **Cancel** buttons. **Yes, join** sets the `forceLogin` Datastar signal to `true` and re-posts `/login`, which skips the collision check and proceeds.
+4. On success, the lobby is created and the browser redirects to the lobby page.
 
-Since the player name is the player ID, two players choosing the same name would conflict (same KV presence key, same roster subjects). This is by design — each name represents a unique player.
+Since the player name is the player ID, two players choosing the same name share one KV presence key and roster subject — actions taken by either binary in the lobby (e.g. ToggleReady) target whichever entry matches the playerID first. The collision check makes that condition opt-in: the user is told and must confirm before proceeding.
 
 ---
 
@@ -440,14 +441,34 @@ func NewOrderedConsumer(
 // RowUpdate represents a single row's new state and the CAS expectation.
 type RowUpdate struct {
     Row             int
+    PlayerID        string
     Payload         []byte
-    ExpectLastSeq   uint64  // NATS-Expected-Last-Subject-Sequence for this row
+    ExpectLastSeq   uint64  // Nats-Expected-Last-Subject-Sequence for this row
+                            // (per-subject CAS, not stream-level)
 }
 
-// PublishMoveAtomically publishes a set of row updates as an atomic batch.
-// Uses jetstreamext batch publish with per-subject CAS headers.
-// Returns ErrCASFailure if any subject's sequence expectation is not met.
+// PublishMoveAtomically publishes a set of row updates as a SINGLE atomic
+// batch with per-subject CAS expectations
+// (jetstreamext.WithBatchExpectLastSequencePerSubject, which sets the
+// Nats-Expected-Last-Subject-Sequence header). Either every row commits or
+// none does. Returns ErrCASFailure if any subject's sequence expectation is
+// not met.
+//
+// Per-subject CAS (not WithBatchExpectLastSequence, which is stream-level)
+// is what we want: each row is its own subject, so concurrent writes to
+// other rows don't cause spurious rejections.
 func PublishMoveAtomically(
+    ctx context.Context,
+    js jetstream.JetStream,
+    gameID string,
+    updates []RowUpdate,
+) error
+
+// PublishRowsAtomicallyNoCAS publishes a set of row updates as a SINGLE
+// atomic batch WITHOUT CAS expectations. Used for authoritative state
+// transitions (lock, hard-drop landing, line-clear, shrink) where the
+// publisher's view is the new ground truth.
+func PublishRowsAtomicallyNoCAS(
     ctx context.Context,
     js jetstream.JetStream,
     gameID string,
@@ -611,19 +632,26 @@ func (pf *Playfield) ActivePiece() *Piece
 // with that playerIdx is present.
 func (pf *Playfield) ActivePieceForPlayer(playerIdx int) *Piece
 
-// SetActivePieceForPlayer clears only active cells with matching PlayerIdx
-// before writing the new piece's active cells (tagged with playerIdx).
-// This ensures one player's piece update does not erase the other player's
-// active piece from the shared playfield.
+// SetActivePieceForPlayer / ClearActiveCellsForPlayer / LockActivePieceForPlayer
+// mutate the playfield in place. They are retained for unit-test setup only;
+// the engine never calls them. See "Invariant: NATS as single source of
+// truth for the playfield" in section 9.
 func (pf *Playfield) SetActivePieceForPlayer(p Piece, playerIdx int)
-
-// LockActivePieceForPlayer converts active cells with matching PlayerIdx to
-// locked (Occupied) cells. Only affects cells belonging to that player.
+func (pf *Playfield) ClearActiveCellsForPlayer(playerIdx int)
 func (pf *Playfield) LockActivePieceForPlayer(playerIdx int)
 
 // Snapshot returns a copy of the LastSeq array at the current moment,
 // for use as CAS expectations in an upcoming publish batch.
 func (pf *Playfield) Snapshot() [TotalRows]uint64
+
+// Projection helpers — compute the row payloads that the engine should
+// publish to NATS WITHOUT mutating pf. The engine never mutates pf; the
+// consumer applies the published rows on echo via Apply().
+func (pf *Playfield) ProjectMove(affectedRows []int, newPiece *Piece, playerIdx int) map[int]Row
+func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row
+func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row
+func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row
+func (pf *Playfield) ProjectShrink(rowsToAdd int, causerIdx int) []Row
 ```
 
 #### `row.go`
@@ -716,6 +744,39 @@ func GravityInterval(level int) time.Duration
 ## 9. internal/engine
 
 The active game session. This is where NATS and game logic meet. One `Engine` instance is created per game the local player is participating in (as a player or spectator). The engine owns the ordered consumer for the game stream and drives all game state transitions.
+
+### Invariant: NATS as single source of truth for the playfield
+
+The in-memory `*game.Playfield` held by the engine is a **read-only replica** for everyone except the row consumer (`runConsumer` in `consumer.go`). Specifically:
+
+- **The only place `e.playfield` is mutated is `pf.Apply(rowIdx, row, seq)` inside the row consumer.** That call is invoked when an ordered-consumer message for one of this engine's row subjects is delivered.
+- **No game action mutates the playfield directly** — not the local player's moves, not hard drops, not piece locks, not line clears, not opponent shrinks, not piece spawns. Each action computes the *projected* row payloads using the helpers in `internal/game/playfield.go` (`ProjectMove`, `ProjectLock`, `ProjectHardDrop`, `ProjectClearRows`, `ProjectShrink`) and publishes them. The consumer then applies those rows when it receives the echo, and the UI re-renders from the updated `e.playfield`.
+- **The UI renders only from `e.playfield`.** It never sees pre-publish state.
+
+This eliminates two-way drift between the local replica and the stream: every player on every machine sees the playfield evolve in the same order it was committed to JetStream. The price is that there is a NATS round-trip between input and visual feedback, and that two rapid inputs may both validate against the same pre-echo state — the second is dropped via CAS rejection (per-subject `ExpectLastSequencePerSubject`), surfaced as a CAS-flash event for visual feedback.
+
+The legacy in-place mutators on `Playfield` (`SetActivePieceForPlayer`, `LockActivePieceForPlayer`, `ClearActiveCellsForPlayer`, `ClearRows`) are retained only for unit-test setup of `internal/game`. They must not be called from `internal/engine`.
+
+### Atomic batches with per-subject CAS
+
+Every publication of multiple rows from the engine is a SINGLE atomic batch:
+
+- `natspkg.PublishMoveAtomically` — multi-row batch with **per-subject CAS** expectations (`Nats-Expected-Last-Subject-Sequence`, applied via `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`). Used for moves, rotations, and spawns.
+- `natspkg.PublishRowsAtomicallyNoCAS` — multi-row batch without CAS. Used for authoritative state transitions (piece lock, hard-drop landing, line-clear, opponent-shrink application).
+
+Why per-subject CAS, not stream-level (`WithBatchExpectLastSequence`)? Each row is its own NATS subject. Per-subject CAS rejects only when *our* row was overwritten since we last saw it; concurrent writes to *other* rows don't conflict. This is essential in cooperative mode where two players write the same shared playfield, and useful in competitive mode for parallelism between meta/event publishes and row publishes.
+
+Why atomic batch, not row-by-row? A single move typically touches 2+ rows (the row the piece is leaving and the row(s) it is entering). If those messages arrived at consumers one at a time, every other player would briefly observe a half-erased / half-placed piece between consumer applies. Atomic batch makes the multi-row update visible to consumers as one indivisible step.
+
+The expected-last-sequence value for each row comes from `e.playfield.LastSeq[r]`, which is updated only by the row consumer's `pf.Apply(rowIdx, row, seq)` call when an ordered-consumer message is delivered. Because the consumer is the only writer to `LastSeq`, the CAS expectation always reflects what we have actually observed from the stream — not optimistic local edits.
+
+CAS-failure handling for **player moves** (same in both modes): **drop the move, no retry, no NATS publish**. The engine emits an `UpdateCASFlash` directly on its local `Updates` channel; the player must retry the input themselves.
+
+In cooperative mode the shared playfield has two writers, so CAS rejections on moves are an expected, regular occurrence. A silent server-side retry would mask the conflict and make the player's own input timing feel non-deterministic. Instead we surface the failure loudly: the UI renders the `UpdateCASFlash` as a **rainbow outline flash on the player's own piece** — cells in `FlashCells` cycle through the seven spectrum colors over roughly 600 ms with a matching glow, then revert. The other players see nothing, since one player's input rejection is information of no use to anyone else.
+
+CAS-failure handling for **engine-driven (internal) writes** — piece spawn and gravity ticks. The player did not press a key for either, so a flash would be misleading; and both share row subjects with the other player in coop mode. Both **must** succeed: a dropped spawn would leave the player pieceless, and a dropped gravity tick would make the piece appear frozen for one tick interval. In coop mode both go through `publishProjectedRowsWithMergeRetry`: on CAS failure, refetch each affected row from the stream via `stream.GetLastMsgForSubject`, overlay this player's cells on top, retry the batch with refreshed per-subject CAS expectations (up to 5 retries). In competitive mode neither can race (each player owns their subjects), so both go through the regular `publishProjectedRows(flashOnFailure=false)`.
+
+The rainbow flash fires **only** for player-initiated moves. The `internal` boolean threaded through `attemptMove` / `attemptMoveStandard` / `attemptMoveCoop` distinguishes the source: `runMoves` (the moves channel — player input) calls `attemptMove(move, false)`, while `runGravity` calls `attemptMove(MoveDown, true)`. The `flashOnFailure` parameter on `publishProjectedRows` is the same flag passed downstream — `internal` true means flash false, and vice versa.
 
 ### Files
 

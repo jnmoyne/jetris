@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -104,7 +105,7 @@ func TestPublishMetaCAS(t *testing.T) {
 	}
 
 	// Second publish with wrong seq should fail
-	if err := PublishMeta(ctx, js, gameID, data, 0); err != ErrCASFailure {
+	if err := PublishMeta(ctx, js, gameID, data, 0); !errors.Is(err, ErrCASFailure) {
 		t.Errorf("expected ErrCASFailure, got %v", err)
 	}
 }

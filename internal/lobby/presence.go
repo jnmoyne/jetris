@@ -3,8 +3,12 @@ package lobby
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"strings"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
 )
@@ -67,6 +71,48 @@ func (l *Lobby) pruneStalePresence() {
 	if changed {
 		l.emitUpdate(LobbyUpdate{Kind: LobbyUpdatePlayers})
 	}
+}
+
+// IsNameInUse scans the lobby KV for active player presence entries with a
+// matching display name. "Active" means LastSeen is within 3× the heartbeat
+// interval — stale entries from unclean shutdowns are ignored. Used by the
+// login flow to warn before accepting a duplicate name. The lookup is
+// case-insensitive and trims whitespace to match config.ValidatePlayerName.
+func IsNameInUse(ctx context.Context, kv jetstream.KeyValue, name string) (bool, error) {
+	target := strings.ToLower(strings.TrimSpace(name))
+	if target == "" {
+		return false, nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		// An empty bucket returns ErrNoKeysFound from the JetStream client
+		// — treat that as "no one in the lobby" rather than a hard error.
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	threshold := time.Now().Add(-3 * config.PresenceHeartbeat)
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "players.") {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			continue
+		}
+		var p PlayerPresence
+		if err := json.Unmarshal(entry.Value(), &p); err != nil {
+			continue
+		}
+		if !p.LastSeen.IsZero() && p.LastSeen.Before(threshold) {
+			continue // stale entry, treat the slot as free
+		}
+		if strings.ToLower(strings.TrimSpace(p.Name)) == target {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (l *Lobby) publishPresence(ctx context.Context) {

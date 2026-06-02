@@ -847,12 +847,41 @@ Mapping from engine action to publish path:
 
 | Action | Path | CAS? |
 | ----- | ---- | ---- |
-| Move (left/right/down/rotate) | `publishProjectedRows` → `PublishMoveAtomically` | yes, per-subject |
-| Spawn | `publishProjectedRows` → `PublishMoveAtomically` | yes, per-subject |
-| Lock-on-blocked-down | `publishProjectedRowsNoCAS` → `PublishRowsAtomicallyNoCAS` | no |
-| Hard drop | `publishProjectedRowsNoCAS` → `PublishRowsAtomicallyNoCAS` | no |
-| Line clear | `publishProjectedRowsSliceNoCAS` → `PublishRowsAtomicallyNoCAS` | no |
-| Opponent shrink (apply locally) | `publishProjectedRowsSliceNoCAS` → `PublishRowsAtomicallyNoCAS` | no |
+| Move left/right/rotate | `publishProjectedRows(bottomFirst=false)` → `PublishMoveAtomically` | yes, per-subject (drop on fail) |
+| Move down / gravity tick | `publishProjectedRows`/`...WithMergeRetry` `(bottomFirst=true)` | yes, per-subject |
+| Spawn | `publishProjectedRowsWithMergeRetry` | yes, per-subject (merge-retry) |
+| Lock-on-blocked-down (coop) | `publishProjectedRowsWithMergeRetry(bottomFirst=false)` | yes, per-subject (merge-retry) |
+| Lock-on-blocked-down (competitive) | `publishProjectedRowsNoCAS(applyBottomFirst=false)` | no |
+| Hard drop (coop) | `publishProjectedRowsWithMergeRetry(bottomFirst=true)` | yes, per-subject (merge-retry) |
+| Hard drop (competitive) | `publishProjectedRowsNoCAS(applyBottomFirst=true)` | no |
+| Line clear (coop) | `publishProjectedRowsWithMergeRetry(bottomFirst=false)` | yes, per-subject (merge-retry) |
+| Line clear (competitive) | `publishProjectedRowsSliceNoCAS` | no |
+| Opponent shrink (apply locally, competitive) | `publishProjectedRowsSliceNoCAS` | no |
+
+**Why coop authoritative writes use CAS+merge-retry, not NoCAS.** In coop both
+players write the **same** shared row subjects, and every row write replaces the
+whole row (all columns), so it necessarily includes the *other* player's active
+cells. A plain NoCAS write therefore re-publishes the other player's cells from the
+writer's **local snapshot** — if that snapshot lags by even one piece, it resurrects
+the other player's old active cells, corrupting their mid-flight piece (ghosts /
+mixed-type pieces). Per-subject CAS prevents this: a stale batch is rejected, and
+the merge-retry refetches the latest row, **vacates only our own old active cells,
+overlays only our new cells, and never overwrites the other player's active cells**,
+then republishes. Competitive mode owns per-player subjects (no shared writer), so
+NoCAS is safe there.
+
+**Bottom-first batch ordering (`bottomFirst`/`applyBottomFirst`):** the ordered
+consumer applies a batch one row at a time and detects lock-in (firing the
+completed-line check) the instant the player's last `Active` cell disappears. Any
+**downward** write that clears higher rows and fills lower rows must be applied
+**bottom-first** (lower/new rows before higher/old rows). Two symptoms otherwise:
+(1) a hard drop that completes a line would have the completion missed until the
+next piece locks (lock-in fires before the landing row is applied); (2) a *single
+-row* piece — the horizontal I — moving down (gravity/soft drop) would briefly have
+zero active cells (old row cleared before new row set), firing a **spurious lock-in**
+that replaces it with the next piece. Bottom-first keeps the new cells in place
+before the old are cleared. Left/right moves stay in one row, and in-place locks
+convert active→occupied in place, so neither needs ordering.
 
 CAS failure handling for **player moves** — same in both modes: **drop the
 move, no retry**. The engine signals the local player with an `UpdateCASFlash`
@@ -873,37 +902,50 @@ player's own piece** — cells of `FlashCells` get an outline that cycles
 through the 7 spectrum colors over ~600ms with a matching box-shadow glow.
 This is unmistakable visual feedback that the move was rejected.
 
-CAS failure handling for **engine-driven (internal) writes** — different
-rules. The two such writes that use CAS are **piece spawn** and **gravity
-ticks** (`runGravity` calls `attemptMove(MoveDown, internal=true)`). In both
-cases the player did not press a key, so the rainbow flash would be
-misleading; and in cooperative mode both writes share the same row subjects
-with the other player and may race. Both **must succeed** — the spawn loser
-must not be left pieceless, and a gravity tick that silently drops would
-make the piece appear stuck for one tick interval, then snap down. So both
-use `publishProjectedRowsWithMergeRetry` in coop mode: on CAS failure,
-refetch the latest row from the stream via `stream.GetLastMsgForSubject`,
-overlay this player's cells on top, retry the batch with refreshed
-per-subject CAS expectations (up to 5 attempts).
+This is done **server-side, no injected JavaScript**: the handler groups
+`FlashCells` by row, then re-renders each affected row (`renderBoardRowInner`)
+with a `cell-flash` class on the touched cells and patches it by `#row-{n}`. The
+`.cell-flash` CSS `@keyframes` plays the one-shot rainbow animation. Because a CAS
+rejection produces no state change, no follow-up playfield render clobbers the
+animation. (This replaced an earlier `ExecuteScript` blob that imperatively mutated
+DOM styles — backend-driven DOM patching is the Datastar-idiomatic approach.)
 
-In competitive mode each player owns their row subjects, so neither spawn
-nor gravity can race; they go through the regular `publishProjectedRows`
-with `flashOnFailure=false` (the call still won't actually fail CAS in
-practice, but if it ever did the flash would be misleading).
+CAS failure handling for **engine-driven (internal) writes** — the two such
+writes that use CAS are **piece spawn** and **gravity ticks** (`runGravity`
+calls `attemptMove(MoveDown, internal=true)`). In cooperative mode both writes
+share the same row subjects with the other player and may race, and both
+**must succeed** — the spawn loser must not be left pieceless, and a gravity
+tick that silently drops would make the piece appear stuck for one tick
+interval, then snap down. So both use `publishProjectedRowsWithMergeRetry` in
+coop mode: on CAS failure, refetch the latest row from the stream via
+`stream.GetLastMsgForSubject`, overlay this player's cells on top, retry the
+batch with refreshed per-subject CAS expectations (up to 5 attempts).
 
-The rainbow flash fires **only** on player-initiated moves
-(`attemptMove(... internal=false)`, `publishHardDrop*`). Gravity ticks and
-spawns never flash.
+In competitive mode each player owns their row subjects, so neither spawn nor
+gravity can race; they go through the regular `publishProjectedRows` (the call
+won't actually fail CAS in practice).
+
+**The rainbow flash fires for every CAS-dropped step, not only player input.**
+Whenever a write is ultimately rejected by CAS and the step is dropped, the
+local player is flashed — player moves, gravity ticks, and spawns alike. The
+flash cells are precomputed by the caller while holding `e.mu` (the dropped
+step's cells) and passed into the publish helper, which calls the lock-free
+`emitCASFlash` on failure (it must not take `e.mu`, because `spawnPiece` can be
+invoked while the consumer already holds the lock). For the merge-retry path
+the flash fires only when **all** retries are exhausted (a transient CAS
+failure that merges and commits is not a dropped step, so it does not flash —
+otherwise coop gravity, which contends every tick, would strobe constantly).
+Spectators never flash (`e.mode != ModePlayer`).
 
 The mode→path mapping for CAS publishes is:
 
 | Path | Mode | On CAS failure |
 | ---- | ---- | -------------- |
 | Player moves (`runMoves` → `attemptMove(internal=false)`) | both | drop + local rainbow flash, no retry |
-| Gravity (`runGravity` → `attemptMove(MoveDown, internal=true)`) | competitive | drop, no flash (cannot race) |
-| Gravity (`runGravity` → `attemptMove(MoveDown, internal=true)`) | cooperative | merge-retry via `publishProjectedRowsWithMergeRetry` |
-| Spawn (`spawnPiece`) | competitive | drop, no flash (cannot race) |
-| Spawn (`spawnPiece`) | cooperative | merge-retry via `publishProjectedRowsWithMergeRetry` |
+| Gravity (`runGravity` → `attemptMove(MoveDown, internal=true)`) | competitive | drop + flash (cannot race in practice) |
+| Gravity (`runGravity` → `attemptMove(MoveDown, internal=true)`) | cooperative | merge-retry; flash only if all retries exhausted |
+| Spawn (`spawnPiece`) | competitive | drop + flash (cannot race in practice) |
+| Spawn (`spawnPiece`) | cooperative | merge-retry; flash only if all retries exhausted |
 
 ### 3.1 `internal/engine`
 
@@ -1266,6 +1308,17 @@ set Active on new cells), and build RowUpdate entries with `ExpectLastSeq` from
 occupied (Active→false, Occupied→true), then check for completed rows and publish the
 line-clear row shift if any. In competitive mode, publish a shrink event (with `PlayerID` set to this player) for every line clear (1+ lines; rows added = lines cleared). All other players apply the shrink to their own playfields. See `jetricks-gameplays.md` for shrink rules.
 
+In **cooperative** mode the board is shared, so a line clear must repaint every
+player's board. The clearing engine emits a full-board re-render itself; every
+other engine, on receiving the `EventLineClear` game event, also emits a
+full-board re-render (`emitFullBoardRerender`) in addition to folding in the shared
+score delta. A *full* re-render (all visible rows in one update) is required
+because the bounded, non-blocking `Updates`/broadcaster fan-out can drop individual
+per-row triggers during the clear's full-visible-range republish, which would
+otherwise leave stale rows on the other player's board. The same full-board
+re-render is emitted after a competitive shrink (`applyOpponentShrink`), which also
+republishes the whole visible range.
+
 #### `cas.go`
 
 ```go
@@ -1493,8 +1546,21 @@ Each fragment has an `id=` attribute that the SSE handler patches into.
 #### `ui/game/board.templ`
 
 The playfield is a grid. Each row has `id="row-{n}"`. The `BoardRow` template renders
-a single `<tr>` or `<div>` for one row. Only changed rows are re-rendered via
-`PatchElements`.
+a single `<tr>` for one row. Only changed rows are re-rendered via `PatchElements`.
+
+**Per-square server-side rendering.** Cell appearance is computed entirely on the
+server by a single helper, `cellStyle(cell, localPlayerIdx, showOutline)`, which is
+the one source of truth used by every render path (own board, spectator boards,
+compact opponent boards). For each `<td>` it emits an inline
+`style="background:#..;outline:Npx solid #..;outline-offset:-1px"` — there are **no**
+per-color CSS classes. Fill is the tetromino's base color composited over the board
+background (`blend(fg, "#111111", alpha)`; active ≈0.9, locked ≈0.7, adversarial
+≈0.8) so opacity layering becomes a concrete hex. Outline rules: own active piece →
+white 2px; spectator → per-player color on active/locked; other player's active
+piece (player view) → grid line only; locked non-adversarial → per-player color 2px
+when `showOutline`; empty / adversarial / compact opponent board → 1px grid line.
+The stylesheet keeps only structural rules (cell sizing, `border-collapse`) plus the
+`.cell-flash` keyframes used for CAS feedback.
 
 In competitive mode, own board has `id="board-own-row-{n}"`, each opponent board has
 `id="board-opp-<pid>-row-{n}"` (namespaced by opponent player ID).

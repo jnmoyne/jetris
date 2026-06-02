@@ -67,7 +67,7 @@ Each player tracks their own `pieceIdx` independently.
 
 **Spawn position:** Each player's piece spawns centered in their section, but can immediately move anywhere:
 - Player N spawns at column `N * 10 + 3` (center of their 10-column section)
-- Row: 2 for most pieces, 1 for the I-piece
+- Anchor row 2 for **all** piece types, so every piece's lowest cell sits at row 3 (just inside the headroom) and they all become visible after the same number of gravity ticks. (Spawning the I one row higher made it appear a tick later than the rest, so a player hard-dropping each piece on sight would drop the I before seeing it.)
 
 ### Movement
 
@@ -110,6 +110,8 @@ A row is complete when **all cells across the entire width** are occupied (locke
 
 Cleared rows are removed and everything above shifts down. Empty rows are added at the top. The cleared state is published with no-CAS (authoritative — the clear must not be undone by stale data).
 
+Because the board is shared, a clear must be reflected on **every** player's screen, not just the player whose piece completed the row. The cleared rows are published to the shared playfield subject and every player's row consumer applies them, so the authoritative `playfield` state always converges. Rendering, however, is per-engine: the player who detected the clear re-renders the whole board directly, and every **other** player re-renders the whole board on receipt of the `EventLineClear` event. A full-board re-render (rather than relying on per-row repaint triggers) is used because a clear repaints the entire visible range at once, and individual per-row triggers can be dropped by the bounded, non-blocking UI update fan-out — which would otherwise leave stale, un-cleared rows on another player's board.
+
 ### Scoring
 
 Score = `playerCount` per line cleared.
@@ -144,9 +146,17 @@ When **any** player tops out (newly spawned piece cannot be placed), the game en
 
 ### Visual Indicators
 
+The playfield is rendered entirely server-side: for **every** square the server
+computes a concrete fill color and an outline color and emits them as an inline
+`style` on the `<td>` (no per-color CSS classes). The fill is the tetromino color
+composited over the board background to match the desired brightness (active ≈0.9,
+locked ≈0.7, adversarial ≈0.8). Empty squares fall back to the board background
+with a thin grid-line outline, so literally every square has an outline.
+
 - **Own piece:** 2px white outline around each active cell
-- **Other player's piece:** Standard piece color, no outline (from a player's perspective)
-- **Spectator view:** Per-player colored outlines (P0=cyan #00ffff, P1=magenta #ff00ff, P2=yellow #ffff00, P3=orange #ff8800)
+- **Other player's piece:** Standard piece color, no ownership outline (from a player's perspective)
+- **Locked cells:** dimmed piece color with a 2px per-player outline (non-adversarial)
+- **Spectator view:** Per-player colored outlines on every active and locked cell (P0=cyan #00ffff, P1=magenta #ff00ff, P2=yellow #ffff00, P3=orange #ff8800, …)
 - **No divider:** The board is rendered as one seamless playfield with no visual separator between player sections
 
 ---
@@ -165,7 +175,7 @@ Each player has their own 10-column playfield. The playfield height scales with 
 
 Each player gets it's own piece spawn on the shared playfield. Players share the same RNG seed (`meta.Seed`) and produce the identical piece sequence.
 
-**Spawn position:** Centered at column 3, row 2 (row 1 for I-piece).
+**Spawn position:** Centered at column 3, anchor row 2 for all piece types (lowest cell at row 3).
 
 ### Movement
 
@@ -326,3 +336,20 @@ The engine runs consumers for:
 - Countdown
 
 Any change in a JetStream stream or KV bucket is immediately pushed to the UI via: consumer → Updates channel → broadcaster → SSE → browser.
+
+Each pushed change re-renders only the affected rows server-side and patches them
+by element ID (`#row-{n}`). The `Updates` channel and the per-connection
+broadcaster fan-out are bounded and **non-blocking** (a slow client must never
+stall the engine), so individual row-update triggers can be dropped under a burst.
+This is safe for incremental play because the UI always re-renders from the
+converged `playfield` — but **bulk** changes that repaint the whole visible range
+(line clears, competitive shrink) must emit a single full-board re-render covering
+every visible row, so no row is left stale if a per-row trigger was dropped. Cell
+appearance (fill + outline) is always computed on the server (see the rendering
+helper in `internal/ui`) and emitted as inline styles — the browser never decides
+colors. **CAS-rejection feedback** (a move rejected by
+per-subject CAS) is handled the same way: the touched rows are re-rendered with a
+`cell-flash` class on the affected cells, and a one-shot ~600ms rainbow CSS
+animation plays. This replaces the previous approach of injecting imperative
+JavaScript to mutate cell styles — consistent with Datastar's principle that the
+backend drives all DOM changes by patching HTML.

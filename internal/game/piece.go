@@ -87,21 +87,25 @@ func (p Piece) Cells() [][2]int {
 }
 
 // SpawnPiece creates a new piece at the standard spawn position.
-// The piece spawns centered at the top of the visible area (row depends on piece).
+// The piece spawns centered at the top of the visible area.
+//
+// All piece types use the same anchor row so their lowest cell sits at the same
+// playfield row (row 3, just inside the headroom). Every spawn orientation places
+// its occupied cells at bounding-box offset row 1 — including the horizontal I —
+// so a single anchor row keeps every piece's lowest cell aligned. This matters
+// because a piece only becomes visible once it falls past the headroom: if the I
+// spawned one row higher (as it used to), it became visible one gravity tick later
+// than every other piece, so a player hard-dropping each piece on sight would
+// drop the I before it appeared and "never see" it.
 func SpawnPiece(pt PieceType, width int) Piece {
 	col := (width - 4) / 2 // center in field
 	if col < 0 {
 		col = 0
 	}
-	// Spawn in headroom rows so piece appears at top of visible area
-	row := 2 // gives a couple rows of headroom above
-	if pt == PieceI {
-		row = 1 // I piece uses row 1 of its bounding box
-	}
 	return Piece{
 		Type:        pt,
 		Orientation: 0,
-		Row:         row,
+		Row:         2, // lowest cell lands at row 3 for every piece type
 		Col:         col,
 	}
 }

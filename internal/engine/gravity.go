@@ -23,7 +23,8 @@ func (e *Engine) runGravity(ctx context.Context) {
 			}
 			// internal=true: gravity is engine-driven, not player input.
 			// In coop this routes to merge-retry on CAS conflict so the
-			// piece keeps falling under contention; never flashes.
+			// piece keeps falling under contention; it flashes only if the
+			// tick is ultimately dropped (all retries exhausted).
 			_ = e.attemptMove(ctx, MoveDown, true)
 
 			if e.gameMode == config.ModeCooperative {

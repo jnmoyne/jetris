@@ -46,9 +46,9 @@ const (
 // GameEvent is the JSON payload published to the events subject.
 //
 // Note: CAS-failure feedback is intentionally NOT modelled as a published
-// event. CAS failures are local information for the player who authored the
-// move; they surface as an UpdateCASFlash on the local engine's Updates
-// channel only and never round-trip through NATS.
+// event. A CAS failure that drops a step (player move, gravity tick, or spawn)
+// is local information for that player; it surfaces as an UpdateCASFlash on the
+// local engine's Updates channel only and never round-trips through NATS.
 type GameEvent struct {
 	Kind         EventKind `json:"kind"`
 	PlayerID     string    `json:"player_id"`

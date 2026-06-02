@@ -164,3 +164,55 @@ func TestEngineUpdatesChannel(t *testing.T) {
 		}
 	}
 }
+
+// TestCoopLineClearRerendersOtherPlayer verifies the fix for the bug where a
+// line cleared by one cooperative player was not reflected on the other
+// player's board. In coop the board is shared, so when ANOTHER player clears a
+// line our engine must force a full-board re-render (every visible row) — not
+// rely on the lossy per-row update fan-out — in addition to folding in the
+// shared score delta.
+func TestCoopLineClearRerendersOtherPlayer(t *testing.T) {
+	e, _, _ := setupEngine(t)
+	defer e.Stop()
+
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Drain startup/spawn/gravity updates.
+	for len(e.Updates) > 0 {
+		<-e.Updates
+	}
+
+	// Another player clears a line on the shared cooperative board.
+	e.handleGameEvent(context.Background(), GameEvent{
+		Kind:     EventLineClear,
+		PlayerID: "other-player",
+		Score:    4,
+	})
+
+	wantRows := e.playfield.Height - e.VisibleRowStart()
+	gotFullRerender := false
+	gotScore := false
+	timeout := time.After(time.Second)
+	for !(gotFullRerender && gotScore) {
+		select {
+		case u := <-e.Updates:
+			switch u.Kind {
+			case UpdateLineClear:
+				if len(u.ChangedRows) == wantRows &&
+					u.ChangedRows[0] == e.VisibleRowStart() &&
+					u.ChangedRows[len(u.ChangedRows)-1] == e.playfield.Height-1 {
+					gotFullRerender = true
+				}
+			case UpdateScore:
+				if u.Score == 4 {
+					gotScore = true
+				}
+			}
+		case <-timeout:
+			t.Fatalf("missing updates after other player's line clear: fullRerender=%v score=%v", gotFullRerender, gotScore)
+		}
+	}
+}

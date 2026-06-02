@@ -23,10 +23,11 @@ func (e *Engine) runMoves(ctx context.Context) {
 }
 
 // attemptMove runs a move. internal=true marks the move as engine-driven (e.g.
-// gravity ticks): on CAS failure such moves use merge-retry in coop mode (so
-// the piece keeps falling under contention) and never trigger the rainbow
-// flash (the player didn't press a key). internal=false is for player input
-// and uses the drop+flash path.
+// gravity ticks): on CAS failure such moves use merge-retry in coop mode so the
+// piece keeps falling under contention. internal=false is for player input and
+// uses the drop path. Either way, a step that is ultimately dropped by CAS
+// flashes the local player (see emitCASFlash); merge-retry flashes only after
+// all retries are exhausted.
 func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
 	e.mu.Lock()
 
@@ -96,8 +97,8 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 			affected := affectedRowsUnion(p, nil)
 			rows := e.playfield.ProjectLock(affected, e.playerIdx)
 			e.mu.Unlock()
-			// Lock is authoritative — NoCAS so it can't be overridden by stale moves.
-			e.publishProjectedRowsNoCAS(ctx, rows)
+			// In-place lock (gravity/soft drop): row order is irrelevant.
+			e.publishProjectedRowsNoCAS(ctx, rows, false)
 			return nil
 		}
 		e.mu.Unlock()
@@ -106,12 +107,16 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 
 	affected := affectedRowsUnion(p, &newPiece)
 	rows := e.playfield.ProjectMove(affected, &newPiece, e.playerIdx)
+	// Cells to flash if the step is dropped by CAS (the piece stays put, so
+	// flash its current position). Computed under e.mu before unlocking.
+	flashCells := p.Cells()
 	e.mu.Unlock()
 	// In competitive mode each player owns their row subjects, so this CAS
-	// publish cannot race with another player. The flashOnFailure flag
-	// distinguishes player input (flash on rare CAS conflicts caused by
-	// stale local LastSeq) from internal gravity moves (no flash).
-	e.publishProjectedRows(ctx, rows, !internal)
+	// publish cannot race with another player in practice; if it ever does,
+	// the dropped step flashes regardless of whether it was a player input or
+	// an internal gravity tick. bottomFirst for downward moves so a single-row
+	// (horizontal I) piece never transiently vanishes mid-relocate.
+	e.publishProjectedRows(ctx, rows, flashCells, move == MoveDown)
 	return nil
 }
 
@@ -161,8 +166,12 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 			}
 			affected := affectedRowsUnion(p, nil)
 			rows := e.playfield.ProjectLock(affected, e.playerIdx)
+			flashCells := p.Cells()
 			e.mu.Unlock()
-			e.publishProjectedRowsNoCAS(ctx, rows)
+			// Coop shares row subjects: use CAS+merge-retry so this lock can't
+			// clobber the other player's mid-flight piece with our stale view.
+			// In-place lock: row order is irrelevant (bottomFirst=false).
+			e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, false)
 			return nil
 		}
 		e.mu.Unlock()
@@ -171,22 +180,27 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 
 	affected := affectedRowsUnion(p, &newPiece)
 	rows := e.playfield.ProjectMove(affected, &newPiece, e.playerIdx)
+	// Cells to flash if the step is dropped by CAS. Computed under e.mu.
+	flashCells := p.Cells()
 	e.mu.Unlock()
 
 	if internal {
 		// Gravity tick (engine-driven): the piece must keep falling even
 		// when the other player is concurrently writing the same shared
-		// rows. Use merge-retry — refetch+overlay+retry on CAS failure.
-		// No flash either way: the player did not press a key.
-		e.publishProjectedRowsWithMergeRetry(ctx, rows)
+		// rows. Use merge-retry — refetch+overlay+retry on CAS failure. If
+		// every retry is exhausted the tick is dropped and flashes, same as
+		// any other lost CAS step. bottomFirst (gravity is a downward move) so a
+		// single-row (horizontal I) piece never transiently vanishes mid-move
+		// and trigger a spurious lock-in.
+		e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, move == MoveDown)
 		return nil
 	}
 	// Player-initiated move: CAS conflict (typical in coop where two
 	// players share the playfield) drops the move and surfaces a local
 	// rainbow flash on the player's piece. We do not retry; the player
 	// must retry the input themselves, and we do NOT publish anything to
-	// the other players.
-	e.publishProjectedRows(ctx, rows, true)
+	// the other players. bottomFirst for downward moves (single-row I safety).
+	e.publishProjectedRows(ctx, rows, flashCells, move == MoveDown)
 	return nil
 }
 
@@ -204,8 +218,10 @@ func (e *Engine) publishHardDrop(ctx context.Context) error {
 	e.mu.Unlock()
 
 	// Hard drop landing is authoritative — NoCAS to prevent shrink/move
-	// echoes from overwriting it.
-	e.publishProjectedRowsNoCAS(ctx, rows)
+	// echoes from overwriting it. applyBottomFirst=true so the landing rows are
+	// applied before the vacated rows, ensuring a line completed by the drop is
+	// detected at this lock (not one piece later). See publishProjectedRowsNoCAS.
+	e.publishProjectedRowsNoCAS(ctx, rows, true)
 	return nil
 }
 
@@ -228,8 +244,13 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 
 	affected := affectedRowsUnion(p, &dest)
 	rows := e.playfield.ProjectHardDrop(affected, dest, e.playerIdx, !landedOnActivePiece)
+	flashCells := p.Cells()
 	e.mu.Unlock()
 
-	e.publishProjectedRowsNoCAS(ctx, rows)
+	// Coop shares row subjects: CAS+merge-retry so this drop can't clobber the
+	// other player's mid-flight piece with our stale view. bottomFirst=true so
+	// the landing rows apply before the vacated rows and a line completed by the
+	// drop is detected at this lock, not one piece later.
+	e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, true)
 	return nil
 }

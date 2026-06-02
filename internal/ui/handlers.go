@@ -274,7 +274,7 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 				for _, row := range update.ChangedRows {
 					if row >= 0 && row < eng.PlayfieldHeight() {
 						_ = sse.PatchElements(
-							renderBoardRowInner(pf.Rows[row], row, playerIdx),
+							renderBoardRowInner(pf.Rows[row], row, playerIdx, nil),
 							datastar.WithSelectorf("#row-%d", row),
 						)
 					}
@@ -336,12 +336,35 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 					)
 				}
 			case engine.UpdateCASFlash:
-				cellsJSON, _ := json.Marshal(update.FlashCells)
-				// Local rainbow flash on the player's own piece outline.
-				// CAS rejected the move; the player needs to retry the
-				// input themselves. Cycles through 7 spectrum colors over
-				// ~600ms so the failure is unmistakable.
-				_ = sse.ExecuteScript(fmt.Sprintf(`(function(){var cs=%s;var rb=['#ff0000','#ff7f00','#ffff00','#00cc00','#0099ff','#4b0082','#9400d3'];var ts=cs.map(function(c){var r=document.getElementById('row-'+c[0]);return r?r.cells[c[1]]:null;}).filter(Boolean);var saved=ts.map(function(t){return {ol:t.style.outline,oo:t.style.outlineOffset,bs:t.style.boxShadow,z:t.style.zIndex,p:t.style.position};});var step=0,maxSteps=12;var iv=setInterval(function(){var col=rb[step%%rb.length];ts.forEach(function(t){t.style.outline='3px solid '+col;t.style.outlineOffset='-1px';t.style.boxShadow='0 0 8px '+col;t.style.zIndex='3';t.style.position='relative';});step++;if(step>=maxSteps){clearInterval(iv);ts.forEach(function(t,i){t.style.outline=saved[i].ol;t.style.outlineOffset=saved[i].oo;t.style.boxShadow=saved[i].bs;t.style.zIndex=saved[i].z;t.style.position=saved[i].p;});}},50);})()`, string(cellsJSON)))
+				// Local feedback that the player's last move was rejected by
+				// per-subject CAS — they must retry the input. Rather than
+				// imperatively scripting DOM styles, re-render the affected rows
+				// server-side with the cell-flash class on the touched cells; the
+				// .cell-flash CSS keyframes play the ~600ms rainbow outline once.
+				// A CAS rejection produces no state change, so no follow-up
+				// playfield render clobbers the animation.
+				pf := eng.Playfield()
+				playerIdx := eng.PlayerIdx()
+				if eng.Mode() == engine.ModeSpectator {
+					playerIdx = -1
+				}
+				flashByRow := make(map[int]map[int]bool)
+				for _, rc := range update.FlashCells {
+					row, col := rc[0], rc[1]
+					if row < 0 || row >= eng.PlayfieldHeight() {
+						continue
+					}
+					if flashByRow[row] == nil {
+						flashByRow[row] = make(map[int]bool)
+					}
+					flashByRow[row][col] = true
+				}
+				for row, cols := range flashByRow {
+					_ = sse.PatchElements(
+						renderBoardRowInner(pf.Rows[row], row, playerIdx, cols),
+						datastar.WithSelectorf("#row-%d", row),
+					)
+				}
 			case engine.UpdatePlayerEliminated:
 				// Re-render competitive player status list
 				if eng.GameMode() == config.ModeCompetitive {
@@ -916,44 +939,27 @@ body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #e0e0e
 .board { border: 2px solid #333; background: #111; border-collapse: collapse; }
 .board tr { height: 24px; }
 .board td { width: 24px; height: 24px; border: 1px solid #1a1a1a; }
-.cell-empty { background: #111; }
-.cell-I { background: #00f0f0; }
-.cell-O { background: #f0f000; }
-.cell-T { background: #a000f0; }
-.cell-S { background: #00f000; }
-.cell-Z { background: #f00000; }
-.cell-J { background: #0000f0; }
-.cell-L { background: #f0a000; }
-.cell-active { opacity: 0.9; }
-.cell-locked { opacity: 0.7; }
-.cell-adversarial { background: #555; opacity: 0.8; }
-.cell-adv-p0 { background: #00ffff; opacity: 0.8; }
-.cell-adv-p1 { background: #ff00ff; opacity: 0.8; }
-.cell-adv-p2 { background: #ffff00; opacity: 0.8; }
-.cell-adv-p3 { background: #ff8800; opacity: 0.8; }
-.cell-adv-p4 { background: #00ff00; opacity: 0.8; }
-.cell-adv-p5 { background: #ff4444; opacity: 0.8; }
-.cell-adv-p6 { background: #8888ff; opacity: 0.8; }
-.cell-adv-p7 { background: #ff88ff; opacity: 0.8; }
-.cell-adv-p8 { background: #88ffff; opacity: 0.8; }
-.cell-adv-p9 { background: #ffaa44; opacity: 0.8; }
+/* Per-square fill and outline colors are computed and emitted server-side as
+   inline styles (see cellStyle in handlers.go); the stylesheet only owns
+   structure here. */
 .opponents { display: flex; flex-direction: column; gap: 10px; }
 .opponent-board { }
 .opp-label { color: #888; font-size: 0.8em; text-align: center; margin-bottom: 2px; }
 .opp-board { border: 1px solid #333; border-collapse: collapse; }
 .opp-board tr { height: 12px; }
 .opp-board td { width: 12px; height: 12px; border: 1px solid #1a1a1a; padding: 0; }
-.cell-own { outline: 2px solid white; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p0 { outline: 2px solid #00ffff; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p1 { outline: 2px solid #ff00ff; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p2 { outline: 2px solid #ffff00; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p3 { outline: 2px solid #ff8800; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p4 { outline: 2px solid #00ff00; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p5 { outline: 2px solid #ff4444; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p6 { outline: 2px solid #8888ff; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p7 { outline: 2px solid #ff88ff; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p8 { outline: 2px solid #88ffff; outline-offset: -1px; z-index: 1; position: relative; }
-.cell-p9 { outline: 2px solid #ffaa44; outline-offset: -1px; z-index: 1; position: relative; }
+/* CAS-rejection feedback: a one-shot ~600ms rainbow outline pulse applied to the
+   touched cells when the server re-renders the affected rows. */
+.cell-flash { position: relative; z-index: 3; animation: cas-flash 0.6s steps(1) 1; }
+@keyframes cas-flash {
+  0%   { outline: 3px solid #ff0000; outline-offset: -1px; box-shadow: 0 0 8px #ff0000; }
+  16%  { outline: 3px solid #ff7f00; outline-offset: -1px; box-shadow: 0 0 8px #ff7f00; }
+  33%  { outline: 3px solid #ffff00; outline-offset: -1px; box-shadow: 0 0 8px #ffff00; }
+  50%  { outline: 3px solid #00cc00; outline-offset: -1px; box-shadow: 0 0 8px #00cc00; }
+  66%  { outline: 3px solid #0099ff; outline-offset: -1px; box-shadow: 0 0 8px #0099ff; }
+  83%  { outline: 3px solid #4b0082; outline-offset: -1px; box-shadow: 0 0 8px #4b0082; }
+  100% { outline: 3px solid #9400d3; outline-offset: -1px; box-shadow: 0 0 8px #9400d3; }
+}
 .ready-player { padding: 4px 0; display: flex; align-items: center; gap: 8px; }
 .ready-yes { color: #00ff88; }
 .ready-no { color: #ff4444; }
@@ -1129,32 +1135,25 @@ func renderBoard(pf *game.Playfield, playerIdx int, visibleRowStart int) string 
 	var sb strings.Builder
 	sb.WriteString(`<table id="game-board" class="board">`)
 	for r := visibleRowStart; r < pf.Height; r++ {
-		sb.WriteString(renderBoardRowInner(pf.Rows[r], r, playerIdx))
+		sb.WriteString(renderBoardRowInner(pf.Rows[r], r, playerIdx, nil))
 	}
 	sb.WriteString(`</table>`)
 	return sb.String()
 }
 
 // renderBoardRowInner renders a single row. playerIdx is the local player's index
-// (-1 for spectators, in which case all active pieces get per-player colored outlines).
-func renderBoardRowInner(row game.Row, rowIndex int, playerIdx int) string {
+// (-1 for spectators, in which case all active pieces get per-player colored
+// outlines). flashCols, when non-nil, marks columns that should carry the
+// cell-flash CSS animation class (used for the CAS-rejection feedback).
+func renderBoardRowInner(row game.Row, rowIndex int, playerIdx int, flashCols map[int]bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, `<tr id="row-%d">`, rowIndex)
-	for _, c := range row.Cells {
-		cls := cellClass(c)
-		if c.Active {
-			if playerIdx < 0 {
-				// Spectator: color outline by player index
-				cls += fmt.Sprintf(" cell-p%d", c.PlayerIdx)
-			} else if c.PlayerIdx == playerIdx {
-				// Player: white outline for own piece
-				cls += " cell-own"
-			}
-		} else if c.Occupied && !c.Adversarial {
-			// Locked/dropped piece: show player color outline
-			cls += fmt.Sprintf(" cell-p%d", c.PlayerIdx)
+	for col, c := range row.Cells {
+		if flashCols[col] {
+			fmt.Fprintf(&sb, `<td class="cell-flash" style="%s"></td>`, cellStyle(c, playerIdx, true))
+		} else {
+			fmt.Fprintf(&sb, `<td style="%s"></td>`, cellStyle(c, playerIdx, true))
 		}
-		fmt.Fprintf(&sb, `<td class="%s"></td>`, cls)
 	}
 	sb.WriteString(`</tr>`)
 	return sb.String()
@@ -1195,13 +1194,8 @@ func renderSpectatorPlayerBoard(pf *game.Playfield, playerID string, playerIdx i
 	for r := visibleRowStart; r < pf.Height; r++ {
 		sb.WriteString(`<tr>`)
 		for _, c := range pf.Rows[r].Cells {
-			cls := cellClass(c)
-			if c.Active {
-				cls += fmt.Sprintf(" cell-p%d", c.PlayerIdx)
-			} else if c.Occupied && !c.Adversarial {
-				cls += fmt.Sprintf(" cell-p%d", c.PlayerIdx)
-			}
-			fmt.Fprintf(&sb, `<td class="%s"></td>`, cls)
+			// Spectator view (-1): every active piece keeps a per-player outline.
+			fmt.Fprintf(&sb, `<td style="%s"></td>`, cellStyle(c, -1, true))
 		}
 		sb.WriteString(`</tr>`)
 	}
@@ -1216,7 +1210,8 @@ func renderOpponentBoard(pf *game.Playfield, oppID string, visibleRowStart int) 
 	for r := visibleRowStart; r < pf.Height; r++ {
 		fmt.Fprintf(&sb, `<tr>`)
 		for _, c := range pf.Rows[r].Cells {
-			fmt.Fprintf(&sb, `<td class="%s"></td>`, cellClass(c))
+			// Compact board: fill only, no ownership outline (just the grid line).
+			fmt.Fprintf(&sb, `<td style="%s"></td>`, cellStyle(c, -1, false))
 		}
 		sb.WriteString(`</tr>`)
 	}
@@ -1409,38 +1404,98 @@ func renderLevelInner(level int) string {
 	return fmt.Sprintf(`<div id="level" class="hud-value">%d</div>`, level)
 }
 
-func cellClass(c game.Cell) string {
-	if c.Active {
-		return "cell-" + pieceTypeName(c.PieceType) + " cell-active"
-	}
-	if c.Adversarial {
-		return fmt.Sprintf("cell-adv-p%d", c.PlayerIdx%10)
-	}
-	if c.Occupied {
-		return "cell-" + pieceTypeName(c.PieceType) + " cell-locked"
-	}
-	return "cell-empty"
+// Board background and grid-line colors. Every square's outline falls back to the
+// grid line so that, literally, every square has an outline.
+const (
+	boardBg    = "#111111"
+	gridLine   = "#1a1a1a"
+	ownOutline = "#ffffff"
+)
+
+// pieceColors maps each tetromino type to its base fill color. Index matches the
+// game.PieceType iota (I, O, T, S, Z, J, L).
+var pieceColors = [...]string{
+	game.PieceI: "#00f0f0", // cyan
+	game.PieceO: "#f0f000", // yellow
+	game.PieceT: "#a000f0", // purple
+	game.PieceS: "#00f000", // green
+	game.PieceZ: "#f00000", // red
+	game.PieceJ: "#0000f0", // blue
+	game.PieceL: "#f0a000", // orange
 }
 
-func pieceTypeName(pt game.PieceType) string {
-	switch pt {
-	case game.PieceI:
-		return "I"
-	case game.PieceO:
-		return "O"
-	case game.PieceT:
-		return "T"
-	case game.PieceS:
-		return "S"
-	case game.PieceZ:
-		return "Z"
-	case game.PieceJ:
-		return "J"
-	case game.PieceL:
-		return "L"
-	default:
-		return "empty"
+func pieceColor(pt game.PieceType) string {
+	if int(pt) >= 0 && int(pt) < len(pieceColors) {
+		return pieceColors[pt]
 	}
+	return boardBg
+}
+
+// blend composites fg over bg at the given alpha (0..1) and returns the resulting
+// "#rrggbb" hex. This reproduces the old opacity-over-dark-board look as a single
+// concrete color, so the server can emit each square's true fill.
+func blend(fg, bg string, alpha float64) string {
+	fr, fg2, fb := hexToRGB(fg)
+	br, bg2, bb := hexToRGB(bg)
+	r := int(float64(fr)*alpha + float64(br)*(1-alpha) + 0.5)
+	g := int(float64(fg2)*alpha + float64(bg2)*(1-alpha) + 0.5)
+	b := int(float64(fb)*alpha + float64(bb)*(1-alpha) + 0.5)
+	return fmt.Sprintf("#%02x%02x%02x", clamp8(r), clamp8(g), clamp8(b))
+}
+
+func hexToRGB(h string) (int, int, int) {
+	h = strings.TrimPrefix(h, "#")
+	if len(h) != 6 {
+		return 0, 0, 0
+	}
+	var r, g, b int
+	fmt.Sscanf(h, "%02x%02x%02x", &r, &g, &b)
+	return r, g, b
+}
+
+func clamp8(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return v
+}
+
+// cellStyle computes the inline CSS (background + outline) for a single square,
+// the single source of truth for cell appearance. localPlayerIdx is the viewer's
+// player index (-1 for spectators: every active piece gets a per-player outline).
+// When showOutline is false (compact opponent boards) ownership outlines are
+// suppressed in favor of the plain grid line.
+func cellStyle(c game.Cell, localPlayerIdx int, showOutline bool) string {
+	fill := boardBg
+	outline := gridLine
+	outlineW := 1
+
+	switch {
+	case c.Active:
+		fill = blend(pieceColor(c.PieceType), boardBg, 0.9)
+		switch {
+		case localPlayerIdx < 0:
+			// Spectator: every active piece gets a per-player outline.
+			outline, outlineW = playerColor(c.PlayerIdx), 2
+		case c.PlayerIdx == localPlayerIdx:
+			// Own piece: white outline.
+			outline, outlineW = ownOutline, 2
+			// Other player's active piece in a player's own view: no
+			// ownership outline (grid line) — preserves the seamless board.
+		}
+	case c.Adversarial:
+		fill = blend(playerColor(c.PlayerIdx%10), boardBg, 0.8)
+	case c.Occupied:
+		fill = blend(pieceColor(c.PieceType), boardBg, 0.7)
+		if showOutline {
+			outline, outlineW = playerColor(c.PlayerIdx), 2
+		}
+	}
+
+	return fmt.Sprintf("background:%s;outline:%dpx solid %s;outline-offset:-1px", fill, outlineW, outline)
 }
 
 func htmlEscape(s string) string {

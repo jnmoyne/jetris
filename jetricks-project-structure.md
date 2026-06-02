@@ -691,6 +691,12 @@ There is no explicit lock-in event message. Instead the engine detects lock-in b
 
 This makes `PieceIdx` in `GameMeta` eventually consistent: any engine joining mid-game via `FetchGameMeta` gets the current piece count in one round trip.
 
+The same lock-in transition also triggers the **completed-line check** (`CompletedRows` → clear). Because the ordered consumer applies a publish batch **one row at a time** and the lock-in (and thus the completion check) fires the instant the player's last `Active` cell disappears, batch **row order matters for hard drops**. A hard drop teleports the piece, so its batch both clears the old (higher-up, lower-index) active cells *and* sets the new locked cells lower down. If the vacated rows were applied first, lock-in would fire before the landing rows were applied and a line completed by the drop would be missed until the next piece locked. Hard-drop batches are therefore published **bottom row first** (the `bottomFirst`/`applyBottomFirst` flag on the publish helpers) so the completed row is in place when lock-in fires.
+
+The same bottom-first ordering is used for **every downward move** (gravity tick and soft drop), for a related reason: a piece that occupies a **single row** — the horizontal I — relocates by clearing its old row and setting its new row in separate messages. If the old row is applied first, the consumer briefly sees the player with **zero** active cells and fires a *spurious* lock-in, replacing the I with the next piece before any input. Applying the lower (new) row first keeps at least one active cell present throughout the move. Multi-row pieces overlap a row when moving down, so they never vanish; left/right moves stay in one row (one message); an in-place lock converts active→occupied in place — none of those need ordering, and bottom-first is harmless for them.
+
+> In **coop**, lock, hard-drop, and line-clear go through `publishProjectedRowsWithMergeRetry` (CAS + refetch-overlay-retry), not a plain NoCAS write — see §`internal/engine` and the publish table in the implementation plan. A NoCAS write replaces the whole shared row including the *other* player's active cells from a possibly-stale snapshot, which corrupts their mid-flight piece; CAS+merge preserves the other player's cells. The `bottomFirst` flag is threaded through that merge path for coop hard drops.
+
 #### `collision.go`
 
 ```go
@@ -1312,6 +1318,21 @@ Templates for the playfield:
 - `OpponentBoardRow(row game.Row, rowIndex int)` — single opponent row fragment for incremental patches
 
 Only changed rows are re-rendered on each `UpdatePlayfield` or `UpdateOpponentField` event. The `ChangedRows` field on `EngineUpdate` tells the handler exactly which row fragments to patch. In competitive mode each opponent board is a separate DOM subtree with element IDs namespaced by opponent ID (e.g. `id="board-opp-<pid>-row-{n}"`) so patches to each board never interfere. In cooperative mode the single wide playfield (playerCount x StandardWidth columns) is rendered directly using the standard `Board` and `BoardRow` templates — the playfield is already the correct width (e.g. 20 columns for 2 players), so no concatenation or special template is needed. There is no visual separator between player sections — it looks like one unified playfield.
+
+**Cell appearance — single source of truth.** Every `<td>` is rendered with an
+explicit, server-computed fill color and outline emitted as an inline `style`; the
+stylesheet carries **no** per-color cell classes (only structural rules and the
+`.cell-flash` animation). All render paths funnel through one helper,
+`cellStyle(cell game.Cell, localPlayerIdx int, showOutline bool) string`, which
+returns `background:#..;outline:Npx solid #..;outline-offset:-1px`. Piece fills come
+from a `pieceColors` table composited over the board background via `blend(fg, bg,
+alpha)` (active ≈0.9, locked ≈0.7, adversarial ≈0.8), turning the old opacity
+layering into concrete hexes. Outlines: own active → white; spectator
+(`localPlayerIdx < 0`) → per-player color on active/locked cells; other player's
+active piece in a player view → grid line; locked non-adversarial → per-player color
+when `showOutline` (suppressed to the grid line on compact opponent boards). Because
+appearance is computed in Go, the browser never decides colors and the visual model
+stays consistent across own/spectator/opponent renders.
 
 #### `hud.templ`
 

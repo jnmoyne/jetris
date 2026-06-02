@@ -106,7 +106,18 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		projected := e.playfield.ProjectClearRows(completed, shiftAnchors)
 
 		// Publish only visible rows (not empty headroom) — reduces NATS round trips.
-		e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
+		if e.gameMode == config.ModeCooperative {
+			// Shared board: use CAS+merge-retry so the clear's whole-board shift
+			// can't clobber the other player's mid-flight piece with our snapshot.
+			rowsMap := make(map[int]game.Row, e.playfield.Height-e.visibleRowStart)
+			for r := e.visibleRowStart; r < e.playfield.Height && r < len(projected); r++ {
+				rowsMap[r] = projected[r]
+			}
+			e.publishProjectedRowsWithMergeRetry(ctx, rowsMap, nil, false)
+		} else {
+			// Competitive: per-player subjects, no other writer to preserve.
+			e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
+		}
 
 		// Update level in cooperative mode
 		if e.gameMode == config.ModeCooperative {
@@ -117,17 +128,10 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			}
 		}
 
-		// Emit a single update with ALL visible rows. The UI re-renders from
-		// e.playfield, which the consumer will populate as the published rows
-		// echo back; the changed-row hint is just a render trigger.
-		allVisibleRows := make([]int, 0, e.playfield.Height-e.visibleRowStart)
-		for r := e.visibleRowStart; r < e.playfield.Height; r++ {
-			allVisibleRows = append(allVisibleRows, r)
-		}
-		e.emitUpdate(EngineUpdate{
-			Kind:        UpdateLineClear,
-			ChangedRows: allVisibleRows,
-		})
+		// Re-render the whole board: a clear shifts every row, and the UI
+		// re-renders from e.playfield as the published rows echo back. A single
+		// full-board update is robust against dropped per-row triggers.
+		e.emitFullBoardRerender()
 		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: e.score})
 
 		// Cooperative: notify other players of the score change
@@ -266,10 +270,18 @@ func (e *Engine) runEventsConsumer(ctx context.Context) {
 func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 	switch ev.Kind {
 	case EventLineClear:
-		// In cooperative mode, add the other player's score delta to our shared score
+		// In cooperative mode the board is shared: when ANOTHER player clears
+		// lines, our playfield consumer applies the same cleared rows (the
+		// authoritative state always converges), but the per-row render
+		// triggers can be dropped by the lossy Updates fan-out during the
+		// clear's full-visible-range republish — leaving stale, un-cleared rows
+		// on our board. Force a full-board re-render from the converged
+		// e.playfield (the same thing the clearing player does) so every player
+		// sees the cleared board. Also fold in the shared score delta.
 		if ev.PlayerID != e.playerID && e.gameMode == config.ModeCooperative {
 			e.score += ev.Score
 			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: e.score})
+			e.emitFullBoardRerender()
 		}
 	case EventShrink:
 		// Apply shrink from any OTHER player (not ourselves)
@@ -355,6 +367,10 @@ func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerI
 
 	// Publish only visible rows (not empty headroom) NoCAS — shrink is authoritative.
 	e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
+
+	// Shrink republishes the whole visible range; force a full-board re-render so
+	// no row is left stale if a per-row trigger is dropped (see emitFullBoardRerender).
+	e.emitFullBoardRerender()
 
 	if topOut {
 		e.handleTopOut(ctx)

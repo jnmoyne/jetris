@@ -21,7 +21,12 @@ func (b *Broadcaster[T]) Subscribe() (<-chan T, func()) {
 	b.mu.Lock()
 	id := b.next
 	b.next++
-	ch := make(chan T, 16)
+	// Buffer must comfortably hold bursts: a line clear or shrink republishes
+	// the entire visible row range (~24 rows) as back-to-back per-row updates,
+	// and several such bursts can stack up (multiple players, rapid play).
+	// With too small a buffer, Send() (non-blocking) drops the overflow and the
+	// board is left with stale, un-repainted rows.
+	ch := make(chan T, 1024)
 	b.subs[id] = ch
 	b.mu.Unlock()
 	return ch, func() {

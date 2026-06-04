@@ -1,0 +1,5 @@
+# Compiled binary (anchored to repo root so cmd/jetricks/ source is not ignored)
+/jetricks
+
+# JetBrains IDE
+.idea/

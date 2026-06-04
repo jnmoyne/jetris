@@ -113,8 +113,6 @@ const (
 	LobbyKVPresenceTTL     = 10 * time.Second
 	LobbyKVDeleteMarkerTTL = 60 * time.Second
 	PresenceHeartbeat      = 5 * time.Second
-
-	CoopPlayfieldID = "coop" // used as playerID token in cooperative row subjects
 )
 
 // CompetitiveVisibleRows returns the visible rows for a competitive game.
@@ -142,8 +140,36 @@ func GameSubjectFilter(gameID string) string {
 	return "jetricks.game." + gameID + ".>"
 }
 
-func RowSubject(gameID, playerID string, row int) string {
+// Cooperative and competitive modes use entirely separate playfield subject
+// schemes — they are not parameterisations of a single layout and are free to
+// diverge. A given game is one mode or the other, so an engine only ever uses
+// one scheme.
+//
+// CoopRowSubject is the subject a row of the shared cooperative board is
+// published to. The board is shared by the whole game, so the subject carries
+// NO player token — every player publishes to and consumes from the same row
+// subjects, and per-cell ownership lives in the payload via Cell.PlayerIdx
+// (coop never filters rows by player).
+func CoopRowSubject(gameID string, row int) string {
+	return "jetricks.game." + gameID + ".playfield.row." + strconv.Itoa(row)
+}
+
+// CoopRowSubjectFilter is the wildcard filter matching every row of the shared
+// cooperative board.
+func CoopRowSubjectFilter(gameID string) string {
+	return "jetricks.game." + gameID + ".playfield.row.>"
+}
+
+// CompetitiveRowSubject is the subject a row of one competitive player's private
+// board is published to. Each player owns a separate board scoped by player ID.
+func CompetitiveRowSubject(gameID, playerID string, row int) string {
 	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.row." + strconv.Itoa(row)
+}
+
+// CompetitiveRowSubjectFilter is the wildcard filter matching every row of one
+// competitive player's board.
+func CompetitiveRowSubjectFilter(gameID, playerID string) string {
+	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.row.>"
 }
 
 func MetaSubject(gameID string) string {

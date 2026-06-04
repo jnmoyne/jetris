@@ -100,8 +100,6 @@ const (
     ArchiveSubject         = "jetricks.archive"
 
     PresenceHeartbeat      = 5 * time.Second
-
-    CoopPlayfieldID        = "coop"  // used as playerID token in cooperative row subjects
 )
 
 // CompetitiveVisibleRows returns the number of visible rows for a competitive
@@ -145,9 +143,21 @@ func GameStream(gameID string) string
 func GameSubjectFilter(gameID string) string
 // → "jetricks.game." + gameID + ".>"
 
-func RowSubject(gameID, playerID string, row int) string
+// Cooperative and competitive modes use ENTIRELY SEPARATE row subject schemes —
+// not one builder parameterised by playerID. A game is one mode or the other.
+//
+// Cooperative — single shared board, no player token (ownership in the payload
+// via Cell.PlayerIdx; coop never filters rows by player):
+func CoopRowSubject(gameID string, row int) string
+// → "jetricks.game." + gameID + ".playfield.row." + strconv.Itoa(row)
+func CoopRowSubjectFilter(gameID string) string
+// → "jetricks.game." + gameID + ".playfield.row.>"
+
+// Competitive — per-player board scoped by player UUID:
+func CompetitiveRowSubject(gameID, playerID string, row int) string
 // → "jetricks.game." + gameID + ".player." + playerID + ".playfield.row." + strconv.Itoa(row)
-// playerID is CoopPlayfieldID ("coop") in cooperative mode or the player's UUID in competitive mode
+func CompetitiveRowSubjectFilter(gameID, playerID string) string
+// → "jetricks.game." + gameID + ".player." + playerID + ".playfield.row.>"
 
 func MetaSubject(gameID string) string
 // → "jetricks.game." + gameID + ".meta"
@@ -185,7 +195,7 @@ func ArchiveSubjectStr() string
 
 **Tests** (`internal/config/config_test.go`):
 - Verify every subject builder returns the exact expected string for a known gameID/playerID/row.
-- Verify `RowSubject` with a UUID produces the correct per-player subject (competitive mode) and with `CoopPlayfieldID` produces the shared subject (cooperative mode).
+- Verify `CompetitiveRowSubject` produces the correct per-player subject and `CoopRowSubject` produces the shared subject with no player token; likewise for the `*RowSubjectFilter` builders.
 - Verify `GameStream` produces a valid NATS stream name (alphanumeric + dash + underscore only, `strings.ContainsAny` check).
 
 ---
@@ -672,8 +682,12 @@ context, which terminates the goroutine.
 #### `publish.go`
 
 ```go
+// The caller supplies the fully-built row Subject, so this package is
+// subject-agnostic — it knows nothing about game modes or players. The engine
+// builds Subject with the mode-appropriate scheme (Coop*/Competitive*RowSubject)
+// and orders the slice for the desired consumer apply order.
 type RowUpdate struct {
-    Row           int
+    Subject       string
     Payload       []byte
     ExpectLastSeq uint64
 }
@@ -683,13 +697,13 @@ var ErrCASFailure = errors.New("CAS sequence expectation not met")
 // PublishMoveAtomically publishes a multi-row update as a SINGLE atomic batch
 // with PER-SUBJECT CAS expectations. Either every row commits or none does;
 // consumers never observe a torn state.
-func PublishMoveAtomically(ctx context.Context, js jetstream.JetStream, gameID string, updates []RowUpdate) error
+func PublishMoveAtomically(ctx context.Context, js jetstream.JetStream, updates []RowUpdate) error
 
 // PublishRowsAtomicallyNoCAS publishes a multi-row update as a SINGLE atomic
 // batch WITHOUT CAS expectations. Used for authoritative state changes (lock,
 // hard-drop landing, line-clear, shrink) where the publisher's view is the
 // new ground truth.
-func PublishRowsAtomicallyNoCAS(ctx context.Context, js jetstream.JetStream, gameID string, updates []RowUpdate) error
+func PublishRowsAtomicallyNoCAS(ctx context.Context, js jetstream.JetStream, updates []RowUpdate) error
 ```
 
 Use `jetstreamext.NewBatchPublisher(js)` and add each row update with a per-subject
@@ -702,8 +716,7 @@ only rejects when our specific row has been overwritten since we last saw it.
 ```go
 batch, err := jetstreamext.NewBatchPublisher(js)
 for i, u := range updates {
-    subject := config.RowSubject(gameID, u.PlayerID, u.Row)
-    msg := &nats.Msg{Subject: subject, Data: u.Payload, Header: nats.Header{}}
+    msg := &nats.Msg{Subject: u.Subject, Data: u.Payload, Header: nats.Header{}}
     if i < len(updates)-1 {
         err = batch.AddMsg(msg, jetstreamext.WithBatchExpectLastSequencePerSubject(u.ExpectLastSeq))
     } else {
@@ -736,11 +749,10 @@ func PublishMeta(ctx context.Context, js jetstream.JetStream, gameID string, pay
 #### `fetch.go`
 
 ```go
-func FetchPlayfieldState(ctx context.Context, js jetstream.JetStream, gameID, playerID string) ([]PlayfieldRowMsg, error) {
-    subjects := make([]string, config.TotalRows)
-    for i := range subjects {
-        subjects[i] = config.RowSubject(gameID, playerID, i)
-    }
+// The caller builds subjects with the mode-appropriate scheme (coop or
+// competitive), so this stays subject-agnostic. Results are keyed by the row
+// index parsed from each subject, so it works for either subject shape.
+func FetchPlayfieldState(ctx context.Context, js jetstream.JetStream, gameID string, subjects []string) ([]PlayfieldRowMsg, error) {
     msgs, err := jetstreamext.GetLastMsgsFor(ctx, js, config.GameStream(gameID), subjects)
     if err != nil { return nil, err }
     var result []PlayfieldRowMsg
@@ -774,9 +786,12 @@ last element.
 Re-export the config builders for convenience:
 ```go
 var (
-    GameStream             = config.GameStream
-    GameSubjectFilter      = config.GameSubjectFilter
-    RowSubject             = config.RowSubject
+    GameStream                  = config.GameStream
+    GameSubjectFilter           = config.GameSubjectFilter
+    CoopRowSubject              = config.CoopRowSubject
+    CoopRowSubjectFilter        = config.CoopRowSubjectFilter
+    CompetitiveRowSubject       = config.CompetitiveRowSubject
+    CompetitiveRowSubjectFilter = config.CompetitiveRowSubjectFilter
     // ... all others
 )
 ```
@@ -1106,14 +1121,10 @@ func (e *Engine) Start() error {
     }
     e.metaSeq = metaSeq
 
-    // 2. Fetch playfield state
-    // In cooperative mode: use CoopPlayfieldID for shared row subjects
-    // In competitive mode: use own playerID
-    playerToken := e.playerID
-    if e.gameMode == config.ModeCooperative {
-        playerToken = config.CoopPlayfieldID
-    }
-    rows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, playerToken)
+    // 2. Fetch playfield state. The engine builds its own row subjects with the
+    // mode-appropriate scheme via helpers — coop: CoopRowSubject (shared board,
+    // no player token); competitive: CompetitiveRowSubject (scoped by own UUID).
+    rows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.rowSubjects(e.playfield.Height))
     if err != nil { cancel(); return err }
     var maxSeq uint64
     for _, r := range rows {
@@ -1123,9 +1134,9 @@ func (e *Engine) Start() error {
     }
 
     // 3. Start row consumer from maxSeq+1
-    // In cooperative mode: ONE consumer on shared subjects (CoopPlayfieldID)
-    // In competitive mode: consumer on own playerID subjects
-    go e.runConsumer(ctx, e.playfield, playerToken, maxSeq+1)
+    // In cooperative mode: ONE consumer on the shared subjects (no player token)
+    // In competitive mode: consumer on own player-scoped subjects
+    go e.runConsumer(ctx, e.playfield, e.rowFilterSubject(), "", maxSeq+1)
 
     // 4. Competitive mode only: fetch and start one consumer per opponent
     // In cooperative mode there is no opponent consumer — both players use the same shared subjects
@@ -1134,7 +1145,12 @@ func (e *Engine) Start() error {
         for _, oppID := range e.opponentPlayerIDs {
             oppPf := game.NewPlayfield(config.StandardWidth)
             e.opponentPlayfields[oppID] = oppPf
-            oppRows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppID)
+            // Opponents are always competitive — build their subjects directly.
+            oppSubjects := make([]string, oppPf.Height)
+            for i := range oppSubjects {
+                oppSubjects[i] = config.CompetitiveRowSubject(e.gameID, oppID, i)
+            }
+            oppRows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppSubjects)
             if err != nil { cancel(); return err }
             var oppMaxSeq uint64
             for _, r := range oppRows {
@@ -1142,7 +1158,7 @@ func (e *Engine) Start() error {
                 oppPf.Apply(r.Row, data, r.Seq)
                 if r.Seq > oppMaxSeq { oppMaxSeq = r.Seq }
             }
-            go e.runConsumer(ctx, oppPf, oppID, oppMaxSeq+1)
+            go e.runConsumer(ctx, oppPf, config.CompetitiveRowSubjectFilter(e.gameID, oppID), oppID, oppMaxSeq+1)
         }
     }
 
@@ -1301,7 +1317,8 @@ func (e *Engine) attemptMove(ctx context.Context, move MoveType) error {
 
 `buildMoveUpdates(from, to Piece) []natspkg.RowUpdate`: determine which rows changed
 between the two piece positions, compute new row states (clear Active from old cells,
-set Active on new cells), and build RowUpdate entries with `ExpectLastSeq` from
+set Active on new cells), and build RowUpdate entries with each row's `Subject` from
+the engine's mode-aware `rowSubject(row)` helper and `ExpectLastSeq` from
 `e.playfield.LastSeq[row]`.
 
 `lockIn(ctx, p Piece)`: publish the rows with the piece's active cells converted to
@@ -1328,8 +1345,9 @@ var (
 )
 
 func (e *Engine) Publish(ctx context.Context, updates []natspkg.RowUpdate, move MoveType) error {
-    // Use effectivePlayerID: CoopPlayfieldID in cooperative mode, own playerID in competitive
-    err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, e.effectivePlayerID(), updates)
+    // updates already carry their row Subject, built by the engine's
+    // mode-aware rowSubject() helper (coop: shared board; competitive: own UUID).
+    err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
     if err == nil { return nil }
     if !errors.Is(err, natspkg.ErrCASFailure) { return err }
 
@@ -1354,7 +1372,7 @@ func (e *Engine) Publish(ctx context.Context, updates []natspkg.RowUpdate, move 
         // retry once with updated sequences
         newUpdates := e.buildMoveUpdates(*p, game.Piece{Type: p.Type,
             Orientation: p.Orientation, Row: p.Row + 1, Col: p.Col})
-        return natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, e.effectivePlayerID(), newUpdates)
+        return natspkg.PublishMoveAtomically(ctx, e.js, newUpdates)
     // ... other move types: check validity and retry or return ErrMoveDropped
     }
     return ErrMoveDropped
@@ -1366,8 +1384,7 @@ func (e *Engine) PublishHardDrop(ctx context.Context) error {
         if p == nil { return nil }
         dest := game.HardDropDestination(*p, e.playfield)
         updates := e.buildLockInUpdates(*p, dest)
-        err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID,
-            e.effectivePlayerID(), updates)
+        err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
         if err == nil { return nil }
         if !errors.Is(err, natspkg.ErrCASFailure) { return err }
         // Wait for consumer update then retry
@@ -1687,11 +1704,13 @@ These rules apply throughout all phases:
    `log.Fatal` on startup errors. Running goroutines log errors and continue (or exit
    via context cancellation) — they do not panic.
 
-6. **Row updates carry player ID.** The `RowUpdate` struct in `internal/nats` includes
-   `PlayerID string` so `PublishMoveAtomically` can construct the correct subject. In
-   cooperative mode this is `CoopPlayfieldID`; in competitive mode it is the moving
-   player's own UUID. The engine's `effectivePlayerID()` helper returns the correct
-   value based on game mode.
+6. **Row updates carry a fully-built subject.** The `RowUpdate` struct in
+   `internal/nats` carries `Subject string`, so the NATS layer is subject-agnostic
+   (it knows nothing about modes or players). The engine builds each subject with the
+   mode-appropriate scheme via its `rowSubject(row)` helper — cooperative uses
+   `config.CoopRowSubject` (shared board, no player token), competitive uses
+   `config.CompetitiveRowSubject` (scoped by the moving player's UUID). The two modes'
+   subject schemes are entirely separate, not parameterisations of one builder.
 
 7. **`templ generate` before build.** After editing any `.templ` file, run
    `templ generate` to produce the `*_templ.go` files. The build fails without them.
@@ -1703,8 +1722,8 @@ These rules apply throughout all phases:
    works on your NATS server version as the first integration test you write for
    `internal/nats`. If it fails, check NATS server version (requires 2.12+).
 
-10. **Cooperative mode uses a single shared playfield.** Cooperative mode uses
-    `CoopPlayfieldID = "coop"` as the player token in row subjects — both players
+10. **Cooperative mode uses a single shared playfield.** Cooperative row subjects
+    carry no player token (the `config.CoopRowSubject` scheme) — both players
     share one wide playfield of width `playerCount × StandardWidth` (20 for 2 players).
     `Cell.PlayerIdx` tags which player's active piece each cell belongs to. Each engine
     has ONE playfield and ONE ordered consumer. Pieces can move anywhere on the full

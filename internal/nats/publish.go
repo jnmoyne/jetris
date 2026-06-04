@@ -12,10 +12,11 @@ import (
 	"jetricks/internal/config"
 )
 
-// RowUpdate represents a single row's new state and the CAS expectation.
+// RowUpdate represents a single row's new state and the CAS expectation. The
+// caller supplies the fully-built row subject — this package is subject-agnostic
+// and knows nothing about game modes or players.
 type RowUpdate struct {
-	Row           int
-	PlayerID      string
+	Subject       string
 	Payload       []byte
 	ExpectLastSeq uint64
 }
@@ -32,7 +33,6 @@ var ErrCASFailure = errors.New("CAS sequence expectation not met")
 func PublishMoveAtomically(
 	ctx context.Context,
 	js jetstream.JetStream,
-	gameID string,
 	updates []RowUpdate,
 ) error {
 	if len(updates) == 0 {
@@ -47,9 +47,8 @@ func PublishMoveAtomically(
 	// Add all rows except the last as batch messages
 	for i := 0; i < len(updates)-1; i++ {
 		u := updates[i]
-		subject := config.RowSubject(gameID, u.PlayerID, u.Row)
 		msg := &natsclient.Msg{
-			Subject: subject,
+			Subject: u.Subject,
 			Data:    u.Payload,
 			Header:  natsclient.Header{},
 		}
@@ -65,9 +64,8 @@ func PublishMoveAtomically(
 
 	// Commit with the last update
 	last := updates[len(updates)-1]
-	subject := config.RowSubject(gameID, last.PlayerID, last.Row)
 	commitMsg := &natsclient.Msg{
-		Subject: subject,
+		Subject: last.Subject,
 		Data:    last.Payload,
 		Header:  natsclient.Header{},
 	}
@@ -89,7 +87,6 @@ func PublishMoveAtomically(
 func PublishRowsAtomicallyNoCAS(
 	ctx context.Context,
 	js jetstream.JetStream,
-	gameID string,
 	updates []RowUpdate,
 ) error {
 	if len(updates) == 0 {
@@ -103,9 +100,8 @@ func PublishRowsAtomicallyNoCAS(
 
 	for i := 0; i < len(updates)-1; i++ {
 		u := updates[i]
-		subject := config.RowSubject(gameID, u.PlayerID, u.Row)
 		msg := &natsclient.Msg{
-			Subject: subject,
+			Subject: u.Subject,
 			Data:    u.Payload,
 			Header:  natsclient.Header{},
 		}
@@ -116,9 +112,8 @@ func PublishRowsAtomicallyNoCAS(
 	}
 
 	last := updates[len(updates)-1]
-	subject := config.RowSubject(gameID, last.PlayerID, last.Row)
 	commitMsg := &natsclient.Msg{
-		Subject: subject,
+		Subject: last.Subject,
 		Data:    last.Payload,
 		Header:  natsclient.Header{},
 	}
@@ -130,11 +125,9 @@ func PublishRowsAtomicallyNoCAS(
 func PublishSingleRow(
 	ctx context.Context,
 	js jetstream.JetStream,
-	gameID string,
 	update RowUpdate,
 ) error {
-	subject := config.RowSubject(gameID, update.PlayerID, update.Row)
-	_, err := js.Publish(ctx, subject, update.Payload,
+	_, err := js.Publish(ctx, update.Subject, update.Payload,
 		jetstream.WithExpectLastSequencePerSubject(update.ExpectLastSeq))
 	if err != nil {
 		if isCASError(err) {
@@ -150,11 +143,9 @@ func PublishSingleRow(
 func PublishSingleRowNoCAS(
 	ctx context.Context,
 	js jetstream.JetStream,
-	gameID string,
 	update RowUpdate,
 ) (uint64, error) {
-	subject := config.RowSubject(gameID, update.PlayerID, update.Row)
-	ack, err := js.Publish(ctx, subject, update.Payload)
+	ack, err := js.Publish(ctx, update.Subject, update.Payload)
 	if err != nil {
 		return 0, err
 	}

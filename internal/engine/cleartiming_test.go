@@ -44,7 +44,7 @@ func TestCoopHardDropClearsCompletingLineImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subj := config.RowSubject(gameID, config.CoopPlayfieldID, bottom)
+	subj := config.CoopRowSubject(gameID, bottom) // coop: shared board, no player token
 	if _, err := js.Publish(context.Background(), subj, rowData); err != nil {
 		t.Fatal(err)
 	}

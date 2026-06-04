@@ -150,9 +150,8 @@ func TestPublishAndFetchRows(t *testing.T) {
 		row := game.NewRow(config.StandardWidth)
 		row.Cells[0] = game.Cell{Occupied: true, PieceType: game.PieceT}
 		data, _ := row.Marshal()
-		err := PublishSingleRow(ctx, js, gameID, RowUpdate{
-			Row:           i,
-			PlayerID:      playerID,
+		err := PublishSingleRow(ctx, js, RowUpdate{
+			Subject:       config.CompetitiveRowSubject(gameID, playerID, i),
 			Payload:       data,
 			ExpectLastSeq: 0,
 		})
@@ -162,7 +161,12 @@ func TestPublishAndFetchRows(t *testing.T) {
 	}
 
 	// Fetch playfield state
-	rows, err := FetchPlayfieldState(ctx, js, gameID, playerID)
+	subjects := []string{
+		config.CompetitiveRowSubject(gameID, playerID, 0),
+		config.CompetitiveRowSubject(gameID, playerID, 1),
+		config.CompetitiveRowSubject(gameID, playerID, 2),
+	}
+	rows, err := FetchPlayfieldState(ctx, js, gameID, subjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +203,7 @@ func TestOrderedConsumer(t *testing.T) {
 	// Publish a message
 	row := game.NewRow(config.StandardWidth)
 	data, _ := row.Marshal()
-	_, err = js.Publish(ctx, config.RowSubject(gameID, "test-player", 0), data)
+	_, err = js.Publish(ctx, config.CompetitiveRowSubject(gameID, "test-player", 0), data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +214,7 @@ func TestOrderedConsumer(t *testing.T) {
 		if msg == nil {
 			t.Fatal("received nil message")
 		}
-		if msg.Subject() != config.RowSubject(gameID, "test-player", 0) {
+		if msg.Subject() != config.CompetitiveRowSubject(gameID, "test-player", 0) {
 			t.Errorf("unexpected subject: %s", msg.Subject())
 		}
 	case <-ctx.Done():

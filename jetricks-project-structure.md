@@ -218,8 +218,6 @@ func CompetitiveVisibleRowStart(playerCount int) int {
     ArchiveSubject        = "jetricks.archive"
 
     PresenceHeartbeat     = 5 * time.Second
-
-    CoopPlayfieldID       = "coop"  // used as playerID token in cooperative row subjects
 )
 ```
 
@@ -257,12 +255,23 @@ Game IDs are UUID v4 strings with dashes (e.g. `550e8400-e29b-41d4-a716-44665544
 func GameStream(gameID string) string        // → "JETRICKS_GAME_<id>"
 func GameSubjectFilter(gameID string) string // → "jetricks.game.<id>.>"
 
-// RowSubject builds the subject for a playfield row.
-//   Cooperative: playerID = CoopPlayfieldID ("coop") → jetricks.game.<id>.player.coop.playfield.row.<n>
-//     Both players share a single wide playfield (playerCount × StandardWidth).
-//     effectivePlayerID() returns CoopPlayfieldID in cooperative mode.
-//   Competitive: playerID = player's UUID → jetricks.game.<id>.player.<pid>.playfield.row.<n>
-func RowSubject(gameID string, playerID string, row int) string
+// Cooperative and competitive modes use entirely separate playfield subject
+// schemes — they are not parameterisations of one builder and are free to
+// diverge. A game is one mode or the other, so an engine uses only one scheme.
+//
+// Cooperative — single shared wide playfield (playerCount × StandardWidth);
+// row subjects carry NO player token. Every player publishes to / consumes from
+// the same subjects; per-cell ownership lives in the payload (Cell.PlayerIdx).
+func CoopRowSubject(gameID string, row int) string
+//   → jetricks.game.<id>.playfield.row.<n>
+func CoopRowSubjectFilter(gameID string) string
+//   → jetricks.game.<id>.playfield.row.>
+
+// Competitive — each player owns a private playfield scoped by their UUID.
+func CompetitiveRowSubject(gameID string, playerID string, row int) string
+//   → jetricks.game.<id>.player.<pid>.playfield.row.<n>
+func CompetitiveRowSubjectFilter(gameID string, playerID string) string
+//   → jetricks.game.<id>.player.<pid>.playfield.row.>
 
 func MetaSubject(gameID string) string
 func RosterSubject(gameID string, playerID string) string
@@ -438,10 +447,13 @@ func NewOrderedConsumer(
 #### `publish.go`
 
 ```go
-// RowUpdate represents a single row's new state and the CAS expectation.
+// RowUpdate represents a single row's new state and the CAS expectation. The
+// caller supplies the fully-built row subject, so this package is subject-
+// agnostic — it knows nothing about game modes or players. The engine builds
+// Subject with the mode-appropriate scheme (Coop*/Competitive*RowSubject) and
+// orders the slice for the desired consumer apply order.
 type RowUpdate struct {
-    Row             int
-    PlayerID        string
+    Subject         string
     Payload         []byte
     ExpectLastSeq   uint64  // Nats-Expected-Last-Subject-Sequence for this row
                             // (per-subject CAS, not stream-level)
@@ -460,7 +472,6 @@ type RowUpdate struct {
 func PublishMoveAtomically(
     ctx context.Context,
     js jetstream.JetStream,
-    gameID string,
     updates []RowUpdate,
 ) error
 
@@ -471,7 +482,6 @@ func PublishMoveAtomically(
 func PublishRowsAtomicallyNoCAS(
     ctx context.Context,
     js jetstream.JetStream,
-    gameID string,
     updates []RowUpdate,
 ) error
 
@@ -494,18 +504,19 @@ Re-exports the subject builder functions from `config` as a convenience. Interna
 #### `fetch.go`
 
 ```go
-// FetchPlayfieldState retrieves the current state of all 28 row subjects
+// FetchPlayfieldState retrieves the current state of the given row subjects
 // for a game in a single round trip using jetstreamext.GetLastMsgsFor.
 // Used by the engine on startup and reconnect to reconstruct the full
 // playfield instantly without replaying the entire game stream history.
 //
-// playerID is CoopPlayfieldID ("coop") in cooperative mode or the
-// player's own UUID in competitive mode.
+// The caller builds the subjects with the mode-appropriate scheme (coop or
+// competitive), so this function is subject-agnostic. Results are keyed by the
+// row index parsed from each subject, so it works for either subject shape.
 func FetchPlayfieldState(
     ctx context.Context,
     js jetstream.JetStream,
     gameID string,
-    playerID string,
+    subjects []string,
 ) ([]PlayfieldRowMsg, error)
 
 type PlayfieldRowMsg struct {
@@ -524,7 +535,7 @@ func FetchGameMeta(
 ) (config.GameMeta, uint64, error)
 ```
 
-`FetchPlayfieldState` calls `jetstreamext.GetLastMsgsFor(ctx, js, streamName, rowSubjects)` where `rowSubjects` is the list of all 28 row subjects for the game, constructed using `config.RowSubject(gameID, playerID, n)` for n in 0..27. The `playerID` parameter is `CoopPlayfieldID` in cooperative mode or the player's own UUID in competitive mode. This returns the last message per subject in a single server round trip — far more efficient than replaying the entire stream from sequence 0 on join or reconnect. The engine uses this for its initial playfield snapshot before starting the ordered consumer, then the consumer takes over for live updates from that point forward.
+`FetchPlayfieldState` calls `jetstreamext.GetLastMsgsFor(ctx, js, streamName, rowSubjects)` where `rowSubjects` is the caller-supplied list of row subjects for the game. The engine builds it with the mode-appropriate scheme: `config.CoopRowSubject(gameID, n)` for the shared cooperative board (no player token) or `config.CompetitiveRowSubject(gameID, playerID, n)` for one competitive player's board. This returns the last message per subject in a single server round trip — far more efficient than replaying the entire stream from sequence 0 on join or reconnect. The engine uses this for its initial playfield snapshot before starting the ordered consumer, then the consumer takes over for live updates from that point forward.
 
 ---
 
@@ -847,7 +858,7 @@ func New(
 
 // Start begins all consumer goroutines and (if ModePlayer) the gravity ticker.
 // In cooperative mode, starts ONE ordered consumer on the shared row subjects
-// (using CoopPlayfieldID). In competitive mode, starts 1 + len(opponentPlayerIDs)
+// (no player token). In competitive mode, starts 1 + len(opponentPlayerIDs)
 // ordered consumers — one for own rows and one per opponent's rows.
 func (e *Engine) Start() error
 
@@ -870,7 +881,7 @@ func (e *Engine) transitionToSpectator()
 
 #### `consumer.go`
 
-Manages the ordered consumer goroutine(s). In cooperative mode, ONE consumer runs on the shared row subjects (using `CoopPlayfieldID` as the player token), updating the single shared `Playfield`. In competitive mode, 1 + N consumers run — one for the local player's rows and one per opponent — each updating a separate `Playfield` instance.
+Manages the ordered consumer goroutine(s). In cooperative mode, ONE consumer runs on the shared row subjects (no player token — the subject carries no player segment), updating the single shared `Playfield`. In competitive mode, 1 + N consumers run — one for the local player's rows and one per opponent — each updating a separate `Playfield` instance.
 
 ```go
 func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubject string)
@@ -879,13 +890,13 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 **Startup sequence:**
 
 1. Call `nats.FetchGameMeta(gameID)` — returns `GameMeta` including `Seed`, `PieceIdx`, and `Status`. In competitive mode, initialise `e.seq = rng.New(meta.Seed)` and `e.pieceIdx = meta.PieceIdx`. In cooperative mode, initialise `e.seq = rng.New(meta.Seed)` for the creator or `e.seq = rng.New(meta.Seed + 1)` for the joiner; each player tracks their own `pieceIdx` independently. Set `e.playerIdx` to 0 for the creator or 1 for the joiner.
-2. Call `nats.FetchPlayfieldState(gameID, playerToken)` — where `playerToken` is `CoopPlayfieldID` in cooperative mode or the player's own UUID in competitive mode. Returns last message per row subject with stream sequences. Apply all rows to `e.playfield` via `pf.Apply`. Record `maxSeq = max(all row sequences)`.
-3. Start the ordered consumer with `StartSeq: maxSeq + 1`. In cooperative mode this is ONE consumer on the shared row subjects (`jetricks.game.<id>.player.coop.playfield.row.>`). In competitive mode this is the consumer for the player's own rows. Messages on non-row subjects (events, meta, chat) that arrived between the lowest and highest fetched row sequence are a tolerable gap — at most a few milliseconds of game time.
+2. Call `nats.FetchPlayfieldState(gameID, playerToken)` — where `playerToken` is empty (`""`) in cooperative mode (shared board, no player token in the subject) or the player's own UUID in competitive mode. Returns last message per row subject with stream sequences. Apply all rows to `e.playfield` via `pf.Apply`. Record `maxSeq = max(all row sequences)`.
+3. Start the ordered consumer with `StartSeq: maxSeq + 1`. In cooperative mode this is ONE consumer on the shared row subjects (`jetricks.game.<id>.playfield.row.>`). In competitive mode this is the consumer for the player's own rows. Messages on non-row subjects (events, meta, chat) that arrived between the lowest and highest fetched row sequence are a tolerable gap — at most a few milliseconds of game time.
 4. In competitive mode only, repeat steps 2–3 for each opponent's rows using `nats.FetchPlayfieldState(gameID, opponentPlayerID)`, starting one consumer goroutine per opponent targeting `jetricks.game.<id>.player.<opponentPID>.playfield.row.>`. In a 4-player game this means 3 opponent consumers plus the player's own consumer. In cooperative mode there is no opponent consumer — both players write to and read from the same shared row subjects.
 
 **Cooperative mode design:**
 
-In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Row subjects use `CoopPlayfieldID = "coop"` as the player token (e.g. `jetricks.game.<id>.player.coop.playfield.row.<n>`), and `effectivePlayerID()` returns `CoopPlayfieldID` in cooperative mode. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
+In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Row subjects carry no player token — the shared board publishes to `jetricks.game.<id>.playfield.row.<n>` (every player publishes to and consumes from the same subjects) via the `config.CoopRowSubject` scheme, distinct from the competitive `config.CompetitiveRowSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
 
 Each player spawns their piece centered in their section (player 0: center of cols 0–9, player 1: center of cols 10–19) but can move it anywhere on the full-width board. `ActivePieceForPlayer(playerIdx)` finds only the piece belonging to that player (by matching `Cell.PlayerIdx`). `SetActivePieceForPlayer(p, playerIdx)` only clears active cells with matching `PlayerIdx` before setting new ones. `LockActivePieceForPlayer(playerIdx)` only locks cells belonging to that player. Collision detection (`CanPlaceCoop`) treats the other player's active cells as obstacles in addition to locked cells.
 
@@ -1417,7 +1428,7 @@ Where packages need to be decoupled for testing, interfaces are defined in the c
 ```go
 // In internal/engine — allows nats publish to be mocked in tests
 type Publisher interface {
-    PublishMoveAtomically(ctx context.Context, gameID string, updates []RowUpdate) error
+    PublishMoveAtomically(ctx context.Context, updates []RowUpdate) error
     PublishMeta(ctx context.Context, gameID string, payload []byte, expectLastSeq uint64) error
 }
 
@@ -1520,6 +1531,6 @@ Decisions settled during design review, recorded here for future reference.
 | 11 | HardDrop CAS behaviour | Auto-retry (`PublishHardDrop`) — intent always fulfilled | Destination is always computable from a valid game state. Player intent should be honoured unconditionally. |
 | 12 | Opponent display in competitive | Full live view via one ordered consumer per opponent's row subjects | Provides the same real-time fidelity as the player's own field. The overhead of additional consumers is minimal (at most 3 opponents in a 4-player game). |
 | 13 | `pieceIdx` recovery on join/reconnect | Store `PieceIdx uint64` in `GameMeta`; locking engine CAS-updates it after each lock-in | `FetchGameMeta` gives any joining engine the current piece index in one round trip. No stream replay needed. |
-| 14 | Cooperative playfield topology | Single shared playfield of width `playerCount × StandardWidth` with `CoopPlayfieldID = "coop"` as the row subject player token | Both players' pieces coexist on one wide board. `Cell.PlayerIdx` distinguishes active pieces. One ordered consumer per engine. Line clears span the full width. UI renders the single playfield directly. |
+| 14 | Cooperative playfield topology | Single shared playfield of width `playerCount × StandardWidth`; row subjects carry no player token (shared board) | Both players' pieces coexist on one wide board. `Cell.PlayerIdx` in the payload distinguishes active pieces — player identity lives in the message, not the subject, since coop never filters rows per player. One ordered consumer per engine. Line clears span the full width. UI renders the single playfield directly. |
 | 15 | `GameMeta` payload | Fully specified in Section 4 with lifecycle, identity, RNG seed, and `PieceIdx` fields | Status uses string constants for readability in the `nats` CLI. `PieceIdx` enables fast startup without stream replay. |
 | 16 | Real-time UI updates from JetStream | All UI data backed by JetStream uses ordered consumers pushing to Datastar SSE — never polling or periodic refresh | The lobby runs consumers for KV (players/games), chat, and archives. The engine runs consumers for playfield rows, events, meta, and countdown. Any change in a JetStream stream or KV bucket is immediately pushed to the UI via the consumer → Updates channel → broadcaster → SSE pipeline. |

@@ -20,23 +20,17 @@ type PlayfieldRowMsg struct {
 	Seq     uint64
 }
 
-// FetchPlayfieldState retrieves the current state of all rows for a game.
+// FetchPlayfieldState retrieves the current state of the given row subjects for
+// a game in a single round trip. The caller builds the subjects using the
+// mode-appropriate scheme (coop or competitive), so this function stays
+// subject-agnostic. The returned rows are keyed by row index parsed from the
+// subject, so the result is independent of the subject shape.
 func FetchPlayfieldState(
 	ctx context.Context,
 	js jetstream.JetStream,
 	gameID string,
-	playerID string,
-	height ...int,
+	subjects []string,
 ) ([]PlayfieldRowMsg, error) {
-	numRows := config.TotalRows
-	if len(height) > 0 && height[0] > 0 {
-		numRows = height[0]
-	}
-	subjects := make([]string, numRows)
-	for i := range subjects {
-		subjects[i] = config.RowSubject(gameID, playerID, i)
-	}
-
 	msgs, err := jetstreamext.GetLastMsgsFor(ctx, js, config.GameStream(gameID), subjects)
 	if err != nil {
 		// If no messages exist yet, return empty

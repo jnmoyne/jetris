@@ -10,9 +10,11 @@ import (
 	natspkg "jetricks/internal/nats"
 )
 
-func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, playerID string, startSeq uint64, isOpponent bool) {
-	filterSubject := "jetricks.game." + e.gameID + ".player." + playerID + ".playfield.row.>"
-
+// runConsumer drives an ordered consumer over filterSubject, applying every row
+// it delivers to pf. opponentID is set only for an opponent's playfield consumer
+// (competitive mode) and tags the emitted UpdateOpponentField events; it is
+// empty for this engine's own playfield.
+func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubject, opponentID string, startSeq uint64, isOpponent bool) {
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, e.js, natspkg.OrderedConsumerConfig{
 		Stream:        config.GameStream(e.gameID),
 		FilterSubject: filterSubject,
@@ -56,7 +58,7 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, playerID s
 				e.emitUpdate(EngineUpdate{
 					Kind:        UpdateOpponentField,
 					ChangedRows: []int{rowIdx},
-					OpponentID:  playerID,
+					OpponentID:  opponentID,
 				})
 			} else {
 				// Lock-in detection: had active → no active

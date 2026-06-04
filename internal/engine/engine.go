@@ -135,8 +135,7 @@ func (e *Engine) Start() error {
 	e.metaSeq = metaSeq
 
 	// 2. Fetch playfield state
-	playerToken := e.effectivePlayerID()
-	rows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, playerToken, e.playfield.Height)
+	rows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.rowSubjects(e.playfield.Height))
 	if err != nil {
 		cancel()
 		return err
@@ -154,7 +153,7 @@ func (e *Engine) Start() error {
 	e.hadActivePiece = e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
 
 	// 3. Start row consumer
-	go e.runConsumer(ctx, e.playfield, playerToken, maxSeq+1, false)
+	go e.runConsumer(ctx, e.playfield, e.rowFilterSubject(), "", maxSeq+1, false)
 
 	// 4. Competitive: set up known opponent and discover others via roster
 	if e.gameMode == config.ModeCompetitive {
@@ -219,7 +218,11 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	e.opponentPlayfields[oppID] = pf
 	e.mu.Unlock()
 
-	oppRows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppID, pf.Height)
+	oppSubjects := make([]string, pf.Height)
+	for i := range oppSubjects {
+		oppSubjects[i] = config.CompetitiveRowSubject(e.gameID, oppID, i)
+	}
+	oppRows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppSubjects)
 	if err != nil {
 		log.Printf("fetch opponent %s state: %v", oppID, err)
 		return
@@ -235,7 +238,7 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 		}
 	}
 
-	go e.runConsumer(ctx, pf, oppID, oppMaxSeq+1, true)
+	go e.runConsumer(ctx, pf, config.CompetitiveRowSubjectFilter(e.gameID, oppID), oppID, oppMaxSeq+1, true)
 }
 
 func (e *Engine) GameID() string            { return e.gameID }
@@ -262,11 +265,52 @@ func (e *Engine) dispatch(m MoveType) {
 	}
 }
 
-func (e *Engine) effectivePlayerID() string {
+// rowSubject returns the subject for one of THIS engine's own playfield rows,
+// using the subject scheme for the engine's game mode: cooperative shares a
+// single board with no player token (ownership lives in the payload via
+// Cell.PlayerIdx), competitive scopes the board by the player's ID.
+func (e *Engine) rowSubject(row int) string {
 	if e.gameMode == config.ModeCooperative {
-		return config.CoopPlayfieldID
+		return config.CoopRowSubject(e.gameID, row)
 	}
-	return e.playerID
+	return config.CompetitiveRowSubject(e.gameID, e.playerID, row)
+}
+
+// rowFilterSubject returns the wildcard filter matching all of this engine's
+// own playfield rows.
+func (e *Engine) rowFilterSubject() string {
+	if e.gameMode == config.ModeCooperative {
+		return config.CoopRowSubjectFilter(e.gameID)
+	}
+	return config.CompetitiveRowSubjectFilter(e.gameID, e.playerID)
+}
+
+// rowSubjects returns the subjects for this engine's own playfield rows
+// 0..height-1, used to fetch the full playfield snapshot in one round trip.
+func (e *Engine) rowSubjects(height int) []string {
+	subjects := make([]string, height)
+	for i := range subjects {
+		subjects[i] = e.rowSubject(i)
+	}
+	return subjects
+}
+
+// sortedRowKeys returns the keys of a row-indexed map in publish/apply order.
+// bottomFirst yields descending row indices (used for hard drops and downward
+// moves so the consumer applies landing rows before vacated ones — see the
+// publish helpers); otherwise ascending.
+func sortedRowKeys[V any](m map[int]V, bottomFirst bool) []int {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if bottomFirst {
+			return keys[i] > keys[j]
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
 }
 
 func (e *Engine) emitUpdate(u EngineUpdate) {
@@ -442,14 +486,13 @@ func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row
 	if len(rows) == 0 {
 		return
 	}
-	playerID := e.effectivePlayerID()
-	updates, err := e.buildBatchUpdates(playerID, rows, bottomFirst)
+	updates, err := e.buildBatchUpdates(rows, bottomFirst)
 	if err != nil {
 		log.Printf("build batch: %v", err)
 		return
 	}
 
-	if err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, updates); err == nil {
+	if err := natspkg.PublishMoveAtomically(ctx, e.js, updates); err == nil {
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
 		log.Printf("publish batch: %v", err)
@@ -483,27 +526,19 @@ func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]gam
 	if len(rows) == 0 {
 		return
 	}
-	playerID := e.effectivePlayerID()
 	updates := make([]natspkg.RowUpdate, 0, len(rows))
-	for r, row := range rows {
-		data, err := row.Marshal()
+	for _, r := range sortedRowKeys(rows, applyBottomFirst) {
+		data, err := rows[r].Marshal()
 		if err != nil {
 			log.Printf("marshal row %d: %v", r, err)
 			return
 		}
 		updates = append(updates, natspkg.RowUpdate{
-			Row:      r,
-			PlayerID: playerID,
-			Payload:  data,
+			Subject: e.rowSubject(r),
+			Payload: data,
 		})
 	}
-	sort.Slice(updates, func(i, j int) bool {
-		if applyBottomFirst {
-			return updates[i].Row > updates[j].Row // bottom (landing) rows first
-		}
-		return updates[i].Row < updates[j].Row
-	})
-	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, e.gameID, updates); err != nil {
+	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates); err != nil {
 		log.Printf("publish batch (no-cas): %v", err)
 	}
 }
@@ -515,7 +550,6 @@ func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game
 	if fromRow >= toRow {
 		return
 	}
-	playerID := e.effectivePlayerID()
 	updates := make([]natspkg.RowUpdate, 0, toRow-fromRow)
 	for r := fromRow; r < toRow && r < len(rows); r++ {
 		data, err := rows[r].Marshal()
@@ -524,39 +558,32 @@ func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game
 			return
 		}
 		updates = append(updates, natspkg.RowUpdate{
-			Row:      r,
-			PlayerID: playerID,
-			Payload:  data,
+			Subject: e.rowSubject(r),
+			Payload: data,
 		})
 	}
-	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, e.gameID, updates); err != nil {
+	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates); err != nil {
 		log.Printf("publish slice batch (no-cas): %v", err)
 	}
 }
 
-// buildBatchUpdates converts a row projection map into a sorted RowUpdate
-// slice (ascending row index) with per-subject CAS expectations sourced from
-// e.playfield.LastSeq.
-func (e *Engine) buildBatchUpdates(playerID string, rows map[int]game.Row, bottomFirst bool) ([]natspkg.RowUpdate, error) {
+// buildBatchUpdates converts a row projection map into a RowUpdate slice in
+// apply order (see sortedRowKeys) with per-subject CAS expectations sourced from
+// e.playfield.LastSeq. Each row's subject is built with the engine's
+// mode-appropriate scheme.
+func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst bool) ([]natspkg.RowUpdate, error) {
 	updates := make([]natspkg.RowUpdate, 0, len(rows))
-	for r, row := range rows {
-		data, err := row.Marshal()
+	for _, r := range sortedRowKeys(rows, bottomFirst) {
+		data, err := rows[r].Marshal()
 		if err != nil {
 			return nil, err
 		}
 		updates = append(updates, natspkg.RowUpdate{
-			Row:           r,
-			PlayerID:      playerID,
+			Subject:       e.rowSubject(r),
 			Payload:       data,
 			ExpectLastSeq: e.playfield.LastSeq[r],
 		})
 	}
-	sort.Slice(updates, func(i, j int) bool {
-		if bottomFirst {
-			return updates[i].Row > updates[j].Row
-		}
-		return updates[i].Row < updates[j].Row
-	})
 	return updates, nil
 }
 
@@ -582,8 +609,6 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 	if len(rows) == 0 {
 		return
 	}
-	playerID := e.effectivePlayerID()
-
 	// Snapshot the cells we want to keep so we can re-project them on top of
 	// refetched stream state. saved[r] is the row we originally projected.
 	saved := make(map[int][]game.Cell, len(rows))
@@ -594,12 +619,12 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 	}
 
 	// First attempt uses in-memory LastSeq.
-	updates, err := e.buildBatchUpdates(playerID, rows, bottomFirst)
+	updates, err := e.buildBatchUpdates(rows, bottomFirst)
 	if err != nil {
 		log.Printf("build batch: %v", err)
 		return
 	}
-	if err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, updates); err == nil {
+	if err := natspkg.PublishMoveAtomically(ctx, e.js, updates); err == nil {
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
 		log.Printf("publish batch: %v", err)
@@ -608,11 +633,11 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 
 	const maxRetries = 5
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		merged, ok := e.refetchAndMerge(ctx, playerID, saved, bottomFirst)
+		merged, ok := e.refetchAndMerge(ctx, saved, bottomFirst)
 		if !ok {
 			return
 		}
-		err := natspkg.PublishMoveAtomically(ctx, e.js, e.gameID, merged)
+		err := natspkg.PublishMoveAtomically(ctx, e.js, merged)
 		if err == nil {
 			return
 		}
@@ -629,14 +654,15 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 // refetchAndMerge fetches the latest stream message for each row in saved,
 // overlays the saved cells on top, and returns a fresh batch with refreshed
 // per-subject CAS expectations. Used by the merge-retry path.
-func (e *Engine) refetchAndMerge(ctx context.Context, playerID string, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, bool) {
+func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, bool) {
 	stream, sErr := e.js.Stream(ctx, config.GameStream(e.gameID))
 	if sErr != nil {
 		return nil, false
 	}
 	merged := make([]natspkg.RowUpdate, 0, len(saved))
-	for r, cells := range saved {
-		subject := config.RowSubject(e.gameID, playerID, r)
+	for _, r := range sortedRowKeys(saved, bottomFirst) {
+		cells := saved[r]
+		subject := e.rowSubject(r)
 		msg, gErr := stream.GetLastMsgForSubject(ctx, subject)
 		if gErr != nil {
 			return nil, false
@@ -677,18 +703,11 @@ func (e *Engine) refetchAndMerge(ctx context.Context, playerID string, saved map
 			return nil, false
 		}
 		merged = append(merged, natspkg.RowUpdate{
-			Row:           r,
-			PlayerID:      playerID,
+			Subject:       subject,
 			Payload:       data,
 			ExpectLastSeq: msg.Sequence,
 		})
 	}
-	sort.Slice(merged, func(i, j int) bool {
-		if bottomFirst {
-			return merged[i].Row > merged[j].Row
-		}
-		return merged[i].Row < merged[j].Row
-	})
 	return merged, true
 }
 

@@ -42,6 +42,32 @@ func rainbow(elapsed time.Duration) color.NRGBA {
 	return stops[i]
 }
 
+// clampF clamps v to [lo, hi].
+func clampF(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// easeOutBack eases 0→1 with a slight overshoot past 1 near the end, giving the
+// countdown number a "pop" as it settles. t is clamped to [0,1] by the caller.
+func easeOutBack(t float64) float64 {
+	const c1 = 1.70158
+	const c3 = c1 + 1
+	u := t - 1
+	return 1 + c3*u*u*u + c1*u*u
+}
+
+// withAlpha returns c with its alpha scaled to a (0..1).
+func withAlpha(c color.NRGBA, a float64) color.NRGBA {
+	c.A = uint8(clampF(a, 0, 1) * 255)
+	return c
+}
+
 // drawCell paints a single board square: the whole cell is filled with the
 // outline color, then an inner rectangle (inset by the outline width) is filled
 // with the cell color — giving a colored frame around the fill, matching the

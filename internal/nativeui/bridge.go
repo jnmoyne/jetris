@@ -30,6 +30,9 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 			case engine.UpdateGameStatus:
 				a.gameStatus = u.GameStatus
 			case engine.UpdateCountdown:
+				if u.Countdown != a.countdown {
+					a.countdownAt = time.Now() // restart the pop animation for each new number
+				}
 				a.countdown = u.Countdown
 			case engine.UpdateGameOver:
 				a.gameOver = true

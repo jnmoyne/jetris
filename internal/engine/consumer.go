@@ -165,8 +165,6 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			data, _ := json.Marshal(ev)
 			_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
 		}
-
-		log.Printf("cleared %d lines, score now %d (delta %d)", len(completed), e.score, scoreDelta)
 	}
 
 	e.emitUpdate(EngineUpdate{Kind: UpdatePieceLocked})

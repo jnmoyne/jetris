@@ -44,6 +44,13 @@ const (
 
 const flashDur = 600 * time.Millisecond
 
+// countdownAnimDur is the pop-in duration for each pre-game countdown number;
+// countdownBaseSp is the settled font size of the centered number.
+const (
+	countdownAnimDur = 450 * time.Millisecond
+	countdownBaseSp  = 132.0
+)
+
 // UI chrome colors (the board itself uses internal/render).
 var (
 	colBg     = color.NRGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff}
@@ -52,6 +59,8 @@ var (
 	colMuted  = color.NRGBA{R: 0x88, G: 0x88, B: 0x88, A: 0xff}
 	colAccent = color.NRGBA{R: 0x00, G: 0xcc, B: 0xcc, A: 0xff}
 	colErr    = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
+	colGold   = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
+	colGo     = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
 )
 
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
@@ -92,7 +101,8 @@ type App struct {
 	score        int
 	level        int
 	gameStatus   string
-	countdown    int // -1 none, 0 GO!, >0 seconds remaining
+	countdown    int       // -1 none, 0 GO!, >0 seconds remaining
+	countdownAt  time.Time // when the current countdown number arrived (for the pop animation)
 	gameOver     bool
 	won          bool
 	myReady      bool

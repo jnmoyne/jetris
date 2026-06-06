@@ -119,8 +119,13 @@ func (a *App) joinGame(gameID string) {
 	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), opponentID, g.Mode, engine.ModePlayer, playerIdx)
 	engCtx, engCancel := context.WithCancel(a.ctx)
 	e.OnGameFinished = func() {
+		// Archive/clean up the finished game's stream + KV. Do NOT return to the
+		// lobby here: this callback only fires on the player who triggers the
+		// finish (the winner in competitive, the topper in coop), so returning to
+		// the lobby would yank just that one player out while everyone else sits
+		// on the game-over screen. Every player stays on YOU WON!/YOU LOST until
+		// they click Back (matches the web UI, which only detaches the engine).
 		archive.ArchiveAndCleanup(context.Background(), a.js, a.kv, e, a.getLobby(), a.snapshotGamePlayers())
-		a.returnToLobby()
 	}
 
 	// Refresh roster after joining so the legend includes us (see handleJoinGame).
@@ -208,6 +213,7 @@ func (a *App) runCountdown(gameID string) {
 	}
 	data, _ := json.Marshal(map[string]int{"seconds": 0})
 	_, _ = a.js.Publish(ctx, config.CountdownSubject(gameID), data)
+	time.Sleep(700 * time.Millisecond) // hold "GO!" on screen before the game starts
 
 	lb := a.getLobby()
 	if lb != nil {
@@ -216,7 +222,7 @@ func (a *App) runCountdown(gameID string) {
 }
 
 // returnToLobby stops the active engine and returns to the lobby screen. Safe to
-// call more than once (e.g. from both the Back button and OnGameFinished).
+// call more than once.
 func (a *App) returnToLobby() {
 	a.mu.Lock()
 	eng := a.eng

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"gioui.org/font"
 	"gioui.org/io/event"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -26,6 +27,7 @@ type gameView struct {
 	score, level         int
 	status               string
 	countdown            int
+	countdownAt          time.Time
 	gameOver, won        bool
 	myReady              bool
 	players, readyPlayer []lobby.PlayerSummary
@@ -49,6 +51,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		level:       a.level,
 		status:      a.gameStatus,
 		countdown:   a.countdown,
+		countdownAt: a.countdownAt,
 		gameOver:    a.gameOver,
 		won:         a.won,
 		myReady:     a.myReady,
@@ -85,6 +88,9 @@ func (a *App) layoutGame(gtx C) D {
 	view := a.snapshotGame(gtx.Now)
 	if view.flashActive {
 		a.invalidate() // keep animating the flash until it expires
+	}
+	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
+		a.invalidate() // keep animating the countdown pop until it settles
 	}
 
 	return layout.Flex{}.Layout(gtx,
@@ -132,18 +138,6 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		layout.Rigid(spacer(14)),
 		layout.Rigid(a.hudStat("SCORE", view.score)),
 		layout.Rigid(a.hudStat("LEVEL", view.level)),
-	}
-
-	if view.countdown >= 0 && !started && !view.gameOver {
-		txt := fmt.Sprintf("%d", view.countdown)
-		if view.countdown == 0 {
-			txt = "GO!"
-		}
-		children = append(children, layout.Rigid(spacer(10)), layout.Rigid(func(gtx C) D {
-			l := material.H4(a.th, txt)
-			l.Color = colAccent
-			return l.Layout(gtx)
-		}))
 	}
 
 	if mode == engine.ModePlayer && !started && !view.gameOver {
@@ -226,13 +220,47 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	board := func(gtx C) D {
 		return layout.Center.Layout(gtx, a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now))
 	}
-	if !view.gameOver {
+	switch {
+	case view.gameOver:
+		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+			layout.Expanded(board),
+			layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view.won) }),
+		)
+	case countdownVisible(view, mode):
+		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+			layout.Expanded(board),
+			layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
+		)
+	default:
 		return board(gtx)
 	}
-	return layout.Stack{Alignment: layout.Center}.Layout(gtx,
-		layout.Expanded(board),
-		layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view.won) }),
-	)
+}
+
+// countdownVisible reports whether the centered pre-game countdown number should
+// be drawn over the player's board.
+func countdownVisible(view gameView, mode engine.Mode) bool {
+	started := view.status == string(config.GameStatusInProgress)
+	return view.countdown >= 0 && !started && !view.gameOver && mode == engine.ModePlayer
+}
+
+// countdownOverlay draws the big centered countdown number (or "GO!") with a
+// pop-in scale + fade so each new number animates in, mirroring the web UI's
+// centered countdown (gold numbers, green GO!).
+func (a *App) countdownOverlay(gtx C, view gameView) D {
+	txt := fmt.Sprintf("%d", view.countdown)
+	col := colGold
+	if view.countdown == 0 {
+		txt = "GO!"
+		col = colGo
+	}
+	t := clampF(float64(gtx.Now.Sub(view.countdownAt))/float64(countdownAnimDur), 0, 1)
+	scale := 0.4 + 0.6*easeOutBack(t)
+	alpha := clampF(t/0.3, 0, 1)
+
+	l := material.Label(a.th, unit.Sp(float32(countdownBaseSp*scale)), txt)
+	l.Color = withAlpha(col, alpha)
+	l.Font.Weight = font.Bold
+	return l.Layout(gtx)
 }
 
 func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {

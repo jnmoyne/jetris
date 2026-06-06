@@ -207,6 +207,46 @@ func (e *Engine) OpponentPlayfields() map[string]*game.Playfield {
 	return out
 }
 
+// BoardSnapshot is an immutable, deep-copied view of a playfield plus the render
+// dimensions a UI needs. Unlike Playfield(), the rows are clones taken under
+// e.mu, so a UI goroutine can read them while the consumer mutates the live
+// playfield — no data race.
+type BoardSnapshot struct {
+	Width        int
+	Height       int
+	VisibleStart int
+	Rows         []game.Row
+}
+
+// Snapshot returns a race-free deep copy of the local playfield for rendering.
+func (e *Engine) Snapshot() BoardSnapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return BoardSnapshot{
+		Width:        e.playfield.Width,
+		Height:       e.playfield.Height,
+		VisibleStart: e.visibleRowStart,
+		Rows:         game.CloneRows(e.playfield.Rows),
+	}
+}
+
+// OpponentSnapshots returns race-free deep copies of all opponent playfields,
+// keyed by playerID (competitive mode).
+func (e *Engine) OpponentSnapshots() map[string]BoardSnapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]BoardSnapshot, len(e.opponentPlayfields))
+	for k, pf := range e.opponentPlayfields {
+		out[k] = BoardSnapshot{
+			Width:        pf.Width,
+			Height:       pf.Height,
+			VisibleStart: e.visibleRowStart,
+			Rows:         game.CloneRows(pf.Rows),
+		}
+	}
+	return out
+}
+
 // startOpponentConsumer creates a playfield and consumer for a single opponent.
 func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	e.mu.Lock()

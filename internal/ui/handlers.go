@@ -12,11 +12,12 @@ import (
 
 	"github.com/starfederation/datastar-go/datastar"
 
+	"jetricks/internal/archive"
 	"jetricks/internal/config"
 	"jetricks/internal/engine"
 	"jetricks/internal/game"
 	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
+	"jetricks/internal/render"
 )
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -688,117 +689,7 @@ func (s *Server) handleSpectateGame(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) archiveAndCleanup(eng *engine.Engine) {
-	ctx := context.Background()
-
-	// Use CAS on game meta to transition finished → archived.
-	// Only the first caller succeeds; others see a CAS failure and skip.
-	meta, metaSeq, err := natspkg.FetchGameMeta(ctx, s.js, eng.GameID())
-	if err != nil {
-		return // stream might already be deleted
-	}
-	if meta.Status != config.GameStatusFinished {
-		return // already archived by another instance
-	}
-	meta.Status = config.GameStatusArchived
-	archiveData, _ := json.Marshal(meta)
-	if err := natspkg.PublishMeta(ctx, s.js, eng.GameID(), archiveData, metaSeq); err != nil {
-		return // CAS failed — another instance won the race
-	}
-
-	// Collect all players' results from EventGameOver events on the game stream.
-	// eventSenders tracks who published their own EventGameOver — i.e., who
-	// topped out. In competitive mode, the winner is the player who did NOT
-	// top out. On a draw (all topped out), there is no winner.
-	playerResults := make(map[string]config.PlayerResult)
-	eventSenders := make(map[string]bool)
-	// Add our own data first
-	playerResults[eng.PlayerID()] = config.PlayerResult{
-		PlayerID:   eng.PlayerID(),
-		Score:      eng.Score(),
-		PieceCount: eng.PieceIdx(),
-	}
-	// Read EventGameOver events from others
-	evtCh, evtCancel, err := natspkg.NewOrderedConsumer(ctx, s.js, natspkg.OrderedConsumerConfig{
-		Stream:        config.GameStream(eng.GameID()),
-		FilterSubject: config.EventsSubject(eng.GameID()),
-	})
-	if err == nil {
-		done := false
-		for !done {
-			select {
-			case msg, ok := <-evtCh:
-				if !ok {
-					done = true
-					break
-				}
-				var ev engine.GameEvent
-				if json.Unmarshal(msg.Data(), &ev) == nil && ev.Kind == engine.EventGameOver {
-					eventSenders[ev.PlayerID] = true
-					if _, exists := playerResults[ev.PlayerID]; !exists {
-						playerResults[ev.PlayerID] = config.PlayerResult{
-							PlayerID:   ev.PlayerID,
-							Score:      ev.Score,
-							PieceCount: ev.PieceCount,
-						}
-					}
-				}
-			default:
-				done = true
-			}
-		}
-		evtCancel()
-	}
-	// Also add players from the game listing who might not have topped out
-	gamePlayers := s.getGamePlayers()
-	for _, p := range gamePlayers {
-		if _, exists := playerResults[p.PlayerID]; !exists {
-			playerResults[p.PlayerID] = config.PlayerResult{PlayerID: p.PlayerID}
-		}
-	}
-	// Determine winners in competitive: any player who did NOT send an
-	// EventGameOver survived to the end and wins. On a simultaneous top-out
-	// draw, every player sent an event, so there is no winner.
-	if meta.Mode == config.ModeCompetitive {
-		for id, pr := range playerResults {
-			if !eventSenders[id] {
-				pr.Winner = true
-				playerResults[id] = pr
-			}
-		}
-	}
-
-	var results []config.PlayerResult
-	for _, pr := range playerResults {
-		results = append(results, pr)
-	}
-
-	record := config.ArchiveRecord{
-		GameID:      eng.GameID(),
-		Mode:        meta.Mode,
-		PlayerCount: meta.PlayerCount,
-		StartedAt:   meta.StartedAt,
-		FinishedAt:  meta.FinishedAt,
-		Players:     results,
-	}
-	if meta.Mode == config.ModeCooperative {
-		record.TotalScore = eng.Score()
-	}
-
-	data, _ := json.Marshal(record)
-	if _, err := s.js.Publish(ctx, config.ArchiveSubject, data); err != nil {
-		log.Printf("archive: publish: %v", err)
-		return
-	}
-
-	// Delete the game stream and KV entry
-	_ = natspkg.DeleteGameStream(ctx, s.js, eng.GameID())
-	_ = s.kv.Delete(ctx, config.LobbyGameKey(eng.GameID()))
-
-	// Leave game in lobby
-	lb := s.getLobby()
-	if lb != nil {
-		_ = lb.LeaveGame(ctx, eng.GameID())
-	}
+	archive.ArchiveAndCleanup(context.Background(), s.js, s.kv, eng, s.getLobby(), s.getGamePlayers())
 	s.DetachEngine()
 }
 
@@ -1150,9 +1041,9 @@ func renderBoardRowInner(row game.Row, rowIndex int, playerIdx int, flashCols ma
 	fmt.Fprintf(&sb, `<tr id="row-%d">`, rowIndex)
 	for col, c := range row.Cells {
 		if flashCols[col] {
-			fmt.Fprintf(&sb, `<td class="cell-flash" style="%s"></td>`, cellStyle(c, playerIdx, true))
+			fmt.Fprintf(&sb, `<td class="cell-flash" style="%s"></td>`, render.CellStyleCSS(c, playerIdx, true))
 		} else {
-			fmt.Fprintf(&sb, `<td style="%s"></td>`, cellStyle(c, playerIdx, true))
+			fmt.Fprintf(&sb, `<td style="%s"></td>`, render.CellStyleCSS(c, playerIdx, true))
 		}
 	}
 	sb.WriteString(`</tr>`)
@@ -1172,7 +1063,7 @@ func renderSpectatorCompetitiveContainer(e *engine.Engine, players []lobby.Playe
 			sb.WriteString(renderSpectatorPlayerBoard(pf, p.PlayerID, i, e.VisibleRowStart()))
 		} else {
 			fmt.Fprintf(&sb, `<div id="sb-%s" class="spectator-board"><div class="opp-label" style="color:%s">%s</div><div style="color:#666;padding:20px">Loading...</div></div>`,
-				htmlEscape(p.PlayerID), playerColor(i), htmlEscape(p.PlayerID))
+				htmlEscape(p.PlayerID), render.PlayerColorHex(i), htmlEscape(p.PlayerID))
 		}
 	}
 	sb.WriteString(`</div>`)
@@ -1187,7 +1078,7 @@ func renderSpectatorPlayerBoard(pf *game.Playfield, playerID string, playerIdx i
 	var sb strings.Builder
 	color := "#00ff88"
 	if playerIdx >= 0 {
-		color = playerColor(playerIdx)
+		color = render.PlayerColorHex(playerIdx)
 	}
 	fmt.Fprintf(&sb, `<div id="sb-%s" class="spectator-board"><div class="opp-label" style="color:%s">%s</div><table class="board">`,
 		htmlEscape(playerID), color, htmlEscape(playerID))
@@ -1195,7 +1086,7 @@ func renderSpectatorPlayerBoard(pf *game.Playfield, playerID string, playerIdx i
 		sb.WriteString(`<tr>`)
 		for _, c := range pf.Rows[r].Cells {
 			// Spectator view (-1): every active piece keeps a per-player outline.
-			fmt.Fprintf(&sb, `<td style="%s"></td>`, cellStyle(c, -1, true))
+			fmt.Fprintf(&sb, `<td style="%s"></td>`, render.CellStyleCSS(c, -1, true))
 		}
 		sb.WriteString(`</tr>`)
 	}
@@ -1211,7 +1102,7 @@ func renderOpponentBoard(pf *game.Playfield, oppID string, visibleRowStart int) 
 		fmt.Fprintf(&sb, `<tr>`)
 		for _, c := range pf.Rows[r].Cells {
 			// Compact board: fill only, no ownership outline (just the grid line).
-			fmt.Fprintf(&sb, `<td style="%s"></td>`, cellStyle(c, -1, false))
+			fmt.Fprintf(&sb, `<td style="%s"></td>`, render.CellStyleCSS(c, -1, false))
 		}
 		sb.WriteString(`</tr>`)
 	}
@@ -1342,7 +1233,7 @@ func renderCompetitivePlayerStatus(players []lobby.PlayerSummary, eng *engine.En
 	sb.WriteString(renderGameModeLabel(config.ModeCompetitive))
 	sb.WriteString(`<div class="hud-label">PLAYERS</div>`)
 	for i, p := range players {
-		color := playerColor(i)
+		color := render.PlayerColorHex(i)
 		if eng.IsEliminated(p.PlayerID) {
 			fmt.Fprintf(&sb, `<div class="player-legend-item"><div class="player-legend-swatch" style="background:%s;opacity:0.3"></div><span style="color:#666;text-decoration:line-through">%s</span></div>`,
 				color, htmlEscape(p.PlayerID))
@@ -1363,26 +1254,6 @@ func renderGameModeLabel(mode config.GameMode) string {
 	return fmt.Sprintf(`<div class="game-mode-label" style="color:#ffcc00;font-size:0.95em;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px">%s</div>`, label)
 }
 
-var playerColors = []string{
-	"#00ffff", // P0 cyan
-	"#ff00ff", // P1 magenta
-	"#ffff00", // P2 yellow
-	"#ff8800", // P3 orange
-	"#00ff00", // P4 green
-	"#ff4444", // P5 red
-	"#8888ff", // P6 light blue
-	"#ff88ff", // P7 pink
-	"#88ffff", // P8 light cyan
-	"#ffaa44", // P9 amber
-}
-
-func playerColor(idx int) string {
-	if idx < len(playerColors) {
-		return playerColors[idx]
-	}
-	return playerColors[idx%len(playerColors)]
-}
-
 func renderPlayerLegend(players []lobby.PlayerSummary, mode config.GameMode) string {
 	var sb strings.Builder
 	sb.WriteString(`<div id="player-legend" class="player-legend">`)
@@ -1390,7 +1261,7 @@ func renderPlayerLegend(players []lobby.PlayerSummary, mode config.GameMode) str
 	sb.WriteString(`<div class="hud-label">PLAYERS</div>`)
 	for i, p := range players {
 		fmt.Fprintf(&sb, `<div class="player-legend-item"><div class="player-legend-swatch" style="background:%s"></div><span>%s</span></div>`,
-			playerColor(i), htmlEscape(p.PlayerID))
+			render.PlayerColorHex(i), htmlEscape(p.PlayerID))
 	}
 	sb.WriteString(`</div>`)
 	return sb.String()
@@ -1402,100 +1273,6 @@ func renderScoreInner(score int) string {
 
 func renderLevelInner(level int) string {
 	return fmt.Sprintf(`<div id="level" class="hud-value">%d</div>`, level)
-}
-
-// Board background and grid-line colors. Every square's outline falls back to the
-// grid line so that, literally, every square has an outline.
-const (
-	boardBg    = "#111111"
-	gridLine   = "#1a1a1a"
-	ownOutline = "#ffffff"
-)
-
-// pieceColors maps each tetromino type to its base fill color. Index matches the
-// game.PieceType iota (I, O, T, S, Z, J, L).
-var pieceColors = [...]string{
-	game.PieceI: "#00f0f0", // cyan
-	game.PieceO: "#f0f000", // yellow
-	game.PieceT: "#a000f0", // purple
-	game.PieceS: "#00f000", // green
-	game.PieceZ: "#f00000", // red
-	game.PieceJ: "#0000f0", // blue
-	game.PieceL: "#f0a000", // orange
-}
-
-func pieceColor(pt game.PieceType) string {
-	if int(pt) >= 0 && int(pt) < len(pieceColors) {
-		return pieceColors[pt]
-	}
-	return boardBg
-}
-
-// blend composites fg over bg at the given alpha (0..1) and returns the resulting
-// "#rrggbb" hex. This reproduces the old opacity-over-dark-board look as a single
-// concrete color, so the server can emit each square's true fill.
-func blend(fg, bg string, alpha float64) string {
-	fr, fg2, fb := hexToRGB(fg)
-	br, bg2, bb := hexToRGB(bg)
-	r := int(float64(fr)*alpha + float64(br)*(1-alpha) + 0.5)
-	g := int(float64(fg2)*alpha + float64(bg2)*(1-alpha) + 0.5)
-	b := int(float64(fb)*alpha + float64(bb)*(1-alpha) + 0.5)
-	return fmt.Sprintf("#%02x%02x%02x", clamp8(r), clamp8(g), clamp8(b))
-}
-
-func hexToRGB(h string) (int, int, int) {
-	h = strings.TrimPrefix(h, "#")
-	if len(h) != 6 {
-		return 0, 0, 0
-	}
-	var r, g, b int
-	fmt.Sscanf(h, "%02x%02x%02x", &r, &g, &b)
-	return r, g, b
-}
-
-func clamp8(v int) int {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return v
-}
-
-// cellStyle computes the inline CSS (background + outline) for a single square,
-// the single source of truth for cell appearance. localPlayerIdx is the viewer's
-// player index (-1 for spectators: every active piece gets a per-player outline).
-// When showOutline is false (compact opponent boards) ownership outlines are
-// suppressed in favor of the plain grid line.
-func cellStyle(c game.Cell, localPlayerIdx int, showOutline bool) string {
-	fill := boardBg
-	outline := gridLine
-	outlineW := 1
-
-	switch {
-	case c.Active:
-		fill = blend(pieceColor(c.PieceType), boardBg, 0.9)
-		switch {
-		case localPlayerIdx < 0:
-			// Spectator: every active piece gets a per-player outline.
-			outline, outlineW = playerColor(c.PlayerIdx), 2
-		case c.PlayerIdx == localPlayerIdx:
-			// Own piece: white outline.
-			outline, outlineW = ownOutline, 2
-			// Other player's active piece in a player's own view: no
-			// ownership outline (grid line) — preserves the seamless board.
-		}
-	case c.Adversarial:
-		fill = blend(playerColor(c.PlayerIdx%10), boardBg, 0.8)
-	case c.Occupied:
-		fill = blend(pieceColor(c.PieceType), boardBg, 0.7)
-		if showOutline {
-			outline, outlineW = playerColor(c.PlayerIdx), 2
-		}
-	}
-
-	return fmt.Sprintf("background:%s;outline:%dpx solid %s;outline-offset:-1px", fill, outlineW, outline)
 }
 
 func htmlEscape(s string) string {

@@ -21,7 +21,7 @@
 9. [internal/engine](#9-internalengine)
 10. [internal/lobby](#10-internallobby)
 11. [internal/cleanup](#11-internalcleanup)
-12. [internal/ui](#12-internalui)
+12. [Front ends: native (default) and web (`--web`)](#12-front-ends-native-default-and-web---web)
 13. [Event Channel Contracts](#13-event-channel-contracts)
 14. [Bootstrap Sequence](#14-bootstrap-sequence)
 15. [Key Interfaces](#15-key-interfaces)
@@ -139,19 +139,24 @@ The entrypoint. Responsible only for wiring — it constructs all top-level comp
 ### Responsibilities
 
 - Parse CLI flags into a `config.Config`
-- Establish the NATS connection
-- Ensure lobby streams and KV exist
-- Start the HTTP/UI server (`ui.Server`) — lobby creation is deferred until the player enters their name in the UI
-- Open the browser or webview
-- Block on OS signal and perform graceful shutdown
+- Establish the NATS connection (shared by both UIs)
+- Ensure lobby streams and KV exist (shared by both UIs)
+- Branch on the `--web` flag:
+  - **default (native):** `runNative` opens a native OS window via the Gio front end (`internal/nativeui`). Gio's `app.Main()` owns the OS main thread, so the app logic runs on a goroutine that calls `App.Run`.
+  - **`--web`:** `runWeb` starts the HTTP/UI server (`ui.Server`) and opens the browser. Lobby creation is deferred until the player enters their name.
+- Block on OS signal / window close and perform graceful shutdown
+
+In both modes the player enters a name on a login screen; identity is the same NATS-backed presence (no browser session). The native window is the default so no HTTP service or browser is involved unless `--web` is passed.
 
 ### CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--context` | `""` | NATS context name (as configured with `nats context add`). Empty string uses the currently selected context. |
-| `--webview` | `false` | Launch as a webview desktop app instead of opening browser |
-| `--port` | `7777` | Local HTTP server port |
+| `--server` / `--user` / `--password` | `""` | Explicit NATS URL + credentials, overriding `--context`. |
+| `--web` | `false` | Use the web browser UI (HTTP/SSE/Datastar) instead of the default native window. |
+| `--port` | `7777` | Local HTTP server port (only used with `--web`). |
+| `--webview` | `false` | Legacy/unused flag (`config.Webview`); has no effect in the current build. |
 
 The `--context` flag maps directly to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
 
@@ -171,9 +176,13 @@ A single `Config` struct populated at startup and passed read-only to all packag
 
 ```go
 type Config struct {
-    NATSContext string // NATS context name; empty = currently selected context
-    Port        int
-    Webview     bool
+    NATSContext  string // NATS context name; empty = currently selected context
+    NATSURL      string // explicit server URL (overrides context)
+    NATSUser     string
+    NATSPassword string
+    Port         int    // HTTP port (web UI only)
+    Web          bool   // use the web browser UI instead of the native window
+    Webview      bool   // legacy/unused
 }
 
 type GameMode int
@@ -352,7 +361,7 @@ The `PieceIdx` field is the number of pieces that have locked in across the enti
 
 ## 5. Player Identity
 
-Player identity is handled entirely in the UI at startup — no persistent files are stored on disk. When a player opens Jetricks in their browser, they are prompted to enter a player name. This name **is** the player ID used in all NATS subjects, KV keys, and game rosters. There is no separate display name.
+Player identity is handled entirely in the UI at startup — no persistent files are stored on disk. When a player starts Jetricks (native window by default, or the browser with `--web`), they are prompted on a login screen to enter a player name. This name **is** the player ID used in all NATS subjects, KV keys, and game rosters. There is no separate display name.
 
 ### Validation
 
@@ -364,10 +373,12 @@ Validation is implemented in `config.ValidatePlayerName(name) error`.
 
 ### Flow
 
-1. Browser opens → login page is served (no lobby exists yet)
-2. Player enters a name → `POST /login` validates the name shape (`config.ValidatePlayerName`) and then checks the lobby KV (`lobby.IsNameInUse`) for an active player presence entry with the same display name (case-insensitive, whitespace-trimmed). Stale presence entries — `LastSeen` older than 3× `config.PresenceHeartbeat` — are ignored so unclean shutdowns don't permanently block the name.
-3. If the name collides with an active player, the server returns a confirmation modal ("looks like there is already a user with this name in the lobby, are you sure you want to join with this name?") with **Yes, join** / **Cancel** buttons. **Yes, join** sets the `forceLogin` Datastar signal to `true` and re-posts `/login`, which skips the collision check and proceeds.
-4. On success, the lobby is created and the browser redirects to the lobby page.
+The flow is identical in both UIs; only the transport differs (native calls the handlers directly; web posts `/login` with Datastar signals).
+
+1. App starts → login screen is shown (no lobby exists yet)
+2. Player enters a name → the name shape is validated (`config.ValidatePlayerName`) and then the lobby KV is checked (`lobby.IsNameInUse`) for an active player presence entry with the same name (case-insensitive, whitespace-trimmed). Stale presence entries — `LastSeen` older than 3× `config.PresenceHeartbeat` — are ignored so unclean shutdowns don't permanently block the name.
+3. If the name collides with an active player, a confirmation prompt ("a user with this name is already in the lobby — join anyway?") with **Yes, join** / **Cancel** is shown. **Yes, join** forces login, skipping the collision check. (Web carries this via the `forceLogin` Datastar signal re-posting `/login`; native sets an internal force flag and retries.)
+4. On success, the lobby is created and the app moves to the lobby screen.
 
 Since the player name is the player ID, two players choosing the same name share one KV presence key and roster subject — actions taken by either binary in the lobby (e.g. ToggleReady) target whichever entry matches the playerID first. The collision check makes that condition opt-in: the user is told and must confirm before proceeding.
 
@@ -1239,7 +1250,18 @@ All transitions go through CAS on `jetricks.game.<id>.meta`. If a CAS fails duri
 
 ---
 
-## 12. internal/ui
+## 12. Front ends: native (default) and web (`--web`)
+
+Jetricks has two interchangeable front ends over the same engine/lobby logic. Both depend on `engine` and `lobby` (one-way) and communicate with them exclusively through their `Updates` channels and exported method calls — neither is imported by the business logic.
+
+- **`internal/nativeui` (default).** A native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — so there is **no HTTP or SSE round-trip**; a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
+- **`internal/ui` (web, `--web`).** The HTTP server + Datastar/SSE rendering described below.
+
+Two small packages are shared by both front ends:
+- **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math). Exposes `CellStyleCSS` (web, byte-for-byte the historical output) and `CellStyle`→RGBA (native) from one decision function, so the two UIs can never visually drift. Extracted from `internal/ui/handlers.go`.
+- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources. Shared so both UIs archive identically.
+
+### 12a. internal/ui (web UI — only with `--web`)
 
 The HTTP server and all UI rendering. Depends on `engine` and `lobby` but is never imported by them — the dependency is one-way. Communicates with engine and lobby exclusively through their `Updates` channels and exported method calls.
 
@@ -1397,23 +1419,26 @@ The following steps happen in order at startup. Steps that can fail cause the ap
 ```
 1.  Parse CLI flags → config.Config
 2.  Connect to NATS via natscontext.Connect(config.NATSContext) → *nats.Conn, jetstream.JetStream, natscontext.Settings
-    (empty context name uses the currently selected nats CLI context)
+    (empty context name uses the currently selected nats CLI context; --server overrides)
 3.  EnsureLobbyChatStream
 3a. EnsureArchiveStream
 4.  EnsureLobbyKV
-5.  Create ui.Server (with js, kv, nc — no lobby yet)
-6.  Start ui.Server (HTTP listener ready)
-7.  Open browser or webview at http://localhost:<port>
-    → Browser shows login page (player name prompt)
-8.  Player enters name → POST /login validates and triggers:
+5.  Branch on config.Web:
+    DEFAULT (native):                          --web (browser):
+      5a. runNative: build nativeui.App          5b. runWeb: create + Start ui.Server (HTTP listener)
+      5b. goroutine calls App.Run (opens the         open browser/webview at http://localhost:<port>
+          Gio window); app.Main() owns the
+          OS main thread
+      → native window shows the login screen     → browser shows the login page
+6.  Player enters name (login screen / POST /login): validate (config.ValidatePlayerName),
+    check lobby.IsNameInUse, then:
     a. Create lobby.Lobby with playerName as both playerID and name
     b. Start lobby (KV watcher, chat consumer, archive consumer, heartbeat)
     c. Wait for initial KV load
     d. Run cleanup.Run
-    e. Redirect to lobby page
-9.  Block on os.Signal (SIGINT / SIGTERM)
-10. On signal: cancel root context → all goroutines exit via ctx.Done()
-11. Close NATS connection
+    e. Move to the lobby screen
+7.  Block on window close / os.Signal (SIGINT / SIGTERM)
+8.  On exit: stop engine + lobby, cancel root context → goroutines exit, Drain/Close NATS
 12. Exit
 ```
 

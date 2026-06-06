@@ -24,6 +24,24 @@ func NewRow(width int) Row {
 	return Row{Cells: make([]Cell, width)}
 }
 
+// Clone returns a deep copy of the row with an independent Cells slice. Cell is
+// all scalar fields, so a slice copy is a full deep copy.
+func (r Row) Clone() Row {
+	cells := make([]Cell, len(r.Cells))
+	copy(cells, r.Cells)
+	return Row{Cells: cells}
+}
+
+// CloneRows returns deep copies of the given rows, safe to read concurrently
+// with mutation of the originals.
+func CloneRows(rows []Row) []Row {
+	out := make([]Row, len(rows))
+	for i, r := range rows {
+		out[i] = r.Clone()
+	}
+	return out
+}
+
 // Marshal encodes the row as JSON.
 func (r Row) Marshal() ([]byte, error) {
 	return json.Marshal(r)

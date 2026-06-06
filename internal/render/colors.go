@@ -155,12 +155,6 @@ func CellStyle(c game.Cell, localPlayerIdx int, showOutline bool) CellAppearance
 // PlayerColorRGBA returns the player outline color as an NRGBA (cycled).
 func PlayerColorRGBA(idx int) color.NRGBA { return nrgbaFromHex(PlayerColorHex(idx)) }
 
-// BoardBgRGBA returns the board background color.
-func BoardBgRGBA() color.NRGBA { return nrgbaFromHex(BoardBgHex) }
-
-// GridLineRGBA returns the grid-line color.
-func GridLineRGBA() color.NRGBA { return nrgbaFromHex(GridLineHex) }
-
 func nrgbaFromHex(h string) color.NRGBA {
 	r, g, b := hexToRGB(h)
 	return color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 0xff}

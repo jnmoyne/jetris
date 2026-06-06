@@ -435,7 +435,6 @@ func (e *Engine) spawnPiece(ctx context.Context) {
 }
 
 func (e *Engine) PlayerIdx() int       { return e.playerIdx }
-func (e *Engine) WasPlayer() bool      { return e.initialMode == ModePlayer }
 func (e *Engine) VisibleRowStart() int { return e.visibleRowStart }
 func (e *Engine) PlayfieldHeight() int { return e.playfield.Height }
 func (e *Engine) IsEliminated(id string) bool {

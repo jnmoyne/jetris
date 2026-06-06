@@ -65,7 +65,7 @@ func (a *App) initLobby(name string) error {
 	initCancel()
 
 	cleanCtx, cleanCancel := context.WithTimeout(lobbyCtx, 30*time.Second)
-	if err := cleanup.Run(cleanCtx, a.js, a.kv, a.nc, lb); err != nil {
+	if err := cleanup.Run(cleanCtx, a.js, a.kv, lb); err != nil {
 		log.Printf("cleanup warning: %v", err)
 	}
 	cleanCancel()

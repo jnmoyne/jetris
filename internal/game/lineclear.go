@@ -13,50 +13,6 @@ func CompletedRows(pf *Playfield) []int {
 	return rows
 }
 
-// ClearRows removes the specified rows and shifts everything above them down.
-// Returns the new playfield state with empty rows at the top.
-func ClearRows(pf *Playfield, rows []int) {
-	if len(rows) == 0 {
-		return
-	}
-	// Mark rows to clear
-	cleared := make(map[int]bool, len(rows))
-	for _, r := range rows {
-		cleared[r] = true
-	}
-
-	// Build new rows: copy non-cleared rows, add empty rows at top
-	var newRows []Row
-	for i := 0; i < pf.Height; i++ {
-		if !cleared[i] {
-			newRows = append(newRows, pf.Rows[i])
-		}
-	}
-	// Prepend empty rows
-	for len(newRows) < pf.Height {
-		newRows = append([]Row{NewRow(pf.Width)}, newRows...)
-	}
-	copy(pf.Rows[:], newRows)
-}
-
-// ScoreDelta returns the score awarded for clearing n lines at the given level.
-func ScoreDelta(linesCleared, level int) int {
-	var base int
-	switch linesCleared {
-	case 1:
-		base = 100
-	case 2:
-		base = 300
-	case 3:
-		base = 500
-	case 4:
-		base = 800
-	default:
-		return 0
-	}
-	return base * (level + 1)
-}
-
 // Level returns the current level derived from total lines cleared.
 func Level(totalLinesCleared int) int {
 	l := totalLinesCleared / 10

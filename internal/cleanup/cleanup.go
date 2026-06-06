@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
@@ -16,7 +15,7 @@ import (
 )
 
 // Run performs the full startup cleanup pass.
-func Run(ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue, nc *nats.Conn, lb *lobby.Lobby) error {
+func Run(ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue, lb *lobby.Lobby) error {
 	streamNames, err := natspkg.ListGameStreams(ctx, js)
 	if err != nil {
 		return err

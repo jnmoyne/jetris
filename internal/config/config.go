@@ -105,15 +105,13 @@ const (
 	VisibleRowStart = 4  // base visible row start (for cooperative; competitive adjusts per game)
 	StandardWidth   = 10
 
-	LobbyKVBucket          = "JETRICKS_LOBBY"
-	LobbyChatStream        = "JETRICKS_LOBBY_CHAT"
-	LobbyChatSubject       = "jetricks.lobby.chat"
-	ArchiveStream          = "JETRICKS_ARCHIVE"
-	ArchiveSubject         = "jetricks.archive"
-	LobbyChatMaxAge        = 7 * 24 * time.Hour
-	LobbyKVPresenceTTL     = 10 * time.Second
-	LobbyKVDeleteMarkerTTL = 60 * time.Second
-	PresenceHeartbeat      = 5 * time.Second
+	LobbyKVBucket     = "JETRICKS_LOBBY"
+	LobbyChatStream   = "JETRICKS_LOBBY_CHAT"
+	LobbyChatSubject  = "jetricks.lobby.chat"
+	ArchiveStream     = "JETRICKS_ARCHIVE"
+	ArchiveSubject    = "jetricks.archive"
+	LobbyChatMaxAge   = 7 * 24 * time.Hour
+	PresenceHeartbeat = 5 * time.Second
 )
 
 // CompetitiveVisibleRows returns the visible rows for a competitive game.
@@ -191,18 +189,6 @@ func CountdownSubject(gameID string) string {
 
 func ChatSubject(gameID string) string {
 	return "jetricks.game." + gameID + ".chat"
-}
-
-func CoopScoreSubject(gameID string) string {
-	return "jetricks.game." + gameID + ".score"
-}
-
-func CompetitiveScoreSubject(gameID, playerID string) string {
-	return "jetricks.game." + gameID + ".player." + playerID + ".score"
-}
-
-func PlayerStateSubject(gameID, playerID string) string {
-	return "jetricks.game." + gameID + ".player." + playerID + ".state"
 }
 
 func LobbyPlayerKey(playerID string) string {

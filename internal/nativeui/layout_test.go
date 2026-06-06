@@ -19,7 +19,7 @@ import (
 // newTestApp builds an App wired for headless layout: nil NATS handles (only
 // used by background goroutines, never by the layout code) and a real theme.
 func newTestApp() *App {
-	a := New(nil, nil, nil)
+	a := New(nil, nil)
 	a.th = material.NewTheme()
 	a.th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
 	return a

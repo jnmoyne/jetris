@@ -19,8 +19,6 @@ go get github.com/nats-io/nats.go
 go get github.com/nats-io/nats.go/jetstream
 go get github.com/synadia-io/orbit.go/natscontext
 go get github.com/synadia-io/orbit.go/jetstreamext
-go get github.com/synadia-io/orbit.go/counters
-go get github.com/synadia-io/orbit.go/natssysclient
 go get github.com/google/uuid
 go get gioui.org                                    # native UI (default front end)
 go get github.com/a-h/templ                         # web UI only (--web)
@@ -94,17 +92,15 @@ type GameMeta struct {
 **Constants:**
 ```go
 const (
-    TotalRows              = 32   // max for 4 players: 28 visible + 4 headroom
+    TotalRows              = 48   // max rows (supports competitive with many players: 24 + playerCount visible + 4 headroom)
     HeadroomRows           = 4
-    VisibleRows            = 24   // cooperative default (not used in competitive)
-    VisibleRowStart        = 4    // cooperative default (not used in competitive)
+    VisibleRows            = 24   // base visible rows (cooperative default)
+    VisibleRowStart        = 4    // base visible row start (cooperative; competitive adjusts per game)
     StandardWidth          = 10
     LobbyKVBucket          = "JETRICKS_LOBBY"
     LobbyChatStream        = "JETRICKS_LOBBY_CHAT"
     LobbyChatSubject       = "jetricks.lobby.chat"
     LobbyChatMaxAge        = 7 * 24 * time.Hour
-    LobbyKVPresenceTTL     = 10 * time.Second
-    LobbyKVDeleteMarkerTTL = 60 * time.Second
     ArchiveStream          = "JETRICKS_ARCHIVE"
     ArchiveSubject         = "jetricks.archive"
 
@@ -112,15 +108,23 @@ const (
 )
 
 // CompetitiveVisibleRows returns the number of visible rows for a competitive
-// game with the given player count: 24 + playerCount.
+// game with the given player count: VisibleRows + playerCount (each extra player
+// makes the board one row taller).
 func CompetitiveVisibleRows(playerCount int) int {
-    return 24 + playerCount
+    return VisibleRows + playerCount
+}
+
+// CompetitiveTotalRows returns the total rows (headroom + visible) for a
+// competitive game with the given player count.
+func CompetitiveTotalRows(playerCount int) int {
+    return HeadroomRows + CompetitiveVisibleRows(playerCount)
 }
 
 // CompetitiveVisibleRowStart returns the first visible row index for a competitive
-// game with the given player count: TotalRows - CompetitiveVisibleRows(playerCount).
+// game. Headroom is a constant, so this always equals HeadroomRows (4); the board
+// grows taller per player rather than shifting the visible window down.
 func CompetitiveVisibleRowStart(playerCount int) int {
-    return TotalRows - CompetitiveVisibleRows(playerCount)
+    return HeadroomRows
 }
 ```
 
@@ -129,8 +133,8 @@ func CompetitiveVisibleRowStart(playerCount int) int {
 type PlayerResult struct {
     PlayerID   string `json:"player_id"`
     Score      int    `json:"score"`
-    PieceCount int    `json:"piece_count"`
-    Winner     bool   `json:"winner"`
+    PieceCount uint64 `json:"piece_count"`
+    Winner     bool   `json:"winner,omitempty"`
 }
 
 type ArchiveRecord struct {
@@ -183,24 +187,15 @@ func CountdownSubject(gameID string) string
 func ChatSubject(gameID string) string
 // → "jetricks.game." + gameID + ".chat"
 
-func CoopScoreSubject(gameID string) string
-// → "jetricks.game." + gameID + ".score"
-
-func CompetitiveScoreSubject(gameID, playerID string) string
-// → "jetricks.game." + gameID + ".player." + playerID + ".score"
-
-func PlayerStateSubject(gameID, playerID string) string
-// → "jetricks.game." + gameID + ".player." + playerID + ".state"
-
 func LobbyPlayerKey(playerID string) string
 // → "players." + playerID
 
 func LobbyGameKey(gameID string) string
 // → "games." + gameID
-
-func ArchiveSubjectStr() string
-// → "jetricks.archive"
 ```
+
+The archive subject is the `ArchiveSubject` const (`"jetricks.archive"`), not a
+builder function.
 
 **Tests** (`internal/config/config_test.go`):
 - Verify every subject builder returns the exact expected string for a known gameID/playerID/row.
@@ -303,6 +298,7 @@ type Cell struct {
     AnchorRow   int       `json:"ar,omitempty"`
     AnchorCol   int       `json:"ac,omitempty"`
     PlayerIdx   int       `json:"pi,omitempty"` // which player's active piece (cooperative mode)
+    Adversarial bool      `json:"g,omitempty"`  // permanent adversarial cell (competitive shrink); row can never be completed
 }
 
 type Row struct {
@@ -325,19 +321,23 @@ Empty rows (all zero-value cells) marshal to minimal JSON. A row with all
 ```go
 type Playfield struct {
     Width   int
-    Rows    [TotalRows]Row
-    LastSeq [TotalRows]uint64
+    Height  int        // total rows (headroom + visible); set at construction
+    Rows    []Row      // length == Height
+    LastSeq []uint64   // length == Height
 }
 
+// NewPlayfield creates an empty playfield with the default TotalRows height.
 func NewPlayfield(width int) *Playfield
+
+// NewPlayfieldWithHeight creates an empty playfield with a specific height. The
+// engine sizes playfields at runtime via this constructor: cooperative boards are
+// width = playerCount × StandardWidth and height = HeadroomRows + VisibleRows;
+// competitive boards are width = StandardWidth and height =
+// CompetitiveTotalRows(playerCount).
+func NewPlayfieldWithHeight(width, height int) *Playfield
 
 // Apply updates row at rowIndex with the decoded row and records the sequence.
 func (pf *Playfield) Apply(rowIndex int, row Row, seq uint64)
-
-// ActivePiece scans all rows for cells with Active==true and reconstructs
-// the Piece from the first active cell found (using its AnchorRow, AnchorCol,
-// Orientation, and PieceType fields). Returns nil if no active piece.
-func (pf *Playfield) ActivePiece() *Piece
 
 // ActivePieceForPlayer returns the active piece belonging to the given playerIdx
 // (matching Cell.PlayerIdx). Used in cooperative mode where two players' active
@@ -345,16 +345,13 @@ func (pf *Playfield) ActivePiece() *Piece
 // with that playerIdx is present.
 func (pf *Playfield) ActivePieceForPlayer(playerIdx int) *Piece
 
-// SetActivePieceForPlayer / LockActivePieceForPlayer / ClearActiveCellsForPlayer
-// mutate the playfield in place. They are retained for unit-test setup only —
-// the engine MUST NOT call them. See the "State mutation invariant" note at
-// the start of Phase 3.
+// SetActivePieceForPlayer / ClearActiveCellsForPlayer mutate the playfield in
+// place (SetActivePieceForPlayer clears the player's old active cells first).
+// They are used by ProjectShrink (to probe candidate piece placements) and by
+// unit-test setup; the engine itself still mutates e.playfield only via Apply.
+// See the "State mutation invariant" note at the start of Phase 3.
 func (pf *Playfield) SetActivePieceForPlayer(p Piece, playerIdx int)
 func (pf *Playfield) ClearActiveCellsForPlayer(playerIdx int)
-func (pf *Playfield) LockActivePieceForPlayer(playerIdx int)
-
-// Snapshot returns a copy of LastSeq — used to build CAS headers for a publish.
-func (pf *Playfield) Snapshot() [TotalRows]uint64
 
 // Projection helpers compute the row payloads that should be published to
 // NATS WITHOUT mutating pf. The engine uses these to publish state changes;
@@ -363,15 +360,16 @@ func (pf *Playfield) ProjectMove(affectedRows []int, newPiece *Piece, playerIdx 
 func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row
 func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row
-func (pf *Playfield) ProjectShrink(rowsToAdd int, causerIdx int) []Row
+func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Row, bool)
 ```
 
-`ActivePiece()` implementation: iterate rows 0..27, for each row iterate cells. The
-first cell with `Active == true` gives you the anchor, orientation, and type. Return
-immediately — don't scan further. The piece type comes from PieceType if Active (note:
-the Cell.PieceType field is reused for active pieces; it holds the type of the falling
-piece, not a locked piece). If Occupied==true and Active==false, it's a locked cell,
-skip. If Active==true, it's the falling piece cell.
+`ActivePieceForPlayer(playerIdx)` implementation: iterate rows `0..Height-1`, for each
+row iterate cells. The first cell with `Active == true` and matching `PlayerIdx` gives
+you the anchor, orientation, and type. Return immediately — don't scan further. The
+piece type comes from PieceType if Active (note: the Cell.PieceType field is reused for
+active pieces; it holds the type of the falling piece, not a locked piece). If
+Occupied==true and Active==false, it's a locked cell, skip. If Active==true, it's a
+falling piece cell.
 
 #### `internal/game/rotation.go`
 
@@ -416,20 +414,21 @@ func CanPlace(p Piece, pf *Playfield) bool
 // own active cells are excluded from the collision check.
 func CanPlaceCoop(p Piece, pf *Playfield, ownPlayerIdx int) bool
 
-// WouldCollide returns true if moving p by (dRow, dCol) would result
-// in an invalid placement.
-func WouldCollide(p Piece, pf *Playfield, dRow, dCol int) bool
-
 // HardDropDestination returns the lowest valid position for p by
 // repeatedly attempting dRow=+1 until collision.
 func HardDropDestination(p Piece, pf *Playfield) Piece
+
+// HardDropDestinationCoop is like HardDropDestination but uses CanPlaceCoop so
+// the other player's active cells are treated as obstacles.
+func HardDropDestinationCoop(p Piece, pf *Playfield, ownPlayerIdx int) Piece
 ```
 
-Bounds: row in [0, TotalRows), col in [0, pf.Width).
+Bounds: row in [0, pf.Height), col in [0, pf.Width).
 Collision: any cell at that (row, col) has Occupied==true and Active==false.
 
-`HardDropDestination`: start from p's current position. Move down one row at a time
-using `WouldCollide(p, pf, 1, 0)`. When that would collide, return the current p.
+`HardDropDestination`: start from p's current position. Move down one row at a time,
+checking `CanPlace` on the piece moved down one row. When the moved-down piece cannot
+be placed, return the current p.
 
 #### `internal/game/lineclear.go`
 
@@ -438,10 +437,9 @@ using `WouldCollide(p, pf, 1, 0)`. When that would collide, return the current p
 // and Active==false (fully locked, no active piece cells).
 func CompletedRows(pf *Playfield) []int
 
-// ScoreDelta: see jetricks-gameplays.md for mode-specific scoring.
-//   Cooperative: playerCount per line cleared.
-//   Competitive: simple line count (score = linesCleared).
-func ScoreDelta(linesCleared, level int) int
+// Mode scoring is computed inline in the lock-in handler (consumer.go
+// handleLockIn): cooperative adds playerCount×lines, competitive adds the line
+// count. There is no separate guideline-score helper. See jetricks-gameplays.md.
 
 // Level: increases every 10 lines cleared.
 //   level = totalLinesCleared / 10  (capped at 19 for the speed curve)
@@ -464,17 +462,13 @@ Gravity intervals (approximate, Tetris Guideline):
 - `Cells()` for every piece type and orientation returns the correct cell coordinates.
 - `CanPlace` rejects pieces out of bounds or overlapping locked cells.
 - `CanPlaceCoop` rejects pieces overlapping locked cells or the other player's active cells, but allows overlapping own active cells.
-- `WouldCollide` correctly detects wall and cell collisions.
 - `HardDropDestination` lands on the correct row with a tower of occupied cells.
 - `Rotate` applies SRS kicks correctly — at minimum test all J/L/S/T/Z transitions plus I.
-- `CompletedRows` correctly identifies full rows.
-- Competitive: `ScoreDelta(1)==1`, `ScoreDelta(4)==4` (simple line count). Cooperative: `ScoreDelta` returns `playerCount` per line. See `jetricks-gameplays.md`.
+- `CompletedRows` correctly identifies full rows. (Mode scoring is not a `game` function; it is computed inline in `handleLockIn` — competitive adds the line count, cooperative adds `playerCount` per line. See `jetricks-gameplays.md`.)
 - `GravityInterval(0)==800ms`, `GravityInterval(19)==33ms`.
 - `Row.Marshal()` and `UnmarshalRow()` round-trip correctly for occupied, active, and empty cells.
-- `ActivePiece()` returns nil for an empty playfield and the correct Piece when active cells are present.
-- `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces.
+- `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces (and nil when no active piece for that player is present).
 - `SetActivePieceForPlayer()` clears only the matching player's active cells before placing new ones, leaving the other player's active cells intact.
-- `LockActivePieceForPlayer()` locks only the matching player's active cells.
 - `Playfield.Apply()` updates both Rows and LastSeq.
 
 ---
@@ -594,8 +588,7 @@ jetstream.StreamConfig{
     Name:               config.GameStream(gameID),
     Subjects:           []string{config.GameSubjectFilter(gameID)},
     AllowAtomicPublish: true,  // required for jetstreamext batch publish
-    AllowMsgCounter:    true,  // required for orbit.go/counters
-    MaxAge:             0,     // no age limit (archived games kept indefinitely)
+    AllowDirect:        true,  // direct get for fast last-message-per-subject fetches
     Storage:            jetstream.FileStorage,
     Retention:          jetstream.LimitsPolicy,
 }
@@ -636,18 +629,19 @@ and filter by prefix.
 
 ```go
 func EnsureLobbyKV(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
+    // No bucket-level TTL — game listings must persist indefinitely. Player
+    // presence entries are kept fresh by heartbeats; stale entries are detected
+    // by comparing LastSeen timestamps in the presence logic, not by KV TTL.
     return js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-        Bucket:              config.LobbyKVBucket,
-        TTL:                 config.LobbyKVPresenceTTL,
-        DeleteMarkerTTL:     config.LobbyKVDeleteMarkerTTL,
-        Storage:             jetstream.FileStorage,
+        Bucket:  config.LobbyKVBucket,
+        Storage: jetstream.FileStorage,
     })
 }
 ```
 
-Note: `TTL` here is the per-key default TTL for presence entries. Individual `Put`
-calls can override per-key TTL if the API supports it; otherwise this bucket-level TTL
-applies globally and heartbeats refresh before expiry.
+Note: the bucket has no TTL or delete-marker TTL. Presence staleness is handled
+in application logic (`LastSeen` timestamps + `pruneStalePresence`) rather than by
+the KV layer, so a heartbeat refresh simply rewrites the entry.
 
 #### `consumer.go`
 
@@ -808,7 +802,7 @@ var (
 **Integration tests** (`internal/nats/nats_test.go`):
 - `EnsureGameStream` creates a stream that accepts atomic batch publishes.
 - `EnsureLobbyChatStream` creates a stream with correct MaxAge.
-- `EnsureLobbyKV` creates a bucket; a key expires after TTL.
+- `EnsureLobbyKV` creates a bucket; a `Put` value is readable back via `Get`.
 - `PublishMoveAtomically` succeeds on first publish, returns `ErrCASFailure` when a
   second client has already updated a row's sequence.
 - `SealGameStream` prevents further publishes.
@@ -843,10 +837,6 @@ rapid inputs may therefore validate against the same pre-echo playfield; the
 second publish will fail per-subject CAS (`wrong last msg seq for subject`)
 and be dropped, surfaced as a `CASFlash` event for visual feedback. This is
 intentional and accepted as the cost of the invariant.
-
-The legacy mutators (`SetActivePieceForPlayer`, `LockActivePieceForPlayer`,
-`ClearActiveCellsForPlayer`, `ClearRows`) remain on `Playfield` for unit-test
-setup in `internal/game` only. The engine never calls them.
 
 ### Atomic batch publish + per-subject CAS
 
@@ -987,31 +977,42 @@ const (
     UpdateScore
     UpdateLevel
     UpdateGameStatus
+    UpdateCountdown
+    UpdatePlayerEliminated // competitive: a player was eliminated
+    UpdateCASFlash         // a CAS failure flash should be rendered
 )
 
 type EngineUpdate struct {
-    Kind        UpdateKind
-    ChangedRows []int
-    OpponentID  string // for UpdateOpponentField, UpdateOpponentShrink: which opponent
-    Score       int
-    Level       int
-    GameStatus  string
+    Kind               UpdateKind
+    ChangedRows        []int
+    Score              int
+    Level              int
+    GameStatus         string
+    Countdown          int      // seconds remaining (0 = GO!)
+    Won                bool     // competitive: true if this player won
+    EliminatedPlayerID string   // competitive: which player was eliminated
+    OpponentID         string   // for UpdateOpponentField: which opponent's board changed
+    FlashCells         [][2]int // cells to flash (UpdateCASFlash)
+    FlashPlayerIdx     int      // player index for flash color
 }
 
 type EventKind string
 const (
-    EventLineClear     EventKind = "line_clear"
-    EventShrink        EventKind = "shrink"
-    EventGameOver      EventKind = "game_over"
+    EventLineClear EventKind = "line_clear"
+    EventShrink    EventKind = "shrink"
+    EventGameOver  EventKind = "game_over"
 )
 
 type GameEvent struct {
     Kind         EventKind `json:"kind"`
     PlayerID     string    `json:"player_id"`
     LinesCleared int       `json:"lines_cleared,omitempty"`
+    TargetPlayer string    `json:"target_player,omitempty"`
     RowsRemoved  int       `json:"rows_removed,omitempty"`
+    ClearedRows  []int     `json:"cleared_rows,omitempty"`
     Score        int       `json:"score,omitempty"`          // for EventGameOver: player's final score
-    PieceCount   int       `json:"piece_count,omitempty"`    // for EventGameOver: total pieces placed
+    PieceCount   uint64    `json:"piece_count,omitempty"`    // for EventGameOver: total pieces placed
+    PlayerIdx    int       `json:"player_idx,omitempty"`     // causer's index for EventShrink
 }
 
 type MoveType int
@@ -1036,33 +1037,53 @@ const (
 )
 
 type Engine struct {
-    gameID           string
-    playerID         string
-    gameMode         config.GameMode
-    mode             Mode
-    playerIdx        int              // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
-    visibleRowStart  int              // first visible row index; cooperative: 4, competitive: CompetitiveVisibleRowStart(playerCount)
-    playfield        *game.Playfield  // in cooperative mode: single shared playfield (playerCount × StandardWidth)
-    opponentPlayfields map[string]*game.Playfield // keyed by opponent playerID; nil in cooperative mode
-    seq              *rng.Sequence
-    pieceIdx         uint64
-    metaSeq          uint64           // last known sequence of meta message
-    Updates          chan EngineUpdate
-    js               jetstream.JetStream
-    cancelFn         context.CancelFunc
-    moves            chan MoveType     // internal move dispatch channel (buf 8)
-    rowUpdated       chan struct{}     // CAS notification channel (buf 1)
+    gameID      string
+    playerID    string
+    gameMode    config.GameMode
+    mode        Mode
+    initialMode Mode // original mode at creation (ModePlayer or ModeSpectator)
+    playerIdx   int  // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
+    playerCount int  // number of players in the game
+
+    mu        sync.Mutex
+    playfield *game.Playfield // cooperative: single shared wide playfield (playerCount × StandardWidth)
+
+    opponentPlayfields map[string]*game.Playfield // keyed by opponent playerID (competitive)
+    opponentPlayerID   string                     // single known opponent (2-player join); others discovered via roster
+
+    seq      *rng.Sequence
+    pieceIdx uint64
+    metaSeq  uint64 // last known sequence of meta message
+
+    score             int
+    totalLines        int
+    level             int
+    hadActivePiece    bool
+    eliminatedPlayers map[string]bool // players who have topped out (competitive)
+    visibleRowStart   int             // first visible row index; cooperative: 4, competitive: CompetitiveVisibleRowStart(playerCount)
+
+    Updates        chan EngineUpdate
+    OnGameFinished func() // called after game transitions to finished (for archiving)
+
+    js         jetstream.JetStream
+    ctx        context.Context
+    cancelFn   context.CancelFunc
+    moves      chan MoveType // internal move dispatch channel (buf 8)
+    rowUpdated chan struct{} // CAS notification channel (buf 1)
 }
 
+// New initialises fields and channels; it does NOT take a context — Start()
+// creates the context. opponentPlayerID is a single known opponent (for a
+// 2-player join); additional competitive opponents are discovered dynamically
+// via the roster consumer. playerIdx is the value returned by lobby.JoinGame.
+// New returns *Engine only (no error); Start() does the fetching and can fail.
 func New(
-    ctx context.Context,
     js jetstream.JetStream,
-    gameID, playerID string,
-    opponentPlayerIDs []string, // empty for spectator/coop; all opponents in competitive mode
+    gameID, playerID, opponentPlayerID string,
     gameMode config.GameMode,
     mode Mode,
-    playerCount int,
-) (*Engine, error)
+    playerIdx int,
+) *Engine
 ```
 
 `New()` does NOT call `FetchGameMeta` or `FetchPlayfieldState` — that happens in
@@ -1086,9 +1107,12 @@ func (e *Engine) dispatch(m MoveType) {
     }
 }
 
-func (e *Engine) transitionToSpectator() {
-    e.mode = ModeSpectator
-    // gravity goroutine watches mode and exits; move dispatcher checks mode
+func (e *Engine) transitionToSpectator(won bool) {
+    e.mode = ModeGameOver
+    e.emitUpdate(EngineUpdate{Kind: UpdateGameOver, Won: won})
+    // It does NOT stop gravity/moves itself: those goroutines self-exit when
+    // e.mode != ModePlayer. The consumers (rows/events/meta/countdown/roster)
+    // keep running so the now-spectating player still sees the board update.
 }
 ```
 
@@ -1099,34 +1123,41 @@ func (e *Engine) transitionToSpectator() {
 ```go
 func (e *Engine) Start() error {
     ctx, cancel := context.WithCancel(context.Background())
+    e.ctx = ctx
     e.cancelFn = cancel
 
     // 1. Fetch meta to get seed and pieceIdx
     meta, metaSeq, err := natspkg.FetchGameMeta(ctx, e.js, e.gameID)
     if err != nil { cancel(); return err }
+    e.playerCount = meta.PlayerCount
     // Set visibleRowStart based on game mode
-    if e.gameMode == config.ModeCooperative {
-        e.visibleRowStart = config.VisibleRowStart // 4
-    } else {
+    if e.gameMode == config.ModeCompetitive {
         e.visibleRowStart = config.CompetitiveVisibleRowStart(meta.PlayerCount)
+    } else {
+        e.visibleRowStart = config.VisibleRowStart // 4
     }
 
-    // In cooperative mode: creator uses seed, joiner uses seed+1
-    // Each player has their own independent RNG sequence and pieceIdx
+    // BOTH modes seed the RNG with meta.Seed — there is no seed+1. playerIdx was
+    // supplied by the caller (lobby.JoinGame's return value) at construction, so
+    // no creator/joiner discovery is needed here.
     if e.gameMode == config.ModeCooperative {
-        if e.playerID == meta.CreatorID {
-            e.seq = rng.New(meta.Seed)
-            e.playerIdx = 0
-        } else {
-            e.seq = rng.New(meta.Seed + 1)
-            e.playerIdx = 1
-        }
-        e.pieceIdx = 0 // each player tracks independently; recover from own playfield state
-        // Single shared playfield of width playerCount × StandardWidth
-        e.playfield = game.NewPlayfield(meta.PlayerCount * config.StandardWidth)
+        e.seq = rng.New(meta.Seed)
+        e.pieceIdx = 0
+        // Single shared wide playfield with the standard visible height. Both
+        // players draw from the SAME sequence; their pieces differ only because
+        // spawnPiece offsets the spawn column by playerIdx*StandardWidth.
+        e.playfield = game.NewPlayfieldWithHeight(
+            meta.PlayerCount*config.StandardWidth,
+            config.HeadroomRows+config.VisibleRows,
+        )
     } else {
         e.seq = rng.New(meta.Seed)
         e.pieceIdx = meta.PieceIdx
+        // Competitive: taller board (extra rows per player).
+        e.playfield = game.NewPlayfieldWithHeight(
+            config.StandardWidth,
+            config.CompetitiveTotalRows(meta.PlayerCount),
+        )
     }
     e.metaSeq = metaSeq
 
@@ -1141,38 +1172,36 @@ func (e *Engine) Start() error {
         e.playfield.Apply(r.Row, data, r.Seq)
         if r.Seq > maxSeq { maxSeq = r.Seq }
     }
+    e.hadActivePiece = e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
 
-    // 3. Start row consumer from maxSeq+1
-    // In cooperative mode: ONE consumer on the shared subjects (no player token)
-    // In competitive mode: consumer on own player-scoped subjects
-    go e.runConsumer(ctx, e.playfield, e.rowFilterSubject(), "", maxSeq+1)
+    // 3. Start own row consumer from maxSeq+1. The 3rd arg of runConsumer is a
+    // FILTER SUBJECT (coop: shared rows; competitive: own player-scoped rows);
+    // the 4th is the opponentID ("" for our own board); the last is isOpponent.
+    go e.runConsumer(ctx, e.playfield, e.rowFilterSubject(), "", maxSeq+1, false)
 
-    // 4. Competitive mode only: fetch and start one consumer per opponent
-    // In cooperative mode there is no opponent consumer — both players use the same shared subjects
-    if e.gameMode == config.ModeCompetitive && len(e.opponentPlayerIDs) > 0 {
-        e.opponentPlayfields = make(map[string]*game.Playfield, len(e.opponentPlayerIDs))
-        for _, oppID := range e.opponentPlayerIDs {
-            oppPf := game.NewPlayfield(config.StandardWidth)
-            e.opponentPlayfields[oppID] = oppPf
-            // Opponents are always competitive — build their subjects directly.
-            oppSubjects := make([]string, oppPf.Height)
-            for i := range oppSubjects {
-                oppSubjects[i] = config.CompetitiveRowSubject(e.gameID, oppID, i)
-            }
-            oppRows, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppSubjects)
-            if err != nil { cancel(); return err }
-            var oppMaxSeq uint64
-            for _, r := range oppRows {
-                data, _ := game.UnmarshalRow(r.Payload)
-                oppPf.Apply(r.Row, data, r.Seq)
-                if r.Seq > oppMaxSeq { oppMaxSeq = r.Seq }
-            }
-            go e.runConsumer(ctx, oppPf, config.CompetitiveRowSubjectFilter(e.gameID, oppID), oppID, oppMaxSeq+1)
+    // 4. Competitive: start a consumer for the known opponent (if any) and run a
+    // roster consumer that DISCOVERS the rest dynamically (one consumer per
+    // opponent is started lazily by startOpponentConsumer). Cooperative has no
+    // opponent consumers — both players share the same row subjects.
+    if e.gameMode == config.ModeCompetitive {
+        if e.opponentPlayerID != "" {
+            e.startOpponentConsumer(ctx, e.opponentPlayerID)
         }
+        go e.runRosterConsumer(ctx)
     }
 
-    // 5. Start move processor and gravity if playing
+    // 5. Start the per-concern consumers (events, meta, countdown).
+    go e.runEventsConsumer(ctx)
+    go e.runMetaConsumer(ctx)
+    go e.runCountdownConsumer(ctx)
+
+    // 6. Start move processor and gravity if playing. If the game is already in
+    // progress and we have no active piece yet, spawn one immediately.
     if e.mode == ModePlayer {
+        if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil &&
+            meta.Status == config.GameStatusInProgress {
+            e.spawnPiece(ctx)
+        }
         go e.runMoves(ctx)
         go e.runGravity(ctx)
     }
@@ -1180,61 +1209,73 @@ func (e *Engine) Start() error {
 }
 ```
 
-`runConsumer(ctx, pf, playerID, startSeq)`:
-- Creates an ordered consumer via `natspkg.NewOrderedConsumer` with
-  `FilterSubject = "jetricks.game.<id>.player.<playerID>.playfield.row.>"` and
-  `StartSeq = startSeq`.
-- Also subscribes to the events subject for the same stream — use a second consumer
-  or filter subject wildcards to also receive events. Simplest: one consumer with
-  filter `"jetricks.game.<id>.>"` scoped to own rows + events.
-  
-  **Better approach:** one consumer per concern:
-  - Own row consumer: filter `jetricks.game.<id>.player.<ownID>.playfield.row.>`
-  - Events consumer: filter `jetricks.game.<id>.events` (shared, one instance)
-  
-  Start both goroutines. The events goroutine handles `EventShrink` and `EventGameOver`.
+The engine runs ONE ordered consumer per concern, not a single wildcard consumer:
 
-**Lock-in detection logic** (in own row consumer, after each `pf.Apply` call):
+- **Own row consumer** (`runConsumer`): filter `rowFilterSubject()` — coop's shared
+  `…playfield.row.>` or competitive's own `…player.<ownID>.playfield.row.>`.
+- **Opponent row consumers** (competitive only): one `runConsumer` per discovered
+  opponent, filter `…player.<oppID>.playfield.row.>`, started by
+  `startOpponentConsumer`.
+- **Roster consumer** (competitive only, `runRosterConsumer`): filter
+  `…roster.*` — discovers opponents (including late joiners) and spins up their
+  row consumers.
+- **Events consumer** (`runEventsConsumer`): filter `…events` — handles
+  `EventLineClear`, `EventShrink`, and `EventGameOver`.
+- **Meta consumer** (`runMetaConsumer`): filter `…meta` — spawns the first piece
+  when the game transitions to `in_progress`.
+- **Countdown consumer** (`runCountdownConsumer`): filter `…countdown`.
+
+`runConsumer(ctx, pf, filterSubject, opponentID string, startSeq uint64, isOpponent bool)`:
+the 3rd argument is a FILTER SUBJECT (not a playerID), the 4th tags emitted
+`UpdateOpponentField` events, and `isOpponent` selects whether this consumer runs
+lock-in detection (own board) or just re-renders the opponent's board.
+
+**Lock-in detection logic** lives in the own row consumer, run after each
+`pf.Apply` call (under `e.mu`): it compares "had an active piece" against "has an
+active piece for our `playerIdx`", and when the piece's last active cell
+disappears it calls `handleLockIn(ctx)`. `handleLockIn` runs the completed-row
+check and scoring, increments `pieceIdx`, fires `publishPieceIdxUpdate`, and (if
+we are a player) spawns the next piece via `spawnPiece`, which calls
+`handleTopOut` if the new piece cannot be placed.
+
+`handleTopOut` only publishes an `EventGameOver` (with `Score` and `PieceCount`)
+and transitions this engine to spectator (`transitionToSpectator(false)`); in
+COOPERATIVE mode it also kicks off `transitionGameToFinished`. It does NOT publish
+the archive record, delete the stream, or remove the KV entry — that happens later
+in `archive.ArchiveAndCleanup`, wired via `engine.OnGameFinished` and run ~5s after
+the finish transition. Competitive finishing is decided by the last player standing
+in `handleGameEvent` (which also handles the all-eliminated draw).
 
 ```go
-prevHadActive := hadActivePiece   // saved from previous message
-hadActivePiece = pf.ActivePiece() != nil
-if prevHadActive && !hadActivePiece {
-    // lock-in detected
-    e.pieceIdx++
-    go e.publishPieceIdxUpdate(e.pieceIdx)  // non-blocking meta update
-    nextPiece := e.seq.Piece(e.pieceIdx)
-    // spawn nextPiece at top of playfield
-    e.spawnPiece(ctx, nextPiece)
-    // check if newly spawned piece can be placed
-    active := pf.ActivePiece()
-    if active != nil && !game.CanPlace(*active, pf) {
-        // handleTopOut publishes EventGameOver with Score and PieceCount,
-        // CAS-transitions meta to "finished", publishes ArchiveRecord to
-        // JETRICKS_ARCHIVE stream, deletes the game stream, and removes
-        // the KV entry.
-        e.handleTopOut(ctx)
-    }
+hasActive := pf.ActivePieceForPlayer(e.playerIdx) != nil
+if e.hadActivePiece && !hasActive {
+    e.handleLockIn(ctx) // completed-row check, scoring, pieceIdx++, spawn next
 }
+e.hadActivePiece = hasActive
 ```
 
-`publishPieceIdxUpdate`: read-then-CAS update to meta. On CAS failure (other engine
-beat us), read new meta — the value is correct (both incremented from same base, one
-wins). This is fire-and-forget; log errors but don't block the consumer goroutine.
+`publishPieceIdxUpdate`: in cooperative mode this is a no-op (each player tracks
+its own `pieceIdx` locally and never writes it to meta). In competitive mode it
+does a read-then-CAS update of `meta.PieceIdx`. This is fire-and-forget (called
+via `go`); errors are ignored rather than blocking the consumer goroutine.
 
 **Shrink event handling** (events consumer):
 ```go
 case EventShrink:
     if ev.PlayerID != e.playerID {
-        // Shrink goes to ALL opponents — no TargetPlayer field needed
-        go e.applyOpponentShrink(ctx, ev.RowsRemoved)
+        // Every line clear shrinks ALL other players, so the shrink is applied
+        // by any engine that didn't publish it (the GameEvent.TargetPlayer field
+        // exists but is unused for shrinks).
+        go e.applyOpponentShrink(ctx, ev.RowsRemoved, ev.PlayerIdx)
     }
 ```
 
-`applyOpponentShrink(n)`: removes the top `n` visible rows from own playfield by
-shifting all rows down by n and publishing the resulting row states as an atomic batch.
-Use `e.playfield.Snapshot()` for CAS expectations. On failure, retry with updated
-snapshot.
+`applyOpponentShrink(n, causerIdx)`: calls `e.playfield.ProjectShrink(n, causerIdx, e.playerIdx)`,
+which shifts the locked stack up by `n`, adds `n` permanent adversarial garbage rows at the
+bottom, holds our own falling piece in place (lifting it only as far as the rising stack/garbage
+forces it, 0..n rows), and returns a `topOut` flag. The projected rows are published NoCAS
+(authoritative, like line clears), followed by a full-board re-render. When `topOut` is true — the
+piece was squeezed off the top — it calls `handleTopOut`.
 
 #### `gravity.go`
 
@@ -1249,16 +1290,15 @@ func (e *Engine) runGravity(ctx context.Context) {
             return
         case <-timer.C:
             if e.mode != ModePlayer { return }
-            if err := e.attemptMove(ctx, MoveDown); err != nil {
-                if errors.Is(err, ErrLockIn) {
-                    // lock-in was handled inside attemptMove
-                }
-                // ErrMoveDropped: gravity tick was dropped, piece already moved
-            }
-            // Recompute level from playfield in cooperative mode
+            // internal=true: gravity is engine-driven, not player input. In coop
+            // this routes to merge-retry on CAS conflict (the piece keeps
+            // falling); it flashes only if the tick is ultimately dropped. The
+            // return value is ignored — lock-in is handled by the consumer's
+            // lock-in detector, not here.
+            _ = e.attemptMove(ctx, MoveDown, true)
+            // Recompute level from the running line total in cooperative mode.
             if e.gameMode == config.ModeCooperative {
-                cleared := countLockedRows(e.playfield) // total filled rows estimate
-                newLevel := game.Level(cleared)
+                newLevel := game.Level(e.totalLines)
                 if newLevel != level {
                     level = newLevel
                 }
@@ -1279,60 +1319,59 @@ func (e *Engine) runMoves(ctx context.Context) {
             return
         case move := <-e.moves:
             if e.mode != ModePlayer { continue }
-            _ = e.attemptMove(ctx, move)
+            // Player input — drop+flash on CAS failure (internal=false).
+            _ = e.attemptMove(ctx, move, false)
         }
     }
 }
 
-func (e *Engine) attemptMove(ctx context.Context, move MoveType) error {
-    p := e.playfield.ActivePiece()
-    if p == nil { return nil }
-
-    if move == MoveHardDrop {
-        return e.PublishHardDrop(ctx)
+// attemptMove takes the lock, then dispatches to the mode-specific handler.
+// internal=true marks an engine-driven move (gravity ticks); in coop those use
+// merge-retry on CAS failure so the piece keeps falling under contention.
+func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
+    e.mu.Lock()
+    if e.gameMode == config.ModeCooperative {
+        return e.attemptMoveCoop(ctx, move, internal)
     }
-
-    var newPiece game.Piece
-    var valid bool
-
-    switch move {
-    case MoveLeft:
-        newPiece = *p; newPiece.Col--
-        valid = game.CanPlace(newPiece, e.playfield)
-    case MoveRight:
-        newPiece = *p; newPiece.Col++
-        valid = game.CanPlace(newPiece, e.playfield)
-    case MoveDown:
-        newPiece = *p; newPiece.Row++
-        valid = game.CanPlace(newPiece, e.playfield)
-    case RotateCW:
-        newPiece, valid = game.Rotate(*p, true, e.playfield)
-    case RotateCCW:
-        newPiece, valid = game.Rotate(*p, false, e.playfield)
-    }
-
-    if !valid {
-        if move == MoveDown {
-            // Gravity blocked: lock in piece
-            return e.lockIn(ctx, *p)
-        }
-        return ErrMoveDropped
-    }
-
-    updates := e.buildMoveUpdates(*p, newPiece)
-    return e.Publish(ctx, updates, move)
+    return e.attemptMoveStandard(ctx, move, internal)
 }
 ```
 
-`buildMoveUpdates(from, to Piece) []natspkg.RowUpdate`: determine which rows changed
-between the two piece positions, compute new row states (clear Active from old cells,
-set Active on new cells), and build RowUpdate entries with each row's `Subject` from
-the engine's mode-aware `rowSubject(row)` helper and `ExpectLastSeq` from
-`e.playfield.LastSeq[row]`.
+`attemptMoveStandard` / `attemptMoveCoop` (both enter holding `e.mu` and release
+it before publishing):
 
-`lockIn(ctx, p Piece)`: publish the rows with the piece's active cells converted to
-occupied (Active→false, Occupied→true), then check for completed rows and publish the
-line-clear row shift if any. In competitive mode, publish a shrink event (with `PlayerID` set to this player) for every line clear (1+ lines; rows added = lines cleared). All other players apply the shrink to their own playfields. See `jetricks-gameplays.md` for shrink rules.
+- Read the active piece via `e.playfield.ActivePieceForPlayer(e.playerIdx)`;
+  return if nil.
+- `MoveHardDrop` delegates to `publishHardDrop` / `publishHardDropCoop`.
+- For directional moves, compute `newPiece` and validate with `CanPlace`
+  (standard) / `CanPlaceCoop` (coop); rotations use `Rotate` / `RotateCoop`.
+- If a `MoveDown` is invalid, the piece locks: project the lock with
+  `ProjectLock(affected, e.playerIdx)` and publish it. Competitive publishes
+  NoCAS; coop uses merge-retry. (Coop additionally distinguishes "blocked by the
+  other player's active piece" — `CanPlace` would still succeed — and in that
+  case does NOT lock; it waits for the next gravity tick.)
+- A valid move projects with `ProjectMove(affected, &newPiece, e.playerIdx)` and
+  publishes via `publishProjectedRows` (competitive / coop player input, drop+flash)
+  or `publishProjectedRowsWithMergeRetry` (coop gravity). `bottomFirst` is set for
+  downward moves so a single-row horizontal-I never transiently vanishes mid-relocate.
+
+There is no `buildMoveUpdates` or `lockIn` helper; row payloads come from the
+`Project*` methods, and `buildBatchUpdates` turns a projection map into a
+`[]natspkg.RowUpdate` with per-subject CAS expectations sourced from
+`e.playfield.LastSeq[r]`. Line-clear detection and the cleared-row shift live in
+`consumer.go`'s `handleLockIn` (fired by the row consumer's lock-in detector),
+not on the move side. In competitive mode `handleLockIn` publishes an `EventShrink`
+(with `PlayerID`/`PlayerIdx` set to this player) for every line clear (1+ lines;
+rows added = lines cleared); all other players apply the shrink to their own
+playfields. See `jetricks-gameplays.md` for shrink rules.
+
+Hard drops compute the destination ONCE (`HardDropDestination` /
+`HardDropDestinationCoop`) and project it with `ProjectHardDrop(...,
+lockOnLand=true)`; there is no recompute-and-retry-until-it-lands loop.
+Competitive publishes the landing NoCAS (`applyBottomFirst=true`); coop uses
+merge-retry (`bottomFirst=true`). In coop, if the destination is only blocked by
+the OTHER player's active piece (not locked cells/bounds), the drop lands as an
+active piece (`lockOnLand=false`) and gravity retries.
 
 In **cooperative** mode the board is shared, so a line clear must repaint every
 player's board. The clearing engine emits a full-board re-render itself; every
@@ -1345,68 +1384,34 @@ otherwise leave stale rows on the other player's board. The same full-board
 re-render is emitted after a competitive shrink (`applyOpponentShrink`), which also
 republishes the whole visible range.
 
-#### `cas.go`
+#### Publish & CAS helpers (`engine.go` / `move.go`)
 
-```go
-var (
-    ErrMoveDropped = errors.New("move dropped")
-    ErrLockIn      = errors.New("piece locked in")
-)
+There is no separate CAS source file. There is no `Publish`, `PublishHardDrop`,
+`ErrMoveDropped`, or `ErrLockIn`, and there is no wait-on-`rowUpdated`-then-retry
+loop. All CAS logic lives in the publish helpers in `engine.go` and the hard-drop
+helpers in `move.go`:
 
-func (e *Engine) Publish(ctx context.Context, updates []natspkg.RowUpdate, move MoveType) error {
-    // updates already carry their row Subject, built by the engine's
-    // mode-aware rowSubject() helper (coop: shared board; competitive: own UUID).
-    err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
-    if err == nil { return nil }
-    if !errors.Is(err, natspkg.ErrCASFailure) { return err }
+- `publishProjectedRows(ctx, rows, flashCells, bottomFirst)` — single atomic
+  batch with per-subject CAS from `e.playfield.LastSeq`. On CAS failure it DROPS
+  the step (no retry, no 50ms wait) and calls `emitCASFlash(flashCells)` so the
+  local player gets a rainbow flash. Used for player moves in both modes and for
+  competitive spawn/gravity.
+- `publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, bottomFirst)` — the
+  ONLY retrying CAS path. On failure it refetches each affected row
+  (`refetchAndMerge` via `stream.GetLastMsgForSubject`), vacates only our own old
+  active cells, overlays only our new cells (never the other player's active
+  cells), and retries (up to 5 attempts) before dropping + flashing. Used for ALL
+  coop shared-row writes (spawn, gravity, lock, hard drop, line clear).
+- `publishProjectedRowsNoCAS` / `publishProjectedRowsSliceNoCAS` — atomic batch
+  with no CAS, for authoritative competitive writes (lock, hard-drop landing,
+  line clear, shrink) where the publisher owns the per-player subjects.
+- `buildBatchUpdates` builds the `[]natspkg.RowUpdate` (with per-subject CAS) from
+  a projection map; `sortedRowKeys(m, bottomFirst)` controls apply order.
+- Hard drops: `publishHardDrop` (competitive, NoCAS) and `publishHardDropCoop`
+  (coop, merge-retry) in `move.go`.
 
-    // Wait for consumer to deliver the conflicting update
-    select {
-    case <-e.rowUpdated:
-    case <-time.After(50 * time.Millisecond):
-    case <-ctx.Done():
-        return ctx.Err()
-    }
-
-    // Re-evaluate
-    p := e.playfield.ActivePiece()
-    if p == nil { return ErrMoveDropped }
-
-    switch move {
-    case MoveDown:
-        if !game.CanPlace(game.Piece{Type: p.Type, Orientation: p.Orientation,
-            Row: p.Row + 1, Col: p.Col}, e.playfield) {
-            return ErrLockIn
-        }
-        // retry once with updated sequences
-        newUpdates := e.buildMoveUpdates(*p, game.Piece{Type: p.Type,
-            Orientation: p.Orientation, Row: p.Row + 1, Col: p.Col})
-        return natspkg.PublishMoveAtomically(ctx, e.js, newUpdates)
-    // ... other move types: check validity and retry or return ErrMoveDropped
-    }
-    return ErrMoveDropped
-}
-
-func (e *Engine) PublishHardDrop(ctx context.Context) error {
-    for {
-        p := e.playfield.ActivePiece()
-        if p == nil { return nil }
-        dest := game.HardDropDestination(*p, e.playfield)
-        updates := e.buildLockInUpdates(*p, dest)
-        err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
-        if err == nil { return nil }
-        if !errors.Is(err, natspkg.ErrCASFailure) { return err }
-        // Wait for consumer update then retry
-        select {
-        case <-e.rowUpdated:
-        case <-time.After(50 * time.Millisecond):
-        case <-ctx.Done(): return ctx.Err()
-        }
-    }
-}
-```
-
-**Consumer signals `e.rowUpdated`** after each `pf.Apply` call:
+The consumer still signals `e.rowUpdated` (non-blocking) after each `pf.Apply` so
+other paths can observe progress, but no CAS path blocks on it:
 ```go
 select {
 case e.rowUpdated <- struct{}{}:
@@ -1414,15 +1419,22 @@ default:
 }
 ```
 
-**Integration tests** (`internal/engine`):
-- Engine start correctly fetches meta and playfield state.
-- MoveLeft/Right/Down/Rotate produce correct row updates.
-- Gravity locks piece in after sufficient ticks.
-- CAS failure on MoveDown triggers lock-in when piece is at bottom.
-- Hard drop places piece at correct destination and locks in.
-- Two engine instances on same NATS server: moves from one are visible to other via consumer.
-- Lock-in detection correctly increments pieceIdx and spawns next piece.
-- Competitive mode: shrink event from engine A causes row shift on engine B.
+**Integration tests** (`internal/engine`, against a real embedded NATS server via
+`internal/testutil.StartServer`). The current suite is:
+- `TestEngineStart` — engine start fetches meta and playfield state and spawns a piece.
+- `TestEngineMoveLeftRight` — directional moves produce the expected row updates.
+- `TestEngineHardDrop` — hard drop places the piece at the correct destination and locks it.
+- `TestEngineUpdatesChannel` — updates are emitted on the `Updates` channel.
+- `TestCoopLineClearRerendersOtherPlayer` / `TestCoopLineClearKeepsOtherPlayersPiece`
+  — a coop line clear repaints the shared board without corrupting the other player's piece.
+- `TestCoopHardDropClearsCompletingLineImmediately` — a hard drop that completes a
+  line clears it at this lock (bottom-first ordering), not one piece later.
+- `TestCoopConcurrentPlayNoPieceCorruption` — concurrent coop play keeps both pieces intact.
+- `TestCoopHorizontalIFallsWithoutSpuriousLock` — the single-row horizontal I falls
+  without firing a spurious lock-in.
+
+TODO (not yet implemented): a competitive shrink A→B row-shift test, a
+"CAS failure on MoveDown → lock-in" test, and a two-engine move-visibility test.
 
 ---
 
@@ -1448,15 +1460,24 @@ The value is JSON-encoded `PlayerPresence`. On context cancellation, delete the 
 
 ```go
 type Lobby struct {
-    playerID string
-    name     string
-    kv       jetstream.KeyValue
-    js       jetstream.JetStream
-    Updates  chan LobbyUpdate
-    mu       sync.RWMutex
-    players  map[string]PlayerPresence
-    games    map[string]GameListing
+    playerID        string
+    name            string
+    kv              jetstream.KeyValue
+    js              jetstream.JetStream
+    Updates         chan LobbyUpdate
+    mu              sync.RWMutex
+    players         map[string]PlayerPresence
+    games           map[string]GameListing
+    archives        []config.ArchiveRecord
+    status          PresenceStatus
+    currentGameID   string
+    cancelFn        context.CancelFunc
+    initialLoadDone chan struct{}
 }
+
+// New constructs the lobby (no ctx, no error); Start(ctx) launches the goroutines.
+func New(js jetstream.JetStream, kv jetstream.KeyValue, playerID, name string) *Lobby
+func (l *Lobby) Start(ctx context.Context) error
 
 func (l *Lobby) Players() map[string]PlayerPresence {
     l.mu.RLock()
@@ -1469,7 +1490,8 @@ func (l *Lobby) Players() map[string]PlayerPresence {
 func (l *Lobby) Games() map[string]GameListing  // same pattern
 ```
 
-`Start()` starts three goroutines: KV watcher, lobby chat consumer, heartbeat.
+`Start()` starts four goroutines: KV watcher, lobby chat consumer, archive
+consumer, and heartbeat.
 
 **KV watcher**: `kv.WatchAll(ctx)` — on each update, decode the key prefix to
 determine if it's a player or game entry, update the appropriate map under `l.mu.Lock()`,
@@ -1484,16 +1506,21 @@ and send a `LobbyUpdate` to `l.Updates`.
 6. Update `games.<id>` KV entry
 7. Return `gameID`
 
-`JoinGame(ctx, gameID)`:
-1. Fetch current meta with `natspkg.FetchGameMeta`
-2. Publish own roster entry to `config.RosterSubject(gameID, l.playerID)`
-3. Update KV presence to `StatusInGame` with this gameID
-4. If roster is now full: CAS-update meta status to `starting`
+`JoinGame(ctx, gameID) (int, error)` — returns the joining player's index, which
+the caller passes to `engine.New` as `playerIdx`:
+1. If already in the game's roster, update presence and return the existing index.
+2. Publish own roster entry to `config.RosterSubject(gameID, l.playerID)`.
+3. Update KV presence to `StatusInGame` with this gameID.
+4. Append self to the game listing; if the roster is now full, set the listing to
+   `starting` and CAS-update meta status to `starting`.
+5. Return `len(players)-1` as the player index.
 
-`MarkReady(ctx, gameID)`:
-1. Update own roster entry to `ready: true`
-2. Check if all roster entries are ready; if so, CAS-update meta to `in_progress`
-   and set `StartedAt = time.Now()`
+`ToggleReady(ctx, gameID) (ToggleReadyResult, error)` — there is no `MarkReady`;
+ready state is a toggle. It CAS-updates the player's `Ready` flag on the game-listing
+KV entry (retrying on revision conflict) and reports whether all players are now
+ready via `ToggleReadyResult{AllReady, Players, MyReady}`. Advancing to
+`in_progress` is done separately by `StartGame(ctx, gameID)`, which transitions
+meta to `in_progress` (setting `StartedAt`).
 
 **Integration tests**: create/join flow, presence heartbeat renewal, KV watcher
 delivers updates to Maps.
@@ -1504,17 +1531,19 @@ delivers updates to Maps.
 
 ### 5.1 `internal/cleanup`
 
-`Run(ctx, js, kv, nc, lobby)`:
+`Run(ctx, js, kv, lobby) error` (there is no system-account `*nats.Conn` client —
+cleanup works entirely through JetStream and the lobby maps):
 
-1. Try `natssysclient.NewSysClient(nc)` and call `sys.Jsz(ctx, "", JszOptions{Streams: true})`.
-   If this fails (no system account), fall back to `natspkg.ListGameStreams`.
-2. For each stream name matching `JETRICKS_GAME_`, check against lobby's Games map.
-3. Apply cleanup rules in order (see Section 11 of spec). Games are archived immediately
-   during normal play — cleanup only handles orphaned finished games that were not
-   archived due to crash or disconnect. For orphaned finished games: publish archive
-   record to `JETRICKS_ARCHIVE`, delete the game stream, remove the KV entry.
-4. All state transitions go through `natspkg.PublishMeta` with CAS; on `ErrCASFailure`,
-   re-fetch and re-evaluate.
+1. List game streams with `natspkg.ListGameStreams(ctx, js)` (which filters
+   `js.StreamNames` by the `jetricks.game.>` subject). There is no
+   `natssysclient`/`Jsz` fast path.
+2. For each stream name matching `JETRICKS_GAME_`, look up its game ID in the
+   lobby's Games and Players maps.
+3. Apply cleanup rules: streams with no KV entry are deleted unless their meta is
+   still `starting`/`in_progress` (in which case the KV entry is re-created);
+   `finished` games are archived; `created`/`starting`/`in_progress` games whose
+   players are all absent are cancelled or finished-as-abandoned.
+4. All state transitions go through `natspkg.PublishMeta` with CAS.
 
 ---
 
@@ -1695,7 +1724,7 @@ func main() {
 // Gio's app.Main() owns the OS main thread and blocks forever, so App.Run runs on a
 // goroutine and the process exits when the window closes.
 func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, js jetstream.JetStream, kv jetstream.KeyValue) {
-    a := nativeui.New(nc, js, kv)
+    a := nativeui.New(js, kv)
     go func() {
         defer cancel()
         _ = a.Run(ctx)   // creates the window, runs the frame loop
@@ -1751,9 +1780,11 @@ These rules apply throughout all phases:
 8. **Test NATS server.** All integration tests use `testutil.StartServer(t)`, not
    a running external NATS instance. Tests are hermetic.
 
-9. **`AllowAtomicPublish` and `AllowMsgCounter` together.** Verify this combination
-   works on your NATS server version as the first integration test you write for
-   `internal/nats`. If it fails, check NATS server version (requires 2.12+).
+9. **`AllowAtomicPublish` and `AllowDirect` together.** The game stream sets both
+   (atomic batch publish for multi-row moves, direct get for fast
+   last-message-per-subject fetches). Verify this combination works on your NATS
+   server version as the first integration test you write for `internal/nats`. If
+   it fails, check the NATS server version (requires 2.12+).
 
 10. **Cooperative mode uses a single shared playfield.** Cooperative row subjects
     carry no player token (the `config.CoopRowSubject` scheme) — both players
@@ -1761,7 +1792,9 @@ These rules apply throughout all phases:
     `Cell.PlayerIdx` tags which player's active piece each cell belongs to. Each engine
     has ONE playfield and ONE ordered consumer. Pieces can move anywhere on the full
     board. Collision detection (`CanPlaceCoop`) treats the other player's active cells
-    as obstacles. Line clears span the full 20-wide rows. Each player has their own
-    independent RNG sequence (creator uses `seed`, joiner uses `seed+1`) and tracks
-    their own `pieceIdx` independently. The UI renders the single wide playfield
-    directly — no concatenation of separate playfields.
+    as obstacles. Line clears span the full 20-wide rows. Both players share the SAME
+    RNG sequence (`rng.New(meta.Seed)` — there is no `seed+1`); their pieces differ
+    only because `spawnPiece` offsets each spawn by `playerIdx × StandardWidth`, so
+    each player's pieces appear in their own section of the board. Each engine tracks
+    its own `pieceIdx` locally (starting at 0). The UI renders the single wide
+    playfield directly — no concatenation of separate playfields.

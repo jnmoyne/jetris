@@ -37,7 +37,7 @@ Each player has a color associated with it: used for the outline color of the pi
 | Total rows | 28 |
 | Headroom rows | 4 (rows 0-3, not rendered) |
 | Visible rows | 24 (rows 4-27) in cooperative mode, for competitive this number depends on the number of players in the game |
-| Standard width | 10 columnsi in competitive mode, for cooperative this number depends on the number of players in the game |
+| Standard width | 10 columns in competitive mode; for cooperative the width is `playerCount × 10` |
 
 **Cell states:**
 
@@ -46,6 +46,7 @@ Each player has a color associated with it: used for the outline color of the pi
 | Empty | false | false | Nothing in this cell |
 | Active | false | true | Part of a falling piece |
 | Locked | true | false | Settled piece, permanent until line clear |
+| Adversarial | true | false | Permanent garbage cell added by a competitive shrink (the `Adversarial` flag is set); its row can never be completed or cleared |
 
 In cooperative mode, active cells carry a `PlayerIdx` field (0-indexed) identifying which player's piece they belong to.
 
@@ -72,7 +73,7 @@ Each player tracks their own `pieceIdx` independently.
 ### Movement
 
 Pieces can move anywhere on the full-width board. Collision detection (`CanPlaceCoop`) checks:
-1. Boundaries (within 0..width, 0..24)
+1. Boundaries (columns 0..width, rows 0..height — 28 in cooperative)
 2. Locked cells (occupied, non-active)
 3. The **other player's active cells** (treated as obstacles)
 4. The moving player's own active cells are **excluded** from collision
@@ -192,7 +193,7 @@ Each player has their own 10-column playfield. The playfield height scales with 
 
 ### Piece Spawning
 
-Each player gets it's own piece spawn on the shared playfield. Players share the same RNG seed (`meta.Seed`) and produce the identical piece sequence.
+Each player gets their own piece spawn on their own independent playfield. Players share the same RNG seed (`meta.Seed`) and produce the identical piece sequence.
 
 **Spawn position:** Centered at column 3, anchor row 2 for all piece types (lowest cell at row 3).
 
@@ -206,7 +207,7 @@ Standard gravity. When a piece can't move down, it locks immediately (no "blocke
 
 ### Line Clears
 
-A row is complete when all 10 cells are occupied (locked). Standard Tetris rules apply. When one player clears a line, the other player gets a line added at the bottom of it's playfield, this means that all of it's existing dropped pieces in his playfield go up by one row, this can cause the piece that is currently falling due to gravity to be suddlenly dropped in it's place or moved one row above. once a line is cleared and added to the other player(s) that added line can never be removed or completed!
+A row is complete when all 10 cells are occupied (locked). Standard Tetris rules apply. When one player clears a line, every other player gets a line added at the bottom of their playfield, so all of their already-locked rows shift up by one. The currently falling piece does **not** rise with the stack — it holds its on-screen position and is simply dropped into place as the stack rises to meet it. Only if the rising stack (or the new garbage) would overlap the falling piece is the piece pushed up, and then only by the minimum number of rows needed to clear the conflict. If that upward push would run the piece off the top of the playfield, the player tops out and is eliminated (see Game Over). Once a line is cleared and added to the other player(s), that added line can never be removed or completed.
 
 ### Scoring
 
@@ -217,11 +218,12 @@ The only score that is kept in competitive mode is the number of line each playe
 When a player clears 1 or more lines, a shrink event is sent to **all** other players still in the game:
 - **Rows added:** the number of lines cleared
 - **Adversarial rows:** Each opponent's playfield shifts up. New rows at the bottom are fully occupied and permanent (can never be cleared)
+- **Falling piece:** Each opponent's falling piece stays in place as the stack rises; it is pushed up only as far as the rising stack/garbage forces it. A push that would carry it off the top tops that player out (they lose)
 - **Multi-player:** The shrink applies to ALL opponents simultaneously, not just one
 
 ### Game Over
 
-The game continues until only **one player remains**. When a player tops out (either the newly spawned piece cannot be placed, or because the opponent cleared a line and the upward shift caused a top-out), that player is eliminated and transitions to spectator mode — they can watch the remaining players continue. The last player standing wins. The game UI shows a player status list with each player marked as playing (green dot) or eliminated (red cross, struck through name). At game over, winners see "YOU WON!" and the loser(s) see "YOU LOST".
+The game continues until only **one player remains**. When a player tops out (either the newly spawned piece cannot be placed, or an opponent's line clear pushed the rising stack into the falling piece and the conflict-resolving upward shift ran the piece off the top), that player is eliminated and transitions to spectator mode — they can watch the remaining players continue. The last player standing wins. The game UI shows a player status list with each player marked as playing (green dot) or eliminated (red cross, struck through name). At game over, winners see "YOU WON!" and the loser(s) see "YOU LOST".
 
 ---
 

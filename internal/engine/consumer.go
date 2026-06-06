@@ -349,29 +349,11 @@ func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerI
 
 	// Compute the post-shrink projection without mutating e.playfield. The
 	// consumer will update e.playfield when our published rows echo back.
-	projected := e.playfield.ProjectShrink(rowsToAdd, causerIdx)
+	// ProjectShrink holds our falling piece in place, pushes it up only as far
+	// as the rising stack/garbage forces it, and reports topOut when that push
+	// would run it off the top of the board.
+	projected, topOut := e.playfield.ProjectShrink(rowsToAdd, causerIdx, e.playerIdx)
 
-	// Top-out check uses the projection, not the in-memory playfield. Build a
-	// temporary Playfield wrapping the projected rows for collision checks.
-	tmpPF := &game.Playfield{
-		Width:  e.playfield.Width,
-		Height: e.playfield.Height,
-		Rows:   projected,
-	}
-	topOut := false
-	if p := tmpPF.ActivePieceForPlayer(e.playerIdx); p != nil {
-		if p.Row < 0 {
-			topOut = true
-		} else if e.gameMode == config.ModeCooperative {
-			if !game.CanPlaceCoop(*p, tmpPF, e.playerIdx) {
-				topOut = true
-			}
-		} else {
-			if !game.CanPlace(*p, tmpPF) {
-				topOut = true
-			}
-		}
-	}
 	e.mu.Unlock()
 
 	// Publish only visible rows (not empty headroom) NoCAS — shrink is authoritative.

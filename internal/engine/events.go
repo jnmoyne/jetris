@@ -37,10 +37,9 @@ type EngineUpdate struct {
 type EventKind string
 
 const (
-	EventLineClear     EventKind = "line_clear"
-	EventShrink        EventKind = "shrink"
-	EventGameOver      EventKind = "game_over"
-	EventCoopLineClear EventKind = "coop_line_clear"
+	EventLineClear EventKind = "line_clear"
+	EventShrink    EventKind = "shrink"
+	EventGameOver  EventKind = "game_over"
 )
 
 // GameEvent is the JSON payload published to the events subject.

@@ -47,75 +47,6 @@ func (pf *Playfield) Apply(rowIndex int, row Row, seq uint64) {
 	pf.LastSeq[rowIndex] = seq
 }
 
-// ActivePiece scans all rows for cells with Active==true and reconstructs
-// the Piece from the first active cell found.
-func (pf *Playfield) ActivePiece() *Piece {
-	for _, row := range pf.Rows {
-		for _, c := range row.Cells {
-			if c.Active {
-				return &Piece{
-					Type:        c.PieceType,
-					Orientation: c.Orientation,
-					Row:         c.AnchorRow,
-					Col:         c.AnchorCol,
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// Snapshot returns a copy of LastSeq for CAS expectations.
-func (pf *Playfield) Snapshot() []uint64 {
-	out := make([]uint64, len(pf.LastSeq))
-	copy(out, pf.LastSeq)
-	return out
-}
-
-// SetActivePiece places a piece's active cells on the playfield.
-// Does not modify locked cells. Clears any existing active cells first.
-func (pf *Playfield) SetActivePiece(p Piece) {
-	pf.ClearActiveCells()
-	for _, cell := range p.Cells() {
-		r, c := cell[0], cell[1]
-		if r >= 0 && r < pf.Height && c >= 0 && c < pf.Width {
-			pf.Rows[r].Cells[c].Active = true
-			pf.Rows[r].Cells[c].PieceType = p.Type
-			pf.Rows[r].Cells[c].Orientation = p.Orientation
-			pf.Rows[r].Cells[c].AnchorRow = p.Row
-			pf.Rows[r].Cells[c].AnchorCol = p.Col
-		}
-	}
-}
-
-// ClearActiveCells removes all active piece cells from the playfield.
-func (pf *Playfield) ClearActiveCells() {
-	for i := range pf.Rows {
-		for j := range pf.Rows[i].Cells {
-			if pf.Rows[i].Cells[j].Active {
-				pf.Rows[i].Cells[j] = Cell{}
-			}
-		}
-	}
-}
-
-// LockActivePiece converts all active cells to occupied (locked) cells.
-func (pf *Playfield) LockActivePiece() {
-	for i := range pf.Rows {
-		for j := range pf.Rows[i].Cells {
-			c := &pf.Rows[i].Cells[j]
-			if c.Active {
-				c.Active = false
-				c.Occupied = true
-				// Keep PieceType for coloring, clear active-specific fields
-				c.Orientation = 0
-				c.AnchorRow = 0
-				c.AnchorCol = 0
-			}
-		}
-	}
-}
-
 // ActivePieceForPlayer returns the active piece belonging to the given playerIdx.
 // Used in cooperative mode where two players' pieces coexist on the same playfield.
 func (pf *Playfield) ActivePieceForPlayer(playerIdx int) *Piece {
@@ -160,52 +91,6 @@ func (pf *Playfield) ClearActiveCellsForPlayer(playerIdx int) {
 			}
 		}
 	}
-}
-
-// LockActivePieceForPlayer converts active cells with matching PlayerIdx to locked.
-func (pf *Playfield) LockActivePieceForPlayer(playerIdx int) {
-	for i := range pf.Rows {
-		for j := range pf.Rows[i].Cells {
-			c := &pf.Rows[i].Cells[j]
-			if c.Active && c.PlayerIdx == playerIdx {
-				c.Active = false
-				c.Occupied = true
-				c.Orientation = 0
-				c.AnchorRow = 0
-				c.AnchorCol = 0
-				// PlayerIdx is intentionally preserved so locked cells
-				// retain the player's color for outline rendering.
-			}
-		}
-	}
-}
-
-// RowsWithActiveCellsForPlayer returns row indices containing active cells for the given playerIdx.
-func (pf *Playfield) RowsWithActiveCellsForPlayer(playerIdx int) []int {
-	var rows []int
-	for i := range pf.Rows {
-		for _, c := range pf.Rows[i].Cells {
-			if c.Active && c.PlayerIdx == playerIdx {
-				rows = append(rows, i)
-				break
-			}
-		}
-	}
-	return rows
-}
-
-// RowsWithActiveCells returns the indices of rows containing active piece cells.
-func (pf *Playfield) RowsWithActiveCells() []int {
-	var rows []int
-	for i := range pf.Rows {
-		for _, c := range pf.Rows[i].Cells {
-			if c.Active {
-				rows = append(rows, i)
-				break
-			}
-		}
-	}
-	return rows
 }
 
 // Projection helpers below build new Row values without mutating pf. They are
@@ -359,17 +244,40 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row 
 	return newRows
 }
 
-// ProjectShrink returns the full new set of rows after shifting the playfield
-// up by rowsToAdd (existing pieces move up) and adding rowsToAdd permanent
-// adversarial rows tagged with causerIdx at the bottom. AnchorRow values in
-// remaining active cells are decremented by rowsToAdd.
-func (pf *Playfield) ProjectShrink(rowsToAdd int, causerIdx int) []Row {
+// ProjectShrink returns the full new set of rows after a competitive shrink:
+// the locked stack shifts up by rowsToAdd and rowsToAdd permanent adversarial
+// rows tagged with causerIdx are added at the bottom.
+//
+// The falling piece belonging to ownPlayerIdx holds its on-screen position
+// while the stack rises beneath it ("dropped into place"). It is pushed up only
+// when the risen stack or garbage would overlap it, and only by the minimum
+// number of rows needed to clear the conflict (0..rowsToAdd). If no amount of
+// lift keeps the piece on the board (the only way to avoid the overlap is to
+// push a cell above the top), the second return value is true to signal that
+// the player has been squeezed out and tops out.
+//
+// rowsToAdd is a sufficient search bound for the lift: the piece was placeable
+// at its old anchor, and the new locked cells are exactly the old ones shifted
+// up by rowsToAdd, so the piece at anchor-rowsToAdd has identical geometry
+// relative to the stack and always clears it — the only remaining failure at
+// that lift is a cell crossing row 0, which is the top-out case.
+func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Row, bool) {
+	// Capture the falling piece before the shift; it is re-placed below.
+	piece := pf.ActivePieceForPlayer(ownPlayerIdx)
+
 	out := make([]Row, pf.Height)
+	// Shift the stack up by rowsToAdd, stripping active cells (the piece is
+	// re-stamped at its resolved position, not carried along by the shift).
 	for i := 0; i < pf.Height-rowsToAdd; i++ {
 		cells := make([]Cell, pf.Width)
-		copy(cells, pf.Rows[i+rowsToAdd].Cells)
+		for j, c := range pf.Rows[i+rowsToAdd].Cells {
+			if !c.Active {
+				cells[j] = c
+			}
+		}
 		out[i] = Row{Cells: cells}
 	}
+	// Permanent adversarial garbage fills the bottom rows.
 	for i := pf.Height - rowsToAdd; i < pf.Height; i++ {
 		cells := make([]Cell, pf.Width)
 		for c := range cells {
@@ -382,13 +290,23 @@ func (pf *Playfield) ProjectShrink(rowsToAdd int, causerIdx int) []Row {
 		}
 		out[i] = Row{Cells: cells}
 	}
-	for i := range out {
-		for j := range out[i].Cells {
-			c := &out[i].Cells[j]
-			if c.Active {
-				c.AnchorRow -= rowsToAdd
-			}
+
+	if piece == nil {
+		return out, false
+	}
+
+	// Keep the piece where it is (k=0) unless the risen stack/garbage overlaps
+	// it; then lift it the minimum needed to rest on top of the new stack.
+	tmp := &Playfield{Width: pf.Width, Height: pf.Height, Rows: out}
+	for k := 0; k <= rowsToAdd; k++ {
+		cand := *piece
+		cand.Row = piece.Row - k
+		if CanPlace(cand, tmp) {
+			tmp.SetActivePieceForPlayer(cand, ownPlayerIdx)
+			return out, false
 		}
 	}
-	return out
+	// No lift keeps the piece on the board: it is pushed off the top → top-out.
+	// Leave the doomed piece unstamped so the board shows the risen stack only.
+	return out, true
 }

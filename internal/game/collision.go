@@ -48,15 +48,6 @@ func HardDropDestinationCoop(p Piece, pf *Playfield, ownPlayerIdx int) Piece {
 	}
 }
 
-// WouldCollide returns true if moving p by (dRow, dCol) would result
-// in an invalid placement.
-func WouldCollide(p Piece, pf *Playfield, dRow, dCol int) bool {
-	moved := p
-	moved.Row += dRow
-	moved.Col += dCol
-	return !CanPlace(moved, pf)
-}
-
 // HardDropDestination returns the lowest valid position for p by
 // moving it down until collision.
 func HardDropDestination(p Piece, pf *Playfield) Piece {

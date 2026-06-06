@@ -471,13 +471,6 @@ func (l *Lobby) transitionGameStatus(ctx context.Context, gameID string, status 
 	_ = natspkg.PublishMeta(ctx, l.js, gameID, data, metaSeq)
 }
 
-// CurrentGameID returns the current game the player is in.
-func (l *Lobby) CurrentGameID() string {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	return l.currentGameID
-}
-
 // PlayerID returns the lobby player ID.
 func (l *Lobby) PlayerID() string {
 	return l.playerID

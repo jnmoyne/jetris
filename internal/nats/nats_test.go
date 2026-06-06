@@ -150,11 +150,10 @@ func TestPublishAndFetchRows(t *testing.T) {
 		row := game.NewRow(config.StandardWidth)
 		row.Cells[0] = game.Cell{Occupied: true, PieceType: game.PieceT}
 		data, _ := row.Marshal()
-		err := PublishSingleRow(ctx, js, RowUpdate{
-			Subject:       config.CompetitiveRowSubject(gameID, playerID, i),
-			Payload:       data,
-			ExpectLastSeq: 0,
-		})
+		err := PublishRowsAtomicallyNoCAS(ctx, js, []RowUpdate{{
+			Subject: config.CompetitiveRowSubject(gameID, playerID, i),
+			Payload: data,
+		}})
 		if err != nil {
 			t.Fatalf("row %d: %v", i, err)
 		}

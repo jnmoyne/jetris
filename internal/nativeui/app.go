@@ -21,7 +21,6 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/engine"
@@ -65,7 +64,6 @@ type gameRowBtns struct {
 // goroutine (the engine/lobby pumps plus the UI goroutine) are guarded by mu.
 // Gio widget values are touched only by the UI goroutine and need no lock.
 type App struct {
-	nc *nats.Conn
 	js jetstream.JetStream
 	kv jetstream.KeyValue
 
@@ -128,9 +126,8 @@ type App struct {
 }
 
 // New builds the App. The window is created later, in Run, on the UI goroutine.
-func New(nc *nats.Conn, js jetstream.JetStream, kv jetstream.KeyValue) *App {
+func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a := &App{
-		nc:        nc,
 		js:        js,
 		kv:        kv,
 		screen:    screenLogin,

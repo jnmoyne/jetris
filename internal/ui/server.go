@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/cleanup"
@@ -22,7 +21,6 @@ type Server struct {
 	port   int
 	js     jetstream.JetStream
 	kv     jetstream.KeyValue
-	nc     *nats.Conn
 	lobby  *lobby.Lobby
 	router *http.ServeMux
 	srv    *http.Server
@@ -38,12 +36,11 @@ type Server struct {
 }
 
 // New creates a new UI server. The lobby is not created until the user logs in.
-func New(port int, js jetstream.JetStream, kv jetstream.KeyValue, nc *nats.Conn) *Server {
+func New(port int, js jetstream.JetStream, kv jetstream.KeyValue) *Server {
 	s := &Server{
 		port:             port,
 		js:               js,
 		kv:               kv,
-		nc:               nc,
 		router:           http.NewServeMux(),
 		lobbyBroadcaster: NewBroadcaster[lobby.LobbyUpdate](),
 		gameBroadcaster:  NewBroadcaster[engine.EngineUpdate](),
@@ -100,7 +97,7 @@ func (s *Server) initLobby(playerName string) error {
 	initCancel()
 
 	cleanCtx, cleanCancel := context.WithTimeout(s.ctx, 30*time.Second)
-	if err := cleanup.Run(cleanCtx, s.js, s.kv, s.nc, lb); err != nil {
+	if err := cleanup.Run(cleanCtx, s.js, s.kv, lb); err != nil {
 		log.Printf("cleanup warning: %v", err)
 	}
 	cleanCancel()

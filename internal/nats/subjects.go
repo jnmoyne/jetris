@@ -15,9 +15,6 @@ var (
 	EventsSubject               = config.EventsSubject
 	CountdownSubject            = config.CountdownSubject
 	ChatSubject                 = config.ChatSubject
-	CoopScoreSubject            = config.CoopScoreSubject
-	CompetitiveScoreSubject     = config.CompetitiveScoreSubject
-	PlayerStateSubject          = config.PlayerStateSubject
 	LobbyPlayerKey              = config.LobbyPlayerKey
 	LobbyGameKey                = config.LobbyGameKey
 )

@@ -56,7 +56,7 @@ func main() {
 
 // runWeb starts the HTTP/SSE UI server and opens a browser (the legacy front end).
 func runWeb(ctx context.Context, cancel context.CancelFunc, cfg config.Config, nc *nats.Conn, js jetstream.JetStream, kv jetstream.KeyValue) {
-	srv := ui.New(cfg.Port, js, kv, nc)
+	srv := ui.New(cfg.Port, js, kv)
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("start UI: %v", err)
 	}
@@ -80,7 +80,7 @@ func runWeb(ctx context.Context, cancel context.CancelFunc, cfg config.Config, n
 // thread and blocks forever, so all application logic runs on a goroutine; when
 // the window closes (or on Ctrl-C) the process exits.
 func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, js jetstream.JetStream, kv jetstream.KeyValue) {
-	a := nativeui.New(nc, js, kv)
+	a := nativeui.New(js, kv)
 
 	go func() {
 		defer cancel()

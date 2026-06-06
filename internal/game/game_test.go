@@ -70,15 +70,6 @@ func TestCanPlace(t *testing.T) {
 	}
 }
 
-func TestWouldCollide(t *testing.T) {
-	pf := NewPlayfield(config.StandardWidth)
-	p := Piece{Type: PieceT, Orientation: 0, Row: config.TotalRows - 2, Col: 4}
-	// Moving down from near bottom - T piece would go out of bounds
-	if !WouldCollide(p, pf, 1, 0) {
-		t.Error("piece at bottom should collide when moving down")
-	}
-}
-
 func TestHardDropDestination(t *testing.T) {
 	pf := NewPlayfield(config.StandardWidth)
 	p := Piece{Type: PieceI, Orientation: 0, Row: 0, Col: 3}
@@ -120,50 +111,6 @@ func TestCompletedRows(t *testing.T) {
 	rows = CompletedRows(pf)
 	if len(rows) != 1 {
 		t.Errorf("row with active cell should not be complete, got %v", rows)
-	}
-}
-
-func TestClearRows(t *testing.T) {
-	pf := NewPlayfield(config.StandardWidth)
-	lastRow := config.TotalRows - 1
-	// Fill last two rows
-	for r := lastRow - 1; r <= lastRow; r++ {
-		for c := 0; c < 10; c++ {
-			pf.Rows[r].Cells[c] = Cell{Occupied: true, PieceType: PieceO}
-		}
-	}
-	// Put something in row above
-	pf.Rows[lastRow-2].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
-
-	ClearRows(pf, []int{lastRow - 1, lastRow})
-
-	// Content should have shifted down to last row
-	if !pf.Rows[lastRow].Cells[5].Occupied {
-		t.Error("content should have shifted to last row after clearing")
-	}
-	// Rows above should be empty now
-	if pf.Rows[lastRow-2].Cells[5].Occupied || pf.Rows[lastRow-1].Cells[5].Occupied {
-		t.Error("rows above cleared should be empty")
-	}
-}
-
-func TestScoreDelta(t *testing.T) {
-	tests := []struct {
-		lines, level, want int
-	}{
-		{1, 0, 100},
-		{2, 0, 300},
-		{3, 0, 500},
-		{4, 0, 800},
-		{4, 1, 1600},
-		{0, 0, 0},
-		{5, 0, 0},
-	}
-	for _, tt := range tests {
-		got := ScoreDelta(tt.lines, tt.level)
-		if got != tt.want {
-			t.Errorf("ScoreDelta(%d, %d) = %d, want %d", tt.lines, tt.level, got, tt.want)
-		}
 	}
 }
 
@@ -215,23 +162,6 @@ func TestRowMarshalRoundTrip(t *testing.T) {
 	}
 }
 
-func TestActivePiece(t *testing.T) {
-	pf := NewPlayfield(config.StandardWidth)
-	if pf.ActivePiece() != nil {
-		t.Error("empty playfield should have no active piece")
-	}
-
-	p := Piece{Type: PieceT, Orientation: 0, Row: 10, Col: 4}
-	pf.SetActivePiece(p)
-	got := pf.ActivePiece()
-	if got == nil {
-		t.Fatal("expected active piece")
-	}
-	if got.Type != PieceT || got.Row != 10 || got.Col != 4 {
-		t.Errorf("got %+v, want T at (10,4)", got)
-	}
-}
-
 func TestPlayfieldApply(t *testing.T) {
 	pf := NewPlayfield(config.StandardWidth)
 	r := NewRow(10)
@@ -272,24 +202,81 @@ func TestRotateSRS(t *testing.T) {
 	}
 }
 
-func TestLockActivePiece(t *testing.T) {
-	pf := NewPlayfield(config.StandardWidth)
-	p := Piece{Type: PieceT, Orientation: 0, Row: 10, Col: 4}
-	pf.SetActivePiece(p)
-	pf.LockActivePiece()
+func TestProjectShrink(t *testing.T) {
+	const own = 0
+	const causer = 1
 
-	if pf.ActivePiece() != nil {
-		t.Error("no active piece should remain after lock")
-	}
-	// Check that cells are now occupied
-	cells := p.Cells()
-	for _, c := range cells {
-		cell := pf.Rows[c[0]].Cells[c[1]]
-		if !cell.Occupied {
-			t.Errorf("cell (%d,%d) should be occupied after lock", c[0], c[1])
+	// activeAnchor returns the anchor row of own's active piece, or -1 if none.
+	activeAnchor := func(rows []Row) int {
+		for _, r := range rows {
+			for _, c := range r.Cells {
+				if c.Active && c.PlayerIdx == own {
+					return c.AnchorRow
+				}
+			}
 		}
-		if cell.Active {
-			t.Errorf("cell (%d,%d) should not be active after lock", c[0], c[1])
-		}
+		return -1
 	}
+
+	// Stays put: piece hovers well above the stack, so a 1-row rise leaves a
+	// gap and the piece keeps its row (dropped into place).
+	t.Run("stays put when no conflict", func(t *testing.T) {
+		pf := NewPlayfield(config.StandardWidth)
+		pf.SetActivePieceForPlayer(Piece{Type: PieceO, Row: 10, Col: 4}, own)
+		pf.Rows[20].Cells[0] = Cell{Occupied: true, PieceType: PieceT} // low stack, far below
+
+		out, topOut := pf.ProjectShrink(1, causer, own)
+
+		if topOut {
+			t.Fatal("expected no top-out when the piece has room above the stack")
+		}
+		if got := activeAnchor(out); got != 10 {
+			t.Errorf("piece should hold its row: got anchor %d, want 10", got)
+		}
+		if !out[19].Cells[0].Occupied || out[19].Cells[0].Adversarial {
+			t.Error("locked stack should have shifted up by 1 (row 20 -> 19)")
+		}
+		bottom := config.TotalRows - 1
+		for c := 0; c < config.StandardWidth; c++ {
+			if !out[bottom].Cells[c].Adversarial {
+				t.Errorf("bottom row cell %d should be adversarial garbage", c)
+			}
+		}
+	})
+
+	// Pushed up minimally: a floor sits directly under the piece, so a 1-row
+	// rise overlaps it and the piece is lifted by exactly 1 to rest on top.
+	t.Run("pushed up minimally on conflict", func(t *testing.T) {
+		pf := NewPlayfield(config.StandardWidth)
+		pf.SetActivePieceForPlayer(Piece{Type: PieceO, Row: 10, Col: 4}, own)
+		pf.Rows[12].Cells[4] = Cell{Occupied: true, PieceType: PieceT}
+		pf.Rows[12].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
+
+		out, topOut := pf.ProjectShrink(1, causer, own)
+
+		if topOut {
+			t.Fatal("expected no top-out: piece can rest one row higher")
+		}
+		if got := activeAnchor(out); got != 9 {
+			t.Errorf("piece should be pushed up by exactly 1: got anchor %d, want 9", got)
+		}
+	})
+
+	// Tops out: piece is pinned against the ceiling with a floor right under
+	// it, so the only conflict-free lift would push a cell above row 0.
+	t.Run("tops out when pushed off the top", func(t *testing.T) {
+		pf := NewPlayfield(config.StandardWidth)
+		pf.SetActivePieceForPlayer(Piece{Type: PieceO, Row: 0, Col: 4}, own)
+		pf.Rows[2].Cells[4] = Cell{Occupied: true, PieceType: PieceT}
+		pf.Rows[2].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
+
+		out, topOut := pf.ProjectShrink(1, causer, own)
+
+		if !topOut {
+			t.Fatal("expected top-out when the piece is squeezed off the top")
+		}
+		if got := activeAnchor(out); got != -1 {
+			t.Errorf("doomed piece should not be stamped: found active anchor %d", got)
+		}
+	})
 }

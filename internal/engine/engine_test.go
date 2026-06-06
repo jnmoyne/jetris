@@ -68,7 +68,7 @@ func TestEngineStart(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	pf := e.Playfield()
-	p := pf.ActivePiece()
+	p := pf.ActivePieceForPlayer(0)
 	if p == nil {
 		t.Fatal("expected active piece after engine start")
 	}
@@ -84,7 +84,7 @@ func TestEngineMoveLeftRight(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	pf := e.Playfield()
-	p := pf.ActivePiece()
+	p := pf.ActivePieceForPlayer(0)
 	if p == nil {
 		t.Fatal("no active piece")
 	}
@@ -94,7 +94,7 @@ func TestEngineMoveLeftRight(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	pf = e.Playfield()
-	p = pf.ActivePiece()
+	p = pf.ActivePieceForPlayer(0)
 	if p != nil && p.Col >= origCol {
 		// Might not have moved yet if publish is pending
 		t.Log("piece may not have moved left yet (async)")

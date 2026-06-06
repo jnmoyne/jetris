@@ -121,37 +121,6 @@ func PublishRowsAtomicallyNoCAS(
 	return err
 }
 
-// PublishSingleRow publishes a single row update with CAS.
-func PublishSingleRow(
-	ctx context.Context,
-	js jetstream.JetStream,
-	update RowUpdate,
-) error {
-	_, err := js.Publish(ctx, update.Subject, update.Payload,
-		jetstream.WithExpectLastSequencePerSubject(update.ExpectLastSeq))
-	if err != nil {
-		if isCASError(err) {
-			return ErrCASFailure
-		}
-		return err
-	}
-	return nil
-}
-
-// PublishSingleRowNoCAS publishes a single row without CAS checks.
-// Used for line-clear publishes where the cleared state is authoritative.
-func PublishSingleRowNoCAS(
-	ctx context.Context,
-	js jetstream.JetStream,
-	update RowUpdate,
-) (uint64, error) {
-	ack, err := js.Publish(ctx, update.Subject, update.Payload)
-	if err != nil {
-		return 0, err
-	}
-	return ack.Sequence, nil
-}
-
 // PublishMeta publishes a game metadata update with a CAS expectation.
 func PublishMeta(
 	ctx context.Context,

@@ -25,9 +25,6 @@ func TestSubjectBuilders(t *testing.T) {
 		{"EventsSubject", EventsSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.events"},
 		{"CountdownSubject", CountdownSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.countdown"},
 		{"ChatSubject", ChatSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.chat"},
-		{"CoopScoreSubject", CoopScoreSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.score"},
-		{"CompetitiveScoreSubject", CompetitiveScoreSubject(gameID, playerID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.player.a1b2c3d4-e5f6-7890-abcd-ef1234567890.score"},
-		{"PlayerStateSubject", PlayerStateSubject(gameID, playerID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.player.a1b2c3d4-e5f6-7890-abcd-ef1234567890.state"},
 		{"LobbyPlayerKey", LobbyPlayerKey(playerID), "players.a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
 		{"LobbyGameKey", LobbyGameKey(gameID), "games.550e8400-e29b-41d4-a716-446655440000"},
 	}

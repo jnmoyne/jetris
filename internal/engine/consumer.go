@@ -115,7 +115,14 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			for r := e.visibleRowStart; r < e.playfield.Height && r < len(projected); r++ {
 				rowsMap[r] = projected[r]
 			}
-			e.publishProjectedRowsWithMergeRetry(ctx, rowsMap, nil, false)
+			// bottomFirst=true: a line clear shifts every piece DOWN, so consumers
+			// must apply the highest (lowest-on-screen) rows first. Applied
+			// top-to-bottom, another player's mid-flight piece is briefly erased
+			// from its old rows before its new (shifted-down) rows arrive — its
+			// active-cell count hits zero and that player's lock-in detector fires
+			// a spurious lock, respawning their piece. Bottom-first guarantees the
+			// shifted piece always overlaps itself, so it never transiently vanishes.
+			e.publishProjectedRowsWithMergeRetry(ctx, rowsMap, nil, true)
 		} else {
 			// Competitive: per-player subjects, no other writer to preserve.
 			e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)

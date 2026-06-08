@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -55,13 +56,19 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		FilterSubject: config.EventsSubject(eng.GameID()),
 	})
 	if err == nil {
-		done := false
-		for !done {
+		// Drain all EventGameOver events on the stream (the consumer uses
+		// DeliverAll). The ordered consumer fetches asynchronously, so wait for
+		// messages with a short idle timeout rather than a non-blocking poll: a
+		// non-blocking poll races delivery and usually reads nothing, leaving
+		// every player but the archiver with a zero score in the archive record.
+		const idle = time.Second
+		timer := time.NewTimer(idle)
+	drain:
+		for {
 			select {
 			case msg, ok := <-evtCh:
 				if !ok {
-					done = true
-					break
+					break drain
 				}
 				var ev engine.GameEvent
 				if json.Unmarshal(msg.Data(), &ev) == nil && ev.Kind == engine.EventGameOver {
@@ -74,10 +81,18 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 						}
 					}
 				}
-			default:
-				done = true
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idle)
+			case <-timer.C:
+				break drain
 			}
 		}
+		timer.Stop()
 		evtCancel()
 	}
 	// Also add players from the game listing who might not have topped out

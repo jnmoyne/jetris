@@ -32,6 +32,20 @@ func (r Row) Clone() Row {
 	return Row{Cells: cells}
 }
 
+// Equal reports whether two rows have identical cells. Cell is all scalar
+// fields, so a direct comparison is a full value compare.
+func (r Row) Equal(other Row) bool {
+	if len(r.Cells) != len(other.Cells) {
+		return false
+	}
+	for i := range r.Cells {
+		if r.Cells[i] != other.Cells[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // CloneRows returns deep copies of the given rows, safe to read concurrently
 // with mutation of the originals.
 func CloneRows(rows []Row) []Row {

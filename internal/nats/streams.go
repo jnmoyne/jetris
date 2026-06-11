@@ -14,9 +14,16 @@ func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 		Name:               config.GameStream(gameID),
 		Subjects:           []string{config.GameSubjectFilter(gameID)},
 		AllowAtomicPublish: true,
-		AllowDirect:        true,
-		Storage:            jetstream.FileStorage,
-		Retention:          jetstream.LimitsPolicy,
+		// AllowDirect powers GetLastMsgForSubject (used by the CAS merge-retry's
+		// refetch and by FetchGameMeta). On a single-replica stream direct get
+		// reads the leader's own state, so the refetched "last sequence per
+		// subject" is fresh — the merge-retry does get the new sequence on each
+		// retry. (On a multi-replica stream direct get can read a follower that is
+		// briefly behind; if that ever causes useless retries we'd switch the
+		// merge-retry refetch to a consistent read.)
+		AllowDirect: true,
+		Storage:     jetstream.FileStorage,
+		Retention:   jetstream.LimitsPolicy,
 	})
 	return err
 }

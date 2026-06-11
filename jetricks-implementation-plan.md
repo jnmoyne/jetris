@@ -1406,12 +1406,22 @@ In **cooperative** mode the board is shared, so a line clear must repaint every
 player's board. The clearing engine emits a full-board re-render itself; every
 other engine, on receiving the `EventLineClear` game event, also emits a
 full-board re-render (`emitFullBoardRerender`) in addition to folding in the shared
-score delta. A *full* re-render (all visible rows in one update) is required
-because the bounded, non-blocking `Updates`/broadcaster fan-out can drop individual
-per-row triggers during the clear's full-visible-range republish, which would
-otherwise leave stale rows on the other player's board. The same full-board
-re-render is emitted after a competitive shrink (`applyOpponentShrink`), which also
-republishes the whole visible range.
+score delta. A *full* re-render (the UI repaints all visible rows in one update) is
+required because the bounded, non-blocking `Updates`/broadcaster fan-out can drop
+individual per-row triggers, which would otherwise leave stale rows on the other
+player's board. The same full-board re-render is emitted after a competitive
+shrink (`applyOpponentShrink`).
+
+Note the distinction between the **re-render** (whole board, UI only) and the
+**publish**: the clear/shrink publish only the rows that *actually changed*
+(`changedRows` diffs the projection against the live rows), not the whole visible
+range. A low stack changes only a handful of rows, so on the shared coop board
+this sharply cuts the per-subject CAS contention that was otherwise failing the
+clear's merge-retry against the other player's moving piece — exhausting the
+retries and dropping the clear (uncleared line) and the follow-up spawn (stuck
+player). Competitive clear/shrink publish their changed rows NoCAS (per-player
+boards, single writer — authoritative); the coop clear stays CAS+merge-retry
+because a NoCAS shared-row write would clobber the other player's mid-flight piece.
 
 #### Publish & CAS helpers (`engine.go` / `move.go`)
 

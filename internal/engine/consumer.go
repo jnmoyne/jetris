@@ -107,32 +107,30 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		}
 		e.score.Add(int64(scoreDelta))
 
-		// Compute the cleared/shifted projection without mutating e.playfield.
-		// The consumer will apply the published rows on echo. In coop mode,
-		// remaining active cells get their AnchorRow shifted by len(completed)
+		// Compute the cleared/shifted projection without mutating e.playfield. In
+		// coop, remaining active cells get their AnchorRow shifted by len(completed)
 		// so other players' pieces land in the right anchor position.
 		shiftAnchors := e.gameMode == config.ModeCooperative
 		projected := e.playfield.ProjectClearRows(completed, shiftAnchors)
 
-		// Publish only visible rows (not empty headroom) — reduces NATS round trips.
+		// Republish ONLY the rows the clear actually changed (a low stack changes
+		// just a few), not the whole visible range — this slashes the per-subject
+		// CAS contention on the shared coop board that was making the merge-retry
+		// exhaust and drop the clear. handleLockIn holds e.mu, so reading
+		// e.playfield.Rows for the diff is safe.
+		changed := changedRows(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
 		if e.gameMode == config.ModeCooperative {
-			// Shared board: use CAS+merge-retry so the clear's whole-board shift
-			// can't clobber the other player's mid-flight piece with our snapshot.
-			rowsMap := make(map[int]game.Row, e.playfield.Height-e.visibleRowStart)
-			for r := e.visibleRowStart; r < e.playfield.Height && r < len(projected); r++ {
-				rowsMap[r] = projected[r]
-			}
-			// bottomFirst=true: a line clear shifts every piece DOWN, so consumers
-			// must apply the highest (lowest-on-screen) rows first. Applied
-			// top-to-bottom, another player's mid-flight piece is briefly erased
-			// from its old rows before its new (shifted-down) rows arrive — its
-			// active-cell count hits zero and that player's lock-in detector fires
-			// a spurious lock, respawning their piece. Bottom-first guarantees the
-			// shifted piece always overlaps itself, so it never transiently vanishes.
-			e.publishProjectedRowsWithMergeRetry(ctx, rowsMap, nil, true, true)
+			// Shared board: CAS+merge-retry so the shift can't clobber the other
+			// player's mid-flight piece with our snapshot. bottomFirst=true: a clear
+			// shifts pieces DOWN, so consumers must apply the highest (lowest-on-
+			// screen) rows first — applied top-to-bottom, another player's mid-flight
+			// piece is briefly erased from its old rows before its shifted rows
+			// arrive, its active-cell count hits zero, and it fires a spurious lock +
+			// respawn. Bottom-first keeps the shifted piece overlapping itself.
+			e.publishProjectedRowsWithMergeRetry(ctx, changed, nil, true, true)
 		} else {
-			// Competitive: per-player subjects, no other writer to preserve.
-			e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height, true)
+			// Competitive: own board, single writer — authoritative NoCAS.
+			e.publishProjectedRowsNoCAS(ctx, changed, true, true)
 		}
 
 		// Update level in cooperative mode
@@ -361,11 +359,15 @@ func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerI
 	// would run it off the top of the board.
 	projected, topOut := e.playfield.ProjectShrink(rowsToAdd, causerIdx, e.playerIdx)
 
+	// Republish only the rows the shift actually changed (diffed under the lock,
+	// reading the live rows), not the whole visible range. Competitive boards are
+	// per-player single-writer, so the shrink is authoritative NoCAS.
+	changed := changedRows(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
+
 	e.mu.Unlock()
 
-	// Publish only visible rows (not empty headroom) NoCAS — shrink is authoritative.
 	// locked=false: applyOpponentShrink released e.mu above before publishing.
-	e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height, false)
+	e.publishProjectedRowsNoCAS(ctx, changed, false, false)
 
 	// Shrink republishes the whole visible range; force a full-board re-render so
 	// no row is left stale if a per-row trigger is dropped (see emitFullBoardRerender).

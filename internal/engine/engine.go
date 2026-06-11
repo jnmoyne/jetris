@@ -381,6 +381,22 @@ func sortedRowKeys[V any](m map[int]V, bottomFirst bool) []int {
 	return keys
 }
 
+// changedRows returns the subset of projected[fromRow:toRow) whose content
+// differs from cur[r]. Used so a line clear (coop/competitive) or competitive
+// shrink republishes only the rows that actually changed — a low stack changes
+// only a handful — instead of the whole visible range, which on the shared coop
+// board sharply cuts the per-subject CAS contention that was exhausting the
+// merge-retry. Call with e.mu held (it reads the live cur rows).
+func changedRows(cur, projected []game.Row, fromRow, toRow int) map[int]game.Row {
+	out := make(map[int]game.Row)
+	for r := fromRow; r < toRow && r < len(projected) && r < len(cur); r++ {
+		if !projected[r].Equal(cur[r]) {
+			out[r] = projected[r]
+		}
+	}
+	return out
+}
+
 func (e *Engine) emitUpdate(u EngineUpdate) {
 	select {
 	case e.Updates <- u:
@@ -653,35 +669,6 @@ func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]gam
 	seq, err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates)
 	if err != nil {
 		log.Printf("publish batch (no-cas): %v", err)
-		return
-	}
-	e.applyPublishedRows(keys, func(r int) game.Row { return rows[r] }, seq, locked)
-}
-
-// publishProjectedRowsSliceNoCAS publishes rows[fromRow:toRow) as a SINGLE
-// atomic batch without CAS. Used for whole-playfield projections (line clear,
-// shrink).
-func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game.Row, fromRow, toRow int, locked bool) {
-	if fromRow >= toRow {
-		return
-	}
-	keys := make([]int, 0, toRow-fromRow)
-	updates := make([]natspkg.RowUpdate, 0, toRow-fromRow)
-	for r := fromRow; r < toRow && r < len(rows); r++ {
-		data, err := rows[r].Marshal()
-		if err != nil {
-			log.Printf("marshal row %d: %v", r, err)
-			return
-		}
-		keys = append(keys, r)
-		updates = append(updates, natspkg.RowUpdate{
-			Subject: e.rowSubject(r),
-			Payload: data,
-		})
-	}
-	seq, err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates)
-	if err != nil {
-		log.Printf("publish slice batch (no-cas): %v", err)
 		return
 	}
 	e.applyPublishedRows(keys, func(r int) game.Row { return rows[r] }, seq, locked)

@@ -135,7 +135,7 @@ func TestCoopLineClearKeepsOtherPlayersPiece(t *testing.T) {
 
 	// The clear must register for a.
 	waitUntil(t, 3*time.Second, func() bool {
-		return a.score > 0 && len(game.CompletedRows(a.Playfield())) == 0
+		return a.Score() > 0 && len(game.CompletedRows(a.Playfield())) == 0
 	}, "a's line clear to register")
 
 	// THE ASSERTION: b keeps its piece (shifted down) and does NOT respawn. Allow a

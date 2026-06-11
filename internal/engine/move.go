@@ -2,22 +2,50 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"jetricks/internal/config"
 	"jetricks/internal/game"
 )
 
-func (e *Engine) runMoves(ctx context.Context) {
+// runInput is the engine's single gameplay-write goroutine: it processes player
+// input AND drives the gravity ticker. Running both on one goroutine is
+// deliberate — a player's own gravity drop and a player move can never publish
+// to their row subjects concurrently, so they can never lose the per-subject CAS
+// race against each other (which would drop the step and flash the piece
+// outline). This applies to both competitive and cooperative modes.
+func (e *Engine) runInput(ctx context.Context) {
+	level := 0
+	timer := time.NewTimer(game.GravityInterval(level))
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case move := <-e.moves:
-			if e.mode != ModePlayer {
+			if e.getMode() != ModePlayer {
 				continue
 			}
 			// Player input — drop+flash on CAS failure.
 			_ = e.attemptMove(ctx, move, false)
+		case <-timer.C:
+			if e.getMode() != ModePlayer {
+				return // became a spectator: stop gravity (and this loop)
+			}
+			// internal=true: engine-driven gravity tick. In coop this routes to
+			// merge-retry on CAS conflict so the piece keeps falling under
+			// contention; it flashes only if the tick is ultimately dropped.
+			// Serialized with player input above (same goroutine), so it never
+			// races our own moves.
+			_ = e.attemptMove(ctx, MoveDown, true)
+
+			if e.gameMode == config.ModeCooperative {
+				if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {
+					level = newLevel
+				}
+			}
+			timer.Reset(game.GravityInterval(level))
 		}
 	}
 }
@@ -98,7 +126,7 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 			rows := e.playfield.ProjectLock(affected, e.playerIdx)
 			e.mu.Unlock()
 			// In-place lock (gravity/soft drop): row order is irrelevant.
-			e.publishProjectedRowsNoCAS(ctx, rows, false)
+			e.publishProjectedRowsNoCAS(ctx, rows, false, false)
 			return nil
 		}
 		e.mu.Unlock()
@@ -116,7 +144,7 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 	// the dropped step flashes regardless of whether it was a player input or
 	// an internal gravity tick. bottomFirst for downward moves so a single-row
 	// (horizontal I) piece never transiently vanishes mid-relocate.
-	e.publishProjectedRows(ctx, rows, flashCells, move == MoveDown)
+	e.publishProjectedRows(ctx, rows, flashCells, move == MoveDown, false)
 	return nil
 }
 
@@ -171,7 +199,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 			// Coop shares row subjects: use CAS+merge-retry so this lock can't
 			// clobber the other player's mid-flight piece with our stale view.
 			// In-place lock: row order is irrelevant (bottomFirst=false).
-			e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, false)
+			e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, false, false)
 			return nil
 		}
 		e.mu.Unlock()
@@ -192,7 +220,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 		// any other lost CAS step. bottomFirst (gravity is a downward move) so a
 		// single-row (horizontal I) piece never transiently vanishes mid-move
 		// and trigger a spurious lock-in.
-		e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, move == MoveDown)
+		e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, move == MoveDown, false)
 		return nil
 	}
 	// Player-initiated move: CAS conflict (typical in coop where two
@@ -200,7 +228,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 	// rainbow flash on the player's piece. We do not retry; the player
 	// must retry the input themselves, and we do NOT publish anything to
 	// the other players. bottomFirst for downward moves (single-row I safety).
-	e.publishProjectedRows(ctx, rows, flashCells, move == MoveDown)
+	e.publishProjectedRows(ctx, rows, flashCells, move == MoveDown, false)
 	return nil
 }
 
@@ -221,7 +249,7 @@ func (e *Engine) publishHardDrop(ctx context.Context) error {
 	// echoes from overwriting it. applyBottomFirst=true so the landing rows are
 	// applied before the vacated rows, ensuring a line completed by the drop is
 	// detected at this lock (not one piece later). See publishProjectedRowsNoCAS.
-	e.publishProjectedRowsNoCAS(ctx, rows, true)
+	e.publishProjectedRowsNoCAS(ctx, rows, true, false)
 	return nil
 }
 
@@ -251,6 +279,6 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 	// other player's mid-flight piece with our stale view. bottomFirst=true so
 	// the landing rows apply before the vacated rows and a line completed by the
 	// drop is detected at this lock, not one piece later.
-	e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, true)
+	e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, true, false)
 	return nil
 }

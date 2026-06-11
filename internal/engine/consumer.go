@@ -61,10 +61,17 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 					OpponentID:  opponentID,
 				})
 			} else {
-				// Lock-in detection: had active → no active
+				// Lock-in detection: had active → no active. handleLockIn spawns the
+				// next piece, and the publish write-through makes it active in pf
+				// immediately (still under e.mu here), so RE-READ hasActive after it
+				// — otherwise hadActivePiece is left false while a piece is active,
+				// and if that piece locks before the next echo (runInput races ahead
+				// of the consumer on fast drops) its lock-in is missed and the player
+				// stops spawning entirely.
 				hasActive := pf.ActivePieceForPlayer(e.playerIdx) != nil
 				if e.hadActivePiece && !hasActive {
 					e.handleLockIn(ctx)
+					hasActive = pf.ActivePieceForPlayer(e.playerIdx) != nil
 				}
 				e.hadActivePiece = hasActive
 				e.mu.Unlock()
@@ -88,7 +95,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	// Check for completed rows
 	completed := game.CompletedRows(e.playfield)
 	if len(completed) > 0 {
-		e.totalLines += len(completed)
+		e.totalLines.Add(int64(len(completed)))
 
 		var scoreDelta int
 		if e.gameMode == config.ModeCooperative {
@@ -98,7 +105,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			// Competitive: score = number of lines cleared (simple count)
 			scoreDelta = len(completed)
 		}
-		e.score += scoreDelta
+		e.score.Add(int64(scoreDelta))
 
 		// Compute the cleared/shifted projection without mutating e.playfield.
 		// The consumer will apply the published rows on echo. In coop mode,
@@ -122,18 +129,18 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			// active-cell count hits zero and that player's lock-in detector fires
 			// a spurious lock, respawning their piece. Bottom-first guarantees the
 			// shifted piece always overlaps itself, so it never transiently vanishes.
-			e.publishProjectedRowsWithMergeRetry(ctx, rowsMap, nil, true)
+			e.publishProjectedRowsWithMergeRetry(ctx, rowsMap, nil, true, true)
 		} else {
 			// Competitive: per-player subjects, no other writer to preserve.
-			e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
+			e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height, true)
 		}
 
 		// Update level in cooperative mode
 		if e.gameMode == config.ModeCooperative {
-			newLevel := game.Level(e.totalLines)
-			if newLevel != e.level {
-				e.level = newLevel
-				e.emitUpdate(EngineUpdate{Kind: UpdateLevel, Level: e.level})
+			newLevel := game.Level(int(e.totalLines.Load()))
+			if int64(newLevel) != e.level.Load() {
+				e.level.Store(int64(newLevel))
+				e.emitUpdate(EngineUpdate{Kind: UpdateLevel, Level: newLevel})
 			}
 		}
 
@@ -141,7 +148,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		// re-renders from e.playfield as the published rows echo back. A single
 		// full-board update is robust against dropped per-row triggers.
 		e.emitFullBoardRerender()
-		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: e.score})
+		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 
 		// Cooperative: notify other players of the score change
 		if e.gameMode == config.ModeCooperative {
@@ -170,12 +177,13 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	e.emitUpdate(EngineUpdate{Kind: UpdatePieceLocked})
 
 	// Increment piece index and spawn next
-	e.pieceIdx++
-	go e.publishPieceIdxUpdate(e.pieceIdx)
+	e.pieceIdx.Add(1)
+	go e.publishPieceIdxUpdate(e.pieceIdx.Load())
 
-	// Spawn next piece if we're the player
-	if e.mode == ModePlayer {
-		e.spawnPiece(ctx)
+	// Spawn next piece if we're the player. handleLockIn runs under e.mu (held
+	// by runConsumer), so locked=true.
+	if e.getMode() == ModePlayer {
+		e.spawnPiece(ctx, true)
 	}
 }
 
@@ -231,10 +239,10 @@ func (e *Engine) runMetaConsumer(ctx context.Context) {
 			if err := json.Unmarshal(msg.Data(), &meta); err != nil {
 				continue
 			}
-			if meta.Status == config.GameStatusInProgress && e.mode == ModePlayer {
+			if meta.Status == config.GameStatusInProgress && e.getMode() == ModePlayer {
 				e.mu.Lock()
 				if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil {
-					e.spawnPiece(ctx)
+					e.spawnPiece(ctx, true) // under e.mu
 				}
 				e.mu.Unlock()
 				e.emitUpdate(EngineUpdate{
@@ -286,8 +294,8 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 		// e.playfield (the same thing the clearing player does) so every player
 		// sees the cleared board. Also fold in the shared score delta.
 		if ev.PlayerID != e.playerID && e.gameMode == config.ModeCooperative {
-			e.score += ev.Score
-			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: e.score})
+			e.score.Add(int64(ev.Score))
+			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 			e.emitFullBoardRerender()
 		}
 	case EventShrink:
@@ -313,7 +321,7 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 				})
 
 				// If we're the last player standing, we win
-				if eliminated >= e.playerCount-1 && e.mode == ModePlayer {
+				if eliminated >= e.playerCount-1 && e.getMode() == ModePlayer {
 					e.transitionToSpectator(true) // we won!
 					go e.transitionGameToFinished(ctx)
 				} else if eliminated >= e.playerCount && e.initialMode == ModePlayer {
@@ -345,8 +353,9 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerIdx int) {
 	e.mu.Lock()
 
-	// Compute the post-shrink projection without mutating e.playfield. The
-	// consumer will update e.playfield when our published rows echo back.
+	// Compute the post-shrink projection without mutating e.playfield here; the
+	// publish below write-throughs the committed rows into e.playfield (and the
+	// consumer echo reconciles via pf.Apply's strictly-higher-sequence rule).
 	// ProjectShrink holds our falling piece in place, pushes it up only as far
 	// as the rising stack/garbage forces it, and reports topOut when that push
 	// would run it off the top of the board.
@@ -355,7 +364,8 @@ func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerI
 	e.mu.Unlock()
 
 	// Publish only visible rows (not empty headroom) NoCAS — shrink is authoritative.
-	e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height)
+	// locked=false: applyOpponentShrink released e.mu above before publishing.
+	e.publishProjectedRowsSliceNoCAS(ctx, projected, e.visibleRowStart, e.playfield.Height, false)
 
 	// Shrink republishes the whole visible range; force a full-board re-render so
 	// no row is left stale if a per-row trigger is dropped (see emitFullBoardRerender).

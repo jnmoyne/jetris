@@ -73,7 +73,7 @@ func TestCoopHardDropClearsCompletingLineImmediately(t *testing.T) {
 	// With the bug, the full bottom row sits uncleared (CompletedRows non-empty)
 	// until the next piece locks.
 	waitUntil(t, 2*time.Second, func() bool {
-		return len(game.CompletedRows(e.Playfield())) == 0 && e.score > 0
+		return len(game.CompletedRows(e.Playfield())) == 0 && e.Score() > 0
 	}, "completing line to clear at the hard drop")
 }
 

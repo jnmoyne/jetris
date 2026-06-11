@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -32,10 +33,16 @@ type Engine struct {
 	gameID      string
 	playerID    string
 	gameMode    config.GameMode
-	mode        Mode
 	initialMode Mode // original mode at creation (ModePlayer or ModeSpectator)
 	playerIdx   int  // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
 	playerCount int  // number of players in the game
+
+	// mode/score/level/totalLines/pieceIdx are read and written from several
+	// goroutines (the row/meta/events consumers, runInput, the UI, tests) with
+	// no single lock covering every path — transitionToSpectator in particular
+	// runs both under and without e.mu — so they are atomic rather than e.mu-
+	// guarded. e.mu still guards the structured state (playfield, the maps).
+	mode atomic.Int32 // current Mode
 
 	mu        sync.Mutex
 	playfield *game.Playfield
@@ -44,14 +51,14 @@ type Engine struct {
 	opponentPlayerID   string                     // single opponent (for 2-player join)
 
 	seq      *rng.Sequence
-	pieceIdx uint64
+	pieceIdx atomic.Uint64
 	metaSeq  uint64
 
-	score             int
-	totalLines        int
-	level             int
-	hadActivePiece    bool
-	eliminatedPlayers map[string]bool // players who have topped out (competitive)
+	score             atomic.Int64
+	totalLines        atomic.Int64
+	level             atomic.Int64
+	hadActivePiece    bool            // only touched by the own-rows consumer goroutine
+	eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
 	visibleRowStart   int             // first visible row index (varies per game mode/player count)
 
 	Updates        chan EngineUpdate
@@ -72,12 +79,11 @@ func New(
 	mode Mode,
 	playerIdx int,
 ) *Engine {
-	return &Engine{
+	e := &Engine{
 		gameID:             gameID,
 		playerID:           playerID,
 		opponentPlayerID:   opponentPlayerID,
 		gameMode:           gameMode,
-		mode:               mode,
 		initialMode:        mode,
 		playerIdx:          playerIdx,
 		playfield:          game.NewPlayfield(config.StandardWidth),
@@ -88,9 +94,12 @@ func New(
 		rowUpdated:         make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
 	}
+	e.setMode(mode)
+	return e
 }
 
-// Start begins all consumer goroutines and (if ModePlayer) the gravity ticker.
+// Start begins all consumer goroutines and (if ModePlayer) the combined
+// input+gravity goroutine.
 func (e *Engine) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.ctx = ctx
@@ -117,7 +126,7 @@ func (e *Engine) Start() error {
 	// Cooperative mode: shared wide playfield, shared RNG seed
 	if e.gameMode == config.ModeCooperative {
 		e.seq = rng.New(meta.Seed)
-		e.pieceIdx = 0
+		e.pieceIdx.Store(0)
 		// Shared wide playfield with standard height
 		e.playfield = game.NewPlayfieldWithHeight(
 			meta.PlayerCount*config.StandardWidth,
@@ -125,7 +134,7 @@ func (e *Engine) Start() error {
 		)
 	} else {
 		e.seq = rng.New(meta.Seed)
-		e.pieceIdx = meta.PieceIdx
+		e.pieceIdx.Store(meta.PieceIdx)
 		// Competitive: taller playfield (extra rows per player)
 		e.playfield = game.NewPlayfieldWithHeight(
 			config.StandardWidth,
@@ -169,14 +178,16 @@ func (e *Engine) Start() error {
 	go e.runMetaConsumer(ctx)
 	go e.runCountdownConsumer(ctx)
 
-	// 7. Start move processor and gravity if playing
-	if e.mode == ModePlayer {
+	// 7. Start the combined input+gravity goroutine if playing. Gravity and
+	// player input share one goroutine so a player's own gravity drop and move
+	// never publish to their row subjects concurrently and lose the per-subject
+	// CAS race (in either game mode).
+	if e.getMode() == ModePlayer {
 		// If game is already in progress and no active piece, spawn immediately
 		if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil && meta.Status == config.GameStatusInProgress {
-			e.spawnPiece(ctx)
+			e.spawnPiece(ctx, false) // Start holds no lock
 		}
-		go e.runMoves(ctx)
-		go e.runGravity(ctx)
+		go e.runInput(ctx)
 	}
 
 	return nil
@@ -189,20 +200,23 @@ func (e *Engine) Stop() {
 	}
 }
 
-// Playfield returns the current playfield (thread-safe copy of rows).
+// Playfield returns a race-free deep copy of the current playfield, taken under
+// e.mu so callers (UI, tests) can read it while the consumer and publish
+// write-through keep mutating the live playfield.
 func (e *Engine) Playfield() *game.Playfield {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.playfield
+	return e.playfield.Clone()
 }
 
-// OpponentPlayfields returns all opponent playfields keyed by playerID.
+// OpponentPlayfields returns race-free deep copies of all opponent playfields
+// keyed by playerID.
 func (e *Engine) OpponentPlayfields() map[string]*game.Playfield {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make(map[string]*game.Playfield, len(e.opponentPlayfields))
 	for k, v := range e.opponentPlayfields {
-		out[k] = v
+		out[k] = v.Clone()
 	}
 	return out
 }
@@ -283,10 +297,14 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 
 func (e *Engine) GameID() string            { return e.gameID }
 func (e *Engine) PlayerID() string          { return e.playerID }
-func (e *Engine) Score() int                { return e.score }
-func (e *Engine) Level() int                { return e.level }
-func (e *Engine) Mode() Mode                { return e.mode }
+func (e *Engine) Score() int                { return int(e.score.Load()) }
+func (e *Engine) Level() int                { return int(e.level.Load()) }
+func (e *Engine) Mode() Mode                { return e.getMode() }
 func (e *Engine) GameMode() config.GameMode { return e.gameMode }
+
+// getMode/setMode read and write the atomic mode field.
+func (e *Engine) getMode() Mode  { return Mode(e.mode.Load()) }
+func (e *Engine) setMode(m Mode) { e.mode.Store(int32(m)) }
 
 func (e *Engine) MoveLeft()  { e.dispatch(MoveLeft) }
 func (e *Engine) MoveRight() { e.dispatch(MoveRight) }
@@ -295,8 +313,18 @@ func (e *Engine) RotateCW()  { e.dispatch(RotateCW) }
 func (e *Engine) RotateCCW() { e.dispatch(RotateCCW) }
 func (e *Engine) HardDrop()  { e.dispatch(MoveHardDrop) }
 
+// dispatch hands a player input to the engine's single input goroutine. Inputs
+// are SERIALIZED and BUFFERED: they queue on the buffered e.moves channel and
+// runInput processes them one at a time, and because each move's publish blocks
+// on its batch commit ack (and applies the write-through) before the next move
+// is dequeued, a new move issued while the previous one is still awaiting its
+// commit ack waits in the buffer — the engine never has two of a player's input
+// batches in flight at once. The non-blocking send means that if a player
+// somehow outruns the ack round-trip by more than the buffer depth the excess
+// input is dropped rather than blocking the UI goroutine (never reached at human
+// input rates).
 func (e *Engine) dispatch(m MoveType) {
-	if e.mode != ModePlayer {
+	if e.getMode() != ModePlayer {
 		return
 	}
 	select {
@@ -377,12 +405,16 @@ func (e *Engine) emitFullBoardRerender() {
 }
 
 func (e *Engine) transitionToSpectator(won bool) {
-	e.mode = ModeGameOver
+	e.setMode(ModeGameOver)
 	e.emitUpdate(EngineUpdate{Kind: UpdateGameOver, Won: won})
 }
 
-func (e *Engine) spawnPiece(ctx context.Context) {
-	pt := e.seq.Piece(e.pieceIdx)
+// spawnPiece publishes a freshly spawned piece. locked reports whether the
+// caller already holds e.mu (handleLockIn and the meta consumer spawn under the
+// lock; Start spawns with the lock released) so the publish write-through can
+// avoid re-locking.
+func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
+	pt := e.seq.Piece(e.pieceIdx.Load())
 	p := game.SpawnPiece(pt, config.StandardWidth)
 
 	// In cooperative mode, offset spawn column to player's section
@@ -402,9 +434,9 @@ func (e *Engine) spawnPiece(ctx context.Context) {
 		return
 	}
 
-	// In-memory state is updated only when the consumer echoes the published
-	// rows back (see runConsumer). Here we just compute the projection and
-	// publish; the consumer will set hadActivePiece via the lock-in detector.
+	// Here we compute the projection and publish; the publish write-through
+	// (applyPublishedRows) advances e.playfield on commit, and the consumer sets
+	// hadActivePiece via the lock-in detector when the echo arrives.
 	affected := make([]int, 0, 4)
 	seen := make(map[int]bool, 4)
 	for _, c := range p.Cells() {
@@ -424,14 +456,14 @@ func (e *Engine) spawnPiece(ctx context.Context) {
 		// merge-retry on CAS failure: refetch the latest row from the
 		// stream, overlay our piece cells on top, retry. This is the only
 		// CAS path in the engine that retries; player moves never do.
-		e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, false)
+		e.publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, false, locked)
 		return
 	}
 	// Competitive: each player writes their own subjects, so a race is
 	// extremely unlikely, but if CAS ever does reject the spawn we flash too.
 	// A spawn places a brand-new piece (no old cells to clear), so ordering is
 	// irrelevant: bottomFirst=false.
-	e.publishProjectedRows(ctx, rows, flashCells, false)
+	e.publishProjectedRows(ctx, rows, flashCells, false, locked)
 }
 
 func (e *Engine) PlayerIdx() int       { return e.playerIdx }
@@ -443,11 +475,11 @@ func (e *Engine) IsEliminated(id string) bool {
 	return e.eliminatedPlayers[id]
 }
 
-func (e *Engine) PieceIdx() uint64 { return e.pieceIdx }
+func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
 
 func (e *Engine) handleTopOut(ctx context.Context) {
 	// Publish game over event with score and piece count
-	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: e.score, PieceCount: e.pieceIdx}
+	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), PieceCount: e.pieceIdx.Load()}
 	data, _ := json.Marshal(ev)
 	_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
 	e.transitionToSpectator(false) // we topped out → we lost
@@ -506,9 +538,11 @@ func (e *Engine) transitionGameToFinished(ctx context.Context) {
 // (Nats-Expected-Last-Subject-Sequence). Either every row in the move
 // commits or none does; consumers never see a torn intermediate state.
 //
-// e.playfield is not mutated — the consumer (runConsumer) is the single writer
-// to e.playfield via pf.Apply. On CAS failure the move is DROPPED in both
-// competitive and cooperative modes; the player is signalled with a local-only
+// On success the committed rows are written through into e.playfield via
+// applyPublishedRows (content + the inferred per-subject sequences) so the next
+// step is projected from up-to-date state; pf.Apply's strictly-higher-sequence
+// rule makes the later consumer echo a no-op. On CAS failure the move is DROPPED
+// in both competitive and cooperative modes; the player is signalled with a local-only
 // rainbow flash on flashCells (the dropped step's cells, precomputed by the
 // caller under e.mu) so they know the step was lost. This fires for every dropped
 // CAS write — player moves, gravity ticks, and spawns alike. Pass nil flashCells
@@ -521,17 +555,24 @@ func (e *Engine) transitionGameToFinished(ctx context.Context) {
 // with the next one). Applying the lower (new) row first keeps at least one active
 // cell present throughout the relocate. Multi-row pieces overlap rows when moving
 // down, so they are unaffected, but ordering bottom-first is harmless for them.
-func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst bool) {
+func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst, locked bool) {
 	if len(rows) == 0 {
 		return
 	}
-	updates, err := e.buildBatchUpdates(rows, bottomFirst)
+	keys := sortedRowKeys(rows, bottomFirst)
+	updates, err := e.buildBatchUpdates(rows, bottomFirst, locked)
 	if err != nil {
 		log.Printf("build batch: %v", err)
 		return
 	}
 
-	if err := natspkg.PublishMoveAtomically(ctx, e.js, updates); err == nil {
+	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
+	if err == nil {
+		// Write the committed rows straight into e.playfield (content + the
+		// inferred per-subject sequences) so the next move/gravity tick is
+		// projected from — and CAS-checked against — up-to-date state without
+		// waiting for the consumer echo. keys is in the same order as updates.
+		e.applyPublishedRows(keys, func(r int) game.Row { return rows[r] }, seq, locked)
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
 		log.Printf("publish batch: %v", err)
@@ -542,6 +583,37 @@ func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row
 	// on the dropped cells. We do NOT publish anything to the other players —
 	// a CAS failure is information for the local player only.
 	e.emitCASFlash(flashCells)
+}
+
+// applyPublishedRows write-throughs a successfully committed batch into
+// e.playfield: it advances both the board content (pf.Rows) AND the per-subject
+// CAS expectation (pf.LastSeq) for the affected rows immediately, using the
+// stream sequences inferred from the batch commit ack rather than waiting for
+// the consumer to echo our own write back.
+//
+// orderedKeys lists the row indices in the exact order the messages were added
+// to the batch (commit message last); get returns each row's committed content;
+// commitSeq is the commit ack's stream sequence. The batch's N messages got
+// consecutive stream sequences, so message i got commitSeq-(N-1-i). pf.Apply's
+// stale-guard then makes the later consumer echo of the same sequence a no-op.
+//
+// This is what keeps a player from losing a per-subject CAS race against their
+// OWN just-committed write (gravity vs. input, a write right after a NoCAS
+// line-clear/shrink, etc.). locked reports whether the caller already holds
+// e.mu: spawnPiece and the line-clear publish run under the consumer's lock;
+// every other publish path runs with the lock released.
+func (e *Engine) applyPublishedRows(orderedKeys []int, get func(int) game.Row, commitSeq uint64, locked bool) {
+	if commitSeq == 0 || len(orderedKeys) == 0 {
+		return
+	}
+	if !locked {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+	}
+	n := len(orderedKeys)
+	for i, r := range orderedKeys {
+		e.playfield.Apply(r, get(r), commitSeq-uint64(n-1-i))
+	}
 }
 
 // publishProjectedRowsNoCAS publishes pre-computed rows as a SINGLE atomic
@@ -561,12 +633,13 @@ func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row
 // next piece locked. Writing the bottom (landing) rows first guarantees the
 // completed row is in place before lock-in fires. For in-place locks the order
 // is irrelevant.
-func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]game.Row, applyBottomFirst bool) {
+func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]game.Row, applyBottomFirst, locked bool) {
 	if len(rows) == 0 {
 		return
 	}
+	keys := sortedRowKeys(rows, applyBottomFirst)
 	updates := make([]natspkg.RowUpdate, 0, len(rows))
-	for _, r := range sortedRowKeys(rows, applyBottomFirst) {
+	for _, r := range keys {
 		data, err := rows[r].Marshal()
 		if err != nil {
 			log.Printf("marshal row %d: %v", r, err)
@@ -577,18 +650,22 @@ func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]gam
 			Payload: data,
 		})
 	}
-	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates); err != nil {
+	seq, err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates)
+	if err != nil {
 		log.Printf("publish batch (no-cas): %v", err)
+		return
 	}
+	e.applyPublishedRows(keys, func(r int) game.Row { return rows[r] }, seq, locked)
 }
 
 // publishProjectedRowsSliceNoCAS publishes rows[fromRow:toRow) as a SINGLE
 // atomic batch without CAS. Used for whole-playfield projections (line clear,
 // shrink).
-func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game.Row, fromRow, toRow int) {
+func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game.Row, fromRow, toRow int, locked bool) {
 	if fromRow >= toRow {
 		return
 	}
+	keys := make([]int, 0, toRow-fromRow)
 	updates := make([]natspkg.RowUpdate, 0, toRow-fromRow)
 	for r := fromRow; r < toRow && r < len(rows); r++ {
 		data, err := rows[r].Marshal()
@@ -596,23 +673,43 @@ func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game
 			log.Printf("marshal row %d: %v", r, err)
 			return
 		}
+		keys = append(keys, r)
 		updates = append(updates, natspkg.RowUpdate{
 			Subject: e.rowSubject(r),
 			Payload: data,
 		})
 	}
-	if err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates); err != nil {
+	seq, err := natspkg.PublishRowsAtomicallyNoCAS(ctx, e.js, updates)
+	if err != nil {
 		log.Printf("publish slice batch (no-cas): %v", err)
+		return
 	}
+	e.applyPublishedRows(keys, func(r int) game.Row { return rows[r] }, seq, locked)
 }
 
 // buildBatchUpdates converts a row projection map into a RowUpdate slice in
 // apply order (see sortedRowKeys) with per-subject CAS expectations sourced from
 // e.playfield.LastSeq. Each row's subject is built with the engine's
 // mode-appropriate scheme.
-func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst bool) ([]natspkg.RowUpdate, error) {
-	updates := make([]natspkg.RowUpdate, 0, len(rows))
-	for _, r := range sortedRowKeys(rows, bottomFirst) {
+//
+// LastSeq is mutated by the consumer (and the publish write-through) under e.mu,
+// so it is snapshotted under the lock — unless the caller already holds it
+// (locked) — to give a race-free CAS expectation. The publish helpers run with
+// e.mu released except spawn/clear (which pass locked=true).
+func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst, locked bool) ([]natspkg.RowUpdate, error) {
+	keys := sortedRowKeys(rows, bottomFirst)
+	expect := make([]uint64, len(keys))
+	if !locked {
+		e.mu.Lock()
+	}
+	for i, r := range keys {
+		expect[i] = e.playfield.LastSeq[r]
+	}
+	if !locked {
+		e.mu.Unlock()
+	}
+	updates := make([]natspkg.RowUpdate, 0, len(keys))
+	for i, r := range keys {
 		data, err := rows[r].Marshal()
 		if err != nil {
 			return nil, err
@@ -620,7 +717,7 @@ func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst bool) ([]n
 		updates = append(updates, natspkg.RowUpdate{
 			Subject:       e.rowSubject(r),
 			Payload:       data,
-			ExpectLastSeq: e.playfield.LastSeq[r],
+			ExpectLastSeq: expect[i],
 		})
 	}
 	return updates, nil
@@ -644,7 +741,7 @@ func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst bool) ([]n
 // player's mid-flight piece: CAS rejects a stale batch, and the merge re-applies
 // only OUR cells on top of the latest stream state. bottomFirst controls row apply
 // order for hard drops (see buildBatchUpdates / publishProjectedRowsNoCAS).
-func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst bool) {
+func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst, locked bool) {
 	if len(rows) == 0 {
 		return
 	}
@@ -658,26 +755,35 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 	}
 
 	// First attempt uses in-memory LastSeq.
-	updates, err := e.buildBatchUpdates(rows, bottomFirst)
+	keys := sortedRowKeys(rows, bottomFirst)
+	updates, err := e.buildBatchUpdates(rows, bottomFirst, locked)
 	if err != nil {
 		log.Printf("build batch: %v", err)
 		return
 	}
-	if err := natspkg.PublishMoveAtomically(ctx, e.js, updates); err == nil {
+	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
+	if err == nil {
+		// First-attempt commit: write through the rows we published.
+		e.applyPublishedRows(keys, func(r int) game.Row { return rows[r] }, seq, locked)
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
 		log.Printf("publish batch: %v", err)
 		return
 	}
 
+	// refetchAndMerge builds the merged batch in sortedRowKeys(saved) order, so
+	// the same key order maps to the committed rows for the write-through.
+	mergedKeys := sortedRowKeys(saved, bottomFirst)
 	const maxRetries = 5
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		merged, ok := e.refetchAndMerge(ctx, saved, bottomFirst)
+		merged, mergedRows, ok := e.refetchAndMerge(ctx, saved, bottomFirst)
 		if !ok {
 			return
 		}
-		err := natspkg.PublishMoveAtomically(ctx, e.js, merged)
+		seq, err := natspkg.PublishMoveAtomically(ctx, e.js, merged)
 		if err == nil {
+			// Retry commit: write through the merged rows that actually committed.
+			e.applyPublishedRows(mergedKeys, func(r int) game.Row { return mergedRows[r] }, seq, locked)
 			return
 		}
 		if !errors.Is(err, natspkg.ErrCASFailure) {
@@ -693,22 +799,23 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 // refetchAndMerge fetches the latest stream message for each row in saved,
 // overlays the saved cells on top, and returns a fresh batch with refreshed
 // per-subject CAS expectations. Used by the merge-retry path.
-func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, bool) {
+func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, map[int]game.Row, bool) {
 	stream, sErr := e.js.Stream(ctx, config.GameStream(e.gameID))
 	if sErr != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	merged := make([]natspkg.RowUpdate, 0, len(saved))
+	mergedRows := make(map[int]game.Row, len(saved))
 	for _, r := range sortedRowKeys(saved, bottomFirst) {
 		cells := saved[r]
 		subject := e.rowSubject(r)
 		msg, gErr := stream.GetLastMsgForSubject(ctx, subject)
 		if gErr != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		latestRow, uErr := game.UnmarshalRow(msg.Data)
 		if uErr != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		// Re-apply OUR change on top of the latest stream state, preserving the
 		// other player's cells. First VACATE our previous active cells from the
@@ -739,15 +846,16 @@ func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell,
 		}
 		data, mErr := latestRow.Marshal()
 		if mErr != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		merged = append(merged, natspkg.RowUpdate{
 			Subject:       subject,
 			Payload:       data,
 			ExpectLastSeq: msg.Sequence,
 		})
+		mergedRows[r] = latestRow
 	}
-	return merged, true
+	return merged, mergedRows, true
 }
 
 // emitCASFlash signals the LOCAL player that a write was rejected by per-subject
@@ -763,7 +871,7 @@ func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell,
 // NATS: a CAS failure is information for the local player, not the others.
 // Spectators never flash.
 func (e *Engine) emitCASFlash(flashCells [][2]int) {
-	if e.mode != ModePlayer || len(flashCells) == 0 {
+	if e.getMode() != ModePlayer || len(flashCells) == 0 {
 		return
 	}
 	e.emitUpdate(EngineUpdate{

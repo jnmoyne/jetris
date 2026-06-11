@@ -18,6 +18,21 @@ func NewPlayfield(width int) *Playfield {
 	return NewPlayfieldWithHeight(width, TotalRows)
 }
 
+// Clone returns a deep copy of the playfield. The Rows and LastSeq slices are
+// copied so the result can be read without holding the lock that guards the
+// original — used by the engine's accessors to hand a race-free snapshot to the
+// UI and tests while the consumer/publish goroutines keep mutating the live one.
+func (pf *Playfield) Clone() *Playfield {
+	lastSeq := make([]uint64, len(pf.LastSeq))
+	copy(lastSeq, pf.LastSeq)
+	return &Playfield{
+		Width:   pf.Width,
+		Height:  pf.Height,
+		Rows:    CloneRows(pf.Rows),
+		LastSeq: lastSeq,
+	}
+}
+
 // NewPlayfieldWithHeight creates an empty playfield with a specific height.
 func NewPlayfieldWithHeight(width, height int) *Playfield {
 	pf := &Playfield{
@@ -32,16 +47,23 @@ func NewPlayfieldWithHeight(width, height int) *Playfield {
 	return pf
 }
 
-// Apply updates the playfield from a decoded row message.
-// Stale messages (with a sequence <= the current LastSeq for that row)
-// are ignored. This prevents old consumer messages from overwriting
-// state that was already updated by a NoCAS publish (e.g. line clears).
+// Apply updates the playfield from a decoded row message and is the single
+// reconciliation point for both the consumer echo and the engine's own publish
+// write-through. A message is applied only if its sequence is HIGHER than the
+// row's current LastSeq; a message with the same-or-lower sequence is skipped.
+//
+// This makes the two sources converge correctly: when the engine commits a
+// write it write-throughs the committed row here with the sequence inferred from
+// the commit ack; the same row is later echoed back by the consumer with the
+// SAME sequence, which is skipped (same-or-lower) — a harmless no-op. Only a
+// strictly higher sequence (e.g. the other player's write in cooperative mode,
+// or a NoCAS line-clear/shrink we did not originate) updates in-memory state.
 func (pf *Playfield) Apply(rowIndex int, row Row, seq uint64) {
 	if rowIndex < 0 || rowIndex >= pf.Height {
 		return
 	}
 	if seq > 0 && seq <= pf.LastSeq[rowIndex] {
-		return // stale message, skip
+		return // same-or-lower sequence: already have it, skip
 	}
 	pf.Rows[rowIndex] = row
 	pf.LastSeq[rowIndex] = seq

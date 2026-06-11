@@ -60,7 +60,6 @@ jetricks/
 │   │   └── row.go
 │   ├── engine/
 │   │   ├── engine.go
-│   │   ├── gravity.go
 │   │   ├── move.go
 │   │   ├── consumer.go
 │   │   └── events.go
@@ -780,15 +779,17 @@ Why per-subject CAS, not stream-level (`WithBatchExpectLastSequence`)? Each row 
 
 Why atomic batch, not row-by-row? A single move typically touches 2+ rows (the row the piece is leaving and the row(s) it is entering). If those messages arrived at consumers one at a time, every other player would briefly observe a half-erased / half-placed piece between consumer applies. Atomic batch makes the multi-row update visible to consumers as one indivisible step.
 
-The expected-last-sequence value for each row comes from `e.playfield.LastSeq[r]`, which is updated only by the row consumer's `pf.Apply(rowIdx, row, seq)` call when an ordered-consumer message is delivered. Because the consumer is the only writer to `LastSeq`, the CAS expectation always reflects what we have actually observed from the stream — not optimistic local edits.
+The expected-last-sequence value for each row comes from `e.playfield.LastSeq[r]`, updated via `pf.Apply(rowIdx, row, seq)` from two places: the row consumer on an ordered-consumer echo, and the **publish write-through** (`applyPublishedRows`), which advances it from the batch commit ack the instant a write commits. The write-through keeps the CAS expectation current so the next write doesn't lose a per-subject race against the engine's own just-committed write; `pf.Apply`'s strictly-higher-sequence rule reconciles the two sources (the echo of our own write carries the same sequence we already applied and is skipped; only a higher sequence updates memory).
+
+**Optimistic sequence write-through (both modes).** The per-subject CAS expectation is `pf.LastSeq[row]`, advanced by `Playfield.Apply`. Rather than waiting for the engine's own consumer to echo a published row back before that expectation (and the board content) catches up, a **successful publish is written through into the playfield immediately**: the batch commit ack returns the stream sequence of the last message, and since an atomic batch's messages get consecutive stream sequences the engine infers each row's sequence (`message i of N → commitSeq − (N−1−i)`) and applies the committed content + sequence via `pf.Apply`. The two batch publishers (`PublishMoveAtomically`, `PublishRowsAtomicallyNoCAS`) return that commit sequence; `applyPublishedRows` does the write-through. `pf.Apply`'s "apply only a **strictly higher** sequence" rule reconciles this with the later echo: the echo of our own write carries the same sequence we already wrote through and is skipped, while a higher sequence (the other player's write in coop, or a NoCAS write we didn't originate) still updates memory. In coop the write-through applies only what actually committed (the first-attempt or merge-retry batch), so it never clobbers the other player's cells. This keeps the in-memory view current so a player cannot lose a per-subject CAS race against their own just-committed write (gravity vs. input, a write right after a NoCAS line-clear/shrink, a fast input burst). `applyPublishedRows` takes `e.mu` unless the caller already holds it — a `locked` flag is threaded through the publish helpers and `spawnPiece` because `spawnPiece` and the line-clear publish run under the consumer's lock while every other publish path runs with the lock released.
 
 CAS-failure handling for **player moves** (same in both modes): **drop the move, no retry, no NATS publish**. The engine emits an `UpdateCASFlash` directly on its local `Updates` channel; the player must retry the input themselves.
 
 In cooperative mode the shared playfield has two writers, so CAS rejections on moves are an expected, regular occurrence. A silent server-side retry would mask the conflict and make the player's own input timing feel non-deterministic. Instead we surface the failure loudly: the UI renders the `UpdateCASFlash` as a **rainbow outline flash on the player's own piece** — cells in `FlashCells` cycle through the seven spectrum colors over roughly 600 ms with a matching glow, then revert. The other players see nothing, since one player's input rejection is information of no use to anyone else.
 
-CAS-failure handling for **engine-driven (internal) writes** — piece spawn and gravity ticks. The player did not press a key for either, so a flash would be misleading; and both share row subjects with the other player in coop mode. Both **must** succeed: a dropped spawn would leave the player pieceless, and a dropped gravity tick would make the piece appear frozen for one tick interval. In coop mode both go through `publishProjectedRowsWithMergeRetry`: on CAS failure, refetch each affected row from the stream via `stream.GetLastMsgForSubject`, overlay this player's cells on top, retry the batch with refreshed per-subject CAS expectations (up to 5 retries). In competitive mode neither can race (each player owns their subjects), so both go through the regular `publishProjectedRows(flashOnFailure=false)`.
+CAS-failure handling for **engine-driven (internal) writes** — piece spawn and gravity ticks. The player did not press a key for either, so a flash would be misleading; and both share row subjects with the other player in coop mode. Both **must** succeed: a dropped spawn would leave the player pieceless, and a dropped gravity tick would make the piece appear frozen for one tick interval. In coop mode both go through `publishProjectedRowsWithMergeRetry`: on CAS failure, refetch each affected row from the stream via `stream.GetLastMsgForSubject`, overlay this player's cells on top, retry the batch with refreshed per-subject CAS expectations (up to 5 retries). In competitive mode each player owns their subjects, so both go through the regular `publishProjectedRows`. **Gravity and player input run on one goroutine (`runInput`), so a player's own gravity tick and move are serialized and cannot lose the per-subject CAS race against each other** — this is what removed the spurious rainbow flashes that were otherwise visible in competitive play.
 
-The rainbow flash fires **only** for player-initiated moves. The `internal` boolean threaded through `attemptMove` / `attemptMoveStandard` / `attemptMoveCoop` distinguishes the source: `runMoves` (the moves channel — player input) calls `attemptMove(move, false)`, while `runGravity` calls `attemptMove(MoveDown, true)`. The `flashOnFailure` parameter on `publishProjectedRows` is the same flag passed downstream — `internal` true means flash false, and vice versa.
+The rainbow flash fires for any dropped CAS write (player moves, gravity ticks, and spawns alike). The `internal` boolean threaded through `attemptMove` / `attemptMoveStandard` / `attemptMoveCoop` distinguishes the source: the moves arm of `runInput` (player input) calls `attemptMove(move, false)`, while its gravity arm calls `attemptMove(MoveDown, true)`. In coop, `internal=true` routes through merge-retry so gravity flashes only after all retries are exhausted.
 
 ### Files
 
@@ -857,7 +858,8 @@ func New(
     playerIdx int,
 ) *Engine
 
-// Start begins all consumer goroutines and (if ModePlayer) the gravity ticker.
+// Start begins all consumer goroutines and (if ModePlayer) the combined
+// input+gravity goroutine (runInput).
 // In cooperative mode, starts ONE ordered consumer on the shared row subjects
 // (no player token). In competitive mode, starts the own-rows consumer plus the
 // roster consumer, and one consumer per opponent as they are discovered.
@@ -919,13 +921,13 @@ Line clears work on the full 20-wide rows. The score is shared — both players'
 - On line-clear detection: checks own playfield for completed rows. Cleared rows are published synchronously before spawning the next piece.
 - Emits appropriate `EngineUpdate` events for the UI on each meaningful state change.
 
-#### `gravity.go`
+#### Input + gravity loop (`runInput`, in `move.go`)
 
 ```go
-func (e *Engine) runGravity(ctx context.Context)
+func (e *Engine) runInput(ctx context.Context)
 ```
 
-Runs on a dedicated goroutine. Fires a tick at the current gravity interval. On each tick, attempts to drop the active piece one row via `attemptMove`. In cooperative mode, reads the current level from the playfield state after each tick and adjusts the ticker interval if the level has changed. In competitive mode, the interval is fixed.
+The engine's single gameplay-write goroutine: it `select`s over the moves channel (player input) and the gravity timer. Running both on **one** goroutine is deliberate — a player's own gravity drop and a player move can never publish to their row subjects concurrently, so they can never lose the per-subject CAS race against each other (in either mode; this removed the spurious rainbow flashes seen in competitive play). On each gravity tick it attempts to drop the active piece one row via `attemptMove(MoveDown, true)`; player input calls `attemptMove(move, false)`. In cooperative mode it reads the current level from `totalLines` after each tick and adjusts the ticker interval when the level changes; in competitive mode the interval is fixed.
 
 **Cooperative gravity and lock-in:** When gravity cannot move a piece down, the engine distinguishes between two cases: (1) the piece is blocked by locked cells or out-of-bounds — the piece locks immediately, as in standard Tetris; (2) the piece is blocked only by the other player's active piece — the piece does NOT lock, since that obstacle is temporary (it will itself fall on its next gravity tick). In case (2), gravity simply waits and tries again on the next tick. This prevents premature lock-ins caused by two pieces passing through the same rows.
 
@@ -1400,7 +1402,7 @@ All cross-package communication uses buffered Go channels. The buffer size is ch
 |---------|-----------|--------|-------|
 | `engine.Updates` | engine → front end | 64 | High-frequency during play (gravity ticks, every row update). Consumed by the native bridge or, in `--web`, pumped into `gameBroadcaster`. Dropping updates here is preferable to blocking the engine. If the channel is full the engine drops the update — the next update will correct the display. |
 | `lobby.Updates` | lobby → front end | 16 | Lower frequency. Lobby changes are infrequent relative to game updates. |
-| `engine.moves` (internal) | front end → engine | 8 | Player move requests dispatched onto the engine's internal moves channel (`runMoves` reads it). Small buffer prevents the caller blocking on a slow game loop. |
+| `engine.moves` (internal) | front end → engine | 8 | Player move requests dispatched onto the engine's internal moves channel (`runInput` reads it). Inputs are **serialized and buffered**: `runInput` processes them one at a time and each move's publish blocks on its batch commit ack (then applies the write-through) before the next move is dequeued, so a player never has two input batches in flight — a move issued while the previous one is still awaiting its ack waits in this buffer. The non-blocking send drops excess input rather than blocking the UI goroutine if a player outruns the ack round-trip by more than the buffer depth (not reached at human input rates). |
 
 Channels are never closed by the sender — they are abandoned when the owning goroutine exits via context cancellation. Receivers must always select on both the channel and `ctx.Done()`.
 
@@ -1460,8 +1462,7 @@ All goroutines are started with a context derived from the root context and exit
 | Events consumer (`runEventsConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Meta consumer (`runMetaConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Countdown consumer (`runCountdownConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
-| Move processor (`runMoves`) | `engine.Engine` | `engine.Start()` (ModePlayer only) | ctx cancel |
-| Gravity ticker (`runGravity`) | `engine.Engine` | `engine.Start()` (ModePlayer only) | ctx cancel |
+| Input + gravity loop (`runInput`) | `engine.Engine` | `engine.Start()` (ModePlayer only) | ctx cancel |
 | Roster consumer (`runRosterConsumer`) | `engine.Engine` | `engine.Start()` (competitive only) | ctx cancel |
 | Per-opponent rows consumer (`runConsumer`) | `engine.Engine` | `startOpponentConsumer` per discovered opponent (competitive) | ctx cancel |
 | Lobby/game update pumps + SSE connections | `ui.Server` (web) / native bridge | per pump and per HTTP connection (web) | client disconnect or ctx cancel |

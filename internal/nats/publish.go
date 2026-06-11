@@ -30,18 +30,24 @@ var ErrCASFailure = errors.New("CAS sequence expectation not met")
 // none is. CAS is enforced per row subject, so concurrent writes to other rows
 // (e.g. another player's playfield in cooperative mode) don't cause spurious
 // rejections.
+//
+// On success it returns the commit ack's stream sequence — the sequence assigned
+// to the LAST message in the batch. The batch's messages get consecutive stream
+// sequences, so the caller can infer every row's assigned sequence from this and
+// the batch order (message i of N → commitSeq-(N-1-i)) and advance its own
+// per-subject sequence tracking without waiting for the consumer echo.
 func PublishMoveAtomically(
 	ctx context.Context,
 	js jetstream.JetStream,
 	updates []RowUpdate,
-) error {
+) (uint64, error) {
 	if len(updates) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	batch, err := jetstreamext.NewBatchPublisher(js)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Add all rows except the last as batch messages
@@ -56,9 +62,9 @@ func PublishMoveAtomically(
 		if err != nil {
 			_ = batch.Discard()
 			if isCASError(err) {
-				return ErrCASFailure
+				return 0, ErrCASFailure
 			}
-			return err
+			return 0, err
 		}
 	}
 
@@ -69,33 +75,37 @@ func PublishMoveAtomically(
 		Data:    last.Payload,
 		Header:  natsclient.Header{},
 	}
-	_, err = batch.CommitMsg(ctx, commitMsg, jetstreamext.WithBatchExpectLastSequencePerSubject(last.ExpectLastSeq))
+	ack, err := batch.CommitMsg(ctx, commitMsg, jetstreamext.WithBatchExpectLastSequencePerSubject(last.ExpectLastSeq))
 	if err != nil {
 		if isCASError(err) {
-			return ErrCASFailure
+			return 0, ErrCASFailure
 		}
-		return err
+		return 0, err
 	}
 
-	return nil
+	return ack.Sequence, nil
 }
 
 // PublishRowsAtomicallyNoCAS publishes a set of row updates as an atomic batch
 // without CAS expectations. Used for authoritative state changes (lock,
 // hard-drop landing, line-clear, shrink) where the publisher's view is the
 // new ground truth and partial writes must not be visible to consumers.
+//
+// Like PublishMoveAtomically it returns the commit ack's stream sequence (the
+// last message's sequence) so the caller can advance its own per-subject
+// sequence tracking from the inferred consecutive sequences.
 func PublishRowsAtomicallyNoCAS(
 	ctx context.Context,
 	js jetstream.JetStream,
 	updates []RowUpdate,
-) error {
+) (uint64, error) {
 	if len(updates) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	batch, err := jetstreamext.NewBatchPublisher(js)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	for i := 0; i < len(updates)-1; i++ {
@@ -107,7 +117,7 @@ func PublishRowsAtomicallyNoCAS(
 		}
 		if err := batch.AddMsg(msg); err != nil {
 			_ = batch.Discard()
-			return err
+			return 0, err
 		}
 	}
 
@@ -117,8 +127,11 @@ func PublishRowsAtomicallyNoCAS(
 		Data:    last.Payload,
 		Header:  natsclient.Header{},
 	}
-	_, err = batch.CommitMsg(ctx, commitMsg)
-	return err
+	ack, err := batch.CommitMsg(ctx, commitMsg)
+	if err != nil {
+		return 0, err
+	}
+	return ack.Sequence, nil
 }
 
 // PublishMeta publishes a game metadata update with a CAS expectation.

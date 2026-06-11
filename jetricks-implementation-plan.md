@@ -355,7 +355,8 @@ func (pf *Playfield) ClearActiveCellsForPlayer(playerIdx int)
 
 // Projection helpers compute the row payloads that should be published to
 // NATS WITHOUT mutating pf. The engine uses these to publish state changes;
-// the consumer is the only thing that mutates pf, via Apply().
+// pf is mutated only via Apply() — by the consumer on echo and by the publish
+// write-through on commit.
 func (pf *Playfield) ProjectMove(affectedRows []int, newPiece *Piece, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row
@@ -699,14 +700,16 @@ var ErrCASFailure = errors.New("CAS sequence expectation not met")
 
 // PublishMoveAtomically publishes a multi-row update as a SINGLE atomic batch
 // with PER-SUBJECT CAS expectations. Either every row commits or none does;
-// consumers never observe a torn state.
-func PublishMoveAtomically(ctx context.Context, js jetstream.JetStream, updates []RowUpdate) error
+// consumers never observe a torn state. On success it returns the commit ack's
+// stream sequence (the last message's sequence) so the caller can write through
+// the committed rows into its playfield without waiting for the echo.
+func PublishMoveAtomically(ctx context.Context, js jetstream.JetStream, updates []RowUpdate) (uint64, error)
 
 // PublishRowsAtomicallyNoCAS publishes a multi-row update as a SINGLE atomic
 // batch WITHOUT CAS expectations. Used for authoritative state changes (lock,
 // hard-drop landing, line-clear, shrink) where the publisher's view is the
-// new ground truth.
-func PublishRowsAtomicallyNoCAS(ctx context.Context, js jetstream.JetStream, updates []RowUpdate) error
+// new ground truth. Also returns the commit ack's stream sequence.
+func PublishRowsAtomicallyNoCAS(ctx context.Context, js jetstream.JetStream, updates []RowUpdate) (uint64, error)
 ```
 
 Use `jetstreamext.NewBatchPublisher(js)` and add each row update with a per-subject
@@ -818,25 +821,50 @@ The hardest package. Implement in file order.
 
 ### State mutation invariant (read this first)
 
-The in-memory `*game.Playfield` is mutated **only** by the row consumer
-(`runConsumer`), and only via `pf.Apply(rowIdx, row, seq)`. Every other code
-path — local moves, hard drops, locks, line clears, shrinks, piece spawns —
-must compute its result as a set of *projected* row payloads (using
-`ProjectMove`, `ProjectLock`, `ProjectHardDrop`, `ProjectClearRows`,
-`ProjectShrink` in `internal/game/playfield.go`) and publish them to NATS.
-The consumer then applies the published rows to `e.playfield` when the
-ordered-consumer echo arrives.
+The in-memory `*game.Playfield` is mutated only via `pf.Apply(rowIdx, row, seq)`,
+from exactly two places: the row consumer (`runConsumer`) on an ordered-consumer
+echo, and the **publish write-through** (`applyPublishedRows`) the instant a batch
+commits. Every other code path — local moves, hard drops, locks, line clears,
+shrinks, piece spawns — must compute its result as a set of *projected* row
+payloads (using `ProjectMove`, `ProjectLock`, `ProjectHardDrop`,
+`ProjectClearRows`, `ProjectShrink` in `internal/game/playfield.go`) and publish
+them; it does not mutate `e.playfield` directly.
+
+The write-through is what lets a successful publish advance `e.playfield`
+(content **and** `LastSeq`) without waiting for its own echo: the batch commit ack
+returns the last message's stream sequence, and the engine infers each row's
+sequence from the consecutive batch ordering (`message i of N → commitSeq −
+(N−1−i)`). `pf.Apply` only accepts a **strictly higher** sequence, so the later
+echo of our own write (same sequence) is a harmless no-op, while a higher sequence
+— the other player's write in coop, or a NoCAS write we didn't originate — still
+updates memory.
 
 The UI renders from `e.playfield` exclusively. There is no separate "pending"
-buffer the UI sees; if you can see it on screen, it has round-tripped through
-NATS.
+buffer; the write-through and the echo converge on the same content.
 
-Validation (e.g. `CanPlace`) reads from `e.playfield` as it is right now,
-which may be slightly behind the just-published-but-not-yet-echoed state. Two
-rapid inputs may therefore validate against the same pre-echo playfield; the
-second publish will fail per-subject CAS (`wrong last msg seq for subject`)
-and be dropped, surfaced as a `CASFlash` event for visual feedback. This is
-intentional and accepted as the cost of the invariant.
+**Concurrency model.** `e.mu` guards the structured state — `e.playfield`
+(`Rows`/`LastSeq`, via `pf.Apply`), `e.opponentPlayfields`, and
+`e.eliminatedPlayers`. Every read of `LastSeq` that feeds a CAS expectation
+(`buildBatchUpdates`) and every write-through takes `e.mu` (or relies on the
+caller's lock via the `locked` flag the publish helpers thread through). The
+scalar fields that several goroutines touch with no single covering lock —
+`mode`, `score`, `level`, `totalLines`, `pieceIdx` — are `sync/atomic` values
+rather than `e.mu`-guarded, because `transitionToSpectator` (which sets `mode`)
+runs both under and without the lock and locking it would deadlock. The
+accessors that hand playfield state to the UI/tests (`Playfield`,
+`OpponentPlayfields`, `Snapshot`, `OpponentSnapshots`) return **deep copies**
+(`Playfield.Clone` / `CloneRows`) taken under `e.mu`, so a caller can read the
+result without the lock while the consumer and write-through keep mutating the
+live playfield. Player input is serialized and buffered on the `e.moves` channel:
+`runInput` processes one at a time and each publish blocks on its commit ack
+before the next is dequeued, so a player never has two input batches in flight.
+
+Validation (e.g. `CanPlace`) reads from `e.playfield`, which the write-through
+keeps current the moment each publish commits. Two rapid inputs (or a gravity tick
+and a move) therefore validate against up-to-date state and the second no longer
+loses per-subject CAS to the engine's own earlier write. A CAS rejection now means
+a *genuine* conflict — in coop, the other player wrote the same shared row — and is
+surfaced as a `CASFlash` event for visual feedback.
 
 ### Atomic batch publish + per-subject CAS
 
@@ -851,8 +879,10 @@ half-erased / half-placed piece.
 The CAS expectation is **per subject** (`Nats-Expected-Last-Subject-Sequence`,
 applied via `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`), not
 per stream. The expected sequence for each row comes from
-`e.playfield.LastSeq[r]`, which the row consumer keeps current via
-`pf.Apply(rowIdx, row, seq)`. Per-subject CAS means a write to row N is only
+`e.playfield.LastSeq[r]`, kept current via `pf.Apply(rowIdx, row, seq)` — both by
+the row consumer on echo and by the publish write-through (which advances it from
+the commit ack the instant a batch commits, so a later write doesn't carry a stale
+expectation). Per-subject CAS means a write to row N is only
 rejected if row N specifically has been written by someone else since we last
 saw it — concurrent writes to row M (e.g. another player's piece moving) are
 not in conflict.
@@ -925,8 +955,8 @@ animation. (This replaced an earlier `ExecuteScript` blob that imperatively muta
 DOM styles — backend-driven DOM patching is the Datastar-idiomatic approach.)
 
 CAS failure handling for **engine-driven (internal) writes** — the two such
-writes that use CAS are **piece spawn** and **gravity ticks** (`runGravity`
-calls `attemptMove(MoveDown, internal=true)`). In cooperative mode both writes
+writes that use CAS are **piece spawn** and **gravity ticks** (the gravity arm
+of `runInput` calls `attemptMove(MoveDown, internal=true)`). In cooperative mode both writes
 share the same row subjects with the other player and may race, and both
 **must succeed** — the spawn loser must not be left pieceless, and a gravity
 tick that silently drops would make the piece appear stuck for one tick
@@ -936,8 +966,11 @@ coop mode: on CAS failure, refetch the latest row from the stream via
 batch with refreshed per-subject CAS expectations (up to 5 attempts).
 
 In competitive mode each player owns their row subjects, so neither spawn nor
-gravity can race; they go through the regular `publishProjectedRows` (the call
-won't actually fail CAS in practice).
+gravity contends with another player; they go through the regular
+`publishProjectedRows`. Crucially, **gravity and player input share one goroutine
+(`runInput`)**, so a player's own gravity tick and move are serialized and cannot
+lose the per-subject CAS race against each other — this is the fix for the
+spurious rainbow flashes that were otherwise visible during competitive play.
 
 **The rainbow flash fires for every CAS-dropped step, not only player input.**
 Whenever a write is ultimately rejected by CAS and the step is dropped, the
@@ -955,9 +988,9 @@ The mode→path mapping for CAS publishes is:
 
 | Path | Mode | On CAS failure |
 | ---- | ---- | -------------- |
-| Player moves (`runMoves` → `attemptMove(internal=false)`) | both | drop + local rainbow flash, no retry |
-| Gravity (`runGravity` → `attemptMove(MoveDown, internal=true)`) | competitive | drop + flash (cannot race in practice) |
-| Gravity (`runGravity` → `attemptMove(MoveDown, internal=true)`) | cooperative | merge-retry; flash only if all retries exhausted |
+| Player moves (`runInput` moves arm → `attemptMove(internal=false)`) | both | drop + local rainbow flash, no retry |
+| Gravity (`runInput` gravity arm → `attemptMove(MoveDown, internal=true)`) | competitive | drop + flash (serialized with input on `runInput`, so it cannot self-race) |
+| Gravity (`runInput` gravity arm → `attemptMove(MoveDown, internal=true)`) | cooperative | merge-retry; flash only if all retries exhausted |
 | Spawn (`spawnPiece`) | competitive | drop + flash (cannot race in practice) |
 | Spawn (`spawnPiece`) | cooperative | merge-retry; flash only if all retries exhausted |
 
@@ -1195,15 +1228,17 @@ func (e *Engine) Start() error {
     go e.runMetaConsumer(ctx)
     go e.runCountdownConsumer(ctx)
 
-    // 6. Start move processor and gravity if playing. If the game is already in
-    // progress and we have no active piece yet, spawn one immediately.
+    // 6. Start the combined input+gravity goroutine if playing. If the game is
+    // already in progress and we have no active piece yet, spawn one immediately.
+    // Gravity and input share one goroutine (runInput) so a player's own gravity
+    // drop and move never publish to their row subjects concurrently and lose the
+    // per-subject CAS race (in either mode).
     if e.mode == ModePlayer {
         if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil &&
             meta.Status == config.GameStatusInProgress {
             e.spawnPiece(ctx)
         }
-        go e.runMoves(ctx)
-        go e.runGravity(ctx)
+        go e.runInput(ctx)
     }
     return nil
 }
@@ -1277,10 +1312,17 @@ forces it, 0..n rows), and returns a `topOut` flag. The projected rows are publi
 (authoritative, like line clears), followed by a full-board re-render. When `topOut` is true — the
 piece was squeezed off the top — it calls `handleTopOut`.
 
-#### `gravity.go`
+#### `move.go` — input + gravity loop
+
+`runInput` is the engine's single gameplay-write goroutine: it processes player
+input **and** drives the gravity ticker. Running both on one goroutine is
+deliberate — a player's own gravity drop and a player move can never publish to
+their row subjects concurrently, so they can never lose the per-subject CAS race
+against each other (in either mode). This is the fix for the spurious rainbow
+flashes that were otherwise visible during competitive play.
 
 ```go
-func (e *Engine) runGravity(ctx context.Context) {
+func (e *Engine) runInput(ctx context.Context) {
     level := 0
     timer := time.NewTimer(game.GravityInterval(level))
     defer timer.Stop()
@@ -1288,13 +1330,17 @@ func (e *Engine) runGravity(ctx context.Context) {
         select {
         case <-ctx.Done():
             return
+        case move := <-e.moves:
+            if e.mode != ModePlayer { continue }
+            // Player input — drop+flash on CAS failure (internal=false).
+            _ = e.attemptMove(ctx, move, false)
         case <-timer.C:
-            if e.mode != ModePlayer { return }
+            if e.mode != ModePlayer { return } // became a spectator
             // internal=true: gravity is engine-driven, not player input. In coop
             // this routes to merge-retry on CAS conflict (the piece keeps
             // falling); it flashes only if the tick is ultimately dropped. The
             // return value is ignored — lock-in is handled by the consumer's
-            // lock-in detector, not here.
+            // lock-in detector, not here. Serialized with the moves arm above.
             _ = e.attemptMove(ctx, MoveDown, true)
             // Recompute level from the running line total in cooperative mode.
             if e.gameMode == config.ModeCooperative {
@@ -1304,23 +1350,6 @@ func (e *Engine) runGravity(ctx context.Context) {
                 }
             }
             timer.Reset(game.GravityInterval(level))
-        }
-    }
-}
-```
-
-#### `move.go`
-
-```go
-func (e *Engine) runMoves(ctx context.Context) {
-    for {
-        select {
-        case <-ctx.Done():
-            return
-        case move := <-e.moves:
-            if e.mode != ModePlayer { continue }
-            // Player input — drop+flash on CAS failure (internal=false).
-            _ = e.attemptMove(ctx, move, false)
         }
     }
 }

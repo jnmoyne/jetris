@@ -91,9 +91,8 @@ over NATS — each move is a local intent that publishes the changed cells with 
 | Z | rotate counter-clockwise | `RotateCCW` |
 | Space | hard drop | `HardDrop` |
 
-In the native UI these are dispatched from `internal/nativeui/input.go` (the board tag is
-kept focused with Gio's `key.FocusFilter` + `key.FocusCmd`); in the web UI a key handler
-`POST`s to `/game/move`.
+These are dispatched from `internal/nativeui/input.go` (the board tag is kept focused
+with Gio's `key.FocusFilter` + `key.FocusCmd`).
 
 ### Gravity
 
@@ -166,9 +165,9 @@ When **any** player tops out (newly spawned piece cannot be placed), the game en
 
 ### Visual Indicators
 
-The playfield is rendered entirely server-side: for **every** square the server
-computes a concrete fill color and an outline color and emits them as an inline
-`style` on the `<td>` (no per-color CSS classes). The fill is the tetromino color
+For **every** square, `internal/render` computes a concrete fill color and an outline
+color (`CellStyle` returns a `CellAppearance`), and the Gio drawer fills the cell and
+strokes its border accordingly. The fill is the tetromino color
 composited over the board background to match the desired brightness (active ≈0.9,
 locked ≈0.7, adversarial ≈0.8). Empty squares fall back to the board background
 with a thin grid-line outline, so literally every square has an outline.
@@ -354,8 +353,8 @@ Locks are published as no-CAS authoritative writes (see below) and so cannot fai
 ## 9. Real-Time UI Updates
 
 **Principle:** All UI data backed by JetStream flows through ordered consumers into the
-engine's and lobby's `Updates` channels — never polling or periodic refresh. Both front
-ends consume those same channels; only the last hop to the screen differs.
+engine's and lobby's `Updates` channels — never polling or periodic refresh. The native
+UI consumes those channels directly; the only remaining hop is drawing the next frame.
 
 The lobby runs consumers for:
 - KV bucket (players and game listings)
@@ -368,30 +367,23 @@ The engine runs consumers for:
 - Game meta (status transitions)
 - Countdown
 
-Any change in a JetStream stream or KV bucket lands on a Go `Updates` channel, then:
+Any change in a JetStream stream or KV bucket lands on a Go `Updates` channel:
+`internal/nativeui` bridge goroutines read `engine.Updates` / `lobby.Updates` directly
+and call `window.Invalidate()`; the next frame redraws the visible board from a
+race-free snapshot (`engine.Snapshot()`). A NATS update reaches pixels within one
+display frame, and the screen is redrawn only when something changed (idle = ~0 CPU).
 
-- **Native UI (default):** `internal/nativeui` bridge goroutines read `engine.Updates` /
-  `lobby.Updates` directly and call `window.Invalidate()`; the next frame redraws the
-  visible board from a race-free snapshot (`engine.Snapshot()`). No HTTP/SSE round-trip — a
-  NATS update reaches pixels within one display frame, and the screen is redrawn only when
-  something changed (idle = ~0 CPU).
-- **Web UI (`--web`):** `internal/ui` fans each update out over a per-connection broadcaster
-  to a Datastar SSE stream and patches the affected rows server-side by element ID
-  (`#row-{n}`).
-
-Both channels are bounded and **non-blocking** (a slow client must never stall the engine),
-so individual row-update triggers can be dropped under a burst. This is safe because each UI
-always re-renders from the converged `playfield` — but **bulk** changes that repaint the
+Both channels are bounded and **non-blocking** (a slow UI must never stall the engine),
+so individual row-update triggers can be dropped under a burst. This is safe because the
+UI always re-renders from the converged `playfield` — but **bulk** changes that repaint the
 whole visible range (line clears, competitive shrink) emit a single full-board re-render so
-no row is left stale. Cell appearance (fill + outline) is computed in one shared place,
-`internal/render` — `CellStyle` returns RGBA for the native drawer and `CellStyleCSS` the
-identical colors as inline CSS for the web — so the two UIs never visually drift.
+no row is left stale. Cell appearance (fill + outline) is computed in one place,
+`internal/render` — `CellStyle` returns the RGBA fill and outline the drawer paints.
 
-**CAS-rejection feedback** (a move rejected by per-subject CAS) is UI-agnostic: the engine
+**CAS-rejection feedback** (a move rejected by per-subject CAS) stays local: the engine
 emits the affected cells on the local `Updates` channel only (never published to NATS, so
-other players see nothing). The native UI draws a one-shot ~600 ms rainbow **border** on
-those cells in Gio; the web UI re-renders them with a `cell-flash` class and a matching
-rainbow CSS animation.
+other players see nothing), and the UI draws a one-shot ~600 ms rainbow **border** on
+those cells in Gio.
 
 ### Ping display
 

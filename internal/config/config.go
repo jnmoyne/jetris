@@ -11,9 +11,6 @@ type Config struct {
 	NATSURL      string
 	NATSUser     string
 	NATSPassword string
-	Port         int
-	Webview      bool
-	Web          bool // use the web browser UI instead of the native window
 }
 
 // ValidatePlayerName checks that a player name is valid for use as a

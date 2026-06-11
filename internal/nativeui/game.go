@@ -250,8 +250,7 @@ func countdownVisible(view gameView, mode engine.Mode) bool {
 }
 
 // countdownOverlay draws the big centered countdown number (or "GO!") with a
-// pop-in scale + fade so each new number animates in, mirroring the web UI's
-// centered countdown (gold numbers, green GO!).
+// pop-in scale + fade so each new number animates in (gold numbers, green GO!).
 func (a *App) countdownOverlay(gtx C, view gameView) D {
 	txt := fmt.Sprintf("%d", view.countdown)
 	col := colGold

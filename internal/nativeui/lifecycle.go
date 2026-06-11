@@ -124,7 +124,7 @@ func (a *App) joinGame(gameID string) {
 		// finish (the winner in competitive, the topper in coop), so returning to
 		// the lobby would yank just that one player out while everyone else sits
 		// on the game-over screen. Every player stays on YOU WON!/YOU LOST until
-		// they click Back (matches the web UI, which only detaches the engine).
+		// they click Back; only the engine is detached here.
 		archive.ArchiveAndCleanup(context.Background(), a.js, a.kv, e, a.getLobby(), a.snapshotGamePlayers())
 	}
 

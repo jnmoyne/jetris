@@ -1,7 +1,6 @@
 // Package render is the single source of truth for Jetricks cell/board
-// appearance. It exposes the same decision logic in two forms: a CSS string
-// (used by the web UI) and an RGBA value (used by the native UI), so the two
-// front ends can never visually drift.
+// appearance: the decision logic lives in appearanceHex and is surfaced as
+// RGBA values for the native UI.
 package render
 
 import (
@@ -92,8 +91,8 @@ func clamp8(v int) int {
 	return v
 }
 
-// appearanceHex is the single decision function shared by both the CSS and RGBA
-// surfaces. It reproduces the original cellStyle logic exactly. localPlayerIdx
+// appearanceHex is the single decision function behind the RGBA surface. It
+// reproduces the original cellStyle logic exactly. localPlayerIdx
 // is the viewer's player index (-1 for spectators: every active piece gets a
 // per-player outline). When showOutline is false (compact opponent boards)
 // ownership outlines are suppressed in favor of the plain grid line.
@@ -126,27 +125,17 @@ func appearanceHex(c game.Cell, localPlayerIdx int, showOutline bool) (fill, out
 	return fill, outline, outlineW
 }
 
-// CellStyleCSS computes the inline CSS (background + outline) for a single
-// square. This is byte-for-byte identical to the web UI's historical output.
-func CellStyleCSS(c game.Cell, localPlayerIdx int, showOutline bool) string {
-	fill, outline, outlineW := appearanceHex(c, localPlayerIdx, showOutline)
-	return fmt.Sprintf("background:%s;outline:%dpx solid %s;outline-offset:-1px", fill, outlineW, outline)
-}
-
-// --- RGBA surface (native UI) ---
-
 // CellAppearance is the resolved visual of one square for native rendering.
 // OutlineW is 1 (grid line) or 2 (ownership/active outline). The native drawer
 // fills the cell with Fill, then strokes a 1px-inset border of width OutlineW
-// in Outline (matching the web's outline-offset:-1px).
+// in Outline.
 type CellAppearance struct {
 	Fill     color.NRGBA
 	Outline  color.NRGBA
 	OutlineW int
 }
 
-// CellStyle is the canonical appearance for native rendering, computed from the
-// same decision logic as CellStyleCSS.
+// CellStyle is the canonical appearance for native rendering.
 func CellStyle(c game.Cell, localPlayerIdx int, showOutline bool) CellAppearance {
 	fill, outline, outlineW := appearanceHex(c, localPlayerIdx, showOutline)
 	return CellAppearance{Fill: nrgbaFromHex(fill), Outline: nrgbaFromHex(outline), OutlineW: outlineW}

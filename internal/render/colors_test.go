@@ -3,7 +3,6 @@ package render
 import (
 	"fmt"
 	"image/color"
-	"strings"
 	"testing"
 
 	"jetricks/internal/game"
@@ -11,51 +10,45 @@ import (
 
 func hex(c color.NRGBA) string { return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B) }
 
-// TestCSSAndRGBAParity guarantees the two appearance surfaces never drift: the
-// RGBA Fill/Outline a native client draws must be exactly the colors the web
-// client emits as CSS for the same cell.
-func TestCSSAndRGBAParity(t *testing.T) {
+// TestCellStyleDecisions pins the appearance decision logic (fill, outline,
+// outline width) for each cell state so the rendering rules can't silently drift.
+func TestCellStyleDecisions(t *testing.T) {
 	cases := []struct {
 		name        string
 		cell        game.Cell
 		localIdx    int
 		showOutline bool
+		wantFill    string
+		wantOutline string
+		wantW       int
 	}{
-		{"empty", game.Cell{}, 0, true},
-		{"active-own", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 0}, 0, true},
-		{"active-other", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 1}, 0, true},
-		{"active-spectator", game.Cell{Active: true, PieceType: game.PieceT, PlayerIdx: 2}, -1, true},
-		{"occupied-outline", game.Cell{Occupied: true, PieceType: game.PieceZ, PlayerIdx: 1}, 0, true},
-		{"occupied-no-outline", game.Cell{Occupied: true, PieceType: game.PieceZ, PlayerIdx: 1}, 0, false},
-		{"adversarial", game.Cell{Adversarial: true, Occupied: true, PlayerIdx: 3}, 0, true},
+		// Empty cell: board background with the plain grid line.
+		{"empty", game.Cell{}, 0, true, BoardBgHex, GridLineHex, 1},
+		// Own active I-piece: 90% cyan over #111111, white 2px outline.
+		{"active-own", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 0}, 0, true, "#02dada", OwnOutlineHex, 2},
+		// Another player's active piece in a player's own view: no ownership outline.
+		{"active-other", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 1}, 0, true, "#02dada", GridLineHex, 1},
+		// Spectator view: every active piece gets a per-player outline.
+		{"active-spectator", game.Cell{Active: true, PieceType: game.PieceT, PlayerIdx: 2}, -1, true, blendHex(pieceColorHex(game.PieceT), BoardBgHex, 0.9), PlayerColorHex(2), 2},
+		// Locked cell: 70% piece color, owner-colored outline when shown.
+		{"occupied-outline", game.Cell{Occupied: true, PieceType: game.PieceZ, PlayerIdx: 1}, 0, true, blendHex(pieceColorHex(game.PieceZ), BoardBgHex, 0.7), PlayerColorHex(1), 2},
+		// Compact opponent boards suppress ownership outlines.
+		{"occupied-no-outline", game.Cell{Occupied: true, PieceType: game.PieceZ, PlayerIdx: 1}, 0, false, blendHex(pieceColorHex(game.PieceZ), BoardBgHex, 0.7), GridLineHex, 1},
+		// Adversarial garbage: 80% sender color, plain grid line.
+		{"adversarial", game.Cell{Adversarial: true, Occupied: true, PlayerIdx: 3}, 0, true, blendHex(PlayerColorHex(3), BoardBgHex, 0.8), GridLineHex, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			css := CellStyleCSS(tc.cell, tc.localIdx, tc.showOutline)
 			app := CellStyle(tc.cell, tc.localIdx, tc.showOutline)
-			fillHex, outlineHex := hex(app.Fill), hex(app.Outline)
-			if !strings.Contains(css, "background:"+fillHex+";") {
-				t.Errorf("fill mismatch: CSS=%q RGBA fill=%s", css, fillHex)
+			if got := hex(app.Fill); got != tc.wantFill {
+				t.Errorf("fill = %s, want %s", got, tc.wantFill)
 			}
-			if !strings.Contains(css, fmt.Sprintf("outline:%dpx solid %s;", app.OutlineW, outlineHex)) {
-				t.Errorf("outline mismatch: CSS=%q RGBA outline=%s w=%d", css, outlineHex, app.OutlineW)
+			if got := hex(app.Outline); got != tc.wantOutline {
+				t.Errorf("outline = %s, want %s", got, tc.wantOutline)
+			}
+			if app.OutlineW != tc.wantW {
+				t.Errorf("outline width = %d, want %d", app.OutlineW, tc.wantW)
 			}
 		})
-	}
-}
-
-// TestCSSUnchanged pins a couple of exact CSS strings so the web output stays
-// byte-for-byte what it was before the extraction.
-func TestCSSUnchanged(t *testing.T) {
-	got := CellStyleCSS(game.Cell{}, 0, true)
-	want := "background:#111111;outline:1px solid #1a1a1a;outline-offset:-1px"
-	if got != want {
-		t.Errorf("empty cell CSS = %q, want %q", got, want)
-	}
-	// Own active I-piece: 90% cyan over #111111, white 2px outline.
-	got = CellStyleCSS(game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 0}, 0, true)
-	want = "background:#02dada;outline:2px solid #ffffff;outline-offset:-1px"
-	if got != want {
-		t.Errorf("own active I CSS = %q, want %q", got, want)
 	}
 }

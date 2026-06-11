@@ -21,7 +21,7 @@
 9. [internal/engine](#9-internalengine)
 10. [internal/lobby](#10-internallobby)
 11. [internal/cleanup](#11-internalcleanup)
-12. [Front ends: native (default) and web (`--web`)](#12-front-ends-native-default-and-web---web)
+12. [Front end: the native Gio UI](#12-front-end-the-native-gio-ui)
 13. [Event Channel Contracts](#13-event-channel-contracts)
 14. [Bootstrap Sequence](#14-bootstrap-sequence)
 15. [Key Interfaces](#15-key-interfaces)
@@ -84,12 +84,8 @@ jetricks/
 │   │   ├── lifecycle.go
 │   │   ├── lobby.go
 │   │   └── login.go
-│   ├── testutil/
-│   │   └── nats.go
-│   └── ui/
-│       ├── server.go
-│       ├── handlers.go
-│       └── broadcast.go
+│   └── testutil/
+│       └── nats.go
 ├── go.mod
 └── go.sum
 ```
@@ -98,7 +94,7 @@ jetricks/
 
 ## 2. Package Dependency Graph
 
-Arrows indicate "depends on". The rule is that `internal/game`, `internal/rng`, and `internal/config` are leaves — they have no internal dependencies. The front-end layers (`internal/nativeui`, `internal/ui`) depend on engine and lobby but neither engine nor lobby depends on a front end. All packages may depend on config.
+Arrows indicate "depends on". The rule is that `internal/game`, `internal/rng`, and `internal/config` are leaves — they have no internal dependencies. The front-end layer (`internal/nativeui`) depends on engine and lobby but neither engine nor lobby depends on the front end. All packages may depend on config.
 
 ```
 cmd/jetricks
@@ -111,8 +107,7 @@ cmd/jetricks
     ├── internal/cleanup           ← depends on: nats, lobby, config
     ├── internal/archive           ← depends on: nats, engine, lobby, config
     ├── internal/render            ← depends on: game (cell/board appearance)
-    ├── internal/nativeui          ← depends on: engine, lobby, render, config (default front end)
-    └── internal/ui                ← depends on: engine, lobby, config (web front end, --web)
+    └── internal/nativeui          ← depends on: engine, lobby, render, config (the front end)
 
 Leaf packages (no internal deps):
     internal/config
@@ -135,14 +130,12 @@ The entrypoint. Responsible only for wiring — it constructs all top-level comp
 ### Responsibilities
 
 - Parse CLI flags into a `config.Config`
-- Establish the NATS connection (shared by both UIs)
-- Ensure lobby streams and KV exist (shared by both UIs)
-- Branch on the `--web` flag:
-  - **default (native):** `runNative` opens a native OS window via the Gio front end (`internal/nativeui`). Gio's `app.Main()` owns the OS main thread, so the app logic runs on a goroutine that calls `App.Run`.
-  - **`--web`:** `runWeb` starts the HTTP/UI server (`ui.Server`) and opens the browser. Lobby creation is deferred until the player enters their name.
+- Establish the NATS connection
+- Ensure lobby streams and KV exist
+- Run the Gio front end (`internal/nativeui`): `runNative` opens a native OS window. Gio's `app.Main()` owns the OS main thread, so the app logic runs on a goroutine that calls `App.Run`.
 - Block on OS signal / window close and perform graceful shutdown
 
-In both modes the player enters a name on a login screen; identity is the same NATS-backed presence (no browser session). The native window is the default so no HTTP service or browser is involved unless `--web` is passed.
+The player enters a name on a login screen; identity is NATS-backed presence. Lobby creation is deferred until the player enters their name.
 
 ### CLI Flags
 
@@ -150,9 +143,6 @@ In both modes the player enters a name on a login screen; identity is the same N
 |------|---------|-------------|
 | `--context` | `""` | NATS context name (as configured with `nats context add`). Empty string uses the currently selected context. |
 | `--server` / `--user` / `--password` | `""` | Explicit NATS URL + credentials, overriding `--context`. |
-| `--web` | `false` | Use the web browser UI (HTTP/SSE/Datastar) instead of the default native window. |
-| `--port` | `7777` | Local HTTP server port (only used with `--web`). |
-| `--webview` | `false` | Legacy/unused flag (`config.Webview`); has no effect in the current build. |
 
 The `--context` flag maps directly to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
 
@@ -176,9 +166,6 @@ type Config struct {
     NATSURL      string // explicit server URL (overrides context)
     NATSUser     string
     NATSPassword string
-    Port         int    // HTTP port (web UI only)
-    Webview      bool   // legacy/unused
-    Web          bool   // use the web browser UI instead of the native window
 }
 
 type GameMode int
@@ -356,7 +343,7 @@ The `PieceIdx` field is the number of pieces that have locked in across the enti
 
 ## 5. Player Identity
 
-Player identity is handled entirely in the UI at startup — no persistent files are stored on disk. When a player starts Jetricks (native window by default, or the browser with `--web`), they are prompted on a login screen to enter a player name. This name **is** the player ID used in all NATS subjects, KV keys, and game rosters. There is no separate display name.
+Player identity is handled entirely in the UI at startup — no persistent files are stored on disk. When a player starts Jetricks, they are prompted on a login screen to enter a player name. This name **is** the player ID used in all NATS subjects, KV keys, and game rosters. There is no separate display name.
 
 ### Validation
 
@@ -368,11 +355,9 @@ Validation is implemented in `config.ValidatePlayerName(name) error`.
 
 ### Flow
 
-The flow is identical in both UIs; only the transport differs (native calls the handlers directly; web posts `/login` with Datastar signals).
-
 1. App starts → login screen is shown (no lobby exists yet)
 2. Player enters a name → the name shape is validated (`config.ValidatePlayerName`) and then the lobby KV is checked (`lobby.IsNameInUse`) for an active player presence entry with the same name (case-insensitive, whitespace-trimmed). Stale presence entries — `LastSeen` older than 3× `config.PresenceHeartbeat` — are ignored so unclean shutdowns don't permanently block the name.
-3. If the name collides with an active player, a confirmation prompt ("a user with this name is already in the lobby — join anyway?") with **Yes, join** / **Cancel** is shown. **Yes, join** forces login, skipping the collision check. (Web carries this via the `forceLogin` Datastar signal re-posting `/login`; native sets an internal force flag and retries.)
+3. If the name collides with an active player, a confirmation prompt ("a user with this name is already in the lobby — join anyway?") with **Yes, join** / **Cancel** is shown. **Yes, join** forces login, skipping the collision check. (The UI sets an internal force flag and retries the login.)
 4. On success, the lobby is created and the app moves to the lobby screen.
 
 Since the player name is the player ID, two players choosing the same name share one KV presence key and roster subject — actions taken by either binary in the lobby (e.g. ToggleReady) target whichever entry matches the playerID first. The collision check makes that condition opt-in: the user is told and must confirm before proceeding.
@@ -921,8 +906,8 @@ func (e *Engine) Start() error
 func (e *Engine) Stop()
 
 // Move input is delivered through MoveType values dispatched onto the internal
-// moves channel and is only acted on when mode == ModePlayer. (The native and
-// web front ends translate key/HTTP input into these moves.)
+// moves channel and is only acted on when mode == ModePlayer. (The native
+// front end translates key input into these moves.)
 
 // transitionToSpectator is called internally when the game ends for the local
 // player. It sets mode = ModeGameOver and emits UpdateGameOver{Won}. It does not
@@ -1292,7 +1277,7 @@ type ToggleReadyResult struct {
 }
 ```
 
-The maps are unexported and accessed only through `Players()` and `Games()`, ensuring all reads hold the read lock and all writes hold the write lock. The KV watcher goroutine (in `listing.go`) calls `l.mu.Lock()` / `l.mu.Unlock()` around every map mutation. UI SSE handlers call `l.Players()` / `l.Games()` which take `l.mu.RLock()`, copy the map, and release before returning. The copy is a shallow copy of the map (new map, same value structs) — since `PlayerPresence` and `GameListing` are value types, this is safe.
+The maps are unexported and accessed only through `Players()` and `Games()`, ensuring all reads hold the read lock and all writes hold the write lock. The KV watcher goroutine (in `listing.go`) calls `l.mu.Lock()` / `l.mu.Unlock()` around every map mutation. The UI calls `l.Players()` / `l.Games()` which take `l.mu.RLock()`, copy the map, and release before returning. The copy is a shallow copy of the map (new map, same value structs) — since `PlayerPresence` and `GameListing` are value types, this is safe.
 
 #### `presence.go`
 
@@ -1417,112 +1402,21 @@ All transitions go through CAS on `jetricks.game.<id>.meta`. If a CAS fails duri
 
 ---
 
-## 12. Front ends: native (default) and web (`--web`)
+## 12. Front end: the native Gio UI
 
-Jetricks has two interchangeable front ends over the same engine/lobby logic. Both depend on `engine` and `lobby` (one-way) and communicate with them exclusively through their `Updates` channels and exported method calls — neither is imported by the business logic.
+Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logic. It depends on `engine` and `lobby` (one-way) and communicates with them exclusively through their `Updates` channels and exported method calls — it is never imported by the business logic.
 
-- **`internal/nativeui` (default).** A native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — so there is **no HTTP or SSE round-trip**; a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
-- **`internal/ui` (web, `--web`).** The HTTP server + Datastar/SSE rendering described below.
+**`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
 
-Two small packages are shared by both front ends:
-- **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math). Exposes `CellStyleCSS` (web, byte-for-byte the historical output) and `CellStyle`→RGBA (native) from one decision function, so the two UIs can never visually drift. Extracted from `internal/ui/handlers.go`.
-- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources. Shared so both UIs archive identically.
+Two small packages support the front end:
+- **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math) for the native UI. Exposes a single decision function, `CellStyle`, plus the RGBA surface (`CellAppearance`, `PlayerColorRGBA`, `PlayerColorHex`), so every render path (own board, opponent boards, spectator view) draws from one visual model.
+- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources.
 
-### 12a. internal/ui (web UI — only with `--web`)
+**Cell appearance — single source of truth.** Every cell is drawn with an explicit fill color and outline computed by `internal/render`. Piece fills come from a piece-color table composited over the board background via `blend(fg, bg, alpha)` (active ≈0.9, locked ≈0.7, adversarial ≈0.8). Outlines: own active → white; spectator (`localPlayerIdx < 0`) → per-player color on active/locked cells; other player's active piece in a player view → grid line; locked non-adversarial → per-player color when `showOutline` (suppressed to the grid line on compact opponent boards). Because appearance is computed in one package, the visual model stays consistent across own/spectator/opponent renders. In competitive mode the UI distinguishes own-field updates (`UpdatePlayfield`) from opponent updates (`UpdateOpponentField`, keyed by `OpponentID`) and redraws the corresponding sidebar board. In cooperative mode the single wide playfield (playerCount × StandardWidth columns) is drawn directly — already the correct width, so there is no concatenation or visual separator between player sections.
 
-The HTTP server and all UI rendering. Depends on `engine` and `lobby` but is never imported by them — the dependency is one-way. Communicates with engine and lobby exclusively through their `Updates` channels and exported method calls.
+**Ready/countdown flow:** While waiting for the game to start, each player sees the list of players with their ready state (green checkmark or red cross). Players toggle their ready state via the READY/NOT READY button (→ `lobby.ToggleReady`). When ALL players are ready, the button and player list are replaced by a 5-second countdown (5...4...3...2...1...GO!). During the countdown, players cannot change their ready state. After the countdown, the game transitions to `in_progress` and pieces begin to spawn.
 
-### Files
-
-#### `server.go`
-
-```go
-type Server struct {
-    port   int
-    js     jetstream.JetStream
-    kv     jetstream.KeyValue
-    lobby  *lobby.Lobby  // nil until player logs in
-    router *http.ServeMux
-    srv    *http.Server
-    ctx    context.Context
-
-    mu          sync.Mutex
-    engine      *engine.Engine
-    gamePlayers []lobby.PlayerSummary // players in the current game (for spectator legend)
-
-    // Broadcasters fan an Updates channel out to all open SSE connections.
-    lobbyBroadcaster *Broadcaster[lobby.LobbyUpdate]
-    gameBroadcaster  *Broadcaster[engine.EngineUpdate]
-}
-
-func New(port int, js jetstream.JetStream, kv jetstream.KeyValue) *Server
-func (s *Server) Start(ctx context.Context) error
-func (s *Server) Stop()
-
-// AttachEngine registers an active game engine with the server, pumping its
-// Updates channel into gameBroadcaster (one goroutine fans it out to every open
-// game SSE connection). Called when the local player joins/creates/spectates a game.
-func (s *Server) AttachEngine(e *engine.Engine)
-
-// DetachEngine unregisters the engine when the game ends.
-func (s *Server) DetachEngine()
-```
-
-Routes (registered in `registerRoutes`):
-- `GET /` — login page (if no lobby) or lobby view (initial HTML)
-- `POST /login` — validate player name, create lobby
-- `GET /lobby/stream` — Datastar SSE stream for lobby updates
-- `POST /lobby/chat` — send a lobby chat message
-- `POST /lobby/game/create` — create a new game
-- `POST /lobby/game/{id}/join` — join a game
-- `POST /lobby/game/{id}/spectate` — spectate an in-progress game (creates engine in ModeSpectator)
-- `POST /lobby/quit` — quit/leave the lobby
-- `GET /game` — game view (initial HTML)
-- `GET /game/stream` — Datastar SSE stream for game updates
-- `POST /game/move` — player move input
-- `POST /game/ready` — toggle ready state
-
-There is **no** `sse.go` and **no** templ files: the web UI does not use SSEWriter wrappers or generated templates. SSE is provided directly by the **datastar-go SDK** (`github.com/starfederation/datastar-go/datastar`): each handler calls `datastar.NewSSE(w, r)` and emits `sse.PatchElements(html, datastar.WithSelectorID(...))` / `sse.PatchSignals(...)` / `sse.ExecuteScript(...)`. HTML fragments are produced by plain Go string helpers in `handlers.go` (e.g. `renderBoard`, `renderPlayerList`, `renderGameList`, `renderArchiveTable`, `renderReadyList`, `renderPlayerLegend`, `renderScoreInner`, `renderLevelInner`), and cell appearance comes from `internal/render`. There are no `ui/lobby`, `ui/game`, or `ui/shared` Go packages — those directories exist but are empty.
-
-#### `handlers.go`
-
-All HTTP handlers and HTML rendering. The lobby stream handler subscribes to `lobbyBroadcaster`, sends an initial full render (player list, game list, archive table, chat), then loops on the subscription patching the affected fragments per `LobbyUpdate.Kind` (chat is appended via `datastar.WithModeAppend()`). The game stream handler subscribes to `gameBroadcaster` and, per `EngineUpdate.Kind`, patches the board, score, level, countdown, ready list, player legend, and game-over UI. In competitive mode it distinguishes own-field updates (`UpdatePlayfield`) from opponent updates (`UpdateOpponentField`, keyed by `OpponentID`) and patches the corresponding sidebar board. In cooperative mode the single wide playfield (playerCount × StandardWidth columns) is rendered directly — already the correct width, so there is no concatenation, special template, or visual separator between player sections.
-
-#### `broadcast.go`
-
-A generic fan-out helper used for both the lobby and game update streams:
-
-```go
-type Broadcaster[T any] struct { ... }
-
-func NewBroadcaster[T any]() *Broadcaster[T]
-func (b *Broadcaster[T]) Subscribe() (<-chan T, func()) // per-connection channel (large buffer) + unsubscribe
-func (b *Broadcaster[T]) Send(v T)                      // non-blocking; drops on a full subscriber buffer
-func (b *Broadcaster[T]) Close()
-```
-
-The server holds `lobbyBroadcaster *Broadcaster[lobby.LobbyUpdate]` and `gameBroadcaster *Broadcaster[engine.EngineUpdate]`; one pump goroutine per source copies from the `Updates` channel into the broadcaster, and each SSE connection `Subscribe()`s for its own buffered channel.
-
-**Cell appearance — single source of truth.** Every `<td>` is rendered with an
-explicit, server-computed fill color and outline emitted as an inline `style`; the
-stylesheet carries **no** per-color cell classes (only structural rules and the
-`.cell-flash` animation). All render paths funnel through one helper,
-`cellStyle(cell game.Cell, localPlayerIdx int, showOutline bool) string`, which
-returns `background:#..;outline:Npx solid #..;outline-offset:-1px`. Piece fills come
-from a `pieceColors` table composited over the board background via `blend(fg, bg,
-alpha)` (active ≈0.9, locked ≈0.7, adversarial ≈0.8), turning the old opacity
-layering into concrete hexes. Outlines: own active → white; spectator
-(`localPlayerIdx < 0`) → per-player color on active/locked cells; other player's
-active piece in a player view → grid line; locked non-adversarial → per-player color
-when `showOutline` (suppressed to the grid line on compact opponent boards). Because
-appearance is computed in Go, the browser never decides colors and the visual model
-stays consistent across own/spectator/opponent renders.
-
-**HUD and page rendering.** The HUD elements (score, level, next-piece preview, player status / "Spectating", countdown, ready list, game-over overlay) are produced by the same Go string helpers in `handlers.go` and patched into stable DOM element IDs over the game SSE stream — there is no separate `hud.templ`. The full lobby and game page shells (`loginPageHTML`, `lobbyPageHTML`, plus the game page) are emitted by `handleRoot`/`handleGamePage`; each shell includes the Datastar script tag and establishes its SSE connection with `data-on-load="@get('/lobby/stream')"` / `data-on-load="@get('/game/stream')"`. Chat fragments reuse the lobby chat render helper.
-
-**Ready/countdown flow:** While waiting for the game to start, each player sees the list of players with their ready state (green checkmark or red cross). Players toggle their ready state via the READY/NOT READY button (`POST /game/ready` → `lobby.ToggleReady`). When ALL players are ready, the button and player list are replaced by a 5-second countdown (5...4...3...2...1...GO!). During the countdown, players cannot change their ready state. After the countdown, the game transitions to `in_progress` and pieces begin to spawn.
-
-The game over overlay is patched in from the game SSE handler on `UpdateGameOver`: in cooperative mode any top-out ends the game for all; in competitive mode it shows "YOU WON!"/"YOU LOST" once the player is eliminated or is the last standing. The game page hides controls and the ready button for spectators, showing "Spectating" as the player status instead.
+The game over overlay is shown on `UpdateGameOver`: in cooperative mode any top-out ends the game for all; in competitive mode it shows "YOU WON!"/"YOU LOST" once the player is eliminated or is the last standing. The game screen hides controls and the ready button for spectators, showing "Spectating" as the player status instead.
 
 ---
 
@@ -1532,7 +1426,7 @@ All cross-package communication uses buffered Go channels. The buffer size is ch
 
 | Channel | Direction | Buffer | Notes |
 |---------|-----------|--------|-------|
-| `engine.Updates` | engine → front end | 64 | High-frequency during play (gravity ticks, every cell update). Consumed by the native bridge or, in `--web`, pumped into `gameBroadcaster`. Dropping updates here is preferable to blocking the engine. If the channel is full the engine drops the update — the next update will correct the display. |
+| `engine.Updates` | engine → front end | 64 | High-frequency during play (gravity ticks, every cell update). Consumed by the native bridge (`pumpEngine`). Dropping updates here is preferable to blocking the engine. If the channel is full the engine drops the update — the next update will correct the display. |
 | `lobby.Updates` | lobby → front end | 16 | Lower frequency. Lobby changes are infrequent relative to game updates. |
 | `engine.moves` (internal) | front end → engine | 8 | Player move requests dispatched onto the engine's internal moves channel (`runInput` reads it). Inputs are **serialized and buffered**: `runInput` processes them one at a time and each move's publish blocks on its batch commit ack (then applies the write-through) before the next move is dequeued, so a player never has two input batches in flight — a move issued while the previous one is still awaiting its ack waits in this buffer. The non-blocking send drops excess input rather than blocking the UI goroutine if a player outruns the ack round-trip by more than the buffer depth (not reached at human input rates). |
 
@@ -1551,14 +1445,10 @@ The following steps happen in order at startup. Steps that can fail cause the ap
 3.  EnsureLobbyChatStream
 3a. EnsureArchiveStream
 4.  EnsureLobbyKV
-5.  Branch on config.Web:
-    DEFAULT (native):                          --web (browser):
-      5a. runNative: build nativeui.App          5b. runWeb: create + Start ui.Server (HTTP listener)
-      5b. goroutine calls App.Run (opens the         open browser/webview at http://localhost:<port>
-          Gio window); app.Main() owns the
-          OS main thread
-      → native window shows the login screen     → browser shows the login page
-6.  Player enters name (login screen / POST /login): validate (config.ValidatePlayerName),
+5.  runNative: build nativeui.App; a goroutine calls App.Run (opens the
+    Gio window); app.Main() owns the OS main thread
+    → the native window shows the login screen
+6.  Player enters name (login screen): validate (config.ValidatePlayerName),
     check lobby.IsNameInUse, then:
     a. Create lobby.Lobby with playerName as both playerID and name
     b. Start lobby (KV watcher, chat consumer, archive consumer, heartbeat)
@@ -1597,7 +1487,7 @@ All goroutines are started with a context derived from the root context and exit
 | Input + gravity loop (`runInput`) | `engine.Engine` | `engine.Start()` (ModePlayer only) | ctx cancel |
 | Roster consumer (`runRosterConsumer`) | `engine.Engine` | `engine.Start()` (competitive only) | ctx cancel |
 | Per-opponent cells consumer (`runConsumer`) | `engine.Engine` | `startOpponentConsumer` per discovered opponent (competitive) | ctx cancel |
-| Lobby/game update pumps + SSE connections | `ui.Server` (web) / native bridge | per pump and per HTTP connection (web) | client disconnect or ctx cancel |
+| Lobby/game update pumps (`pumpLobby` / `pumpEngine`) | native bridge (`nativeui`) | one per attached lobby/engine | ctx cancel |
 
 ---
 
@@ -1668,5 +1558,5 @@ Decisions settled during design review, recorded here for future reference.
 | 13 | `pieceIdx` recovery on join/reconnect | Store `PieceIdx uint64` in `GameMeta`; locking engine CAS-updates it after each lock-in | `FetchGameMeta` gives any joining engine the current piece index in one round trip. No stream replay needed. |
 | 14 | Cooperative playfield topology | Single shared playfield of width `playerCount × StandardWidth`; cell subjects carry no player token (shared board) | Both players' pieces coexist on one wide board. `Cell.PlayerIdx` in the payload distinguishes active pieces — player identity lives in the message, not the subject, since coop never filters cells per player. One ordered consumer per engine. Line clears span the full width. UI renders the single playfield directly. |
 | 15 | `GameMeta` payload | Fully specified in Section 4 with lifecycle, identity, RNG seed, and `PieceIdx` fields | Status uses string constants for readability in the `nats` CLI. `PieceIdx` enables fast startup without stream replay. |
-| 16 | Real-time UI updates from JetStream | All UI data backed by JetStream uses ordered consumers pushing to Datastar SSE — never polling or periodic refresh | The lobby runs consumers for KV (players/games), chat, and archives. The engine runs consumers for playfield cells, events, meta, and countdown. Any change in a JetStream stream or KV bucket is immediately pushed to the UI via the consumer → Updates channel → broadcaster → SSE pipeline. |
+| 16 | Real-time UI updates from JetStream | All UI data backed by JetStream uses ordered consumers pushing through the `Updates` channels — never polling or periodic refresh | The lobby runs consumers for KV (players/games), chat, and archives. The engine runs consumers for playfield cells, events, meta, and countdown. Any change in a JetStream stream or KV bucket is immediately pushed to the UI via the consumer → Updates channel → bridge pipeline. |
 | 17 | Playfield storage granularity | One message per CELL (`playfield.cell.<row>.<col>`), not per row | A cell's last message is its current state. Per-cell CAS shrinks coop contention to same-cell writes only; every publish is a diff of only the changed cells (~4–8 messages per move); the `orderedCellKeys` category order (active → locked → empty) replaces the per-row `bottomFirst` flag with one rule that covers every write path. The CAS/write-through/merge-retry/ordered-consumer architecture is unchanged, just at cell granularity. |

@@ -1,8 +1,7 @@
 // Package nativeui is the native (Gio) player front end for Jetricks. It drives
-// the same lobby and engine business logic as the web UI (internal/ui) but draws
-// directly into an OS window and reads engine.Updates / lobby.Updates straight
-// off their Go channels — no HTTP, SSE, or browser — so a NATS update reaches the
-// screen within one display frame.
+// the lobby and engine business logic, draws directly into an OS window, and
+// reads engine.Updates / lobby.Updates straight off their Go channels, so a
+// NATS update reaches the screen within one display frame.
 package nativeui
 
 import (

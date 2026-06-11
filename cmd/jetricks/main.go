@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"syscall"
 
 	"gioui.org/app"
@@ -18,7 +16,6 @@ import (
 	"jetricks/internal/config"
 	"jetricks/internal/nativeui"
 	natspkg "jetricks/internal/nats"
-	"jetricks/internal/ui"
 )
 
 func main() {
@@ -27,7 +24,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Connect NATS (shared by both UIs).
 	nc, js, err := connectNATS(cfg)
 	if err != nil {
 		log.Fatalf("connect NATS: %v", err)
@@ -35,7 +31,7 @@ func main() {
 	defer nc.Close()
 	fmt.Printf("Connected to NATS at %s\n", nc.ConnectedUrl())
 
-	// Ensure streams and KV (shared by both UIs).
+	// Ensure streams and KV.
 	if err := natspkg.EnsureLobbyChatStream(ctx, js); err != nil {
 		log.Fatalf("ensure lobby chat stream: %v", err)
 	}
@@ -47,33 +43,7 @@ func main() {
 		log.Fatalf("ensure archive stream: %v", err)
 	}
 
-	if cfg.Web {
-		runWeb(ctx, cancel, cfg, nc, js, kv)
-		return
-	}
 	runNative(ctx, cancel, nc, js, kv)
-}
-
-// runWeb starts the HTTP/SSE UI server and opens a browser (the legacy front end).
-func runWeb(ctx context.Context, cancel context.CancelFunc, cfg config.Config, nc *nats.Conn, js jetstream.JetStream, kv jetstream.KeyValue) {
-	srv := ui.New(cfg.Port, js, kv)
-	if err := srv.Start(ctx); err != nil {
-		log.Fatalf("start UI: %v", err)
-	}
-	defer srv.Stop()
-
-	fmt.Printf("Jetricks running at http://localhost:%d\n", cfg.Port)
-	go openBrowser(fmt.Sprintf("http://localhost:%d", cfg.Port))
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case <-sig:
-		fmt.Println("\nShutting down...")
-	case <-ctx.Done():
-	}
-	cancel()
-	nc.Drain()
 }
 
 // runNative opens the native (Gio) window. Gio's app.Main() owns the OS main
@@ -114,9 +84,6 @@ func parseFlags() config.Config {
 	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL (overrides --context when set)")
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
-	flag.IntVar(&cfg.Port, "port", 7777, "HTTP server port (web UI)")
-	flag.BoolVar(&cfg.Webview, "webview", false, "Launch as webview")
-	flag.BoolVar(&cfg.Web, "web", false, "Use the web browser UI instead of the native window")
 	flag.Parse()
 
 	return cfg
@@ -128,23 +95,4 @@ func connectNATS(cfg config.Config) (*nats.Conn, jetstream.JetStream, error) {
 	}
 	nc, js, _, err := natspkg.Connect(cfg.NATSContext)
 	return nc, js, err
-}
-
-func openBrowser(url string) {
-	var cmd string
-	var args []string
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = "open"
-		args = []string{url}
-	case "linux":
-		cmd = "xdg-open"
-		args = []string{url}
-	case "windows":
-		cmd = "rundll32"
-		args = []string{"url.dll,FileProtocolHandler", url}
-	default:
-		return
-	}
-	_ = exec.Command(cmd, args...).Start()
 }

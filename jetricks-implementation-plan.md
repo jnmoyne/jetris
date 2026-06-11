@@ -970,7 +970,8 @@ tick that silently drops would make the piece appear stuck for one tick
 interval, then snap down. So both use `publishProjectedRowsWithMergeRetry` in
 coop mode: on CAS failure, refetch the latest row from the stream via
 `stream.GetLastMsgForSubject`, overlay this player's cells on top, retry the
-batch with refreshed per-subject CAS expectations (up to 5 attempts).
+batch with refreshed per-subject CAS expectations (up to 16 attempts, with a short
+per-player-offset backoff between tries that breaks lockstep with the other player).
 
 In competitive mode each player owns their row subjects, so neither spawn nor
 gravity contends with another player; they go through the regular
@@ -1461,7 +1462,7 @@ helpers in `move.go`:
   — the ONLY retrying CAS path. On failure it refetches each affected row
   (`refetchAndMerge` via `stream.GetLastMsgForSubject`), vacates only our own old
   active cells, overlays only our new cells (never the other player's active
-  cells), and retries (up to 5 attempts) before dropping + flashing; write-throughs
+  cells), and retries (up to 16 attempts, short lockstep-breaking backoff) before dropping + flashing; write-throughs
   the committed (first-attempt or merged) rows on success. Used for ALL coop
   shared-row writes (spawn, gravity, lock, hard drop, line clear).
 - `publishProjectedRowsNoCAS(ctx, rows, applyBottomFirst, locked)` — atomic batch

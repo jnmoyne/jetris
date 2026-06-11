@@ -341,7 +341,7 @@ Gravity ticks and piece spawns must succeed even under contention — a dropped 
 
 In **competitive mode** each player owns their row subjects, so — with gravity and input serialized on `runInput` and write-through keeping the view current — their writes do not contend with another player's in normal play.
 
-In **cooperative mode** both share the same row subjects with the other player. On CAS failure the engine refetches each affected row from the stream, overlays this player's cells on top of the latest stream state, and retries the atomic batch with refreshed per-subject CAS expectations (up to 5 attempts).
+In **cooperative mode** both share the same row subjects with the other player. On CAS failure the engine refetches each affected row from the stream, overlays this player's cells on top of the latest stream state, and retries the atomic batch with refreshed per-subject CAS expectations (up to 16 attempts, with a short per-player-offset backoff between tries that breaks lockstep with the other player's retry loop).
 
 Locks are published as no-CAS authoritative writes (see below) and so cannot fail CAS.
 

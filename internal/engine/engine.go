@@ -761,8 +761,22 @@ func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows ma
 	// refetchAndMerge builds the merged batch in sortedRowKeys(saved) order, so
 	// the same key order maps to the committed rows for the write-through.
 	mergedKeys := sortedRowKeys(saved, bottomFirst)
-	const maxRetries = 5
+	const maxRetries = 16
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Escalating, per-player-offset backoff before re-fetching: it breaks
+			// lockstep with the OTHER player's retry loop (so one wins each round
+			// instead of both losing the CAS race repeatedly) and lets a contention
+			// burst on the shared row settle. Paid only while actually retrying —
+			// the common case commits on the first attempt above. Without this, two
+			// players hammering the same row can exhaust the retries and drop the
+			// step (a dropped spawn would leave a player stuck).
+			backoff := time.Duration(attempt+e.playerIdx) * 200 * time.Microsecond
+			if backoff > 2*time.Millisecond {
+				backoff = 2 * time.Millisecond
+			}
+			time.Sleep(backoff)
+		}
 		merged, mergedRows, ok := e.refetchAndMerge(ctx, saved, bottomFirst)
 		if !ok {
 			return

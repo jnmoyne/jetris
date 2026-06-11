@@ -76,6 +76,10 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				e.hadActivePiece = hasActive
 				e.mu.Unlock()
 
+				// Complete a pending ping measurement if this is the first
+				// message of a batch this engine published (see ping.go).
+				e.notePingEcho(seq)
+
 				// Signal CAS notification
 				select {
 				case e.cellUpdated <- struct{}{}:

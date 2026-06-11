@@ -209,6 +209,7 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = sse.PatchElements(renderScoreInner(e.Score()), datastar.WithSelectorID("score"))
 	_ = sse.PatchElements(renderLevelInner(e.Level()), datastar.WithSelectorID("level"))
+	_ = sse.PatchElements(renderPingInner(e.Ping()), datastar.WithSelectorID("ping"))
 
 	// In competitive mode, show player status list (playing/eliminated)
 	if e.GameMode() == config.ModeCompetitive {
@@ -284,6 +285,8 @@ func (s *Server) handleGameStream(w http.ResponseWriter, r *http.Request) {
 				_ = sse.PatchElements(renderScoreInner(update.Score), datastar.WithSelectorID("score"))
 			case engine.UpdateLevel:
 				_ = sse.PatchElements(renderLevelInner(update.Level), datastar.WithSelectorID("level"))
+			case engine.UpdatePing:
+				_ = sse.PatchElements(renderPingInner(update.Ping), datastar.WithSelectorID("ping"))
 			case engine.UpdateGameOver:
 				result := ""
 				if eng.GameMode() == config.ModeCompetitive {
@@ -886,6 +889,10 @@ body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #e0e0e
       <div class="hud-label">LEVEL</div>
       <div id="level" class="hud-value">0</div>
     </div>
+    <div class="hud-item">
+      <div class="hud-label">PING</div>
+      <div id="ping" class="hud-value">—</div>
+    </div>
     <div id="game-status"></div>
     <div id="ready-area" style="margin:20px 0">
       <div class="hud-label">WAITING FOR PLAYERS</div>
@@ -1273,6 +1280,21 @@ func renderScoreInner(score int) string {
 
 func renderLevelInner(level int) string {
 	return fmt.Sprintf(`<div id="level" class="hud-value">%d</div>`, level)
+}
+
+// renderPingInner renders the engine's publish→echo round trip: sub-10ms with a
+// decimal, whole milliseconds above, an em dash before the first measurement.
+func renderPingInner(d time.Duration) string {
+	val := "—"
+	if d > 0 {
+		ms := float64(d) / float64(time.Millisecond)
+		if ms < 10 {
+			val = fmt.Sprintf("%.1f ms", ms)
+		} else {
+			val = fmt.Sprintf("%.0f ms", ms)
+		}
+	}
+	return fmt.Sprintf(`<div id="ping" class="hud-value">%s</div>`, val)
 }
 
 func htmlEscape(s string) string {

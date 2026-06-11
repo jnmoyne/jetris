@@ -1,5 +1,7 @@
 package engine
 
+import "time"
+
 // UpdateKind identifies the type of engine update sent to the UI.
 type UpdateKind int
 
@@ -16,6 +18,7 @@ const (
 	UpdateCountdown
 	UpdatePlayerEliminated // competitive: a player was eliminated
 	UpdateCASFlash         // a CAS failure flash should be rendered
+	UpdatePing             // a new publish→echo round-trip measurement
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -28,9 +31,10 @@ type EngineUpdate struct {
 	Countdown          int      // seconds remaining (0 = GO!)
 	Won                bool     // competitive: true if this player won
 	EliminatedPlayerID string   // competitive: which player was eliminated
-	OpponentID         string   // which opponent's board changed (UpdateOpponentField)
-	FlashCells         [][2]int // cells to flash (UpdateCASFlash)
-	FlashPlayerIdx     int      // player index for flash color
+	OpponentID         string        // which opponent's board changed (UpdateOpponentField)
+	FlashCells         [][2]int      // cells to flash (UpdateCASFlash)
+	FlashPlayerIdx     int           // player index for flash color
+	Ping               time.Duration // latest publish→echo round trip (UpdatePing)
 }
 
 // EventKind identifies the type of game event published to the events subject.

@@ -69,6 +69,13 @@ type Engine struct {
 	cancelFn    context.CancelFunc
 	moves       chan MoveType
 	cellUpdated chan struct{}
+
+	// Ping measurement (see ping.go): time from initiating a batch publish to
+	// the consumer delivering the batch's first message back.
+	pingMu      sync.Mutex
+	pingPending map[uint64]time.Time // batch first-seq → publish start time
+	lastEchoSeq uint64               // highest own-board seq seen by the consumer; guarded by pingMu
+	pingNanos   atomic.Int64         // latest measurement, for Ping()
 }
 
 // New creates a new engine instance. Call Start() to begin.
@@ -93,6 +100,7 @@ func New(
 		moves:              make(chan MoveType, 8),
 		cellUpdated:        make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
+		pingPending:        make(map[uint64]time.Time),
 	}
 	e.setMode(mode)
 	return e
@@ -654,12 +662,14 @@ func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellP
 		return
 	}
 
+	t0 := time.Now()
 	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
 	if err == nil {
 		// Write the committed cells straight into e.playfield (content + the
 		// inferred per-subject sequences) so the next move/gravity tick is
 		// projected from — and CAS-checked against — up-to-date state without
 		// waiting for the consumer echo. keys is in the same order as updates.
+		e.trackPing(t0, seq, len(updates))
 		e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
@@ -741,11 +751,13 @@ func (e *Engine) publishProjectedCellsNoCAS(ctx context.Context, cells map[game.
 				Payload: data,
 			})
 		}
+		t0 := time.Now()
 		seq, err := natspkg.PublishCellsAtomicallyNoCAS(ctx, e.js, updates)
 		if err != nil {
 			log.Printf("publish batch (no-cas): %v", err)
 			return
 		}
+		e.trackPing(t0, seq, len(updates))
 		e.applyPublishedCells(chunk, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
 	}
 }
@@ -816,9 +828,11 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 		log.Printf("build batch: %v", err)
 		return
 	}
+	t0 := time.Now()
 	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
 	if err == nil {
 		// First-attempt commit: write through the cells we published.
+		e.trackPing(t0, seq, len(updates))
 		e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
@@ -853,9 +867,11 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 			e.emitCASFlash(flashCells)
 			return
 		}
+		t0 := time.Now()
 		seq, err := natspkg.PublishMoveAtomically(ctx, e.js, merged)
 		if err == nil {
 			// Retry commit: write through the cells that actually committed.
+			e.trackPing(t0, seq, len(merged))
 			e.applyPublishedCells(mergedKeys, func(k game.CellPos) game.Cell { return mergedCells[k] }, seq, locked)
 			return
 		}

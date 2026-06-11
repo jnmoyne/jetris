@@ -42,6 +42,8 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				for _, rc := range u.FlashCells {
 					a.flash[[2]int{rc[0], rc[1]}] = now
 				}
+			case engine.UpdatePing:
+				a.ping = u.Ping
 			}
 			a.mu.Unlock()
 			a.invalidate()

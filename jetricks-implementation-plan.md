@@ -1141,6 +1141,7 @@ const (
     UpdateCountdown
     UpdatePlayerEliminated // competitive: a player was eliminated
     UpdateCASFlash         // a CAS failure flash should be rendered
+    UpdatePing             // a new publish→echo round-trip measurement
 )
 
 type EngineUpdate struct {
@@ -1155,6 +1156,7 @@ type EngineUpdate struct {
     OpponentID         string   // for UpdateOpponentField: which opponent's board changed
     FlashCells         [][2]int // cells to flash (UpdateCASFlash)
     FlashPlayerIdx     int      // player index for flash color
+    Ping               time.Duration // latest publish→echo round trip (UpdatePing)
 }
 
 type EventKind string
@@ -1466,6 +1468,31 @@ forces it, 0..n rows), and returns a `topOut` flag. The cells the shift actually
 `orderedCellKeys` re-stamps the held piece's active cells first, applies the risen stack second,
 and vacates last, so the piece never transiently vanishes — followed by a full-board re-render.
 When `topOut` is true — the piece was squeezed off the top — it calls `handleTopOut`.
+
+#### `ping.go` — continuous publish→echo latency measurement
+
+While playing, both HUDs show a continuously updating **PING**: the time from initiating
+a batch publish commit to the own-board ordered consumer delivering that batch's **first
+message** back (the loop every visible board change travels). Implementation:
+
+- `trackPing(t0, commitSeq, n)` — called by all three publish helpers after a successful
+  commit, with `t0` captured immediately before the publish call (each merge-retry
+  attempt and each NoCAS chunk measures independently). The batch's first message has
+  sequence `commitSeq-(N-1)`; `t0` is registered under it in `pingPending`.
+- `notePingEcho(seq)` — called by the own-board consumer for every delivered message;
+  a match completes the measurement, stores it (exposed via `Ping() time.Duration`) and
+  emits `UpdatePing` on the `Updates` channel.
+- Race closure: the echo can arrive before `trackPing` runs (ack and delivery race on
+  the same connection). `lastEchoSeq` — the consumer's high-water mark, valid because
+  the ordered consumer delivers strictly by stream sequence, maintained under `pingMu` —
+  lets `trackPing` complete the measurement immediately in that case. Stale pending
+  entries are pruned after 10 s.
+- UIs: the native HUD adds a `PING` stat (`formatPing`: em dash before the first
+  measurement, one decimal under 10 ms, whole ms above; reset on game enter/leave); the
+  web HUD adds a `#ping` element patched via `renderPingInner` on `UpdatePing`.
+  Spectators never publish, so their readout stays an em dash.
+- Tests: `ping_test.go` — a live engine measures a positive ping after a move and drains
+  `pingPending`; the echo-beats-ack race path is covered directly.
 
 #### `move.go` — input + gravity loop
 

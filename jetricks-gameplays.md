@@ -392,3 +392,16 @@ emits the affected cells on the local `Updates` channel only (never published to
 other players see nothing). The native UI draws a one-shot ~600 ms rainbow **border** on
 those cells in Gio; the web UI re-renders them with a `cell-flash` class and a matching
 rainbow CSS animation.
+
+### Ping display
+
+While playing, the HUD shows a continuously updating **PING** readout: the time between
+the moment the engine initiates a batch publish commit and the moment its own ordered
+consumer delivers the **first message of that batch** back. Every visible board change
+travels this write→commit→echo loop, so the number is the real latency the player
+experiences, not an artificial probe. Each successful batch publish (move, gravity tick,
+spawn, lock, clear) produces a new measurement, emitted as an `UpdatePing` on the local
+`Updates` channel — so the readout refreshes at least once per gravity tick and on every
+input. It shows an em dash until the first measurement completes, sub-10 ms values with
+one decimal, and whole milliseconds above. Spectators publish nothing and therefore have
+no ping readout.

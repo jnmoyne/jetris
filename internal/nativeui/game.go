@@ -25,6 +25,7 @@ import (
 // layout never reads fields the pump goroutine is writing.
 type gameView struct {
 	score, level         int
+	ping                 time.Duration
 	status               string
 	countdown            int
 	countdownAt          time.Time
@@ -49,6 +50,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 	return gameView{
 		score:       a.score,
 		level:       a.level,
+		ping:        a.ping,
 		status:      a.gameStatus,
 		countdown:   a.countdown,
 		countdownAt: a.countdownAt,
@@ -138,6 +140,10 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		layout.Rigid(spacer(14)),
 		layout.Rigid(a.hudStat("SCORE", view.score)),
 		layout.Rigid(a.hudStat("LEVEL", view.level)),
+	}
+
+	if mode == engine.ModePlayer {
+		children = append(children, layout.Rigid(a.hudStatText("PING", formatPing(view.ping))))
 	}
 
 	if mode == engine.ModePlayer && !started && !view.gameOver {
@@ -349,6 +355,10 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, won bool) D {
 }
 
 func (a *App) hudStat(label string, val int) layout.Widget {
+	return a.hudStatText(label, fmt.Sprintf("%d", val))
+}
+
+func (a *App) hudStatText(label, val string) layout.Widget {
 	return func(gtx C) D {
 		return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
@@ -358,13 +368,26 @@ func (a *App) hudStat(label string, val int) layout.Widget {
 					return l.Layout(gtx)
 				}),
 				layout.Rigid(func(gtx C) D {
-					l := material.H6(a.th, fmt.Sprintf("%d", val))
+					l := material.H6(a.th, val)
 					l.Color = colFg
 					return l.Layout(gtx)
 				}),
 			)
 		})
 	}
+}
+
+// formatPing renders the publish→echo round trip for the HUD: sub-10ms with a
+// decimal, whole milliseconds above, an em dash before the first measurement.
+func formatPing(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	ms := float64(d) / float64(time.Millisecond)
+	if ms < 10 {
+		return fmt.Sprintf("%.1f ms", ms)
+	}
+	return fmt.Sprintf("%.0f ms", ms)
 }
 
 // swatch draws a size×size dp filled square in c.

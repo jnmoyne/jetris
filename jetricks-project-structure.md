@@ -62,6 +62,7 @@ jetricks/
 │   │   ├── engine.go
 │   │   ├── move.go
 │   │   ├── consumer.go
+│   │   ├── ping.go
 │   │   └── events.go
 │   ├── lobby/
 │   │   ├── lobby.go
@@ -1117,6 +1118,7 @@ const (
     UpdateCountdown                           // pre-game countdown tick
     UpdatePlayerEliminated                    // competitive: a player was eliminated
     UpdateCASFlash                            // a CAS-failure flash should be rendered
+    UpdatePing                                // a new publish→echo round-trip measurement
 )
 
 type EngineUpdate struct {
@@ -1131,8 +1133,35 @@ type EngineUpdate struct {
     OpponentID         string   // for UpdateOpponentField/UpdateOpponentShrink: which opponent
     FlashCells         [][2]int // for UpdateCASFlash: cells to flash
     FlashPlayerIdx     int      // for UpdateCASFlash: player index for flash color
+    Ping               time.Duration // for UpdatePing: latest publish→echo round trip
 }
 ```
+
+#### `ping.go`
+
+Continuous **ping** measurement, surfaced in both HUDs while playing: the time between
+the moment the engine initiates a batch publish commit and the moment its own ordered
+consumer delivers the batch's **first message** back — the full write→commit→echo loop
+every visible board change travels.
+
+Mechanics: a successful batch publish knows its commit-ack stream sequence, and an
+atomic batch's N messages get consecutive sequences, so the batch's first message has
+sequence `commitSeq-(N-1)`. `trackPing(t0, commitSeq, n)` — called by all three publish
+helpers with `t0` captured just before the publish call (first attempt and each
+merge-retry attempt measure independently; each NoCAS chunk measures separately) —
+registers `t0` under that sequence in `pingPending`; the own-board consumer calls
+`notePingEcho(seq)` for every message it delivers, and the first batch message completes
+the measurement, stores it (atomic, exposed via `Ping() time.Duration`) and emits
+`UpdatePing`.
+
+The commit ack (publisher goroutine) and the echo (consumer goroutine) race — the
+consumer can deliver the echo *before* `trackPing` runs. `lastEchoSeq`, the highest
+own-board sequence the consumer has delivered (maintained under `pingMu`, sufficient
+because the ordered consumer delivers strictly by stream sequence), closes the race:
+if the echo already passed, `trackPing` completes the measurement immediately instead
+of registering an entry that would never match. Stale pending entries (echo cut off by
+shutdown) are pruned after 10 s. Spectators never publish, so they have no measurements
+and the HUD shows an em dash.
 
 **Game events published to `jetricks.game.<id>.events`:**
 

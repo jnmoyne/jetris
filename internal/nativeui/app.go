@@ -100,6 +100,7 @@ type App struct {
 	// game render snapshot (written by pumpEngine)
 	score        int
 	level        int
+	ping         time.Duration // latest publish→echo round trip from the engine
 	gameStatus   string
 	countdown    int       // -1 none, 0 GO!, >0 seconds remaining
 	countdownAt  time.Time // when the current countdown number arrived (for the pop animation)

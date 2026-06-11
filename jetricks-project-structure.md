@@ -808,7 +808,7 @@ type Engine struct {
     gameID      string
     playerID    string
     gameMode    config.GameMode  // cooperative or competitive
-    mode        Mode
+    mode        atomic.Int32     // current Mode; atomic (cross-goroutine, see Concurrency)
     initialMode Mode             // original mode at creation (ModePlayer or ModeSpectator)
     playerIdx   int              // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
     playerCount int              // number of players in the game
@@ -823,14 +823,18 @@ type Engine struct {
     opponentPlayerID   string                     // the known opponent (2-player join), if any
 
     seq      *rng.Sequence
-    pieceIdx uint64
+    pieceIdx atomic.Uint64
     metaSeq  uint64
 
-    score             int
-    totalLines        int
-    level             int
-    hadActivePiece    bool
-    eliminatedPlayers map[string]bool // players who have topped out (competitive)
+    // mode/score/level/totalLines/pieceIdx are sync/atomic — read and written from
+    // the consumer, runInput, events and UI goroutines with no single covering lock
+    // (transitionToSpectator sets mode both under and without e.mu). e.mu guards the
+    // structured state (playfield, the maps).
+    score             atomic.Int64
+    totalLines        atomic.Int64
+    level             atomic.Int64
+    hadActivePiece    bool            // only the own-rows consumer goroutine touches it
+    eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
     visibleRowStart   int             // first visible row index (varies per mode/player count)
 
     // Channels for outbound events to the UI layer
@@ -965,31 +969,46 @@ There is no `Publish`/`PublishHardDrop`/`ErrMoveDropped`/`ErrLockIn` API and no 
 
 ```go
 // publishProjectedRows publishes a map of row payloads as ONE atomic batch with
-// per-subject CAS expectations sourced from e.playfield.LastSeq[r]. On CAS
+// per-subject CAS expectations sourced from e.playfield.LastSeq[r]. On success it
+// WRITE-THROUGHS the committed rows into e.playfield (applyPublishedRows). On CAS
 // failure the step is DROPPED (no retry, no further publish) and the local
 // player is signalled with a rainbow flash on flashCells (pass nil to suppress).
 // Used for player moves, rotations, and competitive spawns/gravity ticks.
-func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst bool)
+func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst, locked bool)
 
 // publishProjectedRowsNoCAS publishes a map of rows as ONE atomic batch with NO
 // CAS expectations — used for authoritative state (competitive lock, hard-drop
-// landing, line-clear, opponent-shrink application). applyBottomFirst orders the
-// batch so a row completed by a hard drop is in place when lock-in fires.
-func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]game.Row, applyBottomFirst bool)
-
-// publishProjectedRowsSliceNoCAS publishes a contiguous []Row (fromRow..toRow)
-// NoCAS — used by the line-clear / shrink paths that produce a row slice.
-func (e *Engine) publishProjectedRowsSliceNoCAS(ctx context.Context, rows []game.Row, fromRow, toRow int)
+// landing, line-clear, opponent-shrink application). Write-throughs on success.
+// applyBottomFirst orders the batch so a row completed by a hard drop is in place
+// when lock-in fires.
+func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]game.Row, applyBottomFirst, locked bool)
 
 // publishProjectedRowsWithMergeRetry is the COOP path for steps that MUST land
 // (spawn, gravity tick, lock, hard drop, line clear) on the shared board. On CAS
 // failure it refetches each affected row from the stream, overlays this player's
 // cells (refetchAndMerge), and retries with refreshed per-subject CAS — up to 5
-// attempts, then drops + flashes.
-func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst bool)
+// attempts, then drops + flashes. Write-throughs the committed (first-attempt or
+// merged) rows on success.
+func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst, locked bool)
 
-func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, bool)
-func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst bool) ([]natspkg.RowUpdate, error)
+// applyPublishedRows write-throughs a committed batch into e.playfield: each row's
+// content + the per-subject stream sequence inferred from the batch commit ack
+// (message i of N → commitSeq−(N−1−i)), advancing both the board and the CAS
+// expectation without waiting for the consumer echo. The `locked` flag is threaded
+// through the publish helpers (and spawnPiece) because spawnPiece and the
+// line-clear publish run under the consumer's lock while every other path runs
+// with e.mu released — applyPublishedRows and buildBatchUpdates take e.mu unless
+// locked.
+func (e *Engine) applyPublishedRows(orderedKeys []int, get func(int) game.Row, commitSeq uint64, locked bool)
+
+func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, map[int]game.Row, bool)
+func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst, locked bool) ([]natspkg.RowUpdate, error)
+
+// changedRows returns the subset of projected[fromRow:toRow) whose content differs
+// from the live cur rows — so a line clear / competitive shrink republishes only
+// the rows that actually changed, not the whole visible range (far less per-subject
+// CAS contention on the shared coop board).
+func changedRows(cur, projected []game.Row, fromRow, toRow int) map[int]game.Row
 ```
 
 There is no recompute-and-retry-until-it-lands hard-drop loop. The hard-drop destination is computed **once** (`game.HardDropDestination` / `HardDropDestinationCoop`). In competitive mode the landing rows are published NoCAS (`publishHardDrop`); in cooperative mode through the merge-retry path (`publishHardDropCoop`, ≤5 retries). `bottomFirst`/`applyBottomFirst` is `true` for hard drops and downward moves so a line completed by the drop is detected at the lock, not one piece later. See the publish-strategy summary below.
@@ -1067,13 +1086,13 @@ type GameEvent struct {
 
 **Score tracking:**
 
-In **cooperative mode** the team score is a plain local `score int`. When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta}` on the events subject; every other player's events consumer folds that delta into its own local `score` so all clients converge on the same combined team total. This is **not** a server-side counter CRDT and uses no score subject. See `jetricks-gameplays.md` for the authoritative scoring rules.
+In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta}` on the events subject; every other player's events consumer folds that delta into its own local `score` so all clients converge on the same combined team total. This is **not** a server-side counter CRDT and uses no score subject. See `jetricks-gameplays.md` for the authoritative scoring rules.
 
 **Line clear publishing:** Cleared rows are published using a no-CAS publish (the cleared state is authoritative). This prevents the CAS retry merge logic from restoring old occupied cells from stale NATS data, which would effectively undo the clear. After the cleared rows are published, `LastSeq` is updated from the publish acknowledgment so subsequent CAS publishes use the correct sequence.
 
 **CAS failure recovery:** After a no-CAS line-clear publish, the other player's engine has stale `LastSeq` values until its consumer processes the clear messages. During this window, their moves may fail with CAS errors. When a move publish fails (CAS on any row), the engine immediately fetches the latest row state from NATS via direct get and corrects both the in-memory row data and `LastSeq`. This ensures the display stays in sync with NATS even when moves are dropped due to stale sequences.
 
-In **competitive mode** each player keeps its own local `score int`, incremented by the number of lines it clears. The score is reported to other clients only at game end via the `EventGameOver` event (and rendered locally via `UpdateScore`); the per-player `score` subject is not used.
+In **competitive mode** each player keeps its own local score counter (`score atomic.Int64`), incremented by the number of lines it clears. The score is reported to other clients only at game end via the `EventGameOver` event (and rendered locally via `UpdateScore`); the per-player `score` subject is not used.
 
 **Top-out transition:**
 
@@ -1528,7 +1547,7 @@ Decisions settled during design review, recorded here for future reference.
 | 5 | Row payload encoding | JSON | Simpler to implement and debug with `nats` CLI. Row update rate is low enough that JSON overhead is not a concern. |
 | 6 | Startup consumer start point | `max(row seqs)+1` | Avoids reprocessing the entire stream history on every join/reconnect. The gap in non-row subjects (at most a few milliseconds of game time) is acceptable; the playfield snapshot reflects any shrinks or clears that occurred in that window. |
 | 7 | Lobby map concurrency | `sync.RWMutex` on `Lobby.mu`, maps unexported, accessed via `Players()` / `Games()` snapshot methods | Straightforward, low-overhead, and makes the access pattern explicit without channel complexity. |
-| 8 | Cooperative score propagation | Plain local `score int`, propagated via `EventLineClear` events on the events subject and summed locally | No server-side counter CRDT is needed; the events stream the game already runs carries the deltas. The game stream sets `AllowAtomicPublish` and `AllowDirect` (not `AllowMsgCounter`). |
+| 8 | Cooperative score propagation | Plain local score counter (`atomic.Int64`), propagated via `EventLineClear` events on the events subject and summed locally | No server-side counter CRDT is needed; the events stream the game already runs carries the deltas. The game stream sets `AllowAtomicPublish` and `AllowDirect` (not `AllowMsgCounter`). |
 | 9 | Game ID format | UUID v4 with dashes (`550e8400-e29b-41d4-a716-446655440000`) | UUIDs are globally unique, collision-free, and NATS stream names allow dashes. |
 | 10 | Game-over semantics | Cooperative: any top-out ends for all. Competitive: eliminated player becomes spectator; game continues until one player remains. | See `jetricks-gameplays.md`. |
 | 11 | HardDrop CAS behaviour | Destination computed once; competitive publishes the landing NoCAS, coop via merge-retry (≤5). No recompute-and-retry-until-it-lands loop. | The landing is authoritative state, so NoCAS (competitive) or CAS+merge (coop, to protect the other player's shared-board cells) is the right tool — not an unbounded CAS retry. |

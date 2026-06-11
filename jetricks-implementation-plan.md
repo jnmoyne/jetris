@@ -898,9 +898,16 @@ Mapping from engine action to publish path:
 | Lock-on-blocked-down (competitive) | `publishProjectedRowsNoCAS(applyBottomFirst=false)` | no |
 | Hard drop (coop) | `publishProjectedRowsWithMergeRetry(bottomFirst=true)` | yes, per-subject (merge-retry) |
 | Hard drop (competitive) | `publishProjectedRowsNoCAS(applyBottomFirst=true)` | no |
-| Line clear (coop) | `publishProjectedRowsWithMergeRetry(bottomFirst=false)` | yes, per-subject (merge-retry) |
-| Line clear (competitive) | `publishProjectedRowsSliceNoCAS` | no |
-| Opponent shrink (apply locally, competitive) | `publishProjectedRowsSliceNoCAS` | no |
+| Line clear (coop) | `publishProjectedRowsWithMergeRetry(bottomFirst=true)`, **changed rows only** | yes, per-subject (merge-retry) |
+| Line clear (competitive) | `publishProjectedRowsNoCAS`, **changed rows only** | no |
+| Opponent shrink (apply locally, competitive) | `publishProjectedRowsNoCAS`, **changed rows only** | no |
+
+The clear/shrink paths publish only the rows that **actually changed**
+(`changedRows` diffs the projection against the live board), not the whole visible
+range. A low stack changes only a few rows, which keeps the coop clear's
+per-subject CAS merge-retry from exhausting against the other player's moving
+piece — the contention that otherwise dropped the clear (uncleared line) and the
+follow-up spawn (stuck player).
 
 **Why coop authoritative writes use CAS+merge-retry, not NoCAS.** In coop both
 players write the **same** shared row subjects, and every row write replaces the
@@ -1073,8 +1080,8 @@ type Engine struct {
     gameID      string
     playerID    string
     gameMode    config.GameMode
-    mode        Mode
-    initialMode Mode // original mode at creation (ModePlayer or ModeSpectator)
+    mode        atomic.Int32 // current Mode; atomic — see the concurrency note below
+    initialMode Mode         // original mode at creation (ModePlayer or ModeSpectator)
     playerIdx   int  // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
     playerCount int  // number of players in the game
 
@@ -1085,14 +1092,18 @@ type Engine struct {
     opponentPlayerID   string                     // single known opponent (2-player join); others discovered via roster
 
     seq      *rng.Sequence
-    pieceIdx uint64
+    pieceIdx atomic.Uint64
     metaSeq  uint64 // last known sequence of meta message
 
-    score             int
-    totalLines        int
-    level             int
-    hadActivePiece    bool
-    eliminatedPlayers map[string]bool // players who have topped out (competitive)
+    // mode/score/level/totalLines/pieceIdx are sync/atomic: they are read and
+    // written across the consumer, runInput, events and UI goroutines with no
+    // single covering lock (transitionToSpectator sets mode both under and without
+    // e.mu, so locking it would deadlock). e.mu still guards the structured state.
+    score             atomic.Int64
+    totalLines        atomic.Int64
+    level             atomic.Int64
+    hadActivePiece    bool            // only the own-rows consumer goroutine touches it
+    eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
     visibleRowStart   int             // first visible row index; cooperative: 4, competitive: CompetitiveVisibleRowStart(playerCount)
 
     Updates        chan EngineUpdate
@@ -1285,9 +1296,19 @@ in `handleGameEvent` (which also handles the all-eliminated draw).
 hasActive := pf.ActivePieceForPlayer(e.playerIdx) != nil
 if e.hadActivePiece && !hasActive {
     e.handleLockIn(ctx) // completed-row check, scoring, pieceIdx++, spawn next
+    hasActive = pf.ActivePieceForPlayer(e.playerIdx) != nil // RE-READ — see below
 }
 e.hadActivePiece = hasActive
 ```
+
+The **re-read after `handleLockIn`** is required by the write-through:
+`handleLockIn` spawns the next piece, and the publish write-through makes that
+piece active in `pf` immediately (the whole block runs under `e.mu`). Without the
+re-read, `hadActivePiece` would be set to the pre-spawn `false` even though a piece
+is active — and if that piece then locks before the consumer processes another
+echo (runInput races ahead on fast drops), its lock-in transition is missed and
+the player stops spawning entirely. Re-reading captures the just-spawned piece, so
+`hadActivePiece` stays correct.
 
 `publishPieceIdxUpdate`: in cooperative mode this is a no-op (each player tracks
 its own `pieceIdx` locally and never writes it to meta). In competitive mode it
@@ -1430,22 +1451,35 @@ There is no separate CAS source file. There is no `Publish`, `PublishHardDrop`,
 loop. All CAS logic lives in the publish helpers in `engine.go` and the hard-drop
 helpers in `move.go`:
 
-- `publishProjectedRows(ctx, rows, flashCells, bottomFirst)` — single atomic
-  batch with per-subject CAS from `e.playfield.LastSeq`. On CAS failure it DROPS
-  the step (no retry, no 50ms wait) and calls `emitCASFlash(flashCells)` so the
-  local player gets a rainbow flash. Used for player moves in both modes and for
-  competitive spawn/gravity.
-- `publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, bottomFirst)` — the
-  ONLY retrying CAS path. On failure it refetches each affected row
+- `publishProjectedRows(ctx, rows, flashCells, bottomFirst, locked)` — single
+  atomic batch with per-subject CAS from `e.playfield.LastSeq`. On success it
+  write-throughs the committed rows (`applyPublishedRows`); on CAS failure it DROPS
+  the step (no retry) and calls `emitCASFlash(flashCells)` so the local player gets
+  a rainbow flash. Used for player moves in both modes and for competitive
+  spawn/gravity.
+- `publishProjectedRowsWithMergeRetry(ctx, rows, flashCells, bottomFirst, locked)`
+  — the ONLY retrying CAS path. On failure it refetches each affected row
   (`refetchAndMerge` via `stream.GetLastMsgForSubject`), vacates only our own old
   active cells, overlays only our new cells (never the other player's active
-  cells), and retries (up to 5 attempts) before dropping + flashing. Used for ALL
-  coop shared-row writes (spawn, gravity, lock, hard drop, line clear).
-- `publishProjectedRowsNoCAS` / `publishProjectedRowsSliceNoCAS` — atomic batch
-  with no CAS, for authoritative competitive writes (lock, hard-drop landing,
-  line clear, shrink) where the publisher owns the per-player subjects.
-- `buildBatchUpdates` builds the `[]natspkg.RowUpdate` (with per-subject CAS) from
-  a projection map; `sortedRowKeys(m, bottomFirst)` controls apply order.
+  cells), and retries (up to 5 attempts) before dropping + flashing; write-throughs
+  the committed (first-attempt or merged) rows on success. Used for ALL coop
+  shared-row writes (spawn, gravity, lock, hard drop, line clear).
+- `publishProjectedRowsNoCAS(ctx, rows, applyBottomFirst, locked)` — atomic batch
+  with no CAS, for authoritative competitive writes (lock, hard-drop landing, line
+  clear, shrink) where the publisher owns the per-player subjects. Write-throughs
+  on success. (The earlier `publishProjectedRowsSliceNoCAS` slice variant is gone —
+  clear/shrink now build a changed-rows map via `changedRows`.)
+- `applyPublishedRows(orderedKeys, get, commitSeq, locked)` — write-throughs a
+  committed batch into `e.playfield`: each row's content + the per-subject stream
+  sequence inferred from the commit ack (`message i of N → commitSeq−(N−1−i)`),
+  advancing the board and the CAS expectation without waiting for the echo. Takes
+  `e.mu` unless `locked` (spawn/clear publish under the consumer's lock).
+- `buildBatchUpdates(rows, bottomFirst, locked)` builds the `[]natspkg.RowUpdate`
+  (per-subject CAS) from a projection map; it snapshots `LastSeq` under `e.mu`
+  (unless `locked`). `sortedRowKeys(m, bottomFirst)` controls apply order.
+- `changedRows(cur, projected, fromRow, toRow)` returns only the rows whose content
+  changed — used so line clear / competitive shrink republish just the changed
+  rows, not the whole visible range.
 - Hard drops: `publishHardDrop` (competitive, NoCAS) and `publishHardDropCoop`
   (coop, merge-retry) in `move.go`.
 
@@ -1823,7 +1857,12 @@ These rules apply throughout all phases:
    (atomic batch publish for multi-row moves, direct get for fast
    last-message-per-subject fetches). Verify this combination works on your NATS
    server version as the first integration test you write for `internal/nats`. If
-   it fails, check the NATS server version (requires 2.12+).
+   it fails, check the NATS server version (requires 2.12+). Note: the CAS
+   merge-retry's per-subject refetch (`GetLastMsgForSubject`) uses direct get,
+   which is a non-consensus read — but the per-game streams are **single-replica**,
+   so the only server is the leader and the read is never stale; the merge-retry
+   does get a fresh sequence each retry. (On a multi-replica game stream direct get
+   could read a follower briefly behind, which would warrant a consistent read.)
 
 10. **Cooperative mode uses a single shared playfield.** Cooperative row subjects
     carry no player token (the `config.CoopRowSubject` scheme) — both players

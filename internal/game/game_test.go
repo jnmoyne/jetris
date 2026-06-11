@@ -138,40 +138,56 @@ func TestGravityInterval(t *testing.T) {
 	}
 }
 
-func TestRowMarshalRoundTrip(t *testing.T) {
-	r := NewRow(10)
-	r.Cells[3] = Cell{Occupied: true, PieceType: PieceT}
-	r.Cells[7] = Cell{Active: true, PieceType: PieceI, Orientation: 1, AnchorRow: 5, AnchorCol: 7}
+func TestCellMarshalRoundTrip(t *testing.T) {
+	c := Cell{Active: true, PieceType: PieceI, Orientation: 1, AnchorRow: 5, AnchorCol: 7}
+	data, err := c.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := UnmarshalCell(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2 != c {
+		t.Errorf("round trip mismatch: got %+v, want %+v", c2, c)
+	}
 
-	data, err := r.Marshal()
+	// An empty cell — the vacate payload — encodes as "{}" and decodes back to
+	// the zero Cell.
+	data, err = Cell{}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := UnmarshalRow(data)
+	if string(data) != "{}" {
+		t.Errorf("empty cell encodes as %q, want {}", data)
+	}
+	c2, err = UnmarshalCell(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r2.Cells) != 10 {
-		t.Fatalf("got %d cells, want 10", len(r2.Cells))
-	}
-	if !r2.Cells[3].Occupied || r2.Cells[3].PieceType != PieceT {
-		t.Error("cell 3 mismatch")
-	}
-	if !r2.Cells[7].Active || r2.Cells[7].PieceType != PieceI {
-		t.Error("cell 7 mismatch")
+	if c2 != (Cell{}) {
+		t.Errorf("empty cell round trip: got %+v", c2)
 	}
 }
 
 func TestPlayfieldApply(t *testing.T) {
 	pf := NewPlayfield(config.StandardWidth)
-	r := NewRow(10)
-	r.Cells[0] = Cell{Occupied: true, PieceType: PieceI}
-	pf.Apply(5, r, 42)
-	if pf.LastSeq[5] != 42 {
-		t.Errorf("LastSeq[5] = %d, want 42", pf.LastSeq[5])
+	pf.Apply(5, 0, Cell{Occupied: true, PieceType: PieceI}, 42)
+	if pf.CellLastSeq(5, 0) != 42 {
+		t.Errorf("CellLastSeq(5,0) = %d, want 42", pf.CellLastSeq(5, 0))
 	}
 	if !pf.Rows[5].Cells[0].Occupied {
 		t.Error("row 5 cell 0 should be occupied after Apply")
+	}
+	// Same-or-lower sequence is skipped.
+	pf.Apply(5, 0, Cell{}, 42)
+	if !pf.Rows[5].Cells[0].Occupied {
+		t.Error("same-sequence apply should be a no-op")
+	}
+	// Higher sequence wins.
+	pf.Apply(5, 0, Cell{}, 43)
+	if pf.Rows[5].Cells[0].Occupied {
+		t.Error("higher-sequence apply should overwrite")
 	}
 }
 

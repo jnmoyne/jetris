@@ -14,7 +14,28 @@ type Cell struct {
 	Adversarial bool      `json:"g,omitempty"`  // permanent adversarial cell (competitive shrink); row can never be completed
 }
 
-// Row represents a single row of cells.
+// Marshal encodes the cell as JSON. An empty cell encodes as "{}" (every field
+// is omitempty), which is the payload published to vacate a cell.
+func (c Cell) Marshal() ([]byte, error) {
+	return json.Marshal(c)
+}
+
+// UnmarshalCell decodes a cell from JSON.
+func UnmarshalCell(data []byte) (Cell, error) {
+	var c Cell
+	err := json.Unmarshal(data, &c)
+	return c, err
+}
+
+// CellPos identifies one cell of the playfield by position. Used as the key of
+// per-cell projection diffs and publish batches.
+type CellPos struct {
+	Row int
+	Col int
+}
+
+// Row represents a single row of cells. Rows are the in-memory representation
+// only — the playfield is stored in NATS as one message per cell.
 type Row struct {
 	Cells []Cell `json:"cells"`
 }
@@ -54,18 +75,6 @@ func CloneRows(rows []Row) []Row {
 		out[i] = r.Clone()
 	}
 	return out
-}
-
-// Marshal encodes the row as JSON.
-func (r Row) Marshal() ([]byte, error) {
-	return json.Marshal(r)
-}
-
-// UnmarshalRow decodes a row from JSON.
-func UnmarshalRow(data []byte) (Row, error) {
-	var r Row
-	err := json.Unmarshal(data, &r)
-	return r, err
 }
 
 // IsFull returns true if every cell in the row is occupied (locked, not active)

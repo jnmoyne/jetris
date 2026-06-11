@@ -144,31 +144,32 @@ func GameSubjectFilter(gameID string) string {
 // diverge. A given game is one mode or the other, so an engine only ever uses
 // one scheme.
 //
-// CoopRowSubject is the subject a row of the shared cooperative board is
-// published to. The board is shared by the whole game, so the subject carries
-// NO player token — every player publishes to and consumes from the same row
-// subjects, and per-cell ownership lives in the payload via Cell.PlayerIdx
-// (coop never filters rows by player).
-func CoopRowSubject(gameID string, row int) string {
-	return "jetricks.game." + gameID + ".playfield.row." + strconv.Itoa(row)
+// CoopCellSubject is the subject one cell (row, col) of the shared cooperative
+// board is published to. The board is shared by the whole game, so the subject
+// carries NO player token — every player publishes to and consumes from the
+// same cell subjects, and per-cell ownership lives in the payload via
+// Cell.PlayerIdx (coop never filters cells by player).
+func CoopCellSubject(gameID string, row, col int) string {
+	return "jetricks.game." + gameID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 }
 
-// CoopRowSubjectFilter is the wildcard filter matching every row of the shared
-// cooperative board.
-func CoopRowSubjectFilter(gameID string) string {
-	return "jetricks.game." + gameID + ".playfield.row.>"
+// CoopCellSubjectFilter is the wildcard filter matching every cell of the
+// shared cooperative board.
+func CoopCellSubjectFilter(gameID string) string {
+	return "jetricks.game." + gameID + ".playfield.cell.>"
 }
 
-// CompetitiveRowSubject is the subject a row of one competitive player's private
-// board is published to. Each player owns a separate board scoped by player ID.
-func CompetitiveRowSubject(gameID, playerID string, row int) string {
-	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.row." + strconv.Itoa(row)
+// CompetitiveCellSubject is the subject one cell (row, col) of one competitive
+// player's private board is published to. Each player owns a separate board
+// scoped by player ID.
+func CompetitiveCellSubject(gameID, playerID string, row, col int) string {
+	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 }
 
-// CompetitiveRowSubjectFilter is the wildcard filter matching every row of one
-// competitive player's board.
-func CompetitiveRowSubjectFilter(gameID, playerID string) string {
-	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.row.>"
+// CompetitiveCellSubjectFilter is the wildcard filter matching every cell of
+// one competitive player's board.
+func CompetitiveCellSubjectFilter(gameID, playerID string) string {
+	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell.>"
 }
 
 func MetaSubject(gameID string) string {

@@ -12,10 +12,10 @@ import (
 	"jetricks/internal/config"
 )
 
-// RowUpdate represents a single row's new state and the CAS expectation. The
-// caller supplies the fully-built row subject — this package is subject-agnostic
+// CellUpdate represents a single cell's new state and the CAS expectation. The
+// caller supplies the fully-built cell subject — this package is subject-agnostic
 // and knows nothing about game modes or players.
-type RowUpdate struct {
+type CellUpdate struct {
 	Subject       string
 	Payload       []byte
 	ExpectLastSeq uint64
@@ -24,22 +24,25 @@ type RowUpdate struct {
 // ErrCASFailure indicates a CAS sequence expectation was not met.
 var ErrCASFailure = errors.New("CAS sequence expectation not met")
 
-// PublishMoveAtomically publishes a set of row updates as an atomic batch with
+// PublishMoveAtomically publishes a set of cell updates as an atomic batch with
 // per-subject CAS expectations (Nats-Expected-Last-Subject-Sequence). Consumers
-// never observe a torn intermediate state — either every row is committed or
-// none is. CAS is enforced per row subject, so concurrent writes to other rows
-// (e.g. another player's playfield in cooperative mode) don't cause spurious
+// never observe a torn intermediate state — either every cell is committed or
+// none is. CAS is enforced per cell subject, so concurrent writes to other
+// cells (e.g. another player's piece in cooperative mode) don't cause spurious
 // rejections.
+//
+// Callers must keep a batch within the server's atomic-batch limit (default
+// max_batch_size is 1000 messages); the engine chunks larger writes.
 //
 // On success it returns the commit ack's stream sequence — the sequence assigned
 // to the LAST message in the batch. The batch's messages get consecutive stream
-// sequences, so the caller can infer every row's assigned sequence from this and
+// sequences, so the caller can infer every cell's assigned sequence from this and
 // the batch order (message i of N → commitSeq-(N-1-i)) and advance its own
 // per-subject sequence tracking without waiting for the consumer echo.
 func PublishMoveAtomically(
 	ctx context.Context,
 	js jetstream.JetStream,
-	updates []RowUpdate,
+	updates []CellUpdate,
 ) (uint64, error) {
 	if len(updates) == 0 {
 		return 0, nil
@@ -50,7 +53,7 @@ func PublishMoveAtomically(
 		return 0, err
 	}
 
-	// Add all rows except the last as batch messages
+	// Add all cells except the last as batch messages
 	for i := 0; i < len(updates)-1; i++ {
 		u := updates[i]
 		msg := &natsclient.Msg{
@@ -86,18 +89,19 @@ func PublishMoveAtomically(
 	return ack.Sequence, nil
 }
 
-// PublishRowsAtomicallyNoCAS publishes a set of row updates as an atomic batch
-// without CAS expectations. Used for authoritative state changes (lock,
+// PublishCellsAtomicallyNoCAS publishes a set of cell updates as an atomic
+// batch without CAS expectations. Used for authoritative state changes (lock,
 // hard-drop landing, line-clear, shrink) where the publisher's view is the
 // new ground truth and partial writes must not be visible to consumers.
 //
-// Like PublishMoveAtomically it returns the commit ack's stream sequence (the
+// Like PublishMoveAtomically it is subject to the server's atomic-batch limit
+// (default 1000 messages) and returns the commit ack's stream sequence (the
 // last message's sequence) so the caller can advance its own per-subject
 // sequence tracking from the inferred consecutive sequences.
-func PublishRowsAtomicallyNoCAS(
+func PublishCellsAtomicallyNoCAS(
 	ctx context.Context,
 	js jetstream.JetStream,
-	updates []RowUpdate,
+	updates []CellUpdate,
 ) (uint64, error) {
 	if len(updates) == 0 {
 		return 0, nil

@@ -81,7 +81,7 @@ Pieces can move anywhere on the full-width board. Collision detection (`CanPlace
 #### Controls
 
 Same in both game modes. The UI calls the engine's move methods directly (no input is sent
-over NATS — each move is a local intent that publishes the resulting rows with CAS):
+over NATS — each move is a local intent that publishes the changed cells with CAS):
 
 | Key | Action | Engine method |
 |-----|--------|---------------|
@@ -128,9 +128,9 @@ A row is complete when **all cells across the entire width** are occupied (locke
 
 Cleared rows are removed and everything above shifts down. Empty rows are added at the top. The cleared state is published with no-CAS (authoritative — the clear must not be undone by stale data).
 
-A clear must **not** disturb the other players' falling pieces: only the player whose piece completed the row gets a new piece; everyone else's piece keeps dropping, shifted down by the number of cleared rows. Because the shift moves every piece **down**, the shifted rows are published **bottom-first** (highest row index first). Applied top-to-bottom instead, another player's mid-flight piece would be erased from its old rows before its new (shifted) rows arrived — its active-cell count would momentarily hit zero and that player's lock-in detector would fire a spurious lock, respawning their piece from the top. Bottom-first keeps the shifted piece always overlapping itself, so it never transiently vanishes.
+A clear must **not** disturb the other players' falling pieces: only the player whose piece completed the row gets a new piece; everyone else's piece keeps dropping, shifted down by the number of cleared rows. Only the cells that actually change are published, and within the atomic batch they are ordered by their **new** content — active cells first, locked cells second, vacated (now-empty) cells last. Vacating first instead, another player's mid-flight piece would be erased from its old cells before its new (shifted) cells arrived — its active-cell count would momentarily hit zero and that player's lock-in detector would fire a spurious lock, respawning their piece from the top. Active-cells-first keeps the shifted piece always present on the board, so it never transiently vanishes.
 
-Because the board is shared, a clear must be reflected on **every** player's screen, not just the player whose piece completed the row. The cleared rows are published to the shared playfield subject and every player's row consumer applies them, so the authoritative `playfield` state always converges. Rendering, however, is per-engine: the player who detected the clear re-renders the whole board directly, and every **other** player re-renders the whole board on receipt of the `EventLineClear` event. A full-board re-render (rather than relying on per-row repaint triggers) is used because a clear repaints the entire visible range at once, and individual per-row triggers can be dropped by the bounded, non-blocking UI update fan-out — which would otherwise leave stale, un-cleared rows on another player's board.
+Because the board is shared, a clear must be reflected on **every** player's screen, not just the player whose piece completed the row. The changed cells are published to the shared per-cell playfield subjects and every player's cell consumer applies them, so the authoritative `playfield` state always converges. Rendering, however, is per-engine: the player who detected the clear re-renders the whole board directly, and every **other** player re-renders the whole board on receipt of the `EventLineClear` event. A full-board re-render (rather than relying on per-row repaint triggers) is used because a clear repaints the entire visible range at once, and individual per-row triggers can be dropped by the bounded, non-blocking UI update fan-out — which would otherwise leave stale, un-cleared rows on another player's board.
 
 ### Scoring
 
@@ -315,15 +315,15 @@ Any player in the lobby can spectate an in-progress game:
 
 ## 8. CAS (Compare-And-Swap) Strategy
 
-All playfield state is stored in JetStream. Concurrent writes are managed via per-subject CAS (`Nats-Expected-Last-Subject-Sequence`) on atomic batch publishes — a multi-row move either commits all rows or none, never a torn intermediate.
+All playfield state is stored in JetStream as **one message per cell** — each (row, col) position has its own subject carrying that cell's current content (an empty cell marshals to `{}`, the vacate payload). Concurrent writes are managed via per-subject CAS (`Nats-Expected-Last-Subject-Sequence`) on atomic batch publishes — a multi-cell move either commits all its cells or none, never a torn intermediate. Every publish path diffs its projection against the live board and publishes only the cells that changed (a move is typically 4-8 cell messages), and within every batch cells are ordered by their new content — active first, locked/occupied second, empty vacates last — so a relocating piece never transiently has zero active cells and lock-in fires exactly once, at the last vacate, with all landed cells already applied.
 
 ### Optimistic sequence write-through (both modes)
 
-The CAS expectation for every write is `pf.LastSeq[row]` — the stream sequence of the last message the engine has seen on that row's subject. Historically this advanced **only** when the engine's own consumer echoed a published row back, so between publishing a write and consuming its echo the in-memory sequence (and board content) lagged the stream. Any second write issued into that window — a gravity tick, the next keypress, or a write right after a NoCAS line-clear/shrink — carried a stale expectation and lost CAS to the engine's *own* earlier write, dropping the step and flashing.
+The CAS expectation for every write is the per-cell `pf.CellLastSeq(row, col)` — the stream sequence of the last message the engine has seen on that cell's subject. Historically this advanced **only** when the engine's own consumer echoed a published cell back, so between publishing a write and consuming its echo the in-memory sequence (and board content) lagged the stream. Any second write issued into that window — a gravity tick, the next keypress, or a write right after a NoCAS line-clear/shrink — carried a stale expectation and lost CAS to the engine's *own* earlier write, dropping the step and flashing.
 
-To close that window, **a successful publish is written through into the in-memory playfield immediately**, without waiting for the echo. The batch commit ack returns the stream sequence of the last message in the batch; because an atomic batch's messages get consecutive stream sequences, the engine infers every row's sequence (`message i of N → commitSeq − (N−1−i)`) and applies the just-committed content **and** sequence to its playfield. The next move/gravity tick is therefore projected from — and CAS-checked against — up-to-date state and cannot self-race.
+To close that window, **a successful publish is written through into the in-memory playfield immediately**, without waiting for the echo. The batch commit ack returns the stream sequence of the last message in the batch; because an atomic batch's messages get consecutive stream sequences, the engine infers every cell's sequence (`message i of N → commitSeq − (N−1−i)`) and applies the just-committed content **and** sequence to its playfield. The next move/gravity tick is therefore projected from — and CAS-checked against — up-to-date state and cannot self-race.
 
-Reconciliation with the consumer echo is automatic and is the single rule in `Playfield.Apply`: a row is updated only if the incoming sequence is **strictly higher** than the one in memory. The echo of our own write carries the **same** sequence we already wrote through, so it is skipped (a harmless no-op); only a **higher** sequence — the other player's write in cooperative mode, or a NoCAS write we did not originate — updates memory. This applies in both competitive and cooperative modes (in coop the write-through applies only what actually committed — the first-attempt batch, or the merged batch after a merge-retry — so it never clobbers the other player's cells).
+Reconciliation with the consumer echo is automatic and is the single rule in `Playfield.Apply`: a cell is updated only if the incoming sequence is **strictly higher** than the one in memory. The echo of our own write carries the **same** sequence we already wrote through, so it is skipped (a harmless no-op); only a **higher** sequence — the other player's write in cooperative mode, or a NoCAS write we did not originate — updates memory. This applies in both competitive and cooperative modes (in coop the write-through applies only what actually committed — the first-attempt batch, or the merged batch after a merge-retry — so it never clobbers the other player's cells).
 
 ### Player-initiated moves (left, right, down, rotate, hard drop)
 
@@ -337,17 +337,17 @@ The flash only ever fires for player-initiated moves. Engine-driven moves (gravi
 
 Gravity ticks and piece spawns must succeed even under contention — a dropped gravity tick would make the piece visibly freeze for one tick, and a dropped spawn would leave the player pieceless. Neither was player-initiated, so a flash would be misleading.
 
-**Single-goroutine invariant (both modes):** a player's gravity ticks and their own input are processed on **one** engine goroutine (`runInput`), which `select`s over the moves channel and the gravity timer. This and the optimistic write-through above together remove a player's self-races: `runInput` ensures a gravity drop and a move never *project and publish concurrently*, and the write-through keeps that serialized writer's in-memory sequence current so even back-to-back writes don't carry a stale CAS expectation. Together they eliminate the spurious rainbow flashes that were otherwise visible in competitive play, where each player owns their row subjects and a self-race was the only way two of *their* writes could contend.
+**Single-goroutine invariant (both modes):** a player's gravity ticks and their own input are processed on **one** engine goroutine (`runInput`), which `select`s over the moves channel and the gravity timer. This and the optimistic write-through above together remove a player's self-races: `runInput` ensures a gravity drop and a move never *project and publish concurrently*, and the write-through keeps that serialized writer's in-memory sequence current so even back-to-back writes don't carry a stale CAS expectation. Together they eliminate the spurious rainbow flashes that were otherwise visible in competitive play, where each player owns their cell subjects and a self-race was the only way two of *their* writes could contend.
 
-In **competitive mode** each player owns their row subjects, so — with gravity and input serialized on `runInput` and write-through keeping the view current — their writes do not contend with another player's in normal play.
+In **competitive mode** each player owns their cell subjects, so — with gravity and input serialized on `runInput` and write-through keeping the view current — their writes do not contend with another player's in normal play.
 
-In **cooperative mode** both share the same row subjects with the other player. On CAS failure the engine refetches each affected row from the stream, overlays this player's cells on top of the latest stream state, and retries the atomic batch with refreshed per-subject CAS expectations (up to 16 attempts, with a short per-player-offset backoff between tries that breaks lockstep with the other player's retry loop).
+In **cooperative mode** the players share the same cell subjects, but with per-cell granularity only writes to the **same cell** actually contend — two players moving in different parts of the board (even on the same row) never conflict, so contention is rare. On CAS failure the engine refetches the latest message for every affected cell in one batched round trip and merges per cell: this player's content is kept except where the stream now holds the other player's mid-flight (active) piece — those cells are skipped entirely, never overwritten or vacated. It then retries the atomic batch with refreshed per-subject CAS expectations (up to 16 attempts, with a short per-player-offset backoff between tries that breaks lockstep with the other player's retry loop).
 
 Locks are published as no-CAS authoritative writes (see below) and so cannot fail CAS.
 
 ### Authoritative writes (lock, hard-drop landing, line clear, opponent-shrink application)
 
-**No CAS.** The publisher's view is the new ground truth. Published as a single atomic no-CAS batch via `PublishRowsAtomicallyNoCAS` so consumers either see the entire authoritative state change at once or not at all.
+**No CAS.** The publisher's view is the new ground truth. The changed cells are published as a single atomic no-CAS batch via `PublishCellsAtomicallyNoCAS` so consumers either see the entire authoritative state change at once or not at all. The same content-ordered batching applies (active cells first, occupied second, vacates last), so e.g. a competitive shrink re-stamps the falling piece before the rising stack and vacates last.
 
 ---
 
@@ -363,7 +363,7 @@ The lobby runs consumers for:
 - Archive stream
 
 The engine runs consumers for:
-- Playfield rows
+- Playfield cells (one message per cell; the consumer parses the (row, col) from the subject, applies the single cell, and derives row-level repaint hints for the UI)
 - Game events (line clears, shrink, game over)
 - Game meta (status transitions)
 - Countdown

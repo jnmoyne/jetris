@@ -266,19 +266,22 @@ func GameSubjectFilter(gameID string) string // → "jetricks.game.<id>.>"
 // schemes — they are not parameterisations of one builder and are free to
 // diverge. A game is one mode or the other, so an engine uses only one scheme.
 //
+// The playfield is stored as ONE MESSAGE PER CELL: each (row, col) position is
+// its own subject, whose last message is that cell's current state.
+//
 // Cooperative — single shared wide playfield (playerCount × StandardWidth);
-// row subjects carry NO player token. Every player publishes to / consumes from
+// cell subjects carry NO player token. Every player publishes to / consumes from
 // the same subjects; per-cell ownership lives in the payload (Cell.PlayerIdx).
-func CoopRowSubject(gameID string, row int) string
-//   → jetricks.game.<id>.playfield.row.<n>
-func CoopRowSubjectFilter(gameID string) string
-//   → jetricks.game.<id>.playfield.row.>
+func CoopCellSubject(gameID string, row, col int) string
+//   → jetricks.game.<id>.playfield.cell.<row>.<col>
+func CoopCellSubjectFilter(gameID string) string
+//   → jetricks.game.<id>.playfield.cell.>
 
 // Competitive — each player owns a private playfield scoped by their UUID.
-func CompetitiveRowSubject(gameID string, playerID string, row int) string
-//   → jetricks.game.<id>.player.<pid>.playfield.row.<n>
-func CompetitiveRowSubjectFilter(gameID string, playerID string) string
-//   → jetricks.game.<id>.player.<pid>.playfield.row.>
+func CompetitiveCellSubject(gameID string, playerID string, row, col int) string
+//   → jetricks.game.<id>.player.<pid>.playfield.cell.<row>.<col>
+func CompetitiveCellSubjectFilter(gameID string, playerID string) string
+//   → jetricks.game.<id>.player.<pid>.playfield.cell.>
 
 func MetaSubject(gameID string) string
 func RosterSubject(gameID string, playerID string) string
@@ -346,7 +349,7 @@ type GameMeta struct {
 
 The `PieceIdx` field is the number of pieces that have locked in across the entire game. In cooperative mode every player initialises their RNG from the same `Seed` and tracks their own `pieceIdx` locally — players still receive different pieces at any moment because their indices advance independently as each locks in, and each piece spawns offset into that player's section (`p.Col += playerIdx*StandardWidth`). `PieceIdx` in meta is not used for cooperative mode piece tracking. In competitive mode each player has an independent piece sequence (also seeded from `Seed`) — `PieceIdx` tracks the piece index for the player whose piece last locked in. Competing engines track their own index locally and only publish to meta when their own piece locks in.
 
-> **Implementation note:** `PieceIdx` in meta is eventually consistent. A joining engine that reads it mid-game will get the last published value, which may lag by at most one piece lock-in. The engine should treat this as a starting lower bound: after applying the FetchPlayfieldState snapshot, it scans the playfield for active piece presence, and if an active piece is visible but its index would correspond to `PieceIdx`, the index is correct. If no active piece is present (lock-in just happened but meta not yet updated), the engine can wait for the ordered consumer to deliver the next row state, which will show the new piece spawning — at that point the implied piece index is `PieceIdx + 1`. This self-corrects without any special handling.
+> **Implementation note:** `PieceIdx` in meta is eventually consistent. A joining engine that reads it mid-game will get the last published value, which may lag by at most one piece lock-in. The engine should treat this as a starting lower bound: after applying the FetchPlayfieldState snapshot, it scans the playfield for active piece presence, and if an active piece is visible but its index would correspond to `PieceIdx`, the index is correct. If no active piece is present (lock-in just happened but meta not yet updated), the engine can wait for the ordered consumer to deliver the next cell updates, which will show the new piece spawning — at that point the implied piece index is `PieceIdx + 1`. This self-corrects without any special handling.
 
 ---
 
@@ -452,43 +455,49 @@ func NewOrderedConsumer(
 #### `publish.go`
 
 ```go
-// RowUpdate represents a single row's new state and the CAS expectation. The
-// caller supplies the fully-built row subject, so this package is subject-
+// CellUpdate represents a single cell's new state and the CAS expectation. The
+// caller supplies the fully-built cell subject, so this package is subject-
 // agnostic — it knows nothing about game modes or players. The engine builds
-// Subject with the mode-appropriate scheme (Coop*/Competitive*RowSubject) and
+// Subject with the mode-appropriate scheme (Coop*/Competitive*CellSubject) and
 // orders the slice for the desired consumer apply order.
-type RowUpdate struct {
+type CellUpdate struct {
     Subject         string
     Payload         []byte
-    ExpectLastSeq   uint64  // Nats-Expected-Last-Subject-Sequence for this row
+    ExpectLastSeq   uint64  // Nats-Expected-Last-Subject-Sequence for this cell
                             // (per-subject CAS, not stream-level)
 }
 
-// PublishMoveAtomically publishes a set of row updates as a SINGLE atomic
+// PublishMoveAtomically publishes a set of cell updates as a SINGLE atomic
 // batch with per-subject CAS expectations
 // (jetstreamext.WithBatchExpectLastSequencePerSubject, which sets the
-// Nats-Expected-Last-Subject-Sequence header). Either every row commits or
+// Nats-Expected-Last-Subject-Sequence header). Either every cell commits or
 // none does. Returns ErrCASFailure if any subject's sequence expectation is
-// not met.
+// not met. On success it returns the commit ack's stream sequence (assigned
+// to the LAST message in the batch); the batch's messages get consecutive
+// sequences, so the caller can infer every cell's assigned sequence from it.
 //
 // Per-subject CAS (not WithBatchExpectLastSequence, which is stream-level)
-// is what we want: each row is its own subject, so concurrent writes to
-// other rows don't cause spurious rejections.
+// is what we want: each cell is its own subject, so concurrent writes to
+// other cells don't cause spurious rejections.
+//
+// Callers must keep a batch within the server's atomic-batch limit (default
+// max_batch_size is 1000 messages); the engine chunks larger writes.
 func PublishMoveAtomically(
     ctx context.Context,
     js jetstream.JetStream,
-    updates []RowUpdate,
-) error
+    updates []CellUpdate,
+) (uint64, error)
 
-// PublishRowsAtomicallyNoCAS publishes a set of row updates as a SINGLE
+// PublishCellsAtomicallyNoCAS publishes a set of cell updates as a SINGLE
 // atomic batch WITHOUT CAS expectations. Used for authoritative state
 // transitions (lock, hard-drop landing, line-clear, shrink) where the
-// publisher's view is the new ground truth.
-func PublishRowsAtomicallyNoCAS(
+// publisher's view is the new ground truth. Subject to the same 1000-message
+// atomic-batch limit; also returns the commit ack's stream sequence.
+func PublishCellsAtomicallyNoCAS(
     ctx context.Context,
     js jetstream.JetStream,
-    updates []RowUpdate,
-) error
+    updates []CellUpdate,
+) (uint64, error)
 
 // PublishMeta publishes a game metadata update with a global CAS expectation.
 func PublishMeta(
@@ -509,26 +518,35 @@ Re-exports the subject builder functions from `config` as a convenience. Interna
 #### `fetch.go`
 
 ```go
-// FetchPlayfieldState retrieves the current state of the given row subjects
-// for a game in a single round trip using jetstreamext.GetLastMsgsFor.
-// Used by the engine on startup and reconnect to reconstruct the full
-// playfield instantly without replaying the entire game stream history.
+// FetchPlayfieldState retrieves the current state of the given cell subjects
+// for a game in one round trip (or a few, for large boards) using
+// jetstreamext.GetLastMsgsFor. Used by the engine on startup and reconnect to
+// reconstruct the full playfield instantly without replaying the entire game
+// stream history, and by the merge-retry refetch.
 //
 // The caller builds the subjects with the mode-appropriate scheme (coop or
 // competitive), so this function is subject-agnostic. Results are keyed by the
-// row index parsed from each subject, so it works for either subject shape.
+// (row, col) parsed from each subject, so it works for either subject shape.
+// Cells that have never been written have no last message and are simply
+// absent from the result (empty cell).
 func FetchPlayfieldState(
     ctx context.Context,
     js jetstream.JetStream,
     gameID string,
     subjects []string,
-) ([]PlayfieldRowMsg, error)
+) ([]PlayfieldCellMsg, error)
 
-type PlayfieldRowMsg struct {
+type PlayfieldCellMsg struct {
     Row     int
+    Col     int
     Payload []byte
     Seq     uint64
 }
+
+// ParseCellFromSubject extracts the (row, col) position from a cell subject —
+// the last two tokens. Returns (-1, -1) if the subject doesn't end in two
+// numeric tokens.
+func ParseCellFromSubject(subject string) (int, int)
 
 // FetchGameMeta retrieves the latest game metadata message directly.
 // Returns the decoded GameMeta, the stream sequence of the message
@@ -540,7 +558,9 @@ func FetchGameMeta(
 ) (config.GameMeta, uint64, error)
 ```
 
-`FetchPlayfieldState` calls `jetstreamext.GetLastMsgsFor(ctx, js, streamName, rowSubjects)` where `rowSubjects` is the caller-supplied list of row subjects for the game. The engine builds it with the mode-appropriate scheme: `config.CoopRowSubject(gameID, n)` for the shared cooperative board (no player token) or `config.CompetitiveRowSubject(gameID, playerID, n)` for one competitive player's board. This returns the last message per subject in a single server round trip — far more efficient than replaying the entire stream from sequence 0 on join or reconnect. The engine uses this for its initial playfield snapshot before starting the ordered consumer, then the consumer takes over for live updates from that point forward.
+`FetchPlayfieldState` calls `jetstreamext.GetLastMsgsFor(ctx, js, streamName, cellSubjects)` where `cellSubjects` is the caller-supplied list of cell subjects for the game. The engine builds it with the mode-appropriate scheme: `config.CoopCellSubject(gameID, row, col)` for the shared cooperative board (no player token) or `config.CompetitiveCellSubject(gameID, playerID, row, col)` for one competitive player's board. This returns the last message per subject in a single server round trip — far more efficient than replaying the entire stream from sequence 0 on join or reconnect. The engine uses this for its initial playfield snapshot before starting the ordered consumer, then the consumer takes over for live updates from that point forward.
+
+One NATS server limit matters here: a multi-last direct get is hard-capped at **1024 responses** per request (the server answers `413 Too Many Results`, with no pagination). A full board snapshot asks for `width × height` cell subjects — well over the cap for a wide coop board — so when more than 512 subjects are requested, `FetchPlayfieldState` splits them into chunks of ≤512 `GetLastMsgsFor` calls, each bounded to a common point in the stream via `jetstreamext.GetLastMsgsUpToSeq(stream last seq)` so the combined snapshot is consistent; anything newer is replayed by the caller's consumer (`startSeq = maxSeq+1`).
 
 ---
 
@@ -626,10 +646,16 @@ type Playfield struct {
     Width  int
     Height int    // total rows (headroom + visible); varies per mode/player count
     Rows   []Row  // length == Height
-    // LastSeq tracks the stream sequence of the last message received
-    // for each row subject — used for CAS expectations. length == Height.
+    // LastSeq tracks the stream sequence of the last message applied to each
+    // CELL subject — used for per-cell CAS expectations. Flat row-major:
+    // index = row*Width + col (see seqIdx). length == Width*Height.
     LastSeq []uint64
 }
+
+// CellLastSeq returns the stream sequence of the last message applied to cell
+// (row, col) — the per-subject CAS expectation for that cell. (seqIdx is the
+// unexported flat-index helper.)
+func (pf *Playfield) CellLastSeq(row, col int) uint64
 
 // NewPlayfield creates an empty playfield with the default TotalRows height.
 func NewPlayfield(width int) *Playfield
@@ -639,9 +665,12 @@ func NewPlayfield(width int) *Playfield
 // CompetitiveTotalRows(playerCount) (taller as player count rises).
 func NewPlayfieldWithHeight(width, height int) *Playfield
 
-// Apply updates the playfield from a decoded row message received from NATS.
-// Updates both the cell data and the LastSeq for that row.
-func (pf *Playfield) Apply(rowIndex int, row Row, seq uint64)
+// Apply updates one cell of the playfield from a decoded cell message. It is
+// the single reconciliation point for both the consumer echo and the engine's
+// publish write-through: the message is applied only if its sequence is
+// STRICTLY HIGHER than the cell's current LastSeq, otherwise it is skipped.
+// Updates both the cell content and the per-cell LastSeq.
+func (pf *Playfield) Apply(row, col int, cell Cell, seq uint64)
 
 // ActivePieceForPlayer returns the active piece belonging to the given playerIdx
 // (matching Cell.PlayerIdx). Used in cooperative mode where two players' active
@@ -650,15 +679,18 @@ func (pf *Playfield) Apply(rowIndex int, row Row, seq uint64)
 func (pf *Playfield) ActivePieceForPlayer(playerIdx int) *Piece
 
 // SetActivePieceForPlayer / ClearActiveCellsForPlayer mutate the playfield in
-// place. They are used by ProjectShrink to recompute the row payloads (and in
+// place. They are used by ProjectShrink to recompute the projected rows (and in
 // unit-test setup); see "Invariant: NATS as single source of truth for the
 // playfield" in section 9.
 func (pf *Playfield) SetActivePieceForPlayer(p Piece, playerIdx int)
 func (pf *Playfield) ClearActiveCellsForPlayer(playerIdx int)
 
-// Projection helpers — compute the row payloads that the engine should
-// publish to NATS WITHOUT mutating pf. The engine never mutates pf; the
-// consumer applies the published rows on echo via Apply().
+// Projection helpers — compute the projected ROW contents for a state change
+// WITHOUT mutating pf. They are deliberately still row-oriented (rows are the
+// natural unit of game logic in memory); the engine then DIFFS the projection
+// against the live board (diffCells / changedCells) and publishes only the
+// cells that changed. The engine never mutates pf; the consumer applies the
+// published cells on echo via Apply().
 func (pf *Playfield) ProjectMove(affectedRows []int, newPiece *Piece, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row
@@ -668,10 +700,11 @@ func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Ro
 
 #### `row.go`
 
-Defines the `Row` type and its serialisation to/from the bytes stored in NATS messages. Row payloads are encoded as **JSON** — straightforward to debug with the `nats` CLI and sufficient for the update rate.
+Defines the `Cell` type — the unit of NATS storage — plus `CellPos` and the in-memory-only `Row` type. Each NATS playfield message carries exactly **one `Cell`**, encoded as **JSON** — straightforward to debug with the `nats` CLI and sufficient for the update rate. An empty cell marshals to `{}` (every field is `omitempty`), which is the payload published to **vacate** a cell.
 
 ```go
-// Cell represents a single cell in a row.
+// Cell represents a single cell of the playfield. One Cell JSON document is
+// the payload of one playfield message.
 type Cell struct {
     Occupied    bool      `json:"o,omitempty"`  // true if a locked piece occupies this cell
     PieceType   PieceType `json:"t,omitempty"`  // type of the locked piece, if Occupied
@@ -683,19 +716,28 @@ type Cell struct {
     Adversarial     bool      `json:"g,omitempty"`  // permanent adversarial cell (competitive shrink); row can never be completed
 }
 
+func (c Cell) Marshal() ([]byte, error)        // empty cell → "{}" (the vacate payload)
+func UnmarshalCell(data []byte) (Cell, error)
+
+// CellPos identifies one cell by position — the key of the engine's per-cell
+// projection diffs and publish batches.
+type CellPos struct {
+    Row int
+    Col int
+}
+
+// Row is the IN-MEMORY representation only — the playfield is stored in NATS
+// as one message per cell. There is no Row.Marshal / UnmarshalRow.
 type Row struct {
     Cells []Cell `json:"cells"`
 }
-
-func (r Row) Marshal() ([]byte, error)
-func UnmarshalRow(data []byte) (Row, error)
 ```
 
-Piece position and orientation are encoded in the `Active`/`Orientation`/`AnchorRow`/`AnchorCol` fields of every cell the piece occupies. All occupied cells of the same active piece carry identical anchor and orientation values, making the full piece reconstructable from any single active cell. This redundancy is intentional — it allows the engine to reconstruct the active piece from any partial row read without needing to scan all rows first.
+Piece position and orientation are encoded in the `Active`/`Orientation`/`AnchorRow`/`AnchorCol` fields of every cell the piece occupies. All occupied cells of the same active piece carry identical anchor and orientation values, making the full piece reconstructable from any single active cell. This redundancy is intentional — and with one message per cell it is even more load-bearing: the engine can reconstruct the active piece from any single cell message without scanning the rest of the board first.
 
 #### Lock-in implicit detection
 
-There is no explicit lock-in event message. Instead the engine detects lock-in by observing the transition in row data delivered by the ordered consumer: a set of cells that were `Active: true` in the previous row state become `Active: false, Occupied: true` in the new state, and no `Active: true` cells appear anywhere in the playfield. When the engine detects this transition it:
+There is no explicit lock-in event message. Instead the engine detects lock-in by observing the transition in cell data delivered by the ordered consumer: cells that were `Active: true` in the previous state become `Active: false, Occupied: true` in the new state, and no `Active: true` cells remain anywhere in the playfield. When the engine detects this transition it:
 
 1. Increments `pieceIdx`.
 2. Publishes an updated `GameMeta` with `PieceIdx = pieceIdx` to `jetricks.game.<id>.meta` — this is a CAS update using the current meta sequence. If the CAS fails (the other player's engine raced to publish first for the same lock-in), the engine reads the new meta value; since both engines increment by 1 from the same base, the value is idempotent and the race winner's value is correct.
@@ -703,11 +745,16 @@ There is no explicit lock-in event message. Instead the engine detects lock-in b
 
 This makes `PieceIdx` in `GameMeta` eventually consistent: any engine joining mid-game via `FetchGameMeta` gets the current piece count in one round trip.
 
-The same lock-in transition also triggers the **completed-line check** (`CompletedRows` → clear). Because the ordered consumer applies a publish batch **one row at a time** and the lock-in (and thus the completion check) fires the instant the player's last `Active` cell disappears, batch **row order matters for hard drops**. A hard drop teleports the piece, so its batch both clears the old (higher-up, lower-index) active cells *and* sets the new locked cells lower down. If the vacated rows were applied first, lock-in would fire before the landing rows were applied and a line completed by the drop would be missed until the next piece locked. Hard-drop batches are therefore published **bottom row first** (the `bottomFirst`/`applyBottomFirst` flag on the publish helpers) so the completed row is in place when lock-in fires.
+The same lock-in transition also triggers the **completed-line check** (`CompletedRows` → clear). Because the ordered consumer applies a publish batch **one cell message at a time** and the lock-in (and thus the completion check) fires the instant the player's last `Active` cell disappears, the **order of the cells within a batch matters** even though the batch commits atomically. Every publish path uses one ordering rule, `orderedCellKeys`: cells are batched by **category of their NEW content — active first, locked/occupied second, empty vacates last** — tie-broken by ascending (row, col). This single rule covers all the cases that previously needed the per-row `bottomFirst` flag:
 
-The same bottom-first ordering is used for **every downward move** (gravity tick and soft drop), for a related reason: a piece that occupies a **single row** — the horizontal I — relocates by clearing its old row and setting its new row in separate messages. If the old row is applied first, the consumer briefly sees the player with **zero** active cells and fires a *spurious* lock-in, replacing the I with the next piece before any input. Applying the lower (new) row first keeps at least one active cell present throughout the move. Multi-row pieces overlap a row when moving down, so they never vanish; left/right moves stay in one row (one message); an in-place lock converts active→occupied in place — none of those need ordering, and bottom-first is harmless for them.
+- A **relocating piece** (gravity, lateral move, rotation, hard drop with the piece staying active) never transiently has **zero** active cells: its new active cells are all applied before its old positions are vacated, so no *spurious* lock-in fires. This covers the single-row horizontal I — whose old and new footprints don't overlap — in **every** direction, not just downward.
+- An **in-place lock or hard drop** fires lock-in exactly once, at the batch's **last** message (the vacate that removes the player's final active cell) — by which point all landing/locked cells are already applied, so a line completed by the drop is detected at that lock, not one piece later.
+- A **coop line clear** applies the other player's shifted active piece before vacating its old positions.
+- A **competitive shrink** applies the re-stamped piece first, the rising stack second, vacates last.
 
-> In **coop**, lock, hard-drop, and line-clear go through `publishProjectedRowsWithMergeRetry` (CAS + refetch-overlay-retry), not a plain NoCAS write — see §`internal/engine` and the publish table in the implementation plan. A NoCAS write replaces the whole shared row including the *other* player's active cells from a possibly-stale snapshot, which corrupts their mid-flight piece; CAS+merge preserves the other player's cells. The `bottomFirst` flag is threaded through that merge path for coop hard drops. The line clear publishes only the rows that **actually changed** (`changedRows` diffs the projection against the live rows), not the whole visible range — a low stack changes only a few rows, which keeps the merge-retry from exhausting against the other player's moving piece (the contention that dropped clears/spawns: uncleared line + stuck player). Competitive clear/shrink publish their changed rows NoCAS (single-writer per-player boards).
+The `bottomFirst`/`applyBottomFirst` parameters that used to thread through the publish helpers are gone.
+
+> In **coop**, lock, hard-drop, and line-clear go through `publishProjectedCellsWithMergeRetry` (CAS + refetch-merge-retry), not a plain NoCAS write — see §`internal/engine` and the publish table in the implementation plan. A NoCAS write could overwrite (or vacate) the *other* player's mid-flight active cells from a possibly-stale snapshot, corrupting their piece; CAS+merge skips those cells. Every publish path publishes only the cells that **actually changed** (`diffCells` for moves/spawn/lock/hard-drop, `changedCells` for clear/shrink) — a move is ~4–8 cell messages, and a clear publishes only the cells that differ after the shift, which keeps the merge-retry from exhausting against the other player's moving piece (the contention that dropped clears/spawns: uncleared line + stuck player). Per-cell CAS itself makes contention much rarer: two coop pieces in the same row no longer conflict, only writes to the *same cell* do. Competitive clear/shrink publish their changed cells NoCAS (single-writer per-player boards).
 
 #### `collision.go`
 
@@ -731,7 +778,7 @@ func HardDropDestinationCoop(p Piece, pf *Playfield, ownPlayerIdx int) Piece
 // given the current playfield state, without modifying the playfield.
 // The returned Piece has the same Type, Orientation, and Col as the input
 // but with Row set to the lowest non-colliding position.
-// Used by the engine's hard-drop handler to build the destination row updates.
+// Used by the engine's hard-drop handler to build the destination cell updates.
 func HardDropDestination(p Piece, pf *Playfield) Piece
 ```
 
@@ -760,34 +807,34 @@ The active game session. This is where NATS and game logic meet. One `Engine` in
 
 ### Invariant: NATS as single source of truth for the playfield
 
-The in-memory `*game.Playfield` held by the engine is a **read-only replica** for everyone except the row consumer (`runConsumer` in `consumer.go`). Specifically:
+The in-memory `*game.Playfield` held by the engine is a **read-only replica** for everyone except the cell consumer (`runConsumer` in `consumer.go`). Specifically:
 
-- **The only place `e.playfield` is mutated is `pf.Apply(rowIdx, row, seq)` inside the row consumer.** That call is invoked when an ordered-consumer message for one of this engine's row subjects is delivered.
-- **No game action mutates the playfield directly** — not the local player's moves, not hard drops, not piece locks, not line clears, not opponent shrinks, not piece spawns. Each action computes the *projected* row payloads using the helpers in `internal/game/playfield.go` (`ProjectMove`, `ProjectLock`, `ProjectHardDrop`, `ProjectClearRows`, `ProjectShrink`) and publishes them. The consumer then applies those rows when it receives the echo, and the UI re-renders from the updated `e.playfield`.
+- **The only place `e.playfield` is mutated is `pf.Apply(row, col, cell, seq)` inside the cell consumer.** That call is invoked when an ordered-consumer message for one of this engine's cell subjects is delivered.
+- **No game action mutates the playfield directly** — not the local player's moves, not hard drops, not piece locks, not line clears, not opponent shrinks, not piece spawns. Each action computes the *projected* row contents using the helpers in `internal/game/playfield.go` (`ProjectMove`, `ProjectLock`, `ProjectHardDrop`, `ProjectClearRows`, `ProjectShrink`), diffs them against the live board down to the changed cells (`diffCells` / `changedCells`), and publishes only those cells. The consumer then applies those cells when it receives the echo, and the UI re-renders from the updated `e.playfield`.
 - **The UI renders only from `e.playfield`.** It never sees pre-publish state.
 
 This eliminates two-way drift between the local replica and the stream: every player on every machine sees the playfield evolve in the same order it was committed to JetStream. The price is that there is a NATS round-trip between input and visual feedback, and that two rapid inputs may both validate against the same pre-echo state — the second is dropped via CAS rejection (per-subject `ExpectLastSequencePerSubject`), surfaced as a CAS-flash event for visual feedback.
 
 ### Atomic batches with per-subject CAS
 
-Every publication of multiple rows from the engine is a SINGLE atomic batch:
+Every publication of multiple cells from the engine is a SINGLE atomic batch:
 
-- `natspkg.PublishMoveAtomically` — multi-row batch with **per-subject CAS** expectations (`Nats-Expected-Last-Subject-Sequence`, applied via `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`). Used for moves, rotations, and spawns.
-- `natspkg.PublishRowsAtomicallyNoCAS` — multi-row batch without CAS. Used for authoritative state transitions (piece lock, hard-drop landing, line-clear, opponent-shrink application).
+- `natspkg.PublishMoveAtomically` — multi-cell batch with **per-subject CAS** expectations (`Nats-Expected-Last-Subject-Sequence`, applied via `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`). Used for moves, rotations, and spawns.
+- `natspkg.PublishCellsAtomicallyNoCAS` — multi-cell batch without CAS. Used for authoritative state transitions (piece lock, hard-drop landing, line-clear, opponent-shrink application).
 
-Why per-subject CAS, not stream-level (`WithBatchExpectLastSequence`)? Each row is its own NATS subject. Per-subject CAS rejects only when *our* row was overwritten since we last saw it; concurrent writes to *other* rows don't conflict. This is essential in cooperative mode where two players write the same shared playfield, and useful in competitive mode for parallelism between meta/event publishes and row publishes.
+Why per-subject CAS, not stream-level (`WithBatchExpectLastSequence`)? Each cell is its own NATS subject. Per-subject CAS rejects only when *our* cell was overwritten since we last saw it; concurrent writes to *other* cells don't conflict. This is essential in cooperative mode where two players write the same shared playfield — and per-cell granularity makes the conflict window far smaller than the old per-row scheme: two coop pieces moving through the same row no longer contend at all, only writes to the *same cell* do. It is also useful in competitive mode for parallelism between meta/event publishes and cell publishes.
 
-Why atomic batch, not row-by-row? A single move typically touches 2+ rows (the row the piece is leaving and the row(s) it is entering). If those messages arrived at consumers one at a time, every other player would briefly observe a half-erased / half-placed piece between consumer applies. Atomic batch makes the multi-row update visible to consumers as one indivisible step.
+Why atomic batch, not cell-by-cell? A single move typically touches 4–8 cells (the new footprint plus the vacated old positions). If those messages arrived at consumers as independent publishes, every other player would briefly observe a half-erased / half-placed piece between consumer applies. Atomic batch makes the multi-cell update visible to consumers as one indivisible step. Within the batch the cells follow the `orderedCellKeys` category order (active, locked, empty) — see the lock-in section in §8 — because the consumer still applies the batch's messages one at a time. One server limit applies: the default atomic-batch limit is **1000 messages**, so the engine keeps every batch at or below that and `publishProjectedCellsNoCAS` chunks larger writes (only reachable on degenerate many-player boards).
 
-The expected-last-sequence value for each row comes from `e.playfield.LastSeq[r]`, updated via `pf.Apply(rowIdx, row, seq)` from two places: the row consumer on an ordered-consumer echo, and the **publish write-through** (`applyPublishedRows`), which advances it from the batch commit ack the instant a write commits. The write-through keeps the CAS expectation current so the next write doesn't lose a per-subject race against the engine's own just-committed write; `pf.Apply`'s strictly-higher-sequence rule reconciles the two sources (the echo of our own write carries the same sequence we already applied and is skipped; only a higher sequence updates memory).
+The expected-last-sequence value for each cell comes from `e.playfield.CellLastSeq(row, col)` (the flat per-cell `LastSeq` array, index `row*Width+col`), updated via `pf.Apply(row, col, cell, seq)` from two places: the cell consumer on an ordered-consumer echo, and the **publish write-through** (`applyPublishedCells`), which advances it from the batch commit ack the instant a write commits. The write-through keeps the CAS expectation current so the next write doesn't lose a per-subject race against the engine's own just-committed write; `pf.Apply`'s strictly-higher-sequence rule reconciles the two sources (the echo of our own write carries the same sequence we already applied and is skipped; only a higher sequence updates memory).
 
-**Optimistic sequence write-through (both modes).** The per-subject CAS expectation is `pf.LastSeq[row]`, advanced by `Playfield.Apply`. Rather than waiting for the engine's own consumer to echo a published row back before that expectation (and the board content) catches up, a **successful publish is written through into the playfield immediately**: the batch commit ack returns the stream sequence of the last message, and since an atomic batch's messages get consecutive stream sequences the engine infers each row's sequence (`message i of N → commitSeq − (N−1−i)`) and applies the committed content + sequence via `pf.Apply`. The two batch publishers (`PublishMoveAtomically`, `PublishRowsAtomicallyNoCAS`) return that commit sequence; `applyPublishedRows` does the write-through. `pf.Apply`'s "apply only a **strictly higher** sequence" rule reconciles this with the later echo: the echo of our own write carries the same sequence we already wrote through and is skipped, while a higher sequence (the other player's write in coop, or a NoCAS write we didn't originate) still updates memory. In coop the write-through applies only what actually committed (the first-attempt or merge-retry batch), so it never clobbers the other player's cells. This keeps the in-memory view current so a player cannot lose a per-subject CAS race against their own just-committed write (gravity vs. input, a write right after a NoCAS line-clear/shrink, a fast input burst). `applyPublishedRows` takes `e.mu` unless the caller already holds it — a `locked` flag is threaded through the publish helpers and `spawnPiece` because `spawnPiece` and the line-clear publish run under the consumer's lock while every other publish path runs with the lock released.
+**Optimistic sequence write-through (both modes).** The per-subject CAS expectation is the cell's `LastSeq` entry, advanced by `Playfield.Apply`. Rather than waiting for the engine's own consumer to echo a published cell back before that expectation (and the board content) catches up, a **successful publish is written through into the playfield immediately**: the batch commit ack returns the stream sequence of the last message, and since an atomic batch's messages get consecutive stream sequences the engine infers each cell's sequence (`message i of N → commitSeq − (N−1−i)`) and applies the committed content + sequence via `pf.Apply`. The two batch publishers (`PublishMoveAtomically`, `PublishCellsAtomicallyNoCAS`) return that commit sequence; `applyPublishedCells` does the write-through. `pf.Apply`'s "apply only a **strictly higher** sequence" rule reconciles this with the later echo: the echo of our own write carries the same sequence we already wrote through and is skipped, while a higher sequence (the other player's write in coop, or a NoCAS write we didn't originate) still updates memory. In coop the write-through applies only what actually committed (the first-attempt or merge-retry batch), so it never clobbers the other player's cells. This keeps the in-memory view current so a player cannot lose a per-subject CAS race against their own just-committed write (gravity vs. input, a write right after a NoCAS line-clear/shrink, a fast input burst). `applyPublishedCells` takes `e.mu` unless the caller already holds it — a `locked` flag is threaded through the publish helpers and `spawnPiece` because `spawnPiece` and the line-clear publish run under the consumer's lock while every other publish path runs with the lock released (`spawnPiece` itself takes `e.mu` around its projection+diff when called with `locked=false` on the Start path, releasing before publish).
 
 CAS-failure handling for **player moves** (same in both modes): **drop the move, no retry, no NATS publish**. The engine emits an `UpdateCASFlash` directly on its local `Updates` channel; the player must retry the input themselves.
 
 In cooperative mode the shared playfield has two writers, so CAS rejections on moves are an expected, regular occurrence. A silent server-side retry would mask the conflict and make the player's own input timing feel non-deterministic. Instead we surface the failure loudly: the UI renders the `UpdateCASFlash` as a **rainbow outline flash on the player's own piece** — cells in `FlashCells` cycle through the seven spectrum colors over roughly 600 ms with a matching glow, then revert. The other players see nothing, since one player's input rejection is information of no use to anyone else.
 
-CAS-failure handling for **engine-driven (internal) writes** — piece spawn and gravity ticks. The player did not press a key for either, so a flash would be misleading; and both share row subjects with the other player in coop mode. Both **must** succeed: a dropped spawn would leave the player pieceless, and a dropped gravity tick would make the piece appear frozen for one tick interval. In coop mode both go through `publishProjectedRowsWithMergeRetry`: on CAS failure, refetch each affected row from the stream via `stream.GetLastMsgForSubject`, overlay this player's cells on top, retry the batch with refreshed per-subject CAS expectations (up to 16 retries, with a short per-player-offset backoff between tries that breaks lockstep with the other player's retry loop). In competitive mode each player owns their subjects, so both go through the regular `publishProjectedRows`. **Gravity and player input run on one goroutine (`runInput`), so a player's own gravity tick and move are serialized and cannot lose the per-subject CAS race against each other** — this is what removed the spurious rainbow flashes that were otherwise visible in competitive play.
+CAS-failure handling for **engine-driven (internal) writes** — piece spawn and gravity ticks. The player did not press a key for either, so a flash would be misleading; and both share cell subjects with the other player in coop mode. Both **must** succeed: a dropped spawn would leave the player pieceless, and a dropped gravity tick would make the piece appear frozen for one tick interval. In coop mode both go through `publishProjectedCellsWithMergeRetry`: on CAS failure, refetch the latest message for **all** affected cells in one batched round trip (`FetchPlayfieldState` / `GetLastMsgsFor`), keep our content except where the latest stream state holds the other player's mid-flight active cell (those cells are skipped entirely), and retry the batch with refreshed per-subject CAS expectations (up to 16 retries, with a short per-player-offset backoff between tries that breaks lockstep with the other player's retry loop). In competitive mode each player owns their subjects, so both go through the regular `publishProjectedCells`. **Gravity and player input run on one goroutine (`runInput`), so a player's own gravity tick and move are serialized and cannot lose the per-subject CAS race against each other** — this is what removed the spurious rainbow flashes that were otherwise visible in competitive play.
 
 The rainbow flash fires for any dropped CAS write (player moves, gravity ticks, and spawns alike). The `internal` boolean threaded through `attemptMove` / `attemptMoveStandard` / `attemptMoveCoop` distinguishes the source: the moves arm of `runInput` (player input) calls `attemptMove(move, false)`, while its gravity arm calls `attemptMove(MoveDown, true)`. In coop, `internal=true` routes through merge-retry so gravity flashes only after all retries are exhausted.
 
@@ -818,7 +865,7 @@ type Engine struct {
 
     // Opponent playfields — populated in competitive mode only, discovered
     // dynamically via the roster consumer. One per opponent, each maintained by
-    // its own ordered consumer on that opponent's row subjects.
+    // its own ordered consumer on that opponent's cell subjects.
     opponentPlayfields map[string]*game.Playfield // keyed by opponent playerID
     opponentPlayerID   string                     // the known opponent (2-player join), if any
 
@@ -833,7 +880,7 @@ type Engine struct {
     score             atomic.Int64
     totalLines        atomic.Int64
     level             atomic.Int64
-    hadActivePiece    bool            // only the own-rows consumer goroutine touches it
+    hadActivePiece    bool            // only the own-cells consumer goroutine touches it
     eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
     visibleRowStart   int             // first visible row index (varies per mode/player count)
 
@@ -842,11 +889,11 @@ type Engine struct {
     OnGameFinished func() // called after the game transitions to finished (wired to archive.ArchiveAndCleanup)
 
     // internal
-    js         jetstream.JetStream
-    ctx        context.Context
-    cancelFn   context.CancelFunc
-    moves      chan MoveType
-    rowUpdated chan struct{}
+    js          jetstream.JetStream
+    ctx         context.Context
+    cancelFn    context.CancelFunc
+    moves       chan MoveType
+    cellUpdated chan struct{}
 }
 
 // New constructs an engine; it takes no ctx (Start derives one) and a SINGLE
@@ -864,8 +911,8 @@ func New(
 
 // Start begins all consumer goroutines and (if ModePlayer) the combined
 // input+gravity goroutine (runInput).
-// In cooperative mode, starts ONE ordered consumer on the shared row subjects
-// (no player token). In competitive mode, starts the own-rows consumer plus the
+// In cooperative mode, starts ONE ordered consumer on the shared cell subjects
+// (no player token). In competitive mode, starts the own-cells consumer plus the
 // roster consumer, and one consumer per opponent as they are discovered.
 func (e *Engine) Start() error
 
@@ -885,7 +932,7 @@ func (e *Engine) transitionToSpectator(won bool)
 
 #### `consumer.go`
 
-Manages the ordered consumer goroutine(s). In cooperative mode, ONE consumer runs on the shared row subjects (no player token — the subject carries no player segment), updating the single shared `Playfield`. In competitive mode, 1 + N consumers run — one for the local player's rows and one per opponent — each updating a separate `Playfield` instance.
+Manages the ordered consumer goroutine(s). In cooperative mode, ONE consumer runs on the shared cell subjects (no player token — the subject carries no player segment), updating the single shared `Playfield`. In competitive mode, 1 + N consumers run — one for the local player's cells and one per opponent — each updating a separate `Playfield` instance.
 
 ```go
 func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubject, opponentID string, startSeq uint64, isOpponent bool)
@@ -894,34 +941,34 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 **Startup sequence:**
 
 1. Call `nats.FetchGameMeta(gameID)` — returns `GameMeta` including `Seed`, `PieceIdx`, and `Status`. In **both** modes `e.seq = rng.New(meta.Seed)`. In competitive mode `e.pieceIdx = meta.PieceIdx`; in cooperative mode `e.pieceIdx = 0` and each player tracks its own index independently (the sequence is shared, not forked with `seed+1`). `e.playerIdx` was supplied at construction (from `lobby.JoinGame`); no discovery is done here. `e.playerCount` and `e.visibleRowStart` are set from meta, and the playfield is (re)allocated at the mode-appropriate width/height.
-2. Call `nats.FetchPlayfieldState(gameID, subjects)` for the player's own row subjects (coop: the shared `playfield.row.*` subjects with no player token; competitive: the player's own `player.<pid>.playfield.row.*`). Apply all rows to `e.playfield` via `pf.Apply`. Record `maxSeq = max(all row sequences)`.
-3. Start the ordered consumer with `startSeq = maxSeq + 1`. In cooperative mode this is ONE consumer on the shared row subjects (`jetricks.game.<id>.playfield.row.>`). In competitive mode this is the consumer for the player's own rows. Messages on non-row subjects (events, meta, chat) that arrived between the lowest and highest fetched row sequence are a tolerable gap — at most a few milliseconds of game time.
-4. In competitive mode only, also start the **roster consumer** (`runRosterConsumer`, watching `jetricks.game.<id>.roster.*`) which discovers opponents dynamically and calls `startOpponentConsumer` for each — fetching that opponent's rows and starting one `runConsumer` per opponent targeting `jetricks.game.<id>.player.<opponentPID>.playfield.row.>`. A known opponent passed at construction is started immediately; late joiners are picked up as their roster entries appear. In cooperative mode there is no opponent consumer — both players write to and read from the same shared row subjects.
+2. Call `nats.FetchPlayfieldState(gameID, subjects)` for the player's own cell subjects — `cellSubjects()` builds all `width × height` of them, row-major (coop: the shared `playfield.cell.*` subjects with no player token; competitive: the player's own `player.<pid>.playfield.cell.*`). Above 512 subjects the fetch is chunked into ≤512-subject `GetLastMsgsFor` calls bounded to a common stream sequence (the server caps a multi-last direct get at 1024 responses). Apply all fetched cells to `e.playfield` via `pf.Apply`; never-written cells are absent from the result and stay empty. Record `maxSeq = max(all cell sequences)`.
+3. Start the ordered consumer with `startSeq = maxSeq + 1`. In cooperative mode this is ONE consumer on the shared cell subjects (filter `jetricks.game.<id>.playfield.cell.>`). In competitive mode this is the consumer for the player's own cells. Messages on non-cell subjects (events, meta, chat) that arrived between the lowest and highest fetched cell sequence are a tolerable gap — at most a few milliseconds of game time.
+4. In competitive mode only, also start the **roster consumer** (`runRosterConsumer`, watching `jetricks.game.<id>.roster.*`) which discovers opponents dynamically and calls `startOpponentConsumer` for each — fetching that opponent's cells and starting one `runConsumer` per opponent targeting `jetricks.game.<id>.player.<opponentPID>.playfield.cell.>`. A known opponent passed at construction is started immediately; late joiners are picked up as their roster entries appear. In cooperative mode there is no opponent consumer — both players write to and read from the same shared cell subjects.
 
 **Cooperative mode design:**
 
-In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Row subjects carry no player token — the shared board publishes to `jetricks.game.<id>.playfield.row.<n>` (every player publishes to and consumes from the same subjects) via the `config.CoopRowSubject` scheme, distinct from the competitive `config.CompetitiveRowSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
+In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Cell subjects carry no player token — the shared board publishes to `jetricks.game.<id>.playfield.cell.<row>.<col>` (every player publishes to and consumes from the same subjects) via the `config.CoopCellSubject` scheme, distinct from the competitive `config.CompetitiveCellSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
 
 Each player spawns their piece centered in their section (player 0: center of cols 0–9, player 1: center of cols 10–19) but can move it anywhere on the full-width board. `ActivePieceForPlayer(playerIdx)` finds only the piece belonging to that player (by matching `Cell.PlayerIdx`). `SetActivePieceForPlayer(p, playerIdx)` only clears active cells with matching `PlayerIdx` before setting new ones. Collision detection (`CanPlaceCoop`) treats the other player's active cells as obstacles in addition to locked cells.
 
-Both players seed their RNG from the same `meta.Seed` but track their own `pieceIdx` independently, so they receive different pieces at any given moment. Each engine has ONE playfield (the shared one) and ONE ordered consumer (on the shared row subjects) — no separate opponent playfield is needed. Both players write to the same shared row subjects. CAS conflicts on **moves** (left, right, down, rotate) are NOT retried — the move is simply dropped and the player must try another move. CAS conflicts on **state changes** (lock-in, spawn, line clear) ARE retried with a direct fetch from the stream, since these must succeed for game consistency.
+Both players seed their RNG from the same `meta.Seed` but track their own `pieceIdx` independently, so they receive different pieces at any given moment. Each engine has ONE playfield (the shared one) and ONE ordered consumer (on the shared cell subjects) — no separate opponent playfield is needed. Both players write to the same shared cell subjects, though per-cell CAS means they only actually conflict when writing the *same cell*. CAS conflicts on **moves** (left, right, down, rotate) are NOT retried — the move is simply dropped and the player must try another move. CAS conflicts on **state changes** (lock-in, spawn, line clear) ARE retried with a batched refetch of the affected cells from the stream, since these must succeed for game consistency.
 
 Line clears work on the full 20-wide rows. The score is shared — both players' line clears contribute to the same score total. The UI renders the single wide playfield directly (no concatenation of two separate playfields).
 
 **Per-message handling (cooperative mode — single shared playfield consumer):**
 
-- Decodes the row message and calls `pf.Apply(rowIndex, row, seq)`, updating both cell data and `LastSeq` for that row.
-- After every row update, scans for the **implicit lock-in signal** for this player's piece: if the previous state had an active piece for this `playerIdx` (`ActivePieceForPlayer(playerIdx) != nil`) and the new state has no active cells with matching `PlayerIdx`, a lock-in has just been committed by this player. The engine increments its own `pieceIdx` and calls `rng.Sequence.Piece(pieceIdx)` to spawn the next piece centered in this player's section.
-- Emits a `UpdatePlayfield` for the changed rows so the UI re-renders from the freshly applied `e.playfield`.
+- Parses `(row, col)` from the subject via `ParseCellFromSubject`, decodes the cell payload (`game.UnmarshalCell`) and calls `pf.Apply(row, col, cell, seq)`, updating both the cell content and its per-cell `LastSeq`.
+- After every cell update, scans for the **implicit lock-in signal** for this player's piece: if the previous state had an active piece for this `playerIdx` (`ActivePieceForPlayer(playerIdx) != nil`) and the new state has no active cells with matching `PlayerIdx`, a lock-in has just been committed by this player. The engine increments its own `pieceIdx` and calls `rng.Sequence.Piece(pieceIdx)` to spawn the next piece centered in this player's section.
+- Emits a `UpdatePlayfield` with `ChangedRows: []int{row}` — the row is DERIVED from the cell position, so the UI event contract (and every UI package) is unchanged by per-cell storage — and the UI re-renders from the freshly applied `e.playfield`.
 - On line-clear detection: checks the full-width playfield for completed rows. **Critically, the cleared rows are published synchronously before spawning the next piece** — this prevents a race condition where the spawn modifies the playfield while the clear is still being published. The score is updated and emitted to the UI. Level is recomputed and the gravity interval adjusted.
 - Emits appropriate `EngineUpdate` events for the UI on each meaningful state change.
 
 **Per-message handling (competitive mode — own and opponent playfield consumers):**
 
-- Decodes the row message and calls `pf.Apply(rowIndex, row, seq)`, updating both cell data and `LastSeq` for that row.
-- After every row update on the own playfield, scans for the **implicit lock-in signal**: if the previous state had an active piece and the new state has no active cells anywhere, a lock-in has just been committed. The engine increments its own `pieceIdx` and calls `rng.Sequence.Piece(pieceIdx)` to determine the next piece.
-- Emits a `UpdatePlayfield` for the changed rows so the UI re-renders from the freshly applied `e.playfield`.
-- On receiving a message on the events subject: if it is a shrink event from another player (`ev.PlayerID != e.playerID`), calls `applyOpponentShrink` which publishes the row shift batch to the local player's own rows. In 3+ player games, every opponent applies the same shrink independently.
+- Parses `(row, col)` from the subject via `ParseCellFromSubject`, decodes the cell payload and calls `pf.Apply(row, col, cell, seq)`, updating both the cell content and its per-cell `LastSeq`.
+- After every cell update on the own playfield, scans for the **implicit lock-in signal**: if the previous state had an active piece and the new state has no active cells anywhere, a lock-in has just been committed. The engine increments its own `pieceIdx` and calls `rng.Sequence.Piece(pieceIdx)` to determine the next piece.
+- Emits a `UpdatePlayfield` with `ChangedRows: []int{row}` (the row derived from the cell) so the UI re-renders from the freshly applied `e.playfield`.
+- On receiving a message on the events subject: if it is a shrink event from another player (`ev.PlayerID != e.playerID`), calls `applyOpponentShrink` which publishes the shift's changed cells to the local player's own cell subjects. In 3+ player games, every opponent applies the same shrink independently.
 - On line-clear detection: checks own playfield for completed rows. Cleared rows are published synchronously before spawning the next piece.
 - Emits appropriate `EngineUpdate` events for the UI on each meaningful state change.
 
@@ -931,7 +978,7 @@ Line clears work on the full 20-wide rows. The score is shared — both players'
 func (e *Engine) runInput(ctx context.Context)
 ```
 
-The engine's single gameplay-write goroutine: it `select`s over the moves channel (player input) and the gravity timer. Running both on **one** goroutine is deliberate — a player's own gravity drop and a player move can never publish to their row subjects concurrently, so they can never lose the per-subject CAS race against each other (in either mode; this removed the spurious rainbow flashes seen in competitive play). On each gravity tick it attempts to drop the active piece one row via `attemptMove(MoveDown, true)`; player input calls `attemptMove(move, false)`. In cooperative mode it reads the current level from `totalLines` after each tick and adjusts the ticker interval when the level changes; in competitive mode the interval is fixed.
+The engine's single gameplay-write goroutine: it `select`s over the moves channel (player input) and the gravity timer. Running both on **one** goroutine is deliberate — a player's own gravity drop and a player move can never publish to their cell subjects concurrently, so they can never lose the per-subject CAS race against each other (in either mode; this removed the spurious rainbow flashes seen in competitive play). On each gravity tick it attempts to drop the active piece one row via `attemptMove(MoveDown, true)`; player input calls `attemptMove(move, false)`. In cooperative mode it reads the current level from `totalLines` after each tick and adjusts the ticker interval when the level changes; in competitive mode the interval is fixed.
 
 **Cooperative gravity and lock-in:** When gravity cannot move a piece down, the engine distinguishes between two cases: (1) the piece is blocked by locked cells or out-of-bounds — the piece locks immediately, as in standard Tetris; (2) the piece is blocked only by the other player's active piece — the piece does NOT lock, since that obstacle is temporary (it will itself fall on its next gravity tick). In case (2), gravity simply waits and tries again on the next tick. This prevents premature lock-ins caused by two pieces passing through the same rows.
 
@@ -944,8 +991,9 @@ The engine's single gameplay-write goroutine: it `select`s over the moves channe
 // engine-driven move (e.g. a gravity tick); internal=false marks player input
 // (player input drops + flashes on CAS failure, gravity ticks merge-retry in
 // coop). It validates the move geometrically against the local playfield, builds
-// the projected row updates, and publishes them via the publishProjected* helpers
-// in engine.go. It dispatches by mode to attemptMoveStandard / attemptMoveCoop.
+// the projection, diffs it to the changed cells (diffCells), and publishes them
+// via the publishProjectedCells* helpers in engine.go. It dispatches by mode to
+// attemptMoveStandard / attemptMoveCoop.
 func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error
 func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, internal bool) error
 func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bool) error
@@ -965,53 +1013,89 @@ const (
 
 #### Publish & CAS helpers (`engine.go` / `move.go`)
 
-There is no `Publish`/`PublishHardDrop`/`ErrMoveDropped`/`ErrLockIn` API and no 50ms-wait-on-`rowUpdated` retry loop. All publish/CAS logic lives in `engine.go` (and the hard-drop helpers in `move.go`). The relevant helpers are:
+There is no `Publish`/`PublishHardDrop`/`ErrMoveDropped`/`ErrLockIn` API and no 50ms-wait-on-`cellUpdated` retry loop. All publish/CAS logic lives in `engine.go` (and the hard-drop helpers in `move.go`). The relevant helpers are:
 
 ```go
-// publishProjectedRows publishes a map of row payloads as ONE atomic batch with
-// per-subject CAS expectations sourced from e.playfield.LastSeq[r]. On success it
-// WRITE-THROUGHS the committed rows into e.playfield (applyPublishedRows). On CAS
-// failure the step is DROPPED (no retry, no further publish) and the local
-// player is signalled with a rainbow flash on flashCells (pass nil to suppress).
-// Used for player moves, rotations, and competitive spawns/gravity ticks.
-func (e *Engine) publishProjectedRows(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst, locked bool)
+// cellSubject / cellFilterSubject / cellSubjects build this engine's own cell
+// subjects with the mode-appropriate scheme (Coop*/Competitive*CellSubject).
+// cellSubjects returns all width×height of them, row-major (snapshot fetch).
+func (e *Engine) cellSubject(row, col int) string
+func (e *Engine) cellFilterSubject() string
+func (e *Engine) cellSubjects() []string
 
-// publishProjectedRowsNoCAS publishes a map of rows as ONE atomic batch with NO
+// orderedCellKeys returns the keys of a cell-projection map in publish/apply
+// order: by CATEGORY of the cell's NEW content — active first, locked/occupied
+// second, empty vacates last (cellCategory) — tie-broken by ascending (row, col).
+// This single rule replaces the old bottomFirst row ordering; see the lock-in
+// section in §8 for the correctness cases it guarantees.
+func orderedCellKeys(m map[game.CellPos]game.Cell) []game.CellPos
+
+// publishProjectedCells publishes a cell diff as ONE atomic batch with
+// per-subject CAS expectations sourced from e.playfield.CellLastSeq(row, col).
+// On success it WRITE-THROUGHS the committed cells into e.playfield
+// (applyPublishedCells). On CAS failure the step is DROPPED (no retry, no
+// further publish) and the local player is signalled with a rainbow flash on
+// flashCells (pass nil to suppress). Used for player moves, rotations, and
+// competitive spawns/gravity ticks.
+func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool)
+
+// publishProjectedCellsNoCAS publishes a cell diff as an atomic batch with NO
 // CAS expectations — used for authoritative state (competitive lock, hard-drop
 // landing, line-clear, opponent-shrink application). Write-throughs on success.
-// applyBottomFirst orders the batch so a row completed by a hard drop is in place
-// when lock-in fires.
-func (e *Engine) publishProjectedRowsNoCAS(ctx context.Context, rows map[int]game.Row, applyBottomFirst, locked bool)
+// A batch above the server's 1000-message atomic-batch limit (only reachable on
+// degenerate many-player boards) is split into sequential atomic chunks along
+// the already-ordered key list — the category order remains a correct total
+// order across chunk boundaries, the only loss being a briefly visible
+// intermediate board between chunks.
+func (e *Engine) publishProjectedCellsNoCAS(ctx context.Context, cells map[game.CellPos]game.Cell, locked bool)
 
-// publishProjectedRowsWithMergeRetry is the COOP path for steps that MUST land
+// publishProjectedCellsWithMergeRetry is the COOP path for steps that MUST land
 // (spawn, gravity tick, lock, hard drop, line clear) on the shared board. On CAS
-// failure it refetches each affected row from the stream, overlays this player's
-// cells (refetchAndMerge), and retries with refreshed per-subject CAS — up to 16
-// attempts (short lockstep-breaking backoff), then drops + flashes. Write-throughs the committed (first-attempt or
-// merged) rows on success.
-func (e *Engine) publishProjectedRowsWithMergeRetry(ctx context.Context, rows map[int]game.Row, flashCells [][2]int, bottomFirst, locked bool)
+// failure it refetches the latest stream state of all affected cells in one
+// batched round trip (refetchAndMerge), keeps our content except where the other
+// player's mid-flight piece sits, and retries with refreshed per-subject CAS —
+// up to 16 attempts with an escalating per-player-offset backoff
+// (200µs × (attempt + playerIdx), capped at 2ms) that breaks lockstep with the
+// other player's retry loop, then drops + flashes. Write-throughs the committed
+// (first-attempt or merged) cells on success.
+func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool)
 
-// applyPublishedRows write-throughs a committed batch into e.playfield: each row's
-// content + the per-subject stream sequence inferred from the batch commit ack
-// (message i of N → commitSeq−(N−1−i)), advancing both the board and the CAS
-// expectation without waiting for the consumer echo. The `locked` flag is threaded
-// through the publish helpers (and spawnPiece) because spawnPiece and the
-// line-clear publish run under the consumer's lock while every other path runs
-// with e.mu released — applyPublishedRows and buildBatchUpdates take e.mu unless
-// locked.
-func (e *Engine) applyPublishedRows(orderedKeys []int, get func(int) game.Row, commitSeq uint64, locked bool)
+// applyPublishedCells write-throughs a committed batch into e.playfield: each
+// cell's content + the per-subject stream sequence inferred from the batch
+// commit ack (message i of N → commitSeq−(N−1−i)), advancing both the board and
+// the CAS expectation without waiting for the consumer echo. The `locked` flag
+// is threaded through the publish helpers (and spawnPiece) because spawnPiece
+// and the line-clear publish run under the consumer's lock while every other
+// path runs with e.mu released — applyPublishedCells and buildBatchUpdates take
+// e.mu unless locked.
+func (e *Engine) applyPublishedCells(orderedKeys []game.CellPos, get func(game.CellPos) game.Cell, commitSeq uint64, locked bool)
 
-func (e *Engine) refetchAndMerge(ctx context.Context, saved map[int][]game.Cell, bottomFirst bool) ([]natspkg.RowUpdate, map[int]game.Row, bool)
-func (e *Engine) buildBatchUpdates(rows map[int]game.Row, bottomFirst, locked bool) ([]natspkg.RowUpdate, error)
+// refetchAndMerge fetches the latest stream message for every cell in keys in
+// ONE batched round trip (FetchPlayfieldState / GetLastMsgsFor) and rebuilds the
+// publish batch with refreshed per-subject CAS expectations. The merge is per
+// cell: our content is kept EXCEPT where the latest stream state holds the OTHER
+// player's mid-flight (active) cell — those cells are skipped entirely (never
+// overwrite or vacate their piece). A cell with no stream message is empty with
+// CAS expectation 0. Returns the merged updates, cells, and key order (the
+// caller's category order minus the skipped cells).
+func (e *Engine) refetchAndMerge(ctx context.Context, keys []game.CellPos, cells map[game.CellPos]game.Cell) ([]natspkg.CellUpdate, map[game.CellPos]game.Cell, []game.CellPos, bool)
 
-// changedRows returns the subset of projected[fromRow:toRow) whose content differs
-// from the live cur rows — so a line clear / competitive shrink republishes only
-// the rows that actually changed, not the whole visible range (far less per-subject
-// CAS contention on the shared coop board).
-func changedRows(cur, projected []game.Row, fromRow, toRow int) map[int]game.Row
+func (e *Engine) buildBatchUpdates(keys []game.CellPos, cells map[game.CellPos]game.Cell, locked bool) ([]natspkg.CellUpdate, error)
+
+// diffCells returns the cells of a row projection that differ from the live
+// board — only those are published, so a move costs ~4-8 cell messages (the new
+// footprint plus the vacated old positions). Used by moves, spawns, locks, and
+// hard drops; called under e.mu.
+func diffCells(cur []game.Row, projected map[int]game.Row) map[game.CellPos]game.Cell
+
+// changedCells returns the cells of projected[fromRow:toRow) whose content
+// differs from cur — so a line clear / competitive shrink republishes only the
+// cells that actually changed, not the whole visible range (far less per-subject
+// CAS contention on the shared coop board). Replaces the old changedRows.
+func changedCells(cur, projected []game.Row, fromRow, toRow int) map[game.CellPos]game.Cell
 ```
 
-There is no recompute-and-retry-until-it-lands hard-drop loop. The hard-drop destination is computed **once** (`game.HardDropDestination` / `HardDropDestinationCoop`). In competitive mode the landing rows are published NoCAS (`publishHardDrop`); in cooperative mode through the merge-retry path (`publishHardDropCoop`, ≤16 retries). `bottomFirst`/`applyBottomFirst` is `true` for hard drops and downward moves so a line completed by the drop is detected at the lock, not one piece later. See the publish-strategy summary below.
+There is no recompute-and-retry-until-it-lands hard-drop loop. The hard-drop destination is computed **once** (`game.HardDropDestination` / `HardDropDestinationCoop`). In competitive mode the landing cells are published NoCAS (`publishHardDrop`); in cooperative mode through the merge-retry path (`publishHardDropCoop`, ≤16 retries). The `orderedCellKeys` category ordering guarantees the landing cells are applied before the vacates, so a line completed by the drop is detected at the lock, not one piece later. See the publish-strategy summary below.
 
 #### `events.go`
 
@@ -1078,8 +1162,8 @@ type GameEvent struct {
 
 **Shrink flow (competitive mode):**
 
-1. Player A's engine detects a line clear after a lock-in (implicit detection from row state).
-2. Player A publishes an atomic batch: the row shift on its own playfield rows (cleared lines removed, rows above shifted down).
+1. Player A's engine detects a line clear after a lock-in (implicit detection from cell state).
+2. Player A publishes an atomic batch: the cells changed by the row shift on its own playfield (cleared lines removed, rows above shifted down — `changedCells` diffs the shift so only cells that differ are published).
 3. Player A also publishes a `GameEvent{Kind: EventShrink, PlayerID: playerA, RowsRemoved: n, PlayerIdx: ...}` to the events subject. The `TargetPlayer` field exists on `GameEvent` but is unused for shrink — the event is broadcast and ALL other players apply it.
 4. Every other player's events consumer reads the shrink event. Since `ev.PlayerID != e.playerID`, each opponent calls `applyOpponentShrink(n)` which shifts their own playfield up by n rows and adds n fully occupied permanent adversarial rows at the bottom. In a 3+ player game, all opponents are shrunk simultaneously. Adversarial cells are marked with `Cell.Adversarial = true` and rendered with a distinct grey color. Adversarial rows can never be completed or cleared — `IsFull()` returns false for any row containing adversarial cells.
 5. The shifted state is published using NoCAS (authoritative, same as line clears) to prevent stale consumer messages from undoing the shift. The opponent's own falling piece holds its position while the stack rises and is pushed up only as far as the rising stack/garbage forces it; `ProjectShrink` resolves the minimal lift (0..`rowsToAdd`) and returns a `topOut` flag. If no lift keeps the piece on the board, `applyOpponentShrink` calls `handleTopOut`. See `jetricks-gameplays.md` for the full competitive shrink rules.
@@ -1088,9 +1172,9 @@ type GameEvent struct {
 
 In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta}` on the events subject; every other player's events consumer folds that delta into its own local `score` so all clients converge on the same combined team total. This is **not** a server-side counter CRDT and uses no score subject. See `jetricks-gameplays.md` for the authoritative scoring rules.
 
-**Line clear publishing:** Cleared rows are published using a no-CAS publish (the cleared state is authoritative). This prevents the CAS retry merge logic from restoring old occupied cells from stale NATS data, which would effectively undo the clear. After the cleared rows are published, `LastSeq` is updated from the publish acknowledgment so subsequent CAS publishes use the correct sequence.
+**Line clear publishing:** The cells changed by a clear (`changedCells` over the shifted projection) are published using a no-CAS publish in competitive mode (the cleared state is authoritative on a single-writer board) and through CAS+merge-retry in coop (so the shift can never overwrite the other player's mid-flight piece — `refetchAndMerge` skips any cell currently holding their active piece, and the category order applies their shifted piece before vacating its old positions). After the clear cells are published, the per-cell `LastSeq` entries are advanced by the write-through from the publish acknowledgment so subsequent CAS publishes use the correct sequences.
 
-**CAS failure recovery:** After a no-CAS line-clear publish, the other player's engine has stale `LastSeq` values until its consumer processes the clear messages. During this window, their moves may fail with CAS errors. When a move publish fails (CAS on any row), the engine immediately fetches the latest row state from NATS via direct get and corrects both the in-memory row data and `LastSeq`. This ensures the display stays in sync with NATS even when moves are dropped due to stale sequences.
+**CAS failure recovery:** After a no-CAS publish (or another player's committed batch), the other player's engine has stale per-cell `LastSeq` values until its consumer processes those messages. During this window, their writes to the same cells may fail with CAS errors. A failed player move is simply dropped (with a flash); the consumer echo carries strictly higher sequences, so `pf.Apply` corrects both the in-memory cell data and `LastSeq` and the next move validates against fresh state. Engine-driven coop writes recover faster: the merge-retry path refetches all affected cells in one batched round trip and retries immediately. Per-cell CAS also shrinks this stale window's blast radius — only the specific cells the other player touched can reject, not every write to a shared row.
 
 In **competitive mode** each player keeps its own local score counter (`score atomic.Int64`), incremented by the number of lines it clears. The score is reported to other clients only at game end via the `EventGameOver` event (and rendered locally via `UpdateScore`); the per-player `score` subject is not used.
 
@@ -1419,7 +1503,7 @@ All cross-package communication uses buffered Go channels. The buffer size is ch
 
 | Channel | Direction | Buffer | Notes |
 |---------|-----------|--------|-------|
-| `engine.Updates` | engine → front end | 64 | High-frequency during play (gravity ticks, every row update). Consumed by the native bridge or, in `--web`, pumped into `gameBroadcaster`. Dropping updates here is preferable to blocking the engine. If the channel is full the engine drops the update — the next update will correct the display. |
+| `engine.Updates` | engine → front end | 64 | High-frequency during play (gravity ticks, every cell update). Consumed by the native bridge or, in `--web`, pumped into `gameBroadcaster`. Dropping updates here is preferable to blocking the engine. If the channel is full the engine drops the update — the next update will correct the display. |
 | `lobby.Updates` | lobby → front end | 16 | Lower frequency. Lobby changes are infrequent relative to game updates. |
 | `engine.moves` (internal) | front end → engine | 8 | Player move requests dispatched onto the engine's internal moves channel (`runInput` reads it). Inputs are **serialized and buffered**: `runInput` processes them one at a time and each move's publish blocks on its batch commit ack (then applies the write-through) before the next move is dequeued, so a player never has two input batches in flight — a move issued while the previous one is still awaiting its ack waits in this buffer. The non-blocking send drops excess input rather than blocking the UI goroutine if a player outruns the ack round-trip by more than the buffer depth (not reached at human input rates). |
 
@@ -1477,13 +1561,13 @@ All goroutines are started with a context derived from the root context and exit
 | Lobby chat consumer (`runChatConsumer`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby archive consumer (`runArchiveConsumer`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby presence heartbeat (`runHeartbeat`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
-| Own-rows consumer (`runConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
+| Own-cells consumer (`runConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Events consumer (`runEventsConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Meta consumer (`runMetaConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Countdown consumer (`runCountdownConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Input + gravity loop (`runInput`) | `engine.Engine` | `engine.Start()` (ModePlayer only) | ctx cancel |
 | Roster consumer (`runRosterConsumer`) | `engine.Engine` | `engine.Start()` (competitive only) | ctx cancel |
-| Per-opponent rows consumer (`runConsumer`) | `engine.Engine` | `startOpponentConsumer` per discovered opponent (competitive) | ctx cancel |
+| Per-opponent cells consumer (`runConsumer`) | `engine.Engine` | `startOpponentConsumer` per discovered opponent (competitive) | ctx cancel |
 | Lobby/game update pumps + SSE connections | `ui.Server` (web) / native bridge | per pump and per HTTP connection (web) | client disconnect or ctx cancel |
 
 ---
@@ -1495,7 +1579,7 @@ All orbit.go modules are independently versioned. Import only the modules needed
 | Module | Import path | Used in | Purpose in Jetricks |
 |--------|-------------|---------|-------------------|
 | `natscontext` | `github.com/synadia-io/orbit.go/natscontext` | `internal/nats` | Connect using NATS CLI context files. Replaces raw URL + credential flags with a single context name, sharing config with the `nats` CLI tool. |
-| `jetstreamext` | `github.com/synadia-io/orbit.go/jetstreamext` | `internal/nats` | Atomic batch publishing for move CAS operations. `GetLastMsgsFor` for instant playfield reconstruction on startup/reconnect (fetches last message per row subject in one round trip). |
+| `jetstreamext` | `github.com/synadia-io/orbit.go/jetstreamext` | `internal/nats` | Atomic batch publishing for move CAS operations. `GetLastMsgsFor` for instant playfield reconstruction on startup/reconnect (fetches the last message per cell subject; chunked via `GetLastMsgsUpToSeq` above 512 subjects to stay under the server's 1024-response cap). |
 
 These are the only two orbit.go modules used (`natsext` comes in as an indirect dependency). `counters` and `natssysclient` are **not** dependencies of Jetricks.
 
@@ -1515,7 +1599,7 @@ These are the only two orbit.go modules used (`natsext` comes in as an indirect 
 
 ### Unit tests (no NATS required)
 
-- `internal/game` — all functions are pure and take no external dependencies. Full coverage of piece rotation (all SRS wall kicks), collision detection, line clear detection, row serialisation, score and level calculation, gravity interval curve.
+- `internal/game` — all functions are pure and take no external dependencies. Full coverage of piece rotation (all SRS wall kicks), collision detection, line clear detection, cell serialisation, score and level calculation, gravity interval curve.
 - `internal/rng` — verify determinism: two `Sequence` instances with the same seed produce identical output. Verify seek: `Piece(N)` equals the Nth output from sequential calls.
 - `internal/config` — subject builder functions produce correct strings.
 
@@ -1540,19 +1624,20 @@ Decisions settled during design review, recorded here for future reference.
 
 | # | Question | Decision | Rationale |
 |---|----------|----------|-----------|
-| 1 | Competitive playfield topology | Player-scoped row subjects within one shared stream (`jetricks.game.<id>.player.<pid>.playfield.row.<n>`) | One stream per game keeps lifecycle management simple. Player-scoped subjects provide full isolation within it. |
-| 2 | Lock-in detection | Implicit — engine scans row state for the `Active→Occupied` transition | No extra message; lock-in is definitionally visible in the row data that would be fetched anyway on rejoin. |
+| 1 | Competitive playfield topology | Player-scoped cell subjects within one shared stream (`jetricks.game.<id>.player.<pid>.playfield.cell.<row>.<col>`) | One stream per game keeps lifecycle management simple. Player-scoped subjects provide full isolation within it. |
+| 2 | Lock-in detection | Implicit — engine scans the playfield state for the `Active→Occupied` transition after each cell message | No extra message; lock-in is definitionally visible in the cell data that would be fetched anyway on rejoin. |
 | 3 | Line-clear row shift publisher | Client whose piece caused the lock-in | Avoids a first-CAS-wins race on a large batch; the publisher has the most current local state. |
-| 4 | Opponent shrink in competitive | Player A publishes shrink event; Player B's engine applies it to its own rows | Player B's engine owns its rows for CAS purposes. Shrink-as-event decouples A's writes from B's CAS keys. |
-| 5 | Row payload encoding | JSON | Simpler to implement and debug with `nats` CLI. Row update rate is low enough that JSON overhead is not a concern. |
-| 6 | Startup consumer start point | `max(row seqs)+1` | Avoids reprocessing the entire stream history on every join/reconnect. The gap in non-row subjects (at most a few milliseconds of game time) is acceptable; the playfield snapshot reflects any shrinks or clears that occurred in that window. |
+| 4 | Opponent shrink in competitive | Player A publishes shrink event; Player B's engine applies it to its own cells | Player B's engine owns its cell subjects for CAS purposes. Shrink-as-event decouples A's writes from B's CAS keys. |
+| 5 | Cell payload encoding | JSON (one `Cell` document per message; empty cell → `{}`, the vacate payload) | Simpler to implement and debug with `nats` CLI. Cell update rate is low enough that JSON overhead is not a concern. |
+| 6 | Startup consumer start point | `max(cell seqs)+1` | Avoids reprocessing the entire stream history on every join/reconnect. The gap in non-cell subjects (at most a few milliseconds of game time) is acceptable; the playfield snapshot reflects any shrinks or clears that occurred in that window. |
 | 7 | Lobby map concurrency | `sync.RWMutex` on `Lobby.mu`, maps unexported, accessed via `Players()` / `Games()` snapshot methods | Straightforward, low-overhead, and makes the access pattern explicit without channel complexity. |
 | 8 | Cooperative score propagation | Plain local score counter (`atomic.Int64`), propagated via `EventLineClear` events on the events subject and summed locally | No server-side counter CRDT is needed; the events stream the game already runs carries the deltas. The game stream sets `AllowAtomicPublish` and `AllowDirect` (not `AllowMsgCounter`). |
 | 9 | Game ID format | UUID v4 with dashes (`550e8400-e29b-41d4-a716-446655440000`) | UUIDs are globally unique, collision-free, and NATS stream names allow dashes. |
 | 10 | Game-over semantics | Cooperative: any top-out ends for all. Competitive: eliminated player becomes spectator; game continues until one player remains. | See `jetricks-gameplays.md`. |
 | 11 | HardDrop CAS behaviour | Destination computed once; competitive publishes the landing NoCAS, coop via merge-retry (≤16). No recompute-and-retry-until-it-lands loop. | The landing is authoritative state, so NoCAS (competitive) or CAS+merge (coop, to protect the other player's shared-board cells) is the right tool — not an unbounded CAS retry. |
-| 12 | Opponent display in competitive | Full live view via one ordered consumer per opponent's row subjects | Provides the same real-time fidelity as the player's own field. The overhead of additional consumers is minimal (at most 3 opponents in a 4-player game). |
+| 12 | Opponent display in competitive | Full live view via one ordered consumer per opponent's cell subjects | Provides the same real-time fidelity as the player's own field. The overhead of additional consumers is minimal (at most 3 opponents in a 4-player game). |
 | 13 | `pieceIdx` recovery on join/reconnect | Store `PieceIdx uint64` in `GameMeta`; locking engine CAS-updates it after each lock-in | `FetchGameMeta` gives any joining engine the current piece index in one round trip. No stream replay needed. |
-| 14 | Cooperative playfield topology | Single shared playfield of width `playerCount × StandardWidth`; row subjects carry no player token (shared board) | Both players' pieces coexist on one wide board. `Cell.PlayerIdx` in the payload distinguishes active pieces — player identity lives in the message, not the subject, since coop never filters rows per player. One ordered consumer per engine. Line clears span the full width. UI renders the single playfield directly. |
+| 14 | Cooperative playfield topology | Single shared playfield of width `playerCount × StandardWidth`; cell subjects carry no player token (shared board) | Both players' pieces coexist on one wide board. `Cell.PlayerIdx` in the payload distinguishes active pieces — player identity lives in the message, not the subject, since coop never filters cells per player. One ordered consumer per engine. Line clears span the full width. UI renders the single playfield directly. |
 | 15 | `GameMeta` payload | Fully specified in Section 4 with lifecycle, identity, RNG seed, and `PieceIdx` fields | Status uses string constants for readability in the `nats` CLI. `PieceIdx` enables fast startup without stream replay. |
-| 16 | Real-time UI updates from JetStream | All UI data backed by JetStream uses ordered consumers pushing to Datastar SSE — never polling or periodic refresh | The lobby runs consumers for KV (players/games), chat, and archives. The engine runs consumers for playfield rows, events, meta, and countdown. Any change in a JetStream stream or KV bucket is immediately pushed to the UI via the consumer → Updates channel → broadcaster → SSE pipeline. |
+| 16 | Real-time UI updates from JetStream | All UI data backed by JetStream uses ordered consumers pushing to Datastar SSE — never polling or periodic refresh | The lobby runs consumers for KV (players/games), chat, and archives. The engine runs consumers for playfield cells, events, meta, and countdown. Any change in a JetStream stream or KV bucket is immediately pushed to the UI via the consumer → Updates channel → broadcaster → SSE pipeline. |
+| 17 | Playfield storage granularity | One message per CELL (`playfield.cell.<row>.<col>`), not per row | A cell's last message is its current state. Per-cell CAS shrinks coop contention to same-cell writes only; every publish is a diff of only the changed cells (~4–8 messages per move); the `orderedCellKeys` category order (active → locked → empty) replaces the per-row `bottomFirst` flag with one rule that covers every write path. The CAS/write-through/merge-retry/ordered-consumer architecture is unchanged, just at cell granularity. |

@@ -27,11 +27,12 @@ func lowestCellRow(p *game.Piece) int {
 
 // TestCoopLineClearKeepsOtherPlayersPiece reproduces the bug where a line clear by
 // one player wiped the OTHER player's falling piece and respawned it for them. A
-// clear shifts every piece DOWN; published top-to-bottom, the other player's piece
-// is erased from its old rows before its new (shifted) rows arrive, so its
-// active-cell count momentarily hits zero and that player's lock-in detector fires
-// a spurious lock + respawn. Publishing the clear bottom-first keeps the shifted
-// piece always overlapping itself, so only the clearing player gets a new piece.
+// clear shifts every piece DOWN; if the other player's old positions were vacated
+// before its new (shifted) active cells arrived, its active-cell count would
+// momentarily hit zero and that player's lock-in detector would fire a spurious
+// lock + respawn. The orderedCellKeys publish order (active cells before vacates)
+// keeps the shifted piece always present, so only the clearing player gets a new
+// piece.
 //
 // Seed 5 makes the first piece a horizontal I (1 row tall) for both players, so a
 // single line clear is enough to vanish the other player's piece under the bug.
@@ -110,10 +111,7 @@ func TestCoopLineClearKeepsOtherPlayersPiece(t *testing.T) {
 			cells[c] = game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: 0}
 		}
 	}
-	rd, _ := (game.Row{Cells: cells}).Marshal()
-	if _, err := js.Publish(ctx, config.CoopRowSubject(gameID, bottom), rd); err != nil {
-		t.Fatal(err)
-	}
+	publishCoopRowCells(t, js, gameID, bottom, cells)
 
 	// Wait for a's consumer to apply the pre-filled bottom row.
 	waitUntil(t, 3*time.Second, func() bool {

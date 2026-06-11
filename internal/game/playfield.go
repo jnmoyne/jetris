@@ -5,12 +5,25 @@ import "jetricks/internal/config"
 // TotalRows is kept for backward compatibility but NewPlayfieldWithHeight should be preferred.
 const TotalRows = config.TotalRows
 
-// Playfield is the in-memory representation of the game board.
+// Playfield is the in-memory representation of the game board. LastSeq tracks
+// the stream sequence of the last message applied to each cell, flat row-major
+// (index = row*Width + col — see seqIdx).
 type Playfield struct {
 	Width   int
 	Height  int // total rows (headroom + visible)
 	Rows    []Row
 	LastSeq []uint64
+}
+
+// seqIdx returns the flat LastSeq index of cell (row, col).
+func (pf *Playfield) seqIdx(row, col int) int {
+	return row*pf.Width + col
+}
+
+// CellLastSeq returns the stream sequence of the last message applied to cell
+// (row, col) — the per-subject CAS expectation for that cell.
+func (pf *Playfield) CellLastSeq(row, col int) uint64 {
+	return pf.LastSeq[pf.seqIdx(row, col)]
 }
 
 // NewPlayfield creates an empty playfield with the default TotalRows height.
@@ -39,7 +52,7 @@ func NewPlayfieldWithHeight(width, height int) *Playfield {
 		Width:   width,
 		Height:  height,
 		Rows:    make([]Row, height),
-		LastSeq: make([]uint64, height),
+		LastSeq: make([]uint64, width*height),
 	}
 	for i := range pf.Rows {
 		pf.Rows[i] = NewRow(width)
@@ -47,26 +60,28 @@ func NewPlayfieldWithHeight(width, height int) *Playfield {
 	return pf
 }
 
-// Apply updates the playfield from a decoded row message and is the single
+// Apply updates the playfield from a decoded cell message and is the single
 // reconciliation point for both the consumer echo and the engine's own publish
 // write-through. A message is applied only if its sequence is HIGHER than the
-// row's current LastSeq; a message with the same-or-lower sequence is skipped.
+// cell's current LastSeq; a message with the same-or-lower sequence is skipped.
 //
 // This makes the two sources converge correctly: when the engine commits a
-// write it write-throughs the committed row here with the sequence inferred from
-// the commit ack; the same row is later echoed back by the consumer with the
-// SAME sequence, which is skipped (same-or-lower) — a harmless no-op. Only a
-// strictly higher sequence (e.g. the other player's write in cooperative mode,
-// or a NoCAS line-clear/shrink we did not originate) updates in-memory state.
-func (pf *Playfield) Apply(rowIndex int, row Row, seq uint64) {
-	if rowIndex < 0 || rowIndex >= pf.Height {
+// write it write-throughs the committed cell here with the sequence inferred
+// from the commit ack; the same cell is later echoed back by the consumer with
+// the SAME sequence, which is skipped (same-or-lower) — a harmless no-op. Only
+// a strictly higher sequence (e.g. the other player's write in cooperative
+// mode, or a NoCAS line-clear/shrink we did not originate) updates in-memory
+// state.
+func (pf *Playfield) Apply(row, col int, cell Cell, seq uint64) {
+	if row < 0 || row >= pf.Height || col < 0 || col >= pf.Width {
 		return
 	}
-	if seq > 0 && seq <= pf.LastSeq[rowIndex] {
+	idx := pf.seqIdx(row, col)
+	if seq > 0 && seq <= pf.LastSeq[idx] {
 		return // same-or-lower sequence: already have it, skip
 	}
-	pf.Rows[rowIndex] = row
-	pf.LastSeq[rowIndex] = seq
+	pf.Rows[row].Cells[col] = cell
+	pf.LastSeq[idx] = seq
 }
 
 // ActivePieceForPlayer returns the active piece belonging to the given playerIdx.

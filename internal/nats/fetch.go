@@ -13,50 +13,75 @@ import (
 	"jetricks/internal/config"
 )
 
-// PlayfieldRowMsg holds the fetched state for a single row.
-type PlayfieldRowMsg struct {
+// PlayfieldCellMsg holds the fetched state for a single cell.
+type PlayfieldCellMsg struct {
 	Row     int
+	Col     int
 	Payload []byte
 	Seq     uint64
 }
 
-// FetchPlayfieldState retrieves the current state of the given row subjects for
-// a game in a single round trip. The caller builds the subjects using the
-// mode-appropriate scheme (coop or competitive), so this function stays
-// subject-agnostic. The returned rows are keyed by row index parsed from the
-// subject, so the result is independent of the subject shape.
+// fetchChunkSize bounds the number of subjects per multi-last direct get. The
+// server caps a single request at 1024 responses (413 Too Many Results, no
+// pagination), so large boards are fetched in chunks bounded to a common
+// stream sequence for a consistent snapshot.
+const fetchChunkSize = 512
+
+// FetchPlayfieldState retrieves the current state of the given cell subjects
+// for a game in one round trip (or a few, for boards above fetchChunkSize
+// cells). The caller builds the subjects using the mode-appropriate scheme
+// (coop or competitive), so this function stays subject-agnostic. The returned
+// cells are keyed by the (row, col) parsed from the subject, so the result is
+// independent of the subject shape. Cells that have never been written have no
+// last message and are simply absent from the result (empty cell).
 func FetchPlayfieldState(
 	ctx context.Context,
 	js jetstream.JetStream,
 	gameID string,
 	subjects []string,
-) ([]PlayfieldRowMsg, error) {
-	msgs, err := jetstreamext.GetLastMsgsFor(ctx, js, config.GameStream(gameID), subjects)
-	if err != nil {
-		// If no messages exist yet, return empty
-		if errors.Is(err, jetstreamext.ErrNoMessages) {
-			return nil, nil
+) ([]PlayfieldCellMsg, error) {
+	var opts []jetstreamext.GetLastForOpt
+	if len(subjects) > fetchChunkSize {
+		// Bound every chunk to the stream's current last sequence so the
+		// combined snapshot is consistent at one point in the stream; anything
+		// newer is replayed by the caller's consumer (startSeq = maxSeq+1).
+		stream, err := js.Stream(ctx, config.GameStream(gameID))
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		opts = append(opts, jetstreamext.GetLastMsgsUpToSeq(stream.CachedInfo().State.LastSeq))
 	}
 
-	var result []PlayfieldRowMsg
-	for msg, err := range msgs {
+	var result []PlayfieldCellMsg
+	for start := 0; start < len(subjects); start += fetchChunkSize {
+		end := min(start+fetchChunkSize, len(subjects))
+		msgs, err := jetstreamext.GetLastMsgsFor(ctx, js, config.GameStream(gameID), subjects[start:end], opts...)
 		if err != nil {
+			// If no messages exist yet, the board is empty so far
 			if errors.Is(err, jetstreamext.ErrNoMessages) {
 				continue
 			}
 			return nil, err
 		}
-		row := ParseRowFromSubject(msg.Subject)
-		if row < 0 {
-			continue
+
+		for msg, err := range msgs {
+			if err != nil {
+				if errors.Is(err, jetstreamext.ErrNoMessages) {
+					continue
+				}
+				return nil, err
+			}
+			row, col := ParseCellFromSubject(msg.Subject)
+			if row < 0 {
+				continue
+			}
+			result = append(result, PlayfieldCellMsg{
+				Row:     row,
+				Col:     col,
+				Payload: msg.Data,
+				Seq:     msg.Sequence,
+			})
 		}
-		result = append(result, PlayfieldRowMsg{
-			Row:     row,
-			Payload: msg.Data,
-			Seq:     msg.Sequence,
-		})
 	}
 	return result, nil
 }
@@ -82,15 +107,21 @@ func FetchGameMeta(
 	return meta, msg.Sequence, nil
 }
 
-// ParseRowFromSubject extracts the row number from a row subject string.
-func ParseRowFromSubject(subject string) int {
+// ParseCellFromSubject extracts the (row, col) position from a cell subject
+// string — the last two tokens. Returns (-1, -1) if the subject doesn't end in
+// two numeric tokens.
+func ParseCellFromSubject(subject string) (int, int) {
 	parts := strings.Split(subject, ".")
-	if len(parts) == 0 {
-		return -1
+	if len(parts) < 2 {
+		return -1, -1
 	}
-	n, err := strconv.Atoi(parts[len(parts)-1])
+	row, err := strconv.Atoi(parts[len(parts)-2])
 	if err != nil {
-		return -1
+		return -1, -1
 	}
-	return n
+	col, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return -1, -1
+	}
+	return row, col
 }

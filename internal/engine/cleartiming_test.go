@@ -5,16 +5,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"jetricks/internal/config"
 	"jetricks/internal/game"
 )
 
+// publishCoopRowCells pre-fills one row of the shared coop board by publishing
+// one message per non-empty cell (the playfield is stored one message per cell).
+func publishCoopRowCells(t *testing.T, js jetstream.JetStream, gameID string, row int, cells []game.Cell) {
+	t.Helper()
+	ctx := context.Background()
+	for col, c := range cells {
+		if c == (game.Cell{}) {
+			continue
+		}
+		data, err := c.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := js.Publish(ctx, config.CoopCellSubject(gameID, row, col), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestCoopHardDropClearsCompletingLineImmediately reproduces the bug where a line
 // completed by a HARD DROP was not cleared at that drop, but only at the next
-// piece's lock. Root cause: ProjectHardDrop teleports the piece (old active rows
-// cleared + dest locked rows set as separate messages); the consumer applies them
-// incrementally and fires lock-in (and the CompletedRows check) before the dest
-// rows are applied, so the completion is missed until the next lock-in.
+// piece's lock. Root cause: ProjectHardDrop teleports the piece (old active cells
+// vacated + dest locked cells set as separate messages); the consumer applies them
+// incrementally, and if the vacates were applied first, lock-in (and the
+// CompletedRows check) would fire before the landing cells were applied and the
+// completion missed until the next lock-in. The orderedCellKeys publish order
+// (locked cells before vacates) guarantees the landing cells are in place when
+// lock-in fires.
 func TestCoopHardDropClearsCompletingLineImmediately(t *testing.T) {
 	e, js, gameID := setupEngine(t) // coop, seed 42 -> piece 0 = T, width 10
 	defer e.Stop()
@@ -40,14 +64,7 @@ func TestCoopHardDropClearsCompletingLineImmediately(t *testing.T) {
 			cells[c] = game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: 0}
 		}
 	}
-	rowData, err := (game.Row{Cells: cells}).Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	subj := config.CoopRowSubject(gameID, bottom) // coop: shared board, no player token
-	if _, err := js.Publish(context.Background(), subj, rowData); err != nil {
-		t.Fatal(err)
-	}
+	publishCoopRowCells(t, js, gameID, bottom, cells) // coop: shared board, no player token
 
 	// Wait for the consumer to apply the pre-filled bottom row.
 	waitUntil(t, 3*time.Second, func() bool {

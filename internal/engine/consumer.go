@@ -10,10 +10,10 @@ import (
 	natspkg "jetricks/internal/nats"
 )
 
-// runConsumer drives an ordered consumer over filterSubject, applying every row
-// it delivers to pf. opponentID is set only for an opponent's playfield consumer
-// (competitive mode) and tags the emitted UpdateOpponentField events; it is
-// empty for this engine's own playfield.
+// runConsumer drives an ordered consumer over filterSubject, applying every
+// cell it delivers to pf. opponentID is set only for an opponent's playfield
+// consumer (competitive mode) and tags the emitted UpdateOpponentField events;
+// it is empty for this engine's own playfield.
 func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubject, opponentID string, startSeq uint64, isOpponent bool) {
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, e.js, natspkg.OrderedConsumerConfig{
 		Stream:        config.GameStream(e.gameID),
@@ -35,12 +35,12 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				return
 			}
 			subject := msg.Subject()
-			rowIdx := natspkg.ParseRowFromSubject(subject)
+			rowIdx, colIdx := natspkg.ParseCellFromSubject(subject)
 			if rowIdx < 0 {
 				continue
 			}
 
-			row, err := game.UnmarshalRow(msg.Data())
+			cell, err := game.UnmarshalCell(msg.Data())
 			if err != nil {
 				continue
 			}
@@ -51,7 +51,7 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 			if md != nil {
 				seq = md.Sequence.Stream
 			}
-			pf.Apply(rowIdx, row, seq)
+			pf.Apply(rowIdx, colIdx, cell, seq)
 
 			if isOpponent {
 				e.mu.Unlock()
@@ -78,7 +78,7 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 
 				// Signal CAS notification
 				select {
-				case e.rowUpdated <- struct{}{}:
+				case e.cellUpdated <- struct{}{}:
 				default:
 				}
 
@@ -113,24 +113,22 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		shiftAnchors := e.gameMode == config.ModeCooperative
 		projected := e.playfield.ProjectClearRows(completed, shiftAnchors)
 
-		// Republish ONLY the rows the clear actually changed (a low stack changes
-		// just a few), not the whole visible range — this slashes the per-subject
-		// CAS contention on the shared coop board that was making the merge-retry
-		// exhaust and drop the clear. handleLockIn holds e.mu, so reading
-		// e.playfield.Rows for the diff is safe.
-		changed := changedRows(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
+		// Republish ONLY the cells the clear actually changed (a low stack
+		// changes just a few), not the whole visible range — this slashes the
+		// per-subject CAS contention on the shared coop board that was making
+		// the merge-retry exhaust and drop the clear. handleLockIn holds e.mu,
+		// so reading e.playfield.Rows for the diff is safe.
+		changed := changedCells(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
 		if e.gameMode == config.ModeCooperative {
 			// Shared board: CAS+merge-retry so the shift can't clobber the other
-			// player's mid-flight piece with our snapshot. bottomFirst=true: a clear
-			// shifts pieces DOWN, so consumers must apply the highest (lowest-on-
-			// screen) rows first — applied top-to-bottom, another player's mid-flight
-			// piece is briefly erased from its old rows before its shifted rows
-			// arrive, its active-cell count hits zero, and it fires a spurious lock +
-			// respawn. Bottom-first keeps the shifted piece overlapping itself.
-			e.publishProjectedRowsWithMergeRetry(ctx, changed, nil, true, true)
+			// player's mid-flight piece with our snapshot. orderedCellKeys applies
+			// another player's shifted (active) piece cells before its old
+			// positions are vacated, so its active-cell count never hits zero and
+			// no spurious lock + respawn fires on their engine.
+			e.publishProjectedCellsWithMergeRetry(ctx, changed, nil, true)
 		} else {
 			// Competitive: own board, single writer — authoritative NoCAS.
-			e.publishProjectedRowsNoCAS(ctx, changed, true, true)
+			e.publishProjectedCellsNoCAS(ctx, changed, true)
 		}
 
 		// Update level in cooperative mode
@@ -359,15 +357,15 @@ func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerI
 	// would run it off the top of the board.
 	projected, topOut := e.playfield.ProjectShrink(rowsToAdd, causerIdx, e.playerIdx)
 
-	// Republish only the rows the shift actually changed (diffed under the lock,
-	// reading the live rows), not the whole visible range. Competitive boards are
-	// per-player single-writer, so the shrink is authoritative NoCAS.
-	changed := changedRows(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
+	// Republish only the cells the shift actually changed (diffed under the
+	// lock, reading the live rows), not the whole visible range. Competitive
+	// boards are per-player single-writer, so the shrink is authoritative NoCAS.
+	changed := changedCells(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
 
 	e.mu.Unlock()
 
 	// locked=false: applyOpponentShrink released e.mu above before publishing.
-	e.publishProjectedRowsNoCAS(ctx, changed, false, false)
+	e.publishProjectedCellsNoCAS(ctx, changed, false)
 
 	// Shrink republishes the whole visible range; force a full-board re-render so
 	// no row is left stale if a per-row trigger is dropped (see emitFullBoardRerender).

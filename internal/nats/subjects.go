@@ -6,10 +6,10 @@ import "jetricks/internal/config"
 var (
 	GameStream                  = config.GameStream
 	GameSubjectFilter           = config.GameSubjectFilter
-	CoopRowSubject              = config.CoopRowSubject
-	CoopRowSubjectFilter        = config.CoopRowSubjectFilter
-	CompetitiveRowSubject       = config.CompetitiveRowSubject
-	CompetitiveRowSubjectFilter = config.CompetitiveRowSubjectFilter
+	CoopCellSubject              = config.CoopCellSubject
+	CoopCellSubjectFilter        = config.CoopCellSubjectFilter
+	CompetitiveCellSubject       = config.CompetitiveCellSubject
+	CompetitiveCellSubjectFilter = config.CompetitiveCellSubjectFilter
 	MetaSubject                 = config.MetaSubject
 	RosterSubject               = config.RosterSubject
 	EventsSubject               = config.EventsSubject

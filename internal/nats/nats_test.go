@@ -136,46 +136,105 @@ func TestFetchGameMeta(t *testing.T) {
 	}
 }
 
-func TestPublishAndFetchRows(t *testing.T) {
+func TestPublishAndFetchCells(t *testing.T) {
 	js := setupJS(t)
 	ctx := context.Background()
-	gameID := "test-rows"
+	gameID := "test-cells"
 	playerID := "test-player"
 	if err := EnsureGameStream(ctx, js, gameID); err != nil {
 		t.Fatal(err)
 	}
 
-	// Publish a few rows individually
+	// Publish a few cells individually
 	for i := 0; i < 3; i++ {
-		row := game.NewRow(config.StandardWidth)
-		row.Cells[0] = game.Cell{Occupied: true, PieceType: game.PieceT}
-		data, _ := row.Marshal()
-		_, err := PublishRowsAtomicallyNoCAS(ctx, js, []RowUpdate{{
-			Subject: config.CompetitiveRowSubject(gameID, playerID, i),
+		data, _ := game.Cell{Occupied: true, PieceType: game.PieceT}.Marshal()
+		_, err := PublishCellsAtomicallyNoCAS(ctx, js, []CellUpdate{{
+			Subject: config.CompetitiveCellSubject(gameID, playerID, i, 4),
 			Payload: data,
 		}})
 		if err != nil {
-			t.Fatalf("row %d: %v", i, err)
+			t.Fatalf("cell %d: %v", i, err)
 		}
 	}
 
-	// Fetch playfield state
+	// Fetch playfield state — include a never-written subject, which should
+	// simply be absent from the result.
 	subjects := []string{
-		config.CompetitiveRowSubject(gameID, playerID, 0),
-		config.CompetitiveRowSubject(gameID, playerID, 1),
-		config.CompetitiveRowSubject(gameID, playerID, 2),
+		config.CompetitiveCellSubject(gameID, playerID, 0, 4),
+		config.CompetitiveCellSubject(gameID, playerID, 1, 4),
+		config.CompetitiveCellSubject(gameID, playerID, 2, 4),
+		config.CompetitiveCellSubject(gameID, playerID, 3, 4),
 	}
-	rows, err := FetchPlayfieldState(ctx, js, gameID, subjects)
+	cells, err := FetchPlayfieldState(ctx, js, gameID, subjects)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 3 {
-		t.Fatalf("expected 3 rows, got %d", len(rows))
+	if len(cells) != 3 {
+		t.Fatalf("expected 3 cells, got %d", len(cells))
 	}
-	for _, r := range rows {
-		if r.Seq == 0 {
+	for _, c := range cells {
+		if c.Seq == 0 {
 			t.Error("expected non-zero sequence")
 		}
+		if c.Col != 4 {
+			t.Errorf("expected col 4, got %d", c.Col)
+		}
+	}
+}
+
+func TestFetchPlayfieldStateChunked(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	gameID := "test-chunked"
+	if err := EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A 20x30 board = 600 subjects, above fetchChunkSize, so the fetch is
+	// split into bounded chunks. Write one cell in each chunk's range.
+	const width, height = 20, 30
+	occupied := map[[2]int]bool{{0, 0}: true, {15, 5}: true, {29, 19}: true}
+	for pos := range occupied {
+		data, _ := game.Cell{Occupied: true, PieceType: game.PieceL}.Marshal()
+		if _, err := PublishCellsAtomicallyNoCAS(ctx, js, []CellUpdate{{
+			Subject: config.CoopCellSubject(gameID, pos[0], pos[1]),
+			Payload: data,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	subjects := make([]string, 0, width*height)
+	for r := 0; r < height; r++ {
+		for c := 0; c < width; c++ {
+			subjects = append(subjects, config.CoopCellSubject(gameID, r, c))
+		}
+	}
+	cells, err := FetchPlayfieldState(ctx, js, gameID, subjects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) != len(occupied) {
+		t.Fatalf("expected %d cells, got %d", len(occupied), len(cells))
+	}
+	for _, c := range cells {
+		if !occupied[[2]int{c.Row, c.Col}] {
+			t.Errorf("unexpected cell (%d,%d)", c.Row, c.Col)
+		}
+	}
+}
+
+func TestParseCellFromSubject(t *testing.T) {
+	row, col := ParseCellFromSubject(config.CoopCellSubject("g1", 12, 7))
+	if row != 12 || col != 7 {
+		t.Errorf("coop: got (%d,%d), want (12,7)", row, col)
+	}
+	row, col = ParseCellFromSubject(config.CompetitiveCellSubject("g1", "p1", 3, 0))
+	if row != 3 || col != 0 {
+		t.Errorf("competitive: got (%d,%d), want (3,0)", row, col)
+	}
+	if row, col = ParseCellFromSubject("jetricks.game.g1.meta"); row != -1 || col != -1 {
+		t.Errorf("non-cell subject: got (%d,%d), want (-1,-1)", row, col)
 	}
 }
 
@@ -200,9 +259,8 @@ func TestOrderedConsumer(t *testing.T) {
 	defer consCancel()
 
 	// Publish a message
-	row := game.NewRow(config.StandardWidth)
-	data, _ := row.Marshal()
-	_, err = js.Publish(ctx, config.CompetitiveRowSubject(gameID, "test-player", 0), data)
+	data, _ := game.Cell{Occupied: true, PieceType: game.PieceT}.Marshal()
+	_, err = js.Publish(ctx, config.CompetitiveCellSubject(gameID, "test-player", 0, 0), data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +271,7 @@ func TestOrderedConsumer(t *testing.T) {
 		if msg == nil {
 			t.Fatal("received nil message")
 		}
-		if msg.Subject() != config.CompetitiveRowSubject(gameID, "test-player", 0) {
+		if msg.Subject() != config.CompetitiveCellSubject(gameID, "test-player", 0, 0) {
 			t.Errorf("unexpected subject: %s", msg.Subject())
 		}
 	case <-ctx.Done():

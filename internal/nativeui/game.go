@@ -96,27 +96,43 @@ func (a *App) layoutGame(gtx C) D {
 		a.invalidate() // keep animating the countdown pop until it settles
 	}
 
-	return layout.Flex{}.Layout(gtx,
-		layout.Rigid(func(gtx C) D {
-			gtx.Constraints.Max.X = gtx.Dp(240)
-			gtx.Constraints.Min.X = gtx.Dp(240)
-			return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-				return a.gameHUD(gtx, eng, view, mode, gmode)
-			})
-		}),
-		layout.Flexed(1, func(gtx C) D {
-			return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-				return a.gameBoardArea(gtx, eng, view, mode, gmode)
-			})
-		}),
-		layout.Rigid(func(gtx C) D {
-			if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
-				return D{}
-			}
-			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
-				return a.opponentColumn(gtx, eng)
-			})
-		}),
+	// Mirror the checkbox into the locked flag that gates the consumer-side
+	// message tap (recordStreamMsg runs on the engine's consumer goroutines).
+	showMsgs := a.showMsgs.Value
+	a.mu.Lock()
+	a.msgShow = showMsgs
+	a.mu.Unlock()
+
+	content := func(gtx C) D {
+		return layout.Flex{}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				gtx.Constraints.Max.X = gtx.Dp(240)
+				gtx.Constraints.Min.X = gtx.Dp(240)
+				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+					return a.gameHUD(gtx, eng, view, mode, gmode)
+				})
+			}),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+					return a.gameBoardArea(gtx, eng, view, mode, gmode)
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
+					return D{}
+				}
+				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+					return a.opponentColumn(gtx, eng)
+				})
+			}),
+		)
+	}
+	if !showMsgs {
+		return content(gtx)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Flexed(1, content),
+		layout.Rigid(a.natsMsgPanel),
 	)
 }
 
@@ -161,6 +177,13 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 
 	children = append(children,
+		layout.Rigid(spacer(14)),
+		layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.showMsgs, "Show NATS messages")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
 		layout.Rigid(spacer(18)),
 		layout.Rigid(func(gtx C) D {
 			b := material.Button(a.th, &a.backBtn, "Back to Lobby")

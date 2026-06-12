@@ -472,3 +472,23 @@ playfield shows that queue, oldest first (e.g. `← ← CW HD`) — each entry
 appears when the input is accepted into the buffer and disappears the moment its own
 batch publish starts. The line is empty (and invisible) at low latency, where moves are
 dequeued as fast as they are typed; spectators have no input and never show it.
+
+### NATS message panel
+
+A **"Show NATS messages"** checkbox sits in the left HUD column while playing or
+spectating. When checked, a fixed-height monospace strip appears across the bottom of
+the window showing the live tail (last 200) of the messages the engine's game-stream
+consumers deliver — the exact messages that update the in-memory playfields and drive
+the UI: own/opponent/team cell echoes, game events, meta transitions, countdown ticks,
+and roster entries. Each line prints the message's **JetStream stream timestamp** (taken
+from the received message's metadata, not the local arrival time), its **subject**, and
+its raw **JSON payload**, syntax-colored (keys blue, string values green, numbers gold,
+`true`/`false`/`null` orange). The list sticks to the newest message. Messages are only
+collected while the box is checked, and the log is cleared when entering or leaving a
+game.
+
+### Lobby branding
+
+The lobby screen carries a banner across its top — the nats.io "N" logo flanking
+"Jetricks: peer to peer and made with NATS.io" — above the player/chat and
+games/history columns.

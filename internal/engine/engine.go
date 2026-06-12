@@ -70,6 +70,12 @@ type Engine struct {
 
 	Updates        chan EngineUpdate
 	OnGameFinished func() // called after game transitions to finished (for archiving)
+	// OnStreamMsg, when set before Start, receives every message delivered by
+	// this engine's game-stream consumers (own/opponent/team cells, events,
+	// meta, countdown, roster): the message's JetStream stream timestamp, its
+	// subject and its raw payload. Drives the UI's "Show NATS messages" panel.
+	// It is called from the consumer goroutines and must not block.
+	OnStreamMsg func(ts time.Time, subject string, payload []byte)
 
 	js          jetstream.JetStream
 	ctx         context.Context
@@ -607,6 +613,20 @@ func (e *Engine) emitUpdate(u EngineUpdate) {
 	case e.Updates <- u:
 	default:
 	}
+}
+
+// tapMsg forwards one delivered game-stream message to the OnStreamMsg hook.
+// Consumers call it before taking e.mu, so the hook never runs under the
+// engine lock.
+func (e *Engine) tapMsg(msg jetstream.Msg) {
+	if e.OnStreamMsg == nil {
+		return
+	}
+	var ts time.Time
+	if md, err := msg.Metadata(); err == nil {
+		ts = md.Timestamp
+	}
+	e.OnStreamMsg(ts, msg.Subject(), msg.Data())
 }
 
 // emitFullBoardRerender triggers a re-render of EVERY visible row from the
@@ -1196,6 +1216,7 @@ func (e *Engine) runRosterConsumer(ctx context.Context) {
 			if !ok {
 				return
 			}
+			e.tapMsg(msg)
 			parts := strings.Split(msg.Subject(), ".")
 			rosterPlayerID := parts[len(parts)-1]
 			if rosterPlayerID == e.playerID {

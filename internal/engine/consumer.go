@@ -36,6 +36,7 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 			if !ok {
 				return
 			}
+			e.tapMsg(msg)
 			subject := msg.Subject()
 			rowIdx, colIdx := natspkg.ParseCellFromSubject(subject)
 			if rowIdx < 0 {
@@ -242,6 +243,7 @@ func (e *Engine) runCountdownConsumer(ctx context.Context) {
 			if !ok {
 				return
 			}
+			e.tapMsg(msg)
 			var cd struct {
 				Seconds int `json:"seconds"`
 			}
@@ -272,6 +274,7 @@ func (e *Engine) runMetaConsumer(ctx context.Context) {
 			if !ok {
 				return
 			}
+			e.tapMsg(msg)
 			var meta config.GameMeta
 			if err := json.Unmarshal(msg.Data(), &meta); err != nil {
 				continue
@@ -310,6 +313,7 @@ func (e *Engine) runEventsConsumer(ctx context.Context) {
 			if !ok {
 				return
 			}
+			e.tapMsg(msg)
 			var ev GameEvent
 			if err := json.Unmarshal(msg.Data(), &ev); err != nil {
 				continue

@@ -951,6 +951,7 @@ type Engine struct {
     // Channels for outbound events to the UI layer
     Updates        chan EngineUpdate
     OnGameFinished func() // called after the game transitions to finished (wired to archive.ArchiveAndCleanup)
+    OnStreamMsg    func(ts time.Time, subject string, payload []byte) // optional tap on every game-stream message delivered by this engine's consumers (set before Start; drives the UI's "Show NATS messages" panel)
 
     // internal
     js          jetstream.JetStream
@@ -1285,6 +1286,19 @@ The HUD readout is color-coded by `rttColor` (`internal/nativeui/game.go`): norm
 color up to 75 ms, a yellow→orange blend (`colWarn`→`colOrange`, `lerpColor`) from 75 ms
 to 150 ms, and red (`colErr`) above 150 ms.
 
+**Stream message tap (`OnStreamMsg`).** Every game-stream consumer — own/opponent/team
+cells (`runConsumer`), events, meta, countdown, and the competitive roster consumer —
+calls `e.tapMsg(msg)` on each delivered message before taking `e.mu`. If the optional
+`OnStreamMsg` hook is set (before `Start`, like `OnGameFinished`), `tapMsg` passes it the
+message's JetStream **stream timestamp** (`msg.Metadata().Timestamp`), subject, and raw
+payload. The hook runs on the consumer goroutines and must not block. The native UI wires
+it to `App.recordStreamMsg`, which appends to a capped (200-entry) log under `a.mu` —
+gated on the `msgShow` flag mirrored each frame from the "Show NATS messages" checkbox,
+so an unchecked panel costs one flag check per message — and the game screen renders the
+tail in a fixed-height monospace strip across the bottom of the window (`natslog.go`:
+timestamp · subject · payload, with the JSON payload syntax-colored by `jsonSpans`). The
+log is cleared on `startGameScreen`/`returnToLobby`.
+
 **Game events published to `jetricks.game.<id>.events`:**
 
 ```go
@@ -1579,7 +1593,7 @@ All transitions go through CAS on `jetricks.game.<id>.meta`. If a CAS fails duri
 
 Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logic. It depends on `engine` and `lobby` (one-way) and communicates with them exclusively through their `Updates` channels and exported method calls — it is never imported by the business logic.
 
-**`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
+**`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — and the lobby branding banner), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
 
 Two small packages support the front end:
 - **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math) for the native UI. Exposes a single decision function, `CellStyle`, plus the RGBA surface (`CellAppearance`, `PlayerColorRGBA`, `PlayerColorHex`), so every render path (own board, opponent boards, spectator view) draws from one visual model.

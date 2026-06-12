@@ -116,6 +116,12 @@ type App struct {
 	// chat log (written by pumpLobby)
 	chatLog []lobby.ChatMessage
 
+	// NATS message panel: msgShow mirrors the "Show NATS messages" checkbox
+	// each frame and gates collection; msgLog holds the tail of game-stream
+	// messages tapped via engine.OnStreamMsg (written by consumer goroutines).
+	msgShow bool
+	msgLog  []streamMsg
+
 	// --- UI-goroutine-only widgets ---
 	loginEd      widget.Editor
 	loginBtn     widget.Clickable
@@ -136,6 +142,8 @@ type App struct {
 
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable
+	showMsgs widget.Bool // "Show NATS messages" checkbox
+	msgList  widget.List
 	boardTag int // address used as the key-input focus tag
 }
 
@@ -160,6 +168,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.gameList.Axis = layout.Vertical
 	a.archiveLst.Axis = layout.Vertical
 	a.chatList.Axis = layout.Vertical
+	a.msgList.Axis = layout.Vertical
+	a.msgList.ScrollToEnd = true
 	return a
 }
 

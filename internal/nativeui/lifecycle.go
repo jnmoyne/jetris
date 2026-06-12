@@ -126,6 +126,7 @@ func (a *App) joinGame(gameID string, team int) {
 	}
 
 	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), opponentID, g.Mode, engine.ModePlayer, res.PlayerIdx, res.Team, res.TeamSlot)
+	e.OnStreamMsg = a.recordStreamMsg // feeds the "Show NATS messages" panel
 	engCtx, engCancel := context.WithCancel(a.ctx)
 	e.OnGameFinished = func() {
 		// Archive/clean up the finished game's stream + KV. Do NOT return to the
@@ -162,6 +163,7 @@ func (a *App) spectateGame(gameID string) {
 		return
 	}
 	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), "", g.Mode, engine.ModeSpectator, 0, 0, 0)
+	e.OnStreamMsg = a.recordStreamMsg // feeds the "Show NATS messages" panel
 	engCtx, engCancel := context.WithCancel(a.ctx)
 
 	a.startGameScreen(e, engCtx, engCancel, g.Players, string(g.Status))
@@ -187,6 +189,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.won = false
 	a.myReady = false
 	a.flash = map[[2]int]time.Time{}
+	a.msgLog = nil
 	a.screen = screenGame
 	a.mu.Unlock()
 }
@@ -247,6 +250,7 @@ func (a *App) returnToLobby() {
 	a.rtt = 0
 	a.gameStatus = ""
 	a.flash = map[[2]int]time.Time{}
+	a.msgLog = nil
 	if a.lobby != nil {
 		a.screen = screenLobby
 	} else {

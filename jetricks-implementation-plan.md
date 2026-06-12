@@ -1972,13 +1972,32 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   `key.Filter{Focus: tag, …}` each frame and is focused with `key.FocusCmd`; ←/→ move,
   ↓ soft drop, ↑/X rotate CW, Z rotate CCW, Space hard drop.
 - `lifecycle.go` — `initLobby`, create/join/spectate engine wiring, `runCountdown`,
-  `returnToLobby`, `teardown` (wires `engine.OnGameFinished` → `archive.ArchiveAndCleanup`).
+  `returnToLobby`, `teardown` (wires `engine.OnGameFinished` → `archive.ArchiveAndCleanup`,
+  and `engine.OnStreamMsg` → `recordStreamMsg` for the NATS message panel).
+- `natslog.go` — the "Show NATS messages" panel: `recordStreamMsg` (the `OnStreamMsg`
+  hook, capped 200-entry log under `a.mu`, gated on the checkbox mirror `msgShow`),
+  `natsMsgPanel` (fixed-height bottom strip, scroll-to-end list), and `jsonSpans`,
+  a display-only JSON syntax colorizer rendered in the Go Mono face.
+- `brand.go` — the nats.io "N" logo (`nats-icon.png`, embedded via `go:embed`,
+  decoded once) and `lobbyBanner`, the branding strip across the top of the lobby.
 
 **Lobby screen.** Player sidebar, game list (with a "Spectate" button on in-progress
 games), chat (lines plus a message editor), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
 archived games with mode, players, duration, and scores — fetched from the
-`JETRICKS_ARCHIVE` stream on lobby load.
+`JETRICKS_ARCHIVE` stream on lobby load. A centered branding banner spans the top of
+the screen: the nats.io "N" logo flanking "Jetricks: peer to peer and made with
+NATS.io" (the "NATS.io" text in the accent color).
+
+**NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
+messages" checkbox. While checked, a 170 dp monospace strip across the bottom of the
+window lists the tail of the messages delivered by the engine's game-stream consumers
+(cells, events, meta, countdown, roster — tapped via `engine.tapMsg` → `OnStreamMsg`):
+per line, the message's JetStream stream timestamp (`msg.Metadata().Timestamp`,
+formatted `15:04:05.000`), the subject (accent color), and the raw JSON payload
+syntax-colored by `jsonSpans`. Collection happens only while the checkbox is checked
+(the UI mirrors it each frame into the `a.mu`-guarded `msgShow` flag read by the
+consumer-side hook); the log resets on game entry/exit.
 
 **Spectator mode.** The lobby's "Spectate" button creates an engine in `ModeSpectator`
 (no gravity, no moves, no controls). The game screen hides controls and the ready

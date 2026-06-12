@@ -78,16 +78,21 @@ func (a *App) layoutLobby(gtx C) D {
 	}
 
 	// --- render ---
-	return layout.Flex{}.Layout(gtx,
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.lobbyBanner),
 		layout.Flexed(1, func(gtx C) D {
-			return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-				return a.lobbyLeft(gtx, players, chat)
-			})
-		}),
-		layout.Flexed(2, func(gtx C) D {
-			return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-				return a.lobbyRight(gtx, games, lb.Archives(), lb.PlayerName())
-			})
+			return layout.Flex{}.Layout(gtx,
+				layout.Flexed(1, func(gtx C) D {
+					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+						return a.lobbyLeft(gtx, players, chat)
+					})
+				}),
+				layout.Flexed(2, func(gtx C) D {
+					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+						return a.lobbyRight(gtx, games, lb.Archives(), lb.PlayerName())
+					})
+				}),
+			)
 		}),
 	)
 }

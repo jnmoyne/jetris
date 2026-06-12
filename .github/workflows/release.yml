@@ -79,8 +79,10 @@ jobs:
         shell: bash
         run: |
           name="jetricks-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           mkdir "$name"
-          mv jetricks* "$name/"
+          mv "jetricks${ext}" "$name/"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             7z a "${name}.zip" "$name"
           else

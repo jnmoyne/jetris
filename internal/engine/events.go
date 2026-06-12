@@ -18,7 +18,8 @@ const (
 	UpdateCountdown
 	UpdatePlayerEliminated // competitive/teams: a player was eliminated
 	UpdateCASFlash         // a CAS failure flash should be rendered
-	UpdatePing             // a new publish→echo round-trip measurement
+	UpdateRTT              // a new publish→echo round-trip measurement
+	UpdateBufferedMoves    // the buffered-input queue changed (read via Engine.BufferedMoves)
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -28,14 +29,14 @@ type EngineUpdate struct {
 	Score              int
 	Level              int
 	GameStatus         string
-	Countdown          int      // seconds remaining (0 = GO!)
-	Won                bool     // competitive/teams: true if this player('s team) won
-	EliminatedPlayerID string   // competitive/teams: which player was eliminated
-	Team               int      // teams: team of the eliminated player (UpdatePlayerEliminated)
+	Countdown          int           // seconds remaining (0 = GO!)
+	Won                bool          // competitive/teams: true if this player('s team) won
+	EliminatedPlayerID string        // competitive/teams: which player was eliminated
+	Team               int           // teams: team of the eliminated player (UpdatePlayerEliminated)
 	OpponentID         string        // which opponent's board changed (UpdateOpponentField)
 	FlashCells         [][2]int      // cells to flash (UpdateCASFlash)
 	FlashPlayerIdx     int           // player index for flash color
-	Ping               time.Duration // latest publish→echo round trip (UpdatePing)
+	RTT                time.Duration // latest publish→echo round trip (UpdateRTT)
 }
 
 // EventKind identifies the type of game event published to the events subject.

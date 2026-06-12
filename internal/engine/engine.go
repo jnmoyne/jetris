@@ -77,12 +77,17 @@ type Engine struct {
 	moves       chan MoveType
 	cellUpdated chan struct{}
 
-	// Ping measurement (see ping.go): time from initiating a batch publish to
+	// Buffered-moves mirror of the e.moves channel, for the line under the
+	// board: dispatch appends on enqueue, runInput pops when it dequeues.
+	bufferedMu    sync.Mutex
+	bufferedMoves []MoveType
+
+	// RTT measurement (see rtt.go): time from initiating a batch publish to
 	// the consumer delivering the batch's first message back.
-	pingMu      sync.Mutex
-	pingPending map[uint64]time.Time // batch first-seq → publish start time
-	lastEchoSeq uint64               // highest own-board seq seen by the consumer; guarded by pingMu
-	pingNanos   atomic.Int64         // latest measurement, for Ping()
+	rttMu       sync.Mutex
+	rttPending  map[uint64]time.Time // batch first-seq → publish start time
+	lastEchoSeq uint64               // highest own-board seq seen by the consumer; guarded by rttMu
+	rttNanos    atomic.Int64         // latest measurement, for RTT()
 }
 
 // New creates a new engine instance. Call Start() to begin. teamIdx/teamSlot
@@ -112,7 +117,7 @@ func New(
 		cellUpdated:        make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
 		eliminatedTeam:     make(map[string]int),
-		pingPending:        make(map[uint64]time.Time),
+		rttPending:         make(map[uint64]time.Time),
 	}
 	e.setMode(mode)
 	return e
@@ -420,8 +425,37 @@ func (e *Engine) dispatch(m MoveType) {
 	}
 	select {
 	case e.moves <- m:
+		// Mirror the enqueue in the buffered-moves list shown under the board
+		// (visible when a high RTT makes inputs queue behind an in-flight
+		// publish). dispatch is the only producer and runInput the only
+		// consumer of e.moves, so this FIFO mirror stays in sync with the
+		// channel: appended here, popped by popBufferedMove when runInput
+		// dequeues the move and its publish begins.
+		e.bufferedMu.Lock()
+		e.bufferedMoves = append(e.bufferedMoves, m)
+		e.bufferedMu.Unlock()
+		e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
 	default:
 	}
+}
+
+// popBufferedMove removes the oldest entry of the buffered-moves mirror; called
+// by runInput the moment it dequeues a move (its batch publish is starting).
+func (e *Engine) popBufferedMove() {
+	e.bufferedMu.Lock()
+	if len(e.bufferedMoves) > 0 {
+		e.bufferedMoves = e.bufferedMoves[1:]
+	}
+	e.bufferedMu.Unlock()
+	e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
+}
+
+// BufferedMoves returns the moves currently queued behind the in-flight
+// publish, oldest first — the dispatch-side mirror of the e.moves buffer.
+func (e *Engine) BufferedMoves() []MoveType {
+	e.bufferedMu.Lock()
+	defer e.bufferedMu.Unlock()
+	return append([]MoveType(nil), e.bufferedMoves...)
 }
 
 // sharedBoard reports whether this engine's own playfield is shared with other
@@ -829,7 +863,7 @@ func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellP
 		// inferred per-subject sequences) so the next move/gravity tick is
 		// projected from — and CAS-checked against — up-to-date state without
 		// waiting for the consumer echo. keys is in the same order as updates.
-		e.trackPing(t0, seq, len(updates))
+		e.trackRTT(t0, seq, len(updates))
 		e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
@@ -917,7 +951,7 @@ func (e *Engine) publishProjectedCellsNoCAS(ctx context.Context, cells map[game.
 			log.Printf("publish batch (no-cas): %v", err)
 			return
 		}
-		e.trackPing(t0, seq, len(updates))
+		e.trackRTT(t0, seq, len(updates))
 		e.applyPublishedCells(chunk, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
 	}
 }
@@ -992,7 +1026,7 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
 	if err == nil {
 		// First-attempt commit: write through the cells we published.
-		e.trackPing(t0, seq, len(updates))
+		e.trackRTT(t0, seq, len(updates))
 		e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
 		return
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
@@ -1031,7 +1065,7 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 		seq, err := natspkg.PublishMoveAtomically(ctx, e.js, merged)
 		if err == nil {
 			// Retry commit: write through the cells that actually committed.
-			e.trackPing(t0, seq, len(merged))
+			e.trackRTT(t0, seq, len(merged))
 			e.applyPublishedCells(mergedKeys, func(k game.CellPos) game.Cell { return mergedCells[k] }, seq, locked)
 			return
 		}

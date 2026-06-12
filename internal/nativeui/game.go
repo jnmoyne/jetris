@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"sort"
+	"strings"
 	"time"
 
 	"gioui.org/font"
@@ -25,7 +26,7 @@ import (
 // layout never reads fields the pump goroutine is writing.
 type gameView struct {
 	score, level         int
-	ping                 time.Duration
+	rtt                  time.Duration
 	status               string
 	countdown            int
 	countdownAt          time.Time
@@ -50,7 +51,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 	return gameView{
 		score:       a.score,
 		level:       a.level,
-		ping:        a.ping,
+		rtt:         a.rtt,
 		status:      a.gameStatus,
 		countdown:   a.countdown,
 		countdownAt: a.countdownAt,
@@ -149,7 +150,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 
 	if mode == engine.ModePlayer {
-		children = append(children, layout.Rigid(a.hudStatText("PING", formatPing(view.ping))))
+		children = append(children, layout.Rigid(a.hudStatColored("RTT", formatRTT(view.rtt), rttColor(view.rtt))))
 	}
 
 	if mode == engine.ModePlayer && !started && !view.gameOver {
@@ -254,7 +255,21 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	}
 	cell := gtx.Dp(unit.Dp(22))
 	board := func(gtx C) D {
-		return layout.Center.Layout(gtx, a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now))
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now)),
+				layout.Rigid(func(gtx C) D {
+					if mode != engine.ModePlayer {
+						return D{}
+					}
+					// Inputs queued behind the in-flight batch publish (visible
+					// on a high-RTT server); the line empties as each buffered
+					// move's own publish starts.
+					return layout.Inset{Top: unit.Dp(4)}.Layout(gtx,
+						a.body(bufferedMovesLine(eng.BufferedMoves()), colMuted))
+				}),
+			)
+		})
 	}
 	switch {
 	case view.gameOver:
@@ -446,6 +461,10 @@ func (a *App) hudStat(label string, val int) layout.Widget {
 }
 
 func (a *App) hudStatText(label, val string) layout.Widget {
+	return a.hudStatColored(label, val, colFg)
+}
+
+func (a *App) hudStatColored(label, val string, valCol colorN) layout.Widget {
 	return func(gtx C) D {
 		return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
@@ -456,7 +475,7 @@ func (a *App) hudStatText(label, val string) layout.Widget {
 				}),
 				layout.Rigid(func(gtx C) D {
 					l := material.H6(a.th, val)
-					l.Color = colFg
+					l.Color = valCol
 					return l.Layout(gtx)
 				}),
 			)
@@ -464,9 +483,9 @@ func (a *App) hudStatText(label, val string) layout.Widget {
 	}
 }
 
-// formatPing renders the publish→echo round trip for the HUD: sub-10ms with a
+// formatRTT renders the publish→echo round trip for the HUD: sub-10ms with a
 // decimal, whole milliseconds above, an em dash before the first measurement.
-func formatPing(d time.Duration) string {
+func formatRTT(d time.Duration) string {
 	if d <= 0 {
 		return "—"
 	}
@@ -475,6 +494,60 @@ func formatPing(d time.Duration) string {
 		return fmt.Sprintf("%.1f ms", ms)
 	}
 	return fmt.Sprintf("%.0f ms", ms)
+}
+
+// bufferedMovesLine renders the engine's queued-input mirror as the small
+// status line under the board: empty while nothing is waiting, otherwise
+// "← ← CW HD" oldest first.
+func bufferedMovesLine(moves []engine.MoveType) string {
+	parts := make([]string, len(moves))
+	for i, m := range moves {
+		parts[i] = moveSymbol(m)
+	}
+	return strings.Join(parts, " ")
+}
+
+// moveSymbol is the compact display token for one buffered move.
+func moveSymbol(m engine.MoveType) string {
+	switch m {
+	case engine.MoveLeft:
+		return "←"
+	case engine.MoveRight:
+		return "→"
+	case engine.MoveDown:
+		return "↓"
+	case engine.RotateCW:
+		return "CW"
+	case engine.RotateCCW:
+		return "CCW"
+	case engine.MoveHardDrop:
+		return "HD"
+	default:
+		return "?"
+	}
+}
+
+// rttColor maps the round trip to the HUD readout color: the normal text
+// color up to 75 ms, then a blend that starts yellow and reaches orange at
+// 150 ms, and red beyond that.
+func rttColor(d time.Duration) colorN {
+	ms := float64(d) / float64(time.Millisecond)
+	switch {
+	case d <= 0 || ms <= 75:
+		return colFg
+	case ms >= 150:
+		return colErr
+	default:
+		return lerpColor(colWarn, colOrange, (ms-75)/75)
+	}
+}
+
+// lerpColor blends linearly from a (t=0) to b (t=1).
+func lerpColor(a, b colorN, t float64) colorN {
+	lerp := func(x, y uint8) uint8 {
+		return uint8(float64(x) + (float64(y)-float64(x))*t)
+	}
+	return colorN{R: lerp(a.R, b.R), G: lerp(a.G, b.G), B: lerp(a.B, b.B), A: lerp(a.A, b.A)}
 }
 
 // swatch draws a size×size dp filled square in c.

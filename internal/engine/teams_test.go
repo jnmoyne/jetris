@@ -47,7 +47,7 @@ func setupTeamsGame(t *testing.T) (js jetstream.JetStream, gameID string, engine
 	}
 
 	specs := []struct {
-		id             string
+		id              string
 		idx, team, slot int
 	}{
 		{"p0", 0, 0, 0},

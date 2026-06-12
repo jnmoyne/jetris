@@ -83,9 +83,9 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				e.hadActivePiece = hasActive
 				e.mu.Unlock()
 
-				// Complete a pending ping measurement if this is the first
-				// message of a batch this engine published (see ping.go).
-				e.notePingEcho(seq)
+				// Complete a pending RTT measurement if this is the first
+				// message of a batch this engine published (see rtt.go).
+				e.noteRTTEcho(seq)
 
 				// Signal CAS notification
 				select {

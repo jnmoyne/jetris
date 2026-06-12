@@ -447,15 +447,28 @@ emits the affected cells on the local `Updates` channel only (never published to
 other players see nothing), and the UI draws a one-shot ~600 ms rainbow **border** on
 those cells in Gio.
 
-### Ping display
+### RTT display
 
-While playing, the HUD shows a continuously updating **PING** readout: the time between
+While playing, the HUD shows a continuously updating **RTT** readout: the time between
 the moment the engine initiates a batch publish commit and the moment its own ordered
 consumer delivers the **first message of that batch** back. Every visible board change
 travels this write→commit→echo loop, so the number is the real latency the player
 experiences, not an artificial probe. Each successful batch publish (move, gravity tick,
-spawn, lock, clear) produces a new measurement, emitted as an `UpdatePing` on the local
+spawn, lock, clear) produces a new measurement, emitted as an `UpdateRTT` on the local
 `Updates` channel — so the readout refreshes at least once per gravity tick and on every
 input. It shows an em dash until the first measurement completes, sub-10 ms values with
 one decimal, and whole milliseconds above. Spectators publish nothing and therefore have
-no ping readout.
+no RTT readout.
+
+The readout is color-coded by latency: the normal text color up to 75 ms, then a warning
+blend that starts yellow at 75 ms and reaches orange at 150 ms, and red above 150 ms.
+
+### Buffered moves line
+
+Player inputs are serialized: each move's batch publish blocks on its commit ack before
+the next move is dequeued, so on a high-RTT server inputs typed during an in-flight
+publish wait in the engine's move buffer. A small muted line directly below the
+playfield shows that queue, oldest first (e.g. `← ← CW HD`) — each entry
+appears when the input is accepted into the buffer and disappears the moment its own
+batch publish starts. The line is empty (and invisible) at low latency, where moves are
+dequeued as fast as they are typed; spectators have no input and never show it.

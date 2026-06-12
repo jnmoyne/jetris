@@ -1015,6 +1015,14 @@ result without the lock while the consumer and write-through keep mutating the
 live playfield. Player input is serialized and buffered on the `e.moves` channel:
 `runInput` processes one at a time and each publish blocks on its commit ack
 before the next is dequeued, so a player never has two input batches in flight.
+The engine mirrors that buffer in a `bufferedMu`-guarded FIFO (`bufferedMoves`):
+`dispatch` appends on a successful enqueue, `runInput` pops (`popBufferedMove`)
+the moment it dequeues a move (its batch publish is starting), and
+`Engine.BufferedMoves()` returns a copy for the UI, which draws the queued moves
+as a small muted line under the player's board (`bufferedMovesLine` in
+`internal/nativeui/game.go`, e.g. `← ← CW HD`) — populated only when a
+high RTT makes inputs queue behind the in-flight publish. `UpdateBufferedMoves`
+on the `Updates` channel triggers the redraw.
 
 Validation (e.g. `CanPlace`) reads from `e.playfield`, which the write-through
 keeps current the moment each publish commits. Two rapid inputs (or a gravity tick
@@ -1202,7 +1210,7 @@ const (
     UpdateCountdown
     UpdatePlayerEliminated // competitive: a player was eliminated
     UpdateCASFlash         // a CAS failure flash should be rendered
-    UpdatePing             // a new publish→echo round-trip measurement
+    UpdateRTT             // a new publish→echo round-trip measurement
 )
 
 type EngineUpdate struct {
@@ -1218,7 +1226,7 @@ type EngineUpdate struct {
     FlashCells         [][2]int // cells to flash (UpdateCASFlash)
     FlashPlayerIdx     int      // player index for flash color
     Team               int      // teams: team of the eliminated player (UpdatePlayerEliminated)
-    Ping               time.Duration // latest publish→echo round trip (UpdatePing)
+    RTT               time.Duration // latest publish→echo round trip (UpdateRTT)
 }
 
 type EventKind string
@@ -1558,29 +1566,31 @@ forces it, 0..n rows), and returns a `topOut` flag. The cells the shift actually
 and vacates last, so the piece never transiently vanishes — followed by a full-board re-render.
 When `topOut` is true — the piece was squeezed off the top — it calls `handleTopOut`.
 
-#### `ping.go` — continuous publish→echo latency measurement
+#### `rtt.go` — continuous publish→echo latency measurement
 
-While playing, the HUD shows a continuously updating **PING**: the time from initiating
+While playing, the HUD shows a continuously updating **RTT**: the time from initiating
 a batch publish commit to the own-board ordered consumer delivering that batch's **first
 message** back (the loop every visible board change travels). Implementation:
 
-- `trackPing(t0, commitSeq, n)` — called by all three publish helpers after a successful
+- `trackRTT(t0, commitSeq, n)` — called by all three publish helpers after a successful
   commit, with `t0` captured immediately before the publish call (each merge-retry
   attempt and each NoCAS chunk measures independently). The batch's first message has
-  sequence `commitSeq-(N-1)`; `t0` is registered under it in `pingPending`.
-- `notePingEcho(seq)` — called by the own-board consumer for every delivered message;
-  a match completes the measurement, stores it (exposed via `Ping() time.Duration`) and
-  emits `UpdatePing` on the `Updates` channel.
-- Race closure: the echo can arrive before `trackPing` runs (ack and delivery race on
+  sequence `commitSeq-(N-1)`; `t0` is registered under it in `rttPending`.
+- `noteRTTEcho(seq)` — called by the own-board consumer for every delivered message;
+  a match completes the measurement, stores it (exposed via `RTT() time.Duration`) and
+  emits `UpdateRTT` on the `Updates` channel.
+- Race closure: the echo can arrive before `trackRTT` runs (ack and delivery race on
   the same connection). `lastEchoSeq` — the consumer's high-water mark, valid because
-  the ordered consumer delivers strictly by stream sequence, maintained under `pingMu` —
-  lets `trackPing` complete the measurement immediately in that case. Stale pending
+  the ordered consumer delivers strictly by stream sequence, maintained under `rttMu` —
+  lets `trackRTT` complete the measurement immediately in that case. Stale pending
   entries are pruned after 10 s.
-- UI: the HUD adds a `PING` stat (`formatPing`: em dash before the first
+- UI: the HUD adds a `RTT` stat (`formatRTT`: em dash before the first
   measurement, one decimal under 10 ms, whole ms above; reset on game enter/leave).
+  The value is color-coded by `rttColor`: normal text color ≤ 75 ms, a yellow→orange
+  blend from 75 ms to 150 ms (`colWarn`→`colOrange` via `lerpColor`), red above 150 ms.
   Spectators never publish, so their readout stays an em dash.
-- Tests: `ping_test.go` — a live engine measures a positive ping after a move and drains
-  `pingPending`; the echo-beats-ack race path is covered directly.
+- Tests: `rtt_test.go` — a live engine measures a positive RTT after a move and drains
+  `rttPending`; the echo-beats-ack race path is covered directly.
 
 #### `move.go` — input + gravity loop
 

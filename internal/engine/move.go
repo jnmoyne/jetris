@@ -23,6 +23,9 @@ func (e *Engine) runInput(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case move := <-e.moves:
+			// The move leaves the buffer the moment its processing (and batch
+			// publish) starts — keep the under-board buffered line in sync.
+			e.popBufferedMove()
 			if e.getMode() != ModePlayer {
 				continue
 			}

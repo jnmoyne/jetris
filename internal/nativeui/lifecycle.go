@@ -180,7 +180,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.readyPlayers = players
 	a.score = 0
 	a.level = 0
-	a.ping = 0
+	a.rtt = 0
 	a.gameStatus = status
 	a.countdown = -1
 	a.gameOver = false
@@ -244,7 +244,7 @@ func (a *App) returnToLobby() {
 	a.countdown = -1
 	a.score = 0
 	a.level = 0
-	a.ping = 0
+	a.rtt = 0
 	a.gameStatus = ""
 	a.flash = map[[2]int]time.Time{}
 	if a.lobby != nil {

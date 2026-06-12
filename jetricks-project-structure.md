@@ -62,7 +62,7 @@ jetricks/
 │   │   ├── engine.go
 │   │   ├── move.go
 │   │   ├── consumer.go
-│   │   ├── ping.go
+│   │   ├── rtt.go
 │   │   └── events.go
 │   ├── lobby/
 │   │   ├── lobby.go
@@ -1235,7 +1235,7 @@ const (
     UpdateCountdown                           // pre-game countdown tick
     UpdatePlayerEliminated                    // competitive/teams: a player was eliminated
     UpdateCASFlash                            // a CAS-failure flash should be rendered
-    UpdatePing                                // a new publish→echo round-trip measurement
+    UpdateRTT                                // a new publish→echo round-trip measurement
 )
 
 type EngineUpdate struct {
@@ -1251,35 +1251,39 @@ type EngineUpdate struct {
     OpponentID         string   // for UpdateOpponentField/UpdateOpponentShrink: which opponent (teams: TeamBoardKey)
     FlashCells         [][2]int // for UpdateCASFlash: cells to flash
     FlashPlayerIdx     int      // for UpdateCASFlash: player index for flash color
-    Ping               time.Duration // for UpdatePing: latest publish→echo round trip
+    RTT               time.Duration // for UpdateRTT: latest publish→echo round trip
 }
 ```
 
-#### `ping.go`
+#### `rtt.go`
 
-Continuous **ping** measurement, surfaced in both HUDs while playing: the time between
+Continuous **RTT** measurement, surfaced in both HUDs while playing: the time between
 the moment the engine initiates a batch publish commit and the moment its own ordered
 consumer delivers the batch's **first message** back — the full write→commit→echo loop
 every visible board change travels.
 
 Mechanics: a successful batch publish knows its commit-ack stream sequence, and an
 atomic batch's N messages get consecutive sequences, so the batch's first message has
-sequence `commitSeq-(N-1)`. `trackPing(t0, commitSeq, n)` — called by all three publish
+sequence `commitSeq-(N-1)`. `trackRTT(t0, commitSeq, n)` — called by all three publish
 helpers with `t0` captured just before the publish call (first attempt and each
 merge-retry attempt measure independently; each NoCAS chunk measures separately) —
-registers `t0` under that sequence in `pingPending`; the own-board consumer calls
-`notePingEcho(seq)` for every message it delivers, and the first batch message completes
-the measurement, stores it (atomic, exposed via `Ping() time.Duration`) and emits
-`UpdatePing`.
+registers `t0` under that sequence in `rttPending`; the own-board consumer calls
+`noteRTTEcho(seq)` for every message it delivers, and the first batch message completes
+the measurement, stores it (atomic, exposed via `RTT() time.Duration`) and emits
+`UpdateRTT`.
 
 The commit ack (publisher goroutine) and the echo (consumer goroutine) race — the
-consumer can deliver the echo *before* `trackPing` runs. `lastEchoSeq`, the highest
-own-board sequence the consumer has delivered (maintained under `pingMu`, sufficient
+consumer can deliver the echo *before* `trackRTT` runs. `lastEchoSeq`, the highest
+own-board sequence the consumer has delivered (maintained under `rttMu`, sufficient
 because the ordered consumer delivers strictly by stream sequence), closes the race:
-if the echo already passed, `trackPing` completes the measurement immediately instead
+if the echo already passed, `trackRTT` completes the measurement immediately instead
 of registering an entry that would never match. Stale pending entries (echo cut off by
 shutdown) are pruned after 10 s. Spectators never publish, so they have no measurements
 and the HUD shows an em dash.
+
+The HUD readout is color-coded by `rttColor` (`internal/nativeui/game.go`): normal text
+color up to 75 ms, a yellow→orange blend (`colWarn`→`colOrange`, `lerpColor`) from 75 ms
+to 150 ms, and red (`colErr`) above 150 ms.
 
 **Game events published to `jetricks.game.<id>.events`:**
 
@@ -1599,7 +1603,7 @@ All cross-package communication uses buffered Go channels. The buffer size is ch
 |---------|-----------|--------|-------|
 | `engine.Updates` | engine → front end | 64 | High-frequency during play (gravity ticks, every cell update). Consumed by the native bridge (`pumpEngine`). Dropping updates here is preferable to blocking the engine. If the channel is full the engine drops the update — the next update will correct the display. |
 | `lobby.Updates` | lobby → front end | 16 | Lower frequency. Lobby changes are infrequent relative to game updates. |
-| `engine.moves` (internal) | front end → engine | 8 | Player move requests dispatched onto the engine's internal moves channel (`runInput` reads it). Inputs are **serialized and buffered**: `runInput` processes them one at a time and each move's publish blocks on its batch commit ack (then applies the write-through) before the next move is dequeued, so a player never has two input batches in flight — a move issued while the previous one is still awaiting its ack waits in this buffer. The non-blocking send drops excess input rather than blocking the UI goroutine if a player outruns the ack round-trip by more than the buffer depth (not reached at human input rates). |
+| `engine.moves` (internal) | front end → engine | 8 | Player move requests dispatched onto the engine's internal moves channel (`runInput` reads it). Inputs are **serialized and buffered**: `runInput` processes them one at a time and each move's publish blocks on its batch commit ack (then applies the write-through) before the next move is dequeued, so a player never has two input batches in flight — a move issued while the previous one is still awaiting its ack waits in this buffer. The non-blocking send drops excess input rather than blocking the UI goroutine if a player outruns the ack round-trip by more than the buffer depth (not reached at human input rates). The engine keeps a FIFO **mirror** of this buffer (`bufferedMoves`, guarded by `bufferedMu`): `dispatch` appends on a successful enqueue, `runInput` pops via `popBufferedMove` the moment it dequeues a move, and `Engine.BufferedMoves()` exposes a copy. The UI renders it as the muted `← ← CW HD` line under the player's board (visible only when high RTT makes inputs queue); an `UpdateBufferedMoves` event triggers the redraw. |
 
 Channels are never closed by the sender — they are abandoned when the owning goroutine exits via context cancellation. Receivers must always select on both the channel and `ctx.Done()`.
 

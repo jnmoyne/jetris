@@ -1,0 +1,113 @@
+# Release pipeline: push a tag matching v* (e.g. v0.1.0) and this workflow
+# builds the jetricks binary for every supported platform and publishes a
+# GitHub release with the archives and a SHA256SUMS file.
+#
+# Gio (gioui.org) constrains how we build:
+#   - Linux: cgo against X11/Wayland/EGL headers, so the build must run on a
+#     Linux runner with the dev packages installed (no cross-compiling).
+#   - macOS: cgo against Apple frameworks, so it must build on a macOS runner.
+#     Both arm64 and amd64 build there (the SDK is multi-arch).
+#   - Windows: pure Go (win32 syscalls), CGO_ENABLED=0.
+# linux/arm64 builds on ubuntu-24.04-arm, which requires the repo to be public
+# (GitHub's free arm64 runners are public-repo only).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install Gio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libwayland-dev libx11-dev \
+            libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev \
+            libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
+      - run: go test ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  goos: linux,   goarch: amd64, cgo: 1 }
+          - { os: ubuntu-24.04-arm, goos: linux, goarch: arm64, cgo: 1 }
+          - { os: macos-latest,   goos: darwin,  goarch: arm64, cgo: 1 }
+          - { os: macos-latest,   goos: darwin,  goarch: amd64, cgo: 1 }
+          - { os: windows-latest, goos: windows, goarch: amd64, cgo: 0 }
+          - { os: windows-latest, goos: windows, goarch: arm64, cgo: 0 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install Gio build dependencies
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libwayland-dev libx11-dev \
+            libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev \
+            libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
+      - name: Build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: |
+          ext=""
+          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o "jetricks${ext}" ./cmd/jetricks
+      - name: Package
+        shell: bash
+        run: |
+          name="jetricks-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir "$name"
+          mv jetricks* "$name/"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            7z a "${name}.zip" "$name"
+          else
+            tar czf "${name}.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jetricks-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            *.tar.gz
+            *.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -2283,6 +2283,36 @@ carries `TeamSize` and `WinningTeam`. `TotalScore` stays unset for teams
 
 ---
 
+## Phase 9 — Release Automation
+
+**File:** `.github/workflows/release.yml`
+
+Tag-driven releases: pushing a tag matching `v*` runs a GitHub Actions workflow that
+tests, builds, and publishes — no manual steps beyond `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+1. **`test` job** (`ubuntu-latest`) — installs the Gio Linux build dependencies
+   (X11/Wayland/EGL dev headers) and runs `go test ./...`. The build matrix only
+   runs if tests pass.
+
+2. **`build` matrix** — one native runner per OS, because Gio uses cgo against
+   platform headers on Linux and macOS (Windows is pure Go, `CGO_ENABLED=0`):
+   linux/amd64, linux/arm64 (on `ubuntu-24.04-arm`), darwin/arm64, darwin/amd64,
+   windows/amd64, windows/arm64.
+   Each target builds with `-trimpath -ldflags "-s -w -X main.version=<tag>"`
+   and packages the binary as `jetricks-<tag>-<os>-<arch>.tar.gz` (`.zip` on
+   Windows), uploaded as a workflow artifact. linux/arm64 requires the repo to
+   be public (GitHub's free arm64 runners are public-repo only).
+
+3. **`release` job** — downloads all artifacts, writes `SHA256SUMS`, and creates
+   the GitHub release with `softprops/action-gh-release` using auto-generated
+   release notes.
+
+Supporting code change: `cmd/jetricks/main.go` declares `var version = "dev"` and a
+`--version` flag that prints it and exits; the workflow stamps the tag into it via
+`-X main.version`.
+
+---
+
 ## Cross-Cutting Implementation Rules
 
 These rules apply throughout all phases:

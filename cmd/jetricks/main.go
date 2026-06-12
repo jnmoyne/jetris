@@ -18,6 +18,10 @@ import (
 	natspkg "jetricks/internal/nats"
 )
 
+// version is overridden at release time via -ldflags "-X main.version=<tag>"
+// (see .github/workflows/release.yml).
+var version = "dev"
+
 func main() {
 	cfg := parseFlags()
 
@@ -84,7 +88,13 @@ func parseFlags() config.Config {
 	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL (overrides --context when set)")
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("jetricks %s\n", version)
+		os.Exit(0)
+	}
 
 	return cfg
 }

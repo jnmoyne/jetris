@@ -28,6 +28,8 @@
 16. [Goroutine Inventory](#16-goroutine-inventory)
 17. [orbit.go Module Reference](#17-orbitgo-module-reference)
 18. [Testing Strategy](#18-testing-strategy)
+19. [Design Decision Log](#19-design-decision-log)
+20. [Release Pipeline](#20-release-pipeline)
 
 ---
 
@@ -35,6 +37,9 @@
 
 ```
 jetricks/
+├── .github/
+│   └── workflows/
+│       └── release.yml
 ├── cmd/
 │   └── jetricks/
 │       └── main.go
@@ -86,6 +91,8 @@ jetricks/
 │   │   └── login.go
 │   └── testutil/
 │       └── nats.go
+├── scripts/
+│   └── cleanup.sh
 ├── go.mod
 └── go.sum
 ```
@@ -143,6 +150,7 @@ The player enters a name on a login screen; identity is NATS-backed presence. Lo
 |------|---------|-------------|
 | `--context` | `""` | NATS context name (as configured with `nats context add`). Empty string uses the currently selected context. |
 | `--server` / `--user` / `--password` | `""` | Explicit NATS URL + credentials, overriding `--context`. |
+| `--version` | `false` | Print the version and exit. The `main.version` variable defaults to `dev` and is overridden at release time via `-ldflags "-X main.version=<tag>"` (see [Section 20 — Release Pipeline](#20-release-pipeline)). |
 
 The `--context` flag maps directly to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
 
@@ -1753,3 +1761,30 @@ Decisions settled during design review, recorded here for future reference.
 | 18 | Teams playfield topology | Two team-scoped shared boards (`jetricks.game.<id>.team.<t>.playfield.cell.<row>.<col>`), each the cooperative scheme at team scale | Within a team, teams mode IS cooperative — the coop shared-board machinery (`CanPlaceCoop`, merge-retry, `Cell.PlayerIdx` ownership) is reused verbatim via `sharedBoard()`. The team token in the subject keeps the two boards disjoint, so cross-team writes are impossible by construction; no roster consumer is needed (the roster is fixed pre-start). |
 | 19 | Shrink on a shared team board | `ProjectShrinkShared`: NO piece is lifted — every active piece is overlaid at its current position; a piece overtaken by the risen stack is "crushed" (locks where it is); shrink never tops a player out (top-out happens at spawn time). Application is CAS-guarded and idempotent via the `expectedGarbage` − `AdversarialRowCount()` deficit | Any of several teammates may win the race to apply a shrink, and lifting would relocate other players' mid-flight pieces from a possibly-stale snapshot. Holding every piece in place keeps the transform pure and symmetric; the monotonic garbage-row count makes the racing applications converge to exactly one committed shift (a stale shift would double-shift the stack, so CAS failures recompute from fresh state rather than blind merge-retry). |
 | 20 | Teams game-over semantics | A topped-out player vacates their piece and spectates while their team plays on; a team loses when ALL members topped out; every member of the other team (eliminated included) wins. Decided once per engine (`teamOutcomeDone`) off the ordered events subject | Per-player elimination keeps the shared board live for the teammates; the ordered events stream guarantees every engine reaches the same verdict without coordination. See `jetricks-gameplays.md`. |
+
+---
+
+## 20. Release Pipeline
+
+**File:** `.github/workflows/release.yml`
+
+Pushing a git tag matching `v*` (e.g. `v0.1.0`) triggers a GitHub Actions workflow that runs the test suite, builds the `jetricks` binary for every supported platform, and publishes a GitHub release containing one archive per platform plus a `SHA256SUMS` checksum file. Release notes are auto-generated from the commits since the previous tag.
+
+### Supported platforms
+
+| Platform | Runner | cgo | Archive |
+|----------|--------|-----|---------|
+| linux/amd64 | `ubuntu-latest` | yes | `.tar.gz` |
+| linux/arm64 | `ubuntu-24.04-arm` | yes | `.tar.gz` |
+| darwin/arm64 | `macos-latest` | yes | `.tar.gz` |
+| darwin/amd64 | `macos-latest` | yes | `.tar.gz` |
+| windows/amd64 | `windows-latest` | no | `.zip` |
+| windows/arm64 | `windows-latest` | no | `.zip` |
+
+### Why native runners per OS
+
+Gio is not cross-compilable from a single host: on Linux it uses cgo against the X11/Wayland/EGL development headers (installed via `apt-get` in the workflow), and on macOS it uses cgo against the Apple frameworks. Windows is the exception — Gio's Windows backend is pure Go (win32 syscalls), so both Windows architectures build with `CGO_ENABLED=0`. Both macOS architectures build on the one macOS runner since the Apple SDK is multi-arch. linux/arm64 builds natively on `ubuntu-24.04-arm`; note that GitHub's free arm64 Linux runners are available to public repositories only, so the repo must be public for that matrix entry to run.
+
+### Versioning
+
+Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps the tag into `main.version` (default `dev` for local builds) — reported by the `--version` flag.

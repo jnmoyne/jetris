@@ -48,8 +48,8 @@ func TestCoopHorizontalIFallsWithoutSpuriousLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := New(js, gameID, "p0", "", config.ModeCooperative, ModePlayer, 0)
-	b := New(js, gameID, "p1", "", config.ModeCooperative, ModePlayer, 1)
+	a := New(js, gameID, "p0", "", config.ModeCooperative, ModePlayer, 0, 0, 0)
+	b := New(js, gameID, "p1", "", config.ModeCooperative, ModePlayer, 1, 0, 0)
 	if err := a.Start(); err != nil {
 		t.Fatal(err)
 	}

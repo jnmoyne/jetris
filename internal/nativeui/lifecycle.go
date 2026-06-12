@@ -80,19 +80,27 @@ func (a *App) initLobby(name string) error {
 	return nil
 }
 
+// createGame creates a game. For teams mode, count is the number of players
+// PER TEAM; for the other modes it is the total player count.
 func (a *App) createGame(mode config.GameMode, count int) {
 	lb := a.getLobby()
 	if lb == nil {
 		return
 	}
-	if _, err := lb.CreateGame(context.Background(), mode, count); err != nil {
+	playerCount, teamSize := count, 0
+	if mode == config.ModeTeams {
+		teamSize = count
+		playerCount = config.TeamCount * count
+	}
+	if _, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize); err != nil {
 		log.Printf("create game: %v", err)
 	}
 }
 
 // joinGame mirrors ui.Server.handleJoinGame: join to get our player index, build
 // and start the engine, wire archive-on-finish, and switch to the game screen.
-func (a *App) joinGame(gameID string) {
+// team selects which team to join in teams mode (ignored otherwise).
+func (a *App) joinGame(gameID string, team int) {
 	lb := a.getLobby()
 	if lb == nil {
 		return
@@ -110,13 +118,14 @@ func (a *App) joinGame(gameID string) {
 		}
 	}
 
-	playerIdx, err := lb.JoinGame(context.Background(), gameID)
+	res, err := lb.JoinGame(context.Background(), gameID, team)
 	if err != nil {
+		// ErrTeamFull in particular: someone else grabbed the last slot first.
 		log.Printf("join game: %v", err)
 		return
 	}
 
-	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), opponentID, g.Mode, engine.ModePlayer, playerIdx)
+	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), opponentID, g.Mode, engine.ModePlayer, res.PlayerIdx, res.Team, res.TeamSlot)
 	engCtx, engCancel := context.WithCancel(a.ctx)
 	e.OnGameFinished = func() {
 		// Archive/clean up the finished game's stream + KV. Do NOT return to the
@@ -152,7 +161,7 @@ func (a *App) spectateGame(gameID string) {
 	if !ok {
 		return
 	}
-	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), "", g.Mode, engine.ModeSpectator, 0)
+	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), "", g.Mode, engine.ModeSpectator, 0, 0, 0)
 	engCtx, engCancel := context.WithCancel(a.ctx)
 
 	a.startGameScreen(e, engCtx, engCancel, g.Players, string(g.Status))

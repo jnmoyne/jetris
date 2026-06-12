@@ -52,7 +52,7 @@ func setupEngine(t *testing.T) (*Engine, jetstream.JetStream, string) {
 		t.Fatal(err)
 	}
 
-	e := New(js, gameID, "player-1", "", config.ModeCooperative, ModePlayer, 0)
+	e := New(js, gameID, "player-1", "", config.ModeCooperative, ModePlayer, 0, 0, 0)
 	return e, js, gameID
 }
 

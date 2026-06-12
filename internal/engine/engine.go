@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,8 +35,11 @@ type Engine struct {
 	playerID    string
 	gameMode    config.GameMode
 	initialMode Mode // original mode at creation (ModePlayer or ModeSpectator)
-	playerIdx   int  // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
+	playerIdx   int  // 0 for creator, 1 for joiner; used on shared boards for Cell.PlayerIdx
 	playerCount int  // number of players in the game
+	teamIdx     int  // teams mode: which team this player is on (0 = A, 1 = B)
+	teamSlot    int  // teams mode: section index within the team board (spawn column offset)
+	teamSize    int  // teams mode: players per team (from meta at Start)
 
 	// mode/score/level/totalLines/pieceIdx are read and written from several
 	// goroutines (the row/meta/events consumers, runInput, the UI, tests) with
@@ -58,7 +62,10 @@ type Engine struct {
 	totalLines        atomic.Int64
 	level             atomic.Int64
 	hadActivePiece    bool            // only touched by the own-rows consumer goroutine
-	eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
+	eliminatedPlayers map[string]bool // players who have topped out (competitive/teams); guarded by e.mu
+	eliminatedTeam    map[string]int  // teams: eliminated player → team; guarded by e.mu
+	teamOutcomeDone   bool            // teams: win/loss/draw already decided; guarded by e.mu
+	expectedGarbage   int             // teams: cumulative adversarial rows owed to this team's board; guarded by e.mu
 	visibleRowStart   int             // first visible row index (varies per game mode/player count)
 
 	Updates        chan EngineUpdate
@@ -78,13 +85,15 @@ type Engine struct {
 	pingNanos   atomic.Int64         // latest measurement, for Ping()
 }
 
-// New creates a new engine instance. Call Start() to begin.
+// New creates a new engine instance. Call Start() to begin. teamIdx/teamSlot
+// come from lobby.JoinGame's JoinResult and are only meaningful in teams mode
+// (spectators and other modes pass 0, 0).
 func New(
 	js jetstream.JetStream,
 	gameID, playerID, opponentPlayerID string,
 	gameMode config.GameMode,
 	mode Mode,
-	playerIdx int,
+	playerIdx, teamIdx, teamSlot int,
 ) *Engine {
 	e := &Engine{
 		gameID:             gameID,
@@ -93,6 +102,8 @@ func New(
 		gameMode:           gameMode,
 		initialMode:        mode,
 		playerIdx:          playerIdx,
+		teamIdx:            teamIdx,
+		teamSlot:           teamSlot,
 		playfield:          game.NewPlayfield(config.StandardWidth),
 		opponentPlayfields: make(map[string]*game.Playfield),
 		Updates:            make(chan EngineUpdate, 64),
@@ -100,6 +111,7 @@ func New(
 		moves:              make(chan MoveType, 8),
 		cellUpdated:        make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
+		eliminatedTeam:     make(map[string]int),
 		pingPending:        make(map[uint64]time.Time),
 	}
 	e.setMode(mode)
@@ -120,19 +132,24 @@ func (e *Engine) Start() error {
 		return err
 	}
 	e.playerCount = meta.PlayerCount
+	e.teamSize = meta.TeamSize
 
 	// Set visible row start based on mode
-	if e.gameMode == config.ModeCompetitive {
+	switch e.gameMode {
+	case config.ModeCompetitive:
 		e.visibleRowStart = config.CompetitiveVisibleRowStart(meta.PlayerCount)
-	} else {
+	case config.ModeTeams:
+		e.visibleRowStart = config.TeamVisibleRowStart(meta.TeamSize)
+	default:
 		e.visibleRowStart = config.VisibleRowStart
 	}
 
 	// playerIdx was supplied by the caller (lobby.JoinGame return value)
 	// at engine construction time; no discovery needed here.
 
-	// Cooperative mode: shared wide playfield, shared RNG seed
-	if e.gameMode == config.ModeCooperative {
+	switch e.gameMode {
+	case config.ModeCooperative:
+		// Cooperative mode: shared wide playfield, shared RNG seed
 		e.seq = rng.New(meta.Seed)
 		e.pieceIdx.Store(0)
 		// Shared wide playfield with standard height
@@ -140,7 +157,17 @@ func (e *Engine) Start() error {
 			meta.PlayerCount*config.StandardWidth,
 			config.HeadroomRows+config.VisibleRows,
 		)
-	} else {
+	case config.ModeTeams:
+		// Teams: shared per-team board, coop-style RNG (every player gets the
+		// full deterministic 7-bag from the shared seed with an independent
+		// pieceIdx, so both teams see the identical, fair piece sequence)
+		e.seq = rng.New(meta.Seed)
+		e.pieceIdx.Store(0)
+		e.playfield = game.NewPlayfieldWithHeight(
+			config.TeamBoardWidth(meta.TeamSize),
+			config.TeamTotalRows(meta.TeamSize),
+		)
+	default:
 		e.seq = rng.New(meta.Seed)
 		e.pieceIdx.Store(meta.PieceIdx)
 		// Competitive: taller playfield (extra rows per player)
@@ -180,6 +207,15 @@ func (e *Engine) Start() error {
 		}
 		// Always run roster consumer to discover all opponents
 		go e.runRosterConsumer(ctx)
+	}
+
+	// Teams: one consumer over the opposing team's shared board (rendered in
+	// the opponent sidebar). The roster is fixed before the game starts and
+	// elimination events carry the player's team, so no roster consumer is
+	// needed. Spectators consume team 0 as their "own" board (teamIdx defaults
+	// to 0) and team 1 here.
+	if e.gameMode == config.ModeTeams {
+		e.startTeamBoardConsumer(ctx, 1-e.teamIdx)
 	}
 
 	// 6. Start events consumer and meta consumer
@@ -270,6 +306,50 @@ func (e *Engine) OpponentSnapshots() map[string]BoardSnapshot {
 	return out
 }
 
+// TeamBoardKey is the opponentPlayfields/OpponentSnapshots key under which a
+// team board consumer files the given team's board (teams mode).
+func TeamBoardKey(team int) string { return "team-" + strconv.Itoa(team) }
+
+// startTeamBoardConsumer creates a playfield and consumer for the given team's
+// shared board (teams mode). It is the team-board analog of
+// startOpponentConsumer and files the board in opponentPlayfields under
+// TeamBoardKey(team) so OpponentSnapshots flows to the UI unchanged.
+func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
+	key := TeamBoardKey(team)
+	e.mu.Lock()
+	if _, exists := e.opponentPlayfields[key]; exists {
+		e.mu.Unlock()
+		return
+	}
+	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize), config.TeamTotalRows(e.teamSize))
+	e.opponentPlayfields[key] = pf
+	e.mu.Unlock()
+
+	subjects := make([]string, 0, pf.Height*pf.Width)
+	for r := 0; r < pf.Height; r++ {
+		for c := 0; c < pf.Width; c++ {
+			subjects = append(subjects, config.TeamCellSubject(e.gameID, team, r, c))
+		}
+	}
+	cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, subjects)
+	if err != nil {
+		log.Printf("fetch team %d board state: %v", team, err)
+		return
+	}
+	var maxSeq uint64
+	for _, c := range cells {
+		data, _ := game.UnmarshalCell(c.Payload)
+		e.mu.Lock()
+		pf.Apply(c.Row, c.Col, data, c.Seq)
+		e.mu.Unlock()
+		if c.Seq > maxSeq {
+			maxSeq = c.Seq
+		}
+	}
+
+	go e.runConsumer(ctx, pf, config.TeamCellSubjectFilter(e.gameID, team), key, maxSeq+1, true)
+}
+
 // startOpponentConsumer creates a playfield and consumer for a single opponent.
 func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	e.mu.Lock()
@@ -344,13 +424,25 @@ func (e *Engine) dispatch(m MoveType) {
 	}
 }
 
+// sharedBoard reports whether this engine's own playfield is shared with other
+// players (cooperative's single board, or a team's board in teams mode). Shared
+// boards use Cell.PlayerIdx ownership, coop collision (CanPlaceCoop), and
+// merge-retry for engine-driven writes.
+func (e *Engine) sharedBoard() bool {
+	return e.gameMode == config.ModeCooperative || e.gameMode == config.ModeTeams
+}
+
 // cellSubject returns the subject for one cell of THIS engine's own playfield,
 // using the subject scheme for the engine's game mode: cooperative shares a
 // single board with no player token (ownership lives in the payload via
-// Cell.PlayerIdx), competitive scopes the board by the player's ID.
+// Cell.PlayerIdx), teams shares a board scoped by team index, competitive
+// scopes the board by the player's ID.
 func (e *Engine) cellSubject(row, col int) string {
-	if e.gameMode == config.ModeCooperative {
+	switch e.gameMode {
+	case config.ModeCooperative:
 		return config.CoopCellSubject(e.gameID, row, col)
+	case config.ModeTeams:
+		return config.TeamCellSubject(e.gameID, e.teamIdx, row, col)
 	}
 	return config.CompetitiveCellSubject(e.gameID, e.playerID, row, col)
 }
@@ -358,8 +450,11 @@ func (e *Engine) cellSubject(row, col int) string {
 // cellFilterSubject returns the wildcard filter matching all of this engine's
 // own playfield cells.
 func (e *Engine) cellFilterSubject() string {
-	if e.gameMode == config.ModeCooperative {
+	switch e.gameMode {
+	case config.ModeCooperative:
 		return config.CoopCellSubjectFilter(e.gameID)
+	case config.ModeTeams:
+		return config.TeamCellSubjectFilter(e.gameID, e.teamIdx)
 	}
 	return config.CompetitiveCellSubjectFilter(e.gameID, e.playerID)
 }
@@ -509,27 +604,32 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	pt := e.seq.Piece(e.pieceIdx.Load())
 	p := game.SpawnPiece(pt, config.StandardWidth)
 
-	// In cooperative mode, offset spawn column to player's section
-	if e.gameMode == config.ModeCooperative {
+	// On a shared board, offset spawn column to the player's section: coop
+	// sections are laid out by playerIdx, team boards by the slot within the team.
+	switch e.gameMode {
+	case config.ModeCooperative:
 		p.Col += e.playerIdx * config.StandardWidth
+	case config.ModeTeams:
+		p.Col += e.teamSlot * config.StandardWidth
 	}
 
 	if !locked {
 		e.mu.Lock()
 	}
 
-	// Check placement (coop checks against other players' active pieces too)
+	// Check placement (shared boards check against other players' active pieces too)
 	var canPlace bool
-	if e.gameMode == config.ModeCooperative {
+	if e.sharedBoard() {
 		canPlace = game.CanPlaceCoop(p, e.playfield, e.playerIdx)
 	} else {
 		canPlace = game.CanPlace(p, e.playfield)
 	}
 	if !canPlace {
+		// e.mu is held here in both cases (acquired above when !locked).
+		e.handleTopOut(ctx, true)
 		if !locked {
 			e.mu.Unlock()
 		}
-		e.handleTopOut(ctx)
 		return
 	}
 
@@ -552,11 +652,11 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	if !locked {
 		e.mu.Unlock()
 	}
-	if e.gameMode == config.ModeCooperative {
-		// In coop both players write the same shared cell subjects, so two
-		// near-simultaneous spawns (e.g. when meta transitions to
-		// in_progress) race for the headroom cells. Spawning MUST
-		// succeed — the loser must not be left without a piece — so we
+	if e.sharedBoard() {
+		// On a shared board (coop, teams) all players write the same shared
+		// cell subjects, so two near-simultaneous spawns (e.g. when meta
+		// transitions to in_progress) race for the headroom cells. Spawning
+		// MUST succeed — the loser must not be left without a piece — so we
 		// merge-retry on CAS failure: refetch the latest cells from the
 		// stream, keep ours where allowed, retry. This is the only
 		// CAS path in the engine that retries; player moves never do.
@@ -569,6 +669,9 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 }
 
 func (e *Engine) PlayerIdx() int       { return e.playerIdx }
+func (e *Engine) TeamIdx() int         { return e.teamIdx }
+func (e *Engine) TeamSlot() int        { return e.teamSlot }
+func (e *Engine) TeamSize() int        { return e.teamSize }
 func (e *Engine) VisibleRowStart() int { return e.visibleRowStart }
 func (e *Engine) PlayfieldHeight() int { return e.playfield.Height }
 func (e *Engine) IsEliminated(id string) bool {
@@ -579,7 +682,15 @@ func (e *Engine) IsEliminated(id string) bool {
 
 func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
 
-func (e *Engine) handleTopOut(ctx context.Context) {
+// handleTopOut handles this player topping out. locked reports whether the
+// caller already holds e.mu (spawnPiece always does at its top-out branch;
+// applyOpponentShrink calls with the lock released).
+func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
+	if e.gameMode == config.ModeTeams {
+		e.handleTeamTopOut(ctx, locked)
+		return
+	}
+
 	// Publish game over event with score and piece count
 	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), PieceCount: e.pieceIdx.Load()}
 	data, _ := json.Marshal(ev)
@@ -593,6 +704,55 @@ func (e *Engine) handleTopOut(ctx context.Context) {
 		go e.transitionGameToFinished(ctx)
 	}
 	// Competitive finishing is handled by the last player standing (see handleGameEvent)
+}
+
+// handleTeamTopOut implements teams-mode per-player elimination: the topped-out
+// player vacates any of their active cells from the shared team board and
+// becomes a spectator, but the TEAM plays on. The team only loses when all its
+// members have topped out (evaluated by every engine in handleGameEvent as the
+// elimination events arrive); this engine therefore never transitions the game
+// to finished here.
+func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
+	if !locked {
+		e.mu.Lock()
+	}
+	// Clear hadActivePiece BEFORE publishing the vacate: the vacate drives our
+	// active-cell count to zero and must not read as a lock-in (which would
+	// spawn a next piece for an eliminated player).
+	e.hadActivePiece = false
+	var cells map[game.CellPos]game.Cell
+	if p := e.playfield.ActivePieceForPlayer(e.playerIdx); p != nil {
+		affected := affectedRowsUnion(p, nil)
+		rows := e.playfield.ProjectMove(affected, nil, e.playerIdx)
+		cells = diffCells(e.playfield.Rows, rows)
+	}
+	e.eliminatedPlayers[e.playerID] = true
+	e.eliminatedTeam[e.playerID] = e.teamIdx
+	if !locked {
+		e.mu.Unlock()
+	}
+
+	// Vacate our piece so teammates don't play around a dead piece. Shared
+	// board: merge-retry, whose skip rule protects teammates' in-flight pieces.
+	if len(cells) > 0 {
+		e.publishProjectedCellsWithMergeRetry(ctx, cells, nil, locked)
+	}
+
+	ev := GameEvent{
+		Kind:       EventGameOver,
+		PlayerID:   e.playerID,
+		Team:       e.teamIdx,
+		Score:      int(e.score.Load()),
+		PieceCount: e.pieceIdx.Load(),
+	}
+	data, _ := json.Marshal(ev)
+	_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
+	e.transitionToSpectator(false) // out for now; flips to won if our team prevails
+	e.emitUpdate(EngineUpdate{
+		Kind:               UpdatePlayerEliminated,
+		EliminatedPlayerID: e.playerID,
+		Team:               e.teamIdx,
+	})
 }
 
 func (e *Engine) transitionGameToFinished(ctx context.Context) {
@@ -964,8 +1124,8 @@ func (e *Engine) emitCASFlash(flashCells [][2]int) {
 }
 
 func (e *Engine) publishPieceIdxUpdate(pieceIdx uint64) {
-	// In cooperative mode, each player has independent piece tracking
-	if e.gameMode == config.ModeCooperative {
+	// On shared boards (coop, teams), each player has independent piece tracking
+	if e.sharedBoard() {
 		return
 	}
 	meta, metaSeq, err := natspkg.FetchGameMeta(e.ctx, e.js, e.gameID)

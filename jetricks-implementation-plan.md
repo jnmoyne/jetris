@@ -3,7 +3,7 @@
 This document is the authoritative implementation guide for Claude Code. It contains
 everything needed to implement Jetricks from scratch. The full design specification is
 in `jetricks-project-structure.md` (same directory); refer to it for rationale and
-extended explanations. Gameplay mechanics (cooperative/competitive modes, scoring,
+extended explanations. Gameplay mechanics (cooperative/competitive/teams modes, scoring,
 gravity, line clears, game lifecycle) are defined in [`jetricks-gameplays.md`](jetricks-gameplays.md);
 this plan defers to that document for gameplay behavior. This plan is structured to be
 executed in strict phase order — each phase's packages are prerequisites for the next.
@@ -56,7 +56,12 @@ type GameMode int
 const (
     ModeCooperative GameMode = iota
     ModeCompetitive
+    ModeTeams // String() == "teams"
 )
+
+// TeamCount is the number of teams in a teams-mode game. Team indices are
+// 0 ("A") and 1 ("B").
+const TeamCount = 2
 
 type GameStatus string
 const (
@@ -72,6 +77,7 @@ type GameMeta struct {
     GameID      string     `json:"game_id"`
     Mode        GameMode   `json:"mode"`
     PlayerCount int        `json:"player_count"`
+    TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
     Seed        uint64     `json:"seed"`
     Status      GameStatus `json:"status"`
     CreatorID   string     `json:"creator_id"`
@@ -120,6 +126,29 @@ func CompetitiveTotalRows(playerCount int) int {
 func CompetitiveVisibleRowStart(playerCount int) int {
     return HeadroomRows
 }
+
+// TeamBoardWidth returns the width of one team's shared board: one standard
+// 10-column section per teammate, like the cooperative board.
+func TeamBoardWidth(teamSize int) int {
+    return teamSize * StandardWidth
+}
+
+// TeamVisibleRows returns the visible rows for a team board. Like competitive,
+// the board grows one row per garbage-producing player on the opposing team
+// (which has teamSize players), leaving room for adversarial rows.
+func TeamVisibleRows(teamSize int) int {
+    return VisibleRows + teamSize
+}
+
+// TeamTotalRows returns the total rows (headroom + visible) for a team board.
+func TeamTotalRows(teamSize int) int {
+    return HeadroomRows + TeamVisibleRows(teamSize)
+}
+
+// TeamVisibleRowStart returns the first visible row index for a team board.
+func TeamVisibleRowStart(teamSize int) int {
+    return HeadroomRows
+}
 ```
 
 **Archive types:**
@@ -129,6 +158,7 @@ type PlayerResult struct {
     Score      int    `json:"score"`
     PieceCount uint64 `json:"piece_count"`
     Winner     bool   `json:"winner,omitempty"`
+    Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
 }
 
 type ArchiveRecord struct {
@@ -139,6 +169,8 @@ type ArchiveRecord struct {
     StartedAt   time.Time      `json:"started_at"`
     FinishedAt  time.Time      `json:"finished_at"`
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only
+    TeamSize    int            `json:"team_size,omitempty"`   // teams mode
+    WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
 }
 ```
 
@@ -154,8 +186,8 @@ func GameSubjectFilter(gameID string) string
 // each cell of the board is its own subject, and the last message on that
 // subject is the cell's current content.
 //
-// Cooperative and competitive modes use ENTIRELY SEPARATE cell subject schemes —
-// not one builder parameterised by playerID. A game is one mode or the other.
+// Cooperative, competitive and teams modes use ENTIRELY SEPARATE cell subject
+// schemes — not one builder parameterised by playerID. A game is exactly one mode.
 //
 // Cooperative — single shared board, no player token (ownership in the payload
 // via Cell.PlayerIdx; coop never filters cells by player):
@@ -169,6 +201,16 @@ func CompetitiveCellSubject(gameID, playerID string, row, col int) string
 // → "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 func CompetitiveCellSubjectFilter(gameID, playerID string) string
 // → "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell.>"
+
+// Teams — one shared board PER TEAM. Like the cooperative scheme the subject
+// carries no player token (all teammates publish to and consume from the same
+// cell subjects; per-cell ownership lives in the payload via Cell.PlayerIdx,
+// which holds the GLOBAL roster index), but the board is scoped by team index
+// so the two teams' boards are disjoint:
+func TeamCellSubject(gameID string, team, row, col int) string
+// → "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+func TeamCellSubjectFilter(gameID string, team int) string
+// → "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
 
 func MetaSubject(gameID string) string
 // → "jetricks.game." + gameID + ".meta"
@@ -197,7 +239,8 @@ builder function.
 
 **Tests** (`internal/config/config_test.go`):
 - Verify every subject builder returns the exact expected string for a known gameID/playerID/(row, col).
-- Verify `CompetitiveCellSubject` produces the correct per-player subject and `CoopCellSubject` produces the shared subject with no player token; likewise for the `*CellSubjectFilter` builders.
+- Verify `CompetitiveCellSubject` produces the correct per-player subject, `CoopCellSubject` produces the shared subject with no player token, and `TeamCellSubject` produces the team-scoped subject (also with no player token); likewise for the `*CellSubjectFilter` builders.
+- Verify the team board-dimension helpers: `TeamBoardWidth(teamSize) == teamSize×10`, `TeamVisibleRows(teamSize) == 24+teamSize`, `TeamTotalRows`, `TeamVisibleRowStart == 4`.
 - Verify `GameStream` produces a valid NATS stream name (alphanumeric + dash + underscore only, `strings.ContainsAny` check).
 
 ---
@@ -391,6 +434,24 @@ func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row
 func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row
 func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Row, bool)
+
+// ProjectShrinkShared is the SHARED-BOARD shrink projection (teams mode):
+// shifts the locked stack up by rowsToAdd, adds adversarial garbage rows
+// (tagged causerIdx) at the bottom, and overlays EVERY player's active cells
+// AT THEIR CURRENT POSITIONS — no piece is lifted. A piece overtaken by the
+// risen stack simply remains where it is (it will lock there, "crushed"); a
+// shared shrink can therefore never top a player out, so there is no topOut
+// return. Compare ProjectShrink, which lifts the single own piece and can
+// squeeze it off the top.
+func (pf *Playfield) ProjectShrinkShared(rowsToAdd, causerIdx int) []Row
+
+// AdversarialRowCount returns the number of contiguous bottom rows containing
+// at least one adversarial cell. Garbage rows are permanent and bottom-anchored,
+// so this count grows monotonically — it is the idempotency guard for the
+// teams-mode shrink application ("≥1 adversarial cell" rather than "all cells"
+// because crushed pieces lock INTO garbage rows and vacated active overlays
+// leave hollow cells in them).
+func (pf *Playfield) AdversarialRowCount() int
 ```
 
 `ActivePieceForPlayer(playerIdx)` implementation: iterate rows `0..Height-1`, for each
@@ -500,6 +561,8 @@ Gravity intervals (approximate, Tetris Guideline):
 - `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces (and nil when no active piece for that player is present).
 - `SetActivePieceForPlayer()` clears only the matching player's active cells before placing new ones, leaving the other player's active cells intact.
 - `Playfield.Apply()` updates the cell content and `CellLastSeq(row, col)`; a same-sequence re-apply is a no-op and a strictly higher sequence overwrites (the per-cell seq rules the write-through/echo convergence relies on).
+- `ProjectShrinkShared()` (`teamshrink_test.go`) holds every active piece at its current position while the locked stack shifts up (no lift), tags the new bottom rows with the causer's index, and leaves a piece overtaken by the stack in place (to be crushed/locked there).
+- `AdversarialRowCount()` counts only the contiguous bottom garbage rows, including rows partially filled by crushed pieces or hollowed by vacated overlays.
 
 ---
 
@@ -882,6 +945,8 @@ var (
     CoopCellSubjectFilter        = config.CoopCellSubjectFilter
     CompetitiveCellSubject       = config.CompetitiveCellSubject
     CompetitiveCellSubjectFilter = config.CompetitiveCellSubjectFilter
+    TeamCellSubject              = config.TeamCellSubject
+    TeamCellSubjectFilter        = config.TeamCellSubjectFilter
     // ... all others
 )
 ```
@@ -986,18 +1051,20 @@ Mapping from engine action to publish path (every path takes a `diffCells`/
 
 | Action | Path | CAS? |
 | ----- | ---- | ---- |
-| Move left/right/rotate/down (player input) | `publishProjectedCells` → `PublishMoveAtomically` | yes, per-subject (drop on fail) |
+| Move left/right/rotate/down (player input, all modes) | `publishProjectedCells` → `PublishMoveAtomically` | yes, per-subject (drop on fail) |
 | Gravity tick (competitive) | `publishProjectedCells` | yes, per-subject (drop on fail) |
-| Gravity tick (coop) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
+| Gravity tick (coop/teams) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
 | Spawn (competitive) | `publishProjectedCells` | yes, per-subject (drop on fail) |
-| Spawn (coop) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
-| Lock-on-blocked-down (coop) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
+| Spawn (coop/teams) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
+| Lock-on-blocked-down (coop/teams) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
 | Lock-on-blocked-down (competitive) | `publishProjectedCellsNoCAS` | no |
-| Hard drop (coop) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
+| Hard drop (coop/teams) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
 | Hard drop (competitive) | `publishProjectedCellsNoCAS` | no |
-| Line clear (coop) | `publishProjectedCellsWithMergeRetry`, **changed cells only** | yes, per-subject (merge-retry) |
+| Line clear (coop/teams) | `publishProjectedCellsWithMergeRetry`, **changed cells only** | yes, per-subject (merge-retry) |
 | Line clear (competitive) | `publishProjectedCellsNoCAS`, **changed cells only** | no |
 | Opponent shrink (apply locally, competitive) | `publishProjectedCellsNoCAS`, **changed cells only** | no |
+| Team shrink (apply locally, teams — every ALIVE member of the target team races) | `applyTeamShrink` → `PublishMoveAtomically`, **changed cells only** | yes, per-subject (**recompute on fail** behind the `expectedGarbage − AdversarialRowCount()` deficit guard — never merge-retry, which would double-shift; see Phase 8) |
+| Elimination vacate (teams — topped-out player erases own active piece) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
 
 Every path publishes only the cells that **actually changed**: `diffCells`
 diffs a `Project*` row map against the live board (moves, spawns, locks, hard
@@ -1018,7 +1085,11 @@ and the merge-retry refetches the latest state of the affected cells and
 **keeps our content everywhere except cells currently holding the other
 player's active piece, which it skips entirely** — it neither overwrites nor
 vacates their piece — then republishes. Competitive mode owns per-player
-subjects (no shared writer), so NoCAS is safe there.
+subjects (no shared writer), so NoCAS is safe there. The teams-mode shared
+team board has the same multi-writer shape as coop (engine code gates on
+`sharedBoard()`, true for coop **and** teams), so every argument in this
+paragraph applies to it unchanged — except the team-shrink application, which
+has its own CAS discipline (recompute, not merge — see Phase 8).
 
 **Batch ordering (`orderedCellKeys`):** the ordered consumer applies a batch
 one cell at a time and detects lock-in (firing the completed-line check) the
@@ -1106,11 +1177,11 @@ The mode→path mapping for CAS publishes is:
 
 | Path | Mode | On CAS failure |
 | ---- | ---- | -------------- |
-| Player moves (`runInput` moves arm → `attemptMove(internal=false)`) | both | drop + local rainbow flash, no retry |
+| Player moves (`runInput` moves arm → `attemptMove(internal=false)`) | all | drop + local rainbow flash, no retry |
 | Gravity (`runInput` gravity arm → `attemptMove(MoveDown, internal=true)`) | competitive | drop + flash (serialized with input on `runInput`, so it cannot self-race) |
-| Gravity (`runInput` gravity arm → `attemptMove(MoveDown, internal=true)`) | cooperative | merge-retry; flash only if all retries exhausted |
+| Gravity (`runInput` gravity arm → `attemptMove(MoveDown, internal=true)`) | cooperative/teams | merge-retry; flash only if all retries exhausted |
 | Spawn (`spawnPiece`) | competitive | drop + flash (cannot race in practice) |
-| Spawn (`spawnPiece`) | cooperative | merge-retry; flash only if all retries exhausted |
+| Spawn (`spawnPiece`) | cooperative/teams | merge-retry; flash only if all retries exhausted |
 
 ### 3.1 `internal/engine`
 
@@ -1146,6 +1217,7 @@ type EngineUpdate struct {
     OpponentID         string   // for UpdateOpponentField: which opponent's board changed
     FlashCells         [][2]int // cells to flash (UpdateCASFlash)
     FlashPlayerIdx     int      // player index for flash color
+    Team               int      // teams: team of the eliminated player (UpdatePlayerEliminated)
     Ping               time.Duration // latest publish→echo round trip (UpdatePing)
 }
 
@@ -1166,6 +1238,8 @@ type GameEvent struct {
     Score        int       `json:"score,omitempty"`          // for EventGameOver: player's final score
     PieceCount   uint64    `json:"piece_count,omitempty"`    // for EventGameOver: total pieces placed
     PlayerIdx    int       `json:"player_idx,omitempty"`     // causer's index for EventShrink
+    Team         int       `json:"team"`                     // teams: sender's team (0 = A, 1 = B)
+    TargetTeam   int       `json:"target_team"`              // teams: receiving team for EventShrink
 }
 
 type MoveType int
@@ -1195,8 +1269,11 @@ type Engine struct {
     gameMode    config.GameMode
     mode        atomic.Int32 // current Mode; atomic — see the concurrency note below
     initialMode Mode         // original mode at creation (ModePlayer or ModeSpectator)
-    playerIdx   int  // 0 for creator, 1 for joiner; used in cooperative mode for Cell.PlayerIdx
+    playerIdx   int  // 0 for creator, 1 for joiner; used on shared boards for Cell.PlayerIdx (GLOBAL roster index)
     playerCount int  // number of players in the game
+    teamIdx     int  // teams mode: which team this player is on (0 = A, 1 = B)
+    teamSlot    int  // teams mode: section index within the team board (spawn column offset)
+    teamSize    int  // teams mode: players per team (from meta at Start)
 
     mu        sync.Mutex
     playfield *game.Playfield // cooperative: single shared wide playfield (playerCount × StandardWidth)
@@ -1217,7 +1294,10 @@ type Engine struct {
     level             atomic.Int64
     hadActivePiece    bool            // only the own-rows consumer goroutine touches it
     eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
-    visibleRowStart   int             // first visible row index; cooperative: 4, competitive: CompetitiveVisibleRowStart(playerCount)
+    eliminatedTeam    map[string]int  // teams: eliminated player → team; guarded by e.mu
+    teamOutcomeDone   bool            // teams: win/loss/draw already decided; guarded by e.mu
+    expectedGarbage   int             // teams: cumulative adversarial rows owed to this team's board; guarded by e.mu
+    visibleRowStart   int             // first visible row index; cooperative: 4, competitive: CompetitiveVisibleRowStart(playerCount), teams: TeamVisibleRowStart(teamSize)
 
     Updates        chan EngineUpdate
     OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -1232,14 +1312,16 @@ type Engine struct {
 // New initialises fields and channels; it does NOT take a context — Start()
 // creates the context. opponentPlayerID is a single known opponent (for a
 // 2-player join); additional competitive opponents are discovered dynamically
-// via the roster consumer. playerIdx is the value returned by lobby.JoinGame.
+// via the roster consumer. playerIdx/teamIdx/teamSlot come from
+// lobby.JoinGame's JoinResult; teamIdx and teamSlot are only meaningful in
+// teams mode (spectators and other modes pass 0, 0).
 // New returns *Engine only (no error); Start() does the fetching and can fail.
 func New(
     js jetstream.JetStream,
     gameID, playerID, opponentPlayerID string,
     gameMode config.GameMode,
     mode Mode,
-    playerIdx int,
+    playerIdx, teamIdx, teamSlot int,
 ) *Engine
 ```
 
@@ -1370,6 +1452,10 @@ func (e *Engine) Start() error {
 }
 ```
 
+(The snippet shows the coop/competitive branches; the mode switch gained a
+teams arm — team-sized shared board, coop-style RNG, one opposing-team board
+consumer instead of the roster/opponent consumers — specified in Phase 8.)
+
 The engine runs ONE ordered consumer per concern, not a single wildcard consumer:
 
 - **Own cell consumer** (`runConsumer`): filter `cellFilterSubject()` — coop's shared
@@ -1381,6 +1467,12 @@ The engine runs ONE ordered consumer per concern, not a single wildcard consumer
 - **Roster consumer** (competitive only, `runRosterConsumer`): filter
   `…roster.*` — discovers opponents (including late joiners) and spins up their
   cell consumers.
+- **Opposing-team board consumer** (teams only): ONE extra `runConsumer` over the
+  opposing team's shared board, started by `startTeamBoardConsumer(ctx, 1-e.teamIdx)`
+  and stored in `opponentPlayfields` under `TeamBoardKey(team)` (`"team-<idx>"`),
+  so `OpponentSnapshots` flows to the UI unchanged. Teams runs NO roster consumer
+  and no per-player opponent consumers (the roster is fixed before the game
+  starts; elimination events carry the player's team). See Phase 8.
 - **Events consumer** (`runEventsConsumer`): filter `…events` — handles
   `EventLineClear`, `EventShrink`, and `EventGameOver`.
 - **Meta consumer** (`runMetaConsumer`): filter `…meta` — spawns the first piece
@@ -1400,7 +1492,10 @@ cell's row, so the UI's row-oriented render contract is unchanged.
 **Lock-in detection logic** lives in the own cell consumer, run after each
 `pf.Apply` call (under `e.mu`): it compares "had an active piece" against "has an
 active piece for our `playerIdx`", and when the piece's last active cell
-disappears it calls `handleLockIn(ctx)`. The `orderedCellKeys` publish order
+disappears it calls `handleLockIn(ctx)`. The check is gated on
+`e.getMode() == ModePlayer` — an eliminated teams player's vacate batch (the
+elimination erases their own active cells) echoes back through this same
+consumer, and without the gate that echo would fire a spurious lock-in. The `orderedCellKeys` publish order
 guarantees that this happens at the batch's LAST vacate, with the
 landing/locked cells already applied. `handleLockIn` runs the completed-row
 check and scoring, increments `pieceIdx`, fires `publishPieceIdxUpdate`, and (if
@@ -1408,13 +1503,17 @@ we are a player) spawns the next piece via `spawnPiece(ctx, true)` (locked=true:
 handleLockIn runs under the consumer's e.mu), which calls `handleTopOut` if the
 new piece cannot be placed.
 
-`handleTopOut` only publishes an `EventGameOver` (with `Score` and `PieceCount`)
+`handleTopOut(ctx, locked bool)` (`locked` reports whether the caller already
+holds `e.mu`) only publishes an `EventGameOver` (with `Score` and `PieceCount`)
 and transitions this engine to spectator (`transitionToSpectator(false)`); in
-COOPERATIVE mode it also kicks off `transitionGameToFinished`. It does NOT publish
+COOPERATIVE mode it also kicks off `transitionGameToFinished`. In TEAMS mode it
+routes to `handleTeamTopOut` instead — per-player elimination while the team
+plays on; no `transitionGameToFinished` (see Phase 8). It does NOT publish
 the archive record, delete the stream, or remove the KV entry — that happens later
 in `archive.ArchiveAndCleanup`, wired via `engine.OnGameFinished` and run ~5s after
 the finish transition. Competitive finishing is decided by the last player standing
-in `handleGameEvent` (which also handles the all-eliminated draw).
+in `handleGameEvent` (which also handles the all-eliminated draw); teams finishing
+by `handleTeamGameOverEvent` when a whole team is eliminated (Phase 8).
 
 ```go
 hasActive := pf.ActivePieceForPlayer(e.playerIdx) != nil
@@ -1524,12 +1623,15 @@ func (e *Engine) runInput(ctx context.Context) {
     }
 }
 
-// attemptMove takes the lock, then dispatches to the mode-specific handler.
-// internal=true marks an engine-driven move (gravity ticks); in coop those use
-// merge-retry on CAS failure so the piece keeps falling under contention.
+// attemptMove takes the lock, then dispatches to the board-shape-specific
+// handler: sharedBoard() is true for cooperative AND teams (both are
+// multi-writer shared boards), so teams play routes through the same
+// attemptMoveCoop path. internal=true marks an engine-driven move (gravity
+// ticks); on shared boards those use merge-retry on CAS failure so the piece
+// keeps falling under contention.
 func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
     e.mu.Lock()
-    if e.gameMode == config.ModeCooperative {
+    if e.sharedBoard() { // coop || teams
         return e.attemptMoveCoop(ctx, move, internal)
     }
     return e.attemptMoveStandard(ctx, move, internal)
@@ -1566,7 +1668,11 @@ the `Project*` methods, `diffCells` reduces them to the changed cells, and
 not on the move side. In competitive mode `handleLockIn` publishes an `EventShrink`
 (with `PlayerID`/`PlayerIdx` set to this player) for every line clear (1+ lines;
 rows added = lines cleared); all other players apply the shrink to their own
-playfields. See `jetricks-gameplays.md` for shrink rules.
+playfields. In teams mode `handleLockIn` scores `teamSize × lines`, publishes an
+`EventLineClear{Team, Score, LinesCleared}` (teammates fold in BOTH the score and
+the line count, keeping level/gravity in sync across the team) and an
+`EventShrink{Team, TargetTeam: 1−teamIdx, RowsRemoved}` aimed at the OPPOSING
+team's shared board (see Phase 8). See `jetricks-gameplays.md` for shrink rules.
 
 Hard drops compute the destination ONCE (`HardDropDestination` /
 `HardDropDestinationCoop`) and project it with `ProjectHardDrop(...,
@@ -1706,7 +1812,11 @@ As specified in Section 10 of the project structure doc.
 
 #### `listing.go` (types only)
 
-As specified in Section 10.
+As specified in Section 10, plus the teams-mode fields: `GameListing.TeamSize`
+(players per team), `PlayerSummary.Team` and `PlayerSummary.TeamSlot` (the
+player's team 0/1 and their section index within the team board, assigned in
+join order), and `GameListing.TeamMemberCount(team int) int` (how many roster
+members belong to the given team).
 
 #### `presence.go`
 
@@ -1755,23 +1865,52 @@ consumer, and heartbeat.
 determine if it's a player or game entry, update the appropriate map under `l.mu.Lock()`,
 and send a `LobbyUpdate` to `l.Updates`.
 
-`CreateGame(ctx, mode, playerCount)` — `playerCount` is 2–4, selected by the user in the create game form (no longer hardcoded to 2):
+`CreateGame(ctx, mode, playerCount, teamSize)` — `playerCount` is 2–4, selected
+by the user in the create game form (no longer hardcoded to 2). For
+`ModeTeams` the UI passes the per-team size and `playerCount =
+config.TeamCount × teamSize`; other modes pass `teamSize = 0`:
 1. Generate `gameID = uuid.New().String()`
 2. Call `natspkg.EnsureGameStream(ctx, l.js, gameID)`
-3. Create `config.GameMeta` with the new ID, mode, player count, seed, status=created, creatorID
+3. Create `config.GameMeta` with the new ID, mode, player count, team size, seed, status=created, creatorID
 4. Publish to `config.MetaSubject(gameID)` with `ExpectLastSeq: 0`
 5. Update own roster entry
-6. Update `games.<id>` KV entry
+6. Update `games.<id>` KV entry (listing carries `TeamSize` for teams games)
 7. Return `gameID`
 
-`JoinGame(ctx, gameID) (int, error)` — returns the joining player's index, which
-the caller passes to `engine.New` as `playerIdx`:
-1. If already in the game's roster, update presence and return the existing index.
-2. Publish own roster entry to `config.RosterSubject(gameID, l.playerID)`.
-3. Update KV presence to `StatusInGame` with this gameID.
-4. Append self to the game listing; if the roster is now full, set the listing to
-   `starting` and CAS-update meta status to `starting`.
-5. Return `len(players)-1` as the player index.
+```go
+// ErrTeamFull is returned by JoinGame when the requested team already has
+// TeamSize members.
+var ErrTeamFull = errors.New("team is full")
+
+// JoinResult is the roster position assigned to a player by JoinGame.
+type JoinResult struct {
+    PlayerIdx int // GLOBAL roster index (join order across both teams)
+    Team      int // teams mode: 0 = A, 1 = B
+    TeamSlot  int // teams mode: section index within the team board
+}
+```
+
+`JoinGame(ctx, gameID, team) (JoinResult, error)` — `team` is the team the
+player picked (0 or 1; teams mode only, other modes ignore it; may fail with
+`ErrTeamFull`). The caller passes `JoinResult`'s fields to `engine.New` as
+`playerIdx`/`teamIdx`/`teamSlot`. The listing update is a **CAS loop** — team
+capacity validation and `TeamSlot` assignment must be atomic with the roster
+append, or two concurrent joiners could both land in the last slot of a team:
+1. If already in the game's roster, update presence and return the existing
+   `JoinResult` (rejoin is idempotent).
+2. CAS loop on the `games.<id>` KV entry: `Get` the listing, validate the team
+   has capacity (`TeamMemberCount(team) < TeamSize`, else `ErrTeamFull`),
+   assign `TeamSlot = TeamMemberCount(team)`, append self, then
+   `kv.Update(..., revision)` — on revision conflict, retry from the `Get`.
+3. Publish own roster entry to `config.RosterSubject(gameID, l.playerID)` —
+   only AFTER the CAS commit, so the roster never announces a join the listing
+   rejected.
+4. If the listing is now full (`len(Players) >= PlayerCount` — for teams this
+   is exactly "both teams full", since per-team capacity is enforced above),
+   set the listing to `starting` in the same CAS write and transition meta
+   status to `starting`.
+5. Update KV presence to `StatusInGame` with this gameID and return the
+   assigned `JoinResult`.
 
 `ToggleReady(ctx, gameID) (ToggleReadyResult, error)` — there is no `MarkReady`;
 ready state is a toggle. It CAS-updates the player's `Ready` flag on the game-listing
@@ -1896,6 +2035,225 @@ func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, js
 
 ---
 
+## Phase 8 — Teams Mode
+
+Built on top of Phases 1–7: a third game mode that composes the cooperative
+shared-board machinery (within a team) with the competitive garbage mechanic
+(between teams). Gameplay rules are in `jetricks-gameplays.md` §5 ("Teams
+Mode"); this phase defers to it for behavior and specifies the implementation.
+
+**Gameplay summary.** Two teams ("A" and "B") of equal size: `TeamSize`
+players each, `PlayerCount = config.TeamCount × TeamSize`. Within a team play
+is exactly cooperative — one shared board of width `teamSize × 10`, height
+`HeadroomRows + VisibleRows + teamSize`, per-player sections keyed by team
+slot, `CanPlaceCoop` collision, merge-retry on shared-cell CAS conflicts.
+Between teams it is competitive: a team's line clears add unclearable
+adversarial garbage rows to the OPPOSING team's shared board. Players pick
+their team when joining ("Join A" / "Join B"). A topped-out player vacates
+their piece and spectates while their team plays on; a team loses when ALL of
+its members have topped out, and every member of the other team — eliminated
+members included — wins.
+
+**KEY design decision — shared-board shrinks never lift pieces.** On a shared
+team board NO active piece is lifted by a shrink: all active pieces are
+overlaid at their current positions, a piece overtaken by the risen stack
+locks where it is ("crushed"), and a shrink can never top a player out
+(top-out happens at spawn failure only). This is what makes the multi-receiver
+shrink application safe — the shrink batch never touches piece cells, so it
+can neither corrupt a teammate's in-flight piece nor fire a spurious lock-in.
+
+### 8.1 `internal/config`
+
+All implemented in Phase 1's `config.go` (the updated specs above are
+authoritative): `ModeTeams` (enum value 2, `String() == "teams"`), `const
+TeamCount = 2`, `GameMeta.TeamSize` (`team_size,omitempty`),
+`PlayerResult.Team`, `ArchiveRecord.TeamSize` + `WinningTeam`
+(`winning_team`; `-1` = draw or not a teams game), the
+`TeamBoardWidth`/`TeamVisibleRows`/`TeamTotalRows`/`TeamVisibleRowStart`
+board-dimension helpers, and the `TeamCellSubject`/`TeamCellSubjectFilter`
+builders — like coop the subjects carry no player token (per-cell ownership
+lives in the payload via `Cell.PlayerIdx`, which holds the GLOBAL roster
+index), scoped by team index so the two boards are disjoint.
+`internal/nats/subjects.go` re-exports both builders.
+
+### 8.2 `internal/game`
+
+Two additions to `playfield.go` (specified in §1.3 above), no collision or
+rotation changes:
+
+- `ProjectShrinkShared(rowsToAdd, causerIdx int) []Row` — the shared-board
+  shrink projection: shifts the locked stack up, appends adversarial bottom
+  rows tagged `causerIdx`, and overlays EVERY player's active cells in place
+  (no lift; an overtaken piece stays put to be crushed). No `topOut` return.
+- `AdversarialRowCount() int` — contiguous bottom rows with **≥1** adversarial
+  cell. Monotonic (garbage is permanent and bottom-anchored), which makes it
+  the idempotency guard for the shrink application; "≥1" rather than "all
+  cells" because crushed pieces fill — and vacated active overlays hollow —
+  individual cells of a garbage row.
+
+### 8.3 `internal/lobby`
+
+Specified in the updated Phase 4 above: `GameListing.TeamSize`,
+`PlayerSummary.Team`/`TeamSlot`, `GameListing.TeamMemberCount(team)`,
+`CreateGame(ctx, mode, playerCount, teamSize)`, and
+`JoinGame(ctx, gameID, team) → (JoinResult{PlayerIdx, Team, TeamSlot}, error)`
+with the `ErrTeamFull` sentinel. The listing update was converted from a plain
+`kv.Put` to a CAS loop (`Get` → validate team capacity + assign `TeamSlot` +
+append → `kv.Update(rev)` → retry on conflict); the roster entry is published
+only after the CAS commit. Both-teams-full reuses the existing roster-full →
+`starting` transition unchanged.
+
+### 8.4 `internal/engine`
+
+**Fields and construction.** `Engine` gains `teamIdx`/`teamSlot`/`teamSize`,
+`eliminatedTeam map[string]int`, `teamOutcomeDone bool`, and `expectedGarbage
+int` (all specified in §3.1 above). `New(..., playerIdx, teamIdx, teamSlot)`
+takes the `JoinResult` fields. The `sharedBoard()` helper (`coop || teams`)
+replaces most former `ModeCooperative` checks — move routing
+(`attemptMove` → `attemptMoveCoop`), lock/hard-drop/line-clear merge-retry,
+anchor shifting on clears, shared level sync.
+
+**`Start()` teams branch.** Board dims
+`TeamBoardWidth(teamSize) × TeamTotalRows(teamSize)`; coop-style RNG
+(`rng.New(meta.Seed)` with per-player local `pieceIdx` starting at 0 — every
+player draws the full deterministic 7-bag, so both teams see the identical,
+fair sequence); `cellSubject`/`cellFilterSubject` route to
+`TeamCellSubject(gameID, e.teamIdx, …)`; `spawnPiece` offsets the spawn column
+by `teamSlot × StandardWidth` (the within-team section, NOT the global
+playerIdx). Instead of the competitive roster/opponent consumers, teams starts
+exactly ONE extra consumer over the opposing team's shared board
+(`startTeamBoardConsumer(ctx, 1-e.teamIdx)`), whose playfield lives in
+`opponentPlayfields` under `TeamBoardKey(team)` (`"team-<idx>"`) so
+`OpponentSnapshots` flows to the UI unchanged. The roster is fixed before the
+game starts and elimination events carry the player's team, so no roster
+consumer is needed; spectators (teamIdx 0 by default) consume team 0 as their
+"own" board and team 1 via the team-board consumer.
+
+**Elimination (`handleTeamTopOut`).** `handleTopOut(ctx, locked bool)` routes
+teams to `handleTeamTopOut`, which implements per-player elimination while the
+team plays on:
+
+1. Under `e.mu`, set `hadActivePiece = false` BEFORE publishing the vacate —
+   the vacate drives our active-cell count to zero and must not read as a
+   lock-in (which would spawn a next piece for an eliminated player). The
+   consumer-side guard (lock-in detection gated on `getMode() == ModePlayer`,
+   §3.1) catches the echo for the same reason.
+2. Project the removal of our own active cells (`ProjectMove(affected, nil,
+   e.playerIdx)` → `diffCells`) and mark ourselves in `eliminatedPlayers` /
+   `eliminatedTeam`.
+3. Publish the vacate via merge-retry (shared board — the skip rule protects
+   teammates' in-flight pieces), so teammates don't play around a dead piece.
+4. Publish `EventGameOver{PlayerID, Team, Score, PieceCount}`, transition to
+   spectator with `Won=false` (interim — flips to won if the team prevails),
+   and emit `UpdatePlayerEliminated{EliminatedPlayerID, Team}`. NO
+   `transitionGameToFinished` here — the game only finishes when a whole team
+   is dead.
+
+**Outcome (`handleTeamGameOverEvent`).** Every engine processes every
+elimination event (including the echo of its own): record the sender in the
+elimination maps, recount per-team eliminations, and decide the outcome
+exactly once (`teamOutcomeDone`, set under `e.mu`). The events subject is one
+ordered stream, so all engines see the same elimination order and reach the
+same verdict. When the OTHER team is dead: every member of our team —
+including already-eliminated members — transitions with `Won=true`, and each
+winning `initialMode == ModePlayer` engine calls the CAS-deduped
+`transitionGameToFinished` (idempotent: finished→archived CAS plus an
+already-finished check). An `UpdateGameStatus` "finished" is emitted either
+way so an eliminated loser's interim message resolves. A defensive draw branch
+(both teams read as dead — shouldn't happen on an ordered stream) still makes
+SOMEONE finish the game so it archives.
+
+**Line clears (`handleLockIn` teams arm, `consumer.go`).** Score `teamSize ×
+lines` (coop scoring within the team); publish
+`EventLineClear{PlayerID, Team, Score, LinesCleared}` — teammates fold in the
+score AND the line count, keeping every teammate's level/gravity in sync —
+followed by `EventShrink{PlayerID, PlayerIdx, Team, TargetTeam: 1−teamIdx,
+RowsRemoved: lines}` aimed at the opposing team. `handleGameEvent` branches on
+teams for all three event kinds (`events.go` adds `GameEvent.Team` +
+`GameEvent.TargetTeam`, `LinesCleared` set on team clears, and
+`EngineUpdate.Team`).
+
+**Shrink application (`applyTeamShrink`) — THE publish-path novelty.** Unlike
+competitive's `applyOpponentShrink` (single writer per board → authoritative
+NoCAS), every ALIVE member of the target team receives the same `EventShrink`
+and races to apply the identical transform to the same subjects
+(`ev.TargetTeam == e.teamIdx && getMode() == ModePlayer`; eliminated members
+skip it). Two mechanisms make the race safe:
+
+- **Idempotency guard:** `expectedGarbage` (under `e.mu`) accumulates the rows
+  owed to this board across all shrink events; the deficit is
+  `expectedGarbage − e.playfield.AdversarialRowCount()`. Garbage rows are
+  permanent and bottom-anchored, so the count converges monotonically toward
+  the target — `deficit <= 0` means the shift (ours or a teammate's) already
+  landed and the loop stops.
+- **Recompute-on-CAS-failure:** the projection (`ProjectShrinkShared(deficit,
+  causerIdx)` → `changedCells`, under `e.mu`) is published WITH per-subject
+  CAS (`PublishMoveAtomically`). On `ErrCASFailure` the projection is thrown
+  away ENTIRELY: wait on `e.cellUpdated` (capped per-player-offset backoff
+  desynchronizing teammates), re-check the guard, and RECOMPUTE from fresh
+  state. **Never merge-retry** — a blind merge would republish a stale shift
+  after a teammate's shift committed and double-shift the stack; recomputing
+  cannot. Any batch built from a stale board necessarily carries a stale
+  expectation on at least one garbage-row cell (the winning batch wrote the
+  full board width), so CAS rejects it.
+
+Exactly one teammate's batch commits per deficit; the rest converge and stop.
+Bounded at 16 attempts; ends with a full-board re-render (the shift touches
+most of the board). Because the projection overlays active pieces in place,
+the batch never touches piece cells and no spurious lock-in can fire on any
+teammate.
+
+### 8.5 `internal/archive`
+
+`playerTeams` maps playerID → team from the roster listing snapshot (the
+authoritative source), with `EventGameOver.Team` as the fallback for players
+missing from it. The losing team is the one whose members ALL sent
+`EventGameOver`; `WinningTeam` is the other index (`-1` if both or neither
+read as dead — draw). Every winning-team member gets `Winner: true` (the
+eliminated ones included) and every `PlayerResult` carries `Team`; the record
+carries `TeamSize` and `WinningTeam`. `TotalScore` stays unset for teams
+(it remains cooperative-only).
+
+### 8.6 `internal/nativeui`
+
+- **Lobby:** the create-game form gains a "teams" radio and a per-team count
+  editor (the count label flips to "Per team:"); `createGame` converts the
+  per-team count to `playerCount = TeamCount × teamSize`. Teams listings show
+  per-team join buttons (`gameRowBtns.joinA`/`joinB`, "Join A (n/size)"),
+  each hidden when its team is full. The archive line renders teams results
+  as "teams · A 🏆 alice, bob · B carol, dave".
+- **Game screen:** roster line and legend grouped under TEAM A / TEAM B
+  headers (swatch colors stay GLOBAL roster colors); HUD shows
+  "Teams · TEAM A/B"; the opponent sidebar is the opposing team's shared
+  board labelled "OPPOSING TEAM"; spectators get `spectatorTeamBoards` —
+  both teams' boards side by side. The `gameOverBox` shows an interim
+  "YOU'RE OUT / Your team plays on" while the game is still in progress
+  (driven by `UpdatePlayerEliminated` + the engine's interim `Won=false`
+  spectator transition), then "YOUR TEAM WON!" / "YOUR TEAM LOST" once the
+  outcome lands.
+- **Lifecycle:** `joinGame(gameID, team)` threads `lobby.JoinGame`'s
+  `JoinResult` into `engine.New(..., res.PlayerIdx, res.Team, res.TeamSlot)`;
+  spectate passes `0, 0, 0`.
+
+### 8.7 Tests
+
+- `internal/config/config_test.go` — team subject builders and board-dimension
+  helpers (see §1.1 test list).
+- `internal/game/teamshrink_test.go` — `ProjectShrinkShared` holds pieces in
+  place (no lift, overtaken piece left to crush); `AdversarialRowCount`
+  monotonic counting including partially-filled garbage rows.
+- `internal/lobby/teamjoin_test.go` — slot assignment in join order,
+  `ErrTeamFull`, rejoin idempotence, both-teams-full → `starting`, and
+  concurrent joins racing the CAS loop never over-fill a team.
+- `internal/engine/teams_test.go` — 2v2 integration against an embedded
+  server: a clear's garbage lands on the opposing board EXACTLY once with
+  both receivers racing `applyTeamShrink`, and never on the clearing team's
+  board; teammates fold the score; an elimination leaves the team playing on,
+  the second elimination ends the game with `Won=true` on every winner
+  (eliminated winner included) and meta `finished`.
+
+---
+
 ## Cross-Cutting Implementation Rules
 
 These rules apply throughout all phases:
@@ -1927,8 +2285,9 @@ These rules apply throughout all phases:
    (it knows nothing about modes or players). The engine builds each subject with the
    mode-appropriate scheme via its `cellSubject(row, col)` helper — cooperative uses
    `config.CoopCellSubject` (shared board, no player token), competitive uses
-   `config.CompetitiveCellSubject` (scoped by the moving player's UUID). The two modes'
-   subject schemes are entirely separate, not parameterisations of one builder.
+   `config.CompetitiveCellSubject` (scoped by the moving player's UUID), teams uses
+   `config.TeamCellSubject` (shared board scoped by team index, no player token). The
+   modes' subject schemes are entirely separate, not parameterisations of one builder.
 
 7. **Test NATS server.** All integration tests use `testutil.StartServer(t)`, not
    a running external NATS instance. Tests are hermetic.
@@ -1961,4 +2320,8 @@ These rules apply throughout all phases:
    only because `spawnPiece` offsets each spawn by `playerIdx × StandardWidth`, so
    each player's pieces appear in their own section of the board. Each engine tracks
    its own `pieceIdx` locally (starting at 0). The UI renders the single wide
-   playfield directly — no concatenation of separate playfields.
+   playfield directly — no concatenation of separate playfields. Teams mode reuses
+   this entire shared-board machinery per team (`sharedBoard()` is true for coop
+   AND teams): each team's board is `teamSize × StandardWidth` wide, sections are
+   keyed by `teamSlot`, and `Cell.PlayerIdx` carries the GLOBAL roster index. See
+   Phase 8.

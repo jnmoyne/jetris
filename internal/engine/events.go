@@ -16,7 +16,7 @@ const (
 	UpdateLevel
 	UpdateGameStatus
 	UpdateCountdown
-	UpdatePlayerEliminated // competitive: a player was eliminated
+	UpdatePlayerEliminated // competitive/teams: a player was eliminated
 	UpdateCASFlash         // a CAS failure flash should be rendered
 	UpdatePing             // a new publish→echo round-trip measurement
 )
@@ -29,8 +29,9 @@ type EngineUpdate struct {
 	Level              int
 	GameStatus         string
 	Countdown          int      // seconds remaining (0 = GO!)
-	Won                bool     // competitive: true if this player won
-	EliminatedPlayerID string   // competitive: which player was eliminated
+	Won                bool     // competitive/teams: true if this player('s team) won
+	EliminatedPlayerID string   // competitive/teams: which player was eliminated
+	Team               int      // teams: team of the eliminated player (UpdatePlayerEliminated)
 	OpponentID         string        // which opponent's board changed (UpdateOpponentField)
 	FlashCells         [][2]int      // cells to flash (UpdateCASFlash)
 	FlashPlayerIdx     int           // player index for flash color
@@ -62,6 +63,8 @@ type GameEvent struct {
 	Score        int       `json:"score,omitempty"`
 	PieceCount   uint64    `json:"piece_count,omitempty"`
 	PlayerIdx    int       `json:"player_idx,omitempty"` // causer's index for EventShrink
+	Team         int       `json:"team"`                 // teams: sender's team (0 = A, 1 = B)
+	TargetTeam   int       `json:"target_team"`          // teams: receiving team for EventShrink
 }
 
 // MoveType represents a player move.

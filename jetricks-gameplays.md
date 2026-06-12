@@ -36,8 +36,8 @@ Each player has a color associated with it: used for the outline color of the pi
 |----------|-------|
 | Total rows | 28 |
 | Headroom rows | 4 (rows 0-3, not rendered) |
-| Visible rows | 24 (rows 4-27) in cooperative mode, for competitive this number depends on the number of players in the game |
-| Standard width | 10 columns in competitive mode; for cooperative the width is `playerCount × 10` |
+| Visible rows | 24 (rows 4-27) in cooperative mode; for competitive and teams this number depends on the number of players in the game |
+| Standard width | 10 columns in competitive mode; for cooperative the width is `playerCount × 10`; for teams each team's board is `teamSize × 10` |
 
 **Cell states:**
 
@@ -46,9 +46,9 @@ Each player has a color associated with it: used for the outline color of the pi
 | Empty | false | false | Nothing in this cell |
 | Active | false | true | Part of a falling piece |
 | Locked | true | false | Settled piece, permanent until line clear |
-| Adversarial | true | false | Permanent garbage cell added by a competitive shrink (the `Adversarial` flag is set); its row can never be completed or cleared |
+| Adversarial | true | false | Permanent garbage cell added by a competitive or teams shrink (the `Adversarial` flag is set); its row can never be completed or cleared |
 
-In cooperative mode, active cells carry a `PlayerIdx` field (0-indexed) identifying which player's piece they belong to.
+On shared boards (cooperative, teams), active cells carry a `PlayerIdx` field (0-indexed, global across the whole game) identifying which player's piece they belong to.
 
 ---
 
@@ -96,7 +96,7 @@ with Gio's `key.FocusFilter` + `key.FocusCmd`).
 
 ### Gravity
 
-Gravity ticks at the standard speed curve interval (see Section 6). On each tick, the engine attempts to move the piece down one row.
+Gravity ticks at the standard speed curve interval (see Section 7). On each tick, the engine attempts to move the piece down one row.
 
 **Blocked by locked cells or bounds:** The piece locks immediately (standard Tetris behavior).
 
@@ -154,7 +154,7 @@ There is a single shared score visible to all players. When any player clears li
 
 ### Level Progression
 
-Level = `totalLinesCleared / 10`, capped at 19. Level affects gravity speed (see Section 6). Level is computed independently by each engine from its local `totalLines` counter, which increases on both local clears and received `EventLineClear` events.
+Level = `totalLinesCleared / 10`, capped at 19. Level affects gravity speed (see Section 7). Level is computed independently by each engine from its local `totalLines` counter, which increases on both local clears and received `EventLineClear` events.
 
 ### Game Over
 
@@ -226,7 +226,55 @@ The game continues until only **one player remains**. When a player tops out (ei
 
 ---
 
-## 5. Game Lifecycle
+## 5. Teams Mode
+
+Two teams of equal size ("A" = team 0, "B" = team 1). **Within a team, play is cooperative** — teammates share one wide board with all the cooperative-mode mechanics (per-player sections, shared pieces as obstacles, merge-retry on the shared subjects). **Between the teams, play is competitive** — each team has its own independent board, line clears send unclearable garbage to the opposing team's board, and the last team with a player standing wins.
+
+### Players & Teams
+
+`TeamSize` players per team; `PlayerCount = 2 × TeamSize` total. Players **choose their team when joining** (Join A / Join B in the lobby); a join on a full team is rejected. The game transitions to `starting` when both teams are full. Each player keeps a **global** roster index (`PlayerIdx`, used for piece ownership and colors) plus a **team slot** (0..TeamSize-1, join order within the team) that selects their spawn section on the team board.
+
+### Playfield
+
+One shared board per team: width `teamSize × 10`, visible rows `24 + teamSize` (plus 4 headroom rows). Like competitive, the extra rows leave room for garbage; the producer here is the opposing team's `teamSize` piece-locking players. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the two boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
+
+### Piece Spawning
+
+Coop rules per team: player at team slot N spawns centered in their section at column `N×10 + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so both teams see the identical, fair piece sequence.
+
+### Movement, Gravity, Hard Drop, Lock-In
+
+Identical to cooperative mode, scoped to the team board: teammates' active pieces are obstacles, a piece blocked downward only by a teammate's active piece waits instead of locking, and all engine-driven shared-cell writes use CAS merge-retry.
+
+### Line Clears & Scoring
+
+Coop scoring within the team: a clear scores `teamSize × lines` to the **team score**; every teammate folds the clearing player's score **and line count** from the line-clear event, so the team's level (and gravity speed) stays in sync for all members. The opposing team's clears do not affect your score.
+
+### Garbage Attack (team shrink)
+
+When a team clears N lines, N permanent adversarial rows are added at the bottom of the **opposing team's** shared board and that board's locked stack shifts up — the competitive shrink, applied to a shared board. Two deliberate differences from the competitive shrink, both consequences of the board being shared:
+
+- **Application is race-managed, not single-writer.** Every alive member of the receiving team gets the shrink event and races to apply the identical transform. The application is guarded by an idempotency check (cumulative expected garbage vs. the count of bottom adversarial rows actually on the board — monotonic, since garbage is permanent and bottom-anchored) and published **with** per-subject CAS; on CAS failure the projection is thrown away and **recomputed from fresh state** (never blind-retried, which could double-shift the stack). Exactly one member's shift commits; the rest observe the deficit reach zero and stop.
+- **No piece rides up.** Falling pieces (all of them, the applier's own included) hold their on-screen position while the stack rises around them. A piece overtaken by the risen stack sits in the holes its overlay preserved and simply **locks where it is on its next blocked drop** ("crushed") — it is never carried upward, and a shrink alone never tops a player out. Top-out on a full team board happens at spawn time instead. (Lifting pieces on a multi-writer board would mean relocating *other* players' mid-flight pieces from a possibly-stale snapshot; holding every piece in place keeps the transform pure and symmetric across whichever teammate wins the application race.)
+
+A known cosmetic artifact (same class as the documented coop merge-skip): the winning shift batch preserves teammates' active cells in place, so a shifted locked cell that would land under a teammate's piece is skipped; when that piece later moves away, the cell reads empty. Holes in the risen stack, never board corruption — per-cell sequence authority converges every replica. A garbage row therefore stays a garbage row as long as it holds at least one adversarial cell (crushed pieces can fill, and vacated overlays can hollow, some of its cells).
+
+### Elimination & Game Over
+
+**A player out is not a team out.** When a player tops out (their next spawn cannot be placed), they vacate any of their active cells from the team board, publish their elimination, and become a spectator of their own team's board — but their teammates play on. The UI shows "YOU'RE OUT — your team plays on" until the game resolves.
+
+A team **loses when ALL its members have topped out**. At that point every member of the other team — alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Losers see "YOUR TEAM LOST". All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines.
+
+### Visual Indicators
+
+- HUD shows `Teams · TEAM A/B`, the team score, and the team level
+- Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
+- The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
+- Spectators see both team boards side by side
+
+---
+
+## 6. Game Lifecycle
 
 ```
 created → starting → [countdown] → in_progress → finished → archived
@@ -239,7 +287,7 @@ created → starting → [countdown] → in_progress → finished → archived
 | From | To | Trigger |
 |------|----|---------|
 | — | created | Player clicks "Create Game" |
-| created | starting | All player slots filled (roster full) |
+| created | starting | All player slots filled (roster full; in teams mode, both teams full) |
 | starting | [countdown] | All players click READY |
 | [countdown] | in_progress | 5-second countdown completes |
 | in_progress | finished | Game over (top-out) |
@@ -275,9 +323,11 @@ Published to `JETRICKS_ARCHIVE` stream when a game finishes:
 }
 ```
 
+Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or not a team game), and a `team` field on each player result. Every member of the winning team has `winner: true`, eliminated members included — a team win is shared.
+
 ---
 
-## 6. Gravity Speed Curve
+## 7. Gravity Speed Curve
 
 Standard Tetris Guideline gravity intervals:
 
@@ -300,7 +350,7 @@ Standard Tetris Guideline gravity intervals:
 
 ---
 
-## 7. Spectate Mode
+## 8. Spectate Mode
 
 Any player in the lobby can spectate an in-progress game:
 - Engine starts in `ModeSpectator` (no gravity, no move input)
@@ -312,7 +362,7 @@ Any player in the lobby can spectate an in-progress game:
 
 ---
 
-## 8. CAS (Compare-And-Swap) Strategy
+## 9. CAS (Compare-And-Swap) Strategy
 
 All playfield state is stored in JetStream as **one message per cell** — each (row, col) position has its own subject carrying that cell's current content (an empty cell marshals to `{}`, the vacate payload). Concurrent writes are managed via per-subject CAS (`Nats-Expected-Last-Subject-Sequence`) on atomic batch publishes — a multi-cell move either commits all its cells or none, never a torn intermediate. Every publish path diffs its projection against the live board and publishes only the cells that changed (a move is typically 4-8 cell messages), and within every batch cells are ordered by their new content — active first, locked/occupied second, empty vacates last — so a relocating piece never transiently has zero active cells and lock-in fires exactly once, at the last vacate, with all landed cells already applied.
 
@@ -342,15 +392,27 @@ In **competitive mode** each player owns their cell subjects, so — with gravit
 
 In **cooperative mode** the players share the same cell subjects, but with per-cell granularity only writes to the **same cell** actually contend — two players moving in different parts of the board (even on the same row) never conflict, so contention is rare. On CAS failure the engine refetches the latest message for every affected cell in one batched round trip and merges per cell: this player's content is kept except where the stream now holds the other player's mid-flight (active) piece — those cells are skipped entirely, never overwritten or vacated. It then retries the atomic batch with refreshed per-subject CAS expectations (up to 16 attempts, with a short per-player-offset backoff between tries that breaks lockstep with the other player's retry loop).
 
+**Teams mode** uses the cooperative scheme verbatim within each team's board (same merge-retry, same skip rule — "another player's active cell" naturally means a teammate's).
+
 Locks are published as no-CAS authoritative writes (see below) and so cannot fail CAS.
+
+### Shared-board shrink (teams): recompute-on-CAS-failure with a garbage-row-count guard
+
+A teams garbage attack is the one write that is **neither** single-writer authoritative (every alive member of the receiving team gets the event and may apply it) **nor** merge-retry safe (a blind merge would republish a *stale* stack shift after a teammate's shift already committed, double-shifting the board). It gets its own discipline:
+
+- **Idempotency guard:** each engine accumulates the garbage rows its team is owed (`expectedGarbage`) and compares it to the number of garbage rows actually at the bottom of the converged board. Garbage is permanent and bottom-anchored, so that count only grows toward the target; a deficit of zero means the shift (anyone's) already landed and there is nothing to do. A row counts as a garbage row while it holds **at least one** adversarial cell — crushed pieces can fill, and vacated piece overlays can hollow, some of its cells.
+- **CAS with full recompute:** the shift batch is published *with* per-subject CAS expectations. On failure the projection is discarded; the engine waits for its consumer to converge, re-checks the deficit guard, and re-projects from fresh state (bounded retries with per-player-offset waits). Any batch computed from a stale or torn board necessarily carries a stale expectation on at least one bottom-row cell — the winning batch wrote the full board width — so CAS rejects it. Exactly one teammate's shift commits per deficit.
+- **No piece relocation:** the projection overlays every active piece at its current position (see Teams Mode), so the batch never touches piece cells, no lock-in can fire spuriously on any teammate, and the transform is identical regardless of which teammate wins the race.
+
+This guard also makes event replay safe: an engine that (re)starts mid-game refetches the board first, so replayed shrink events find their garbage already on the board and skip.
 
 ### Authoritative writes (lock, hard-drop landing, line clear, opponent-shrink application)
 
-**No CAS.** The publisher's view is the new ground truth. The changed cells are published as a single atomic no-CAS batch via `PublishCellsAtomicallyNoCAS` so consumers either see the entire authoritative state change at once or not at all. The same content-ordered batching applies (active cells first, occupied second, vacates last), so e.g. a competitive shrink re-stamps the falling piece before the rising stack and vacates last.
+**No CAS.** The publisher's view is the new ground truth. The changed cells are published as a single atomic no-CAS batch via `PublishCellsAtomicallyNoCAS` so consumers either see the entire authoritative state change at once or not at all. The same content-ordered batching applies (active cells first, occupied second, vacates last), so e.g. a competitive shrink re-stamps the falling piece before the rising stack and vacates last. (The teams shrink is the exception — it is CAS-guarded, see above — because the receiving board has multiple writers.)
 
 ---
 
-## 9. Real-Time UI Updates
+## 10. Real-Time UI Updates
 
 **Principle:** All UI data backed by JetStream flows through ordered consumers into the
 engine's and lobby's `Updates` channels — never polling or periodic refresh. The native

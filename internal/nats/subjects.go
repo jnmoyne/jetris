@@ -10,6 +10,8 @@ var (
 	CoopCellSubjectFilter        = config.CoopCellSubjectFilter
 	CompetitiveCellSubject       = config.CompetitiveCellSubject
 	CompetitiveCellSubjectFilter = config.CompetitiveCellSubjectFilter
+	TeamCellSubject              = config.TeamCellSubject
+	TeamCellSubjectFilter        = config.TeamCellSubjectFilter
 	MetaSubject                 = config.MetaSubject
 	RosterSubject               = config.RosterSubject
 	EventsSubject               = config.EventsSubject

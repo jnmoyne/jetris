@@ -30,11 +30,19 @@ func (a *App) layoutLobby(gtx C) D {
 	}
 	if a.createBtn.Clicked(gtx) {
 		mode := config.ModeCooperative
-		if a.modeEnum.Value == "competitive" {
+		switch a.modeEnum.Value {
+		case "competitive":
 			mode = config.ModeCompetitive
+		case "teams":
+			mode = config.ModeTeams
 		}
 		count, err := strconv.Atoi(strings.TrimSpace(a.countEd.Text()))
-		if err != nil || count < 2 {
+		if mode == config.ModeTeams {
+			// For teams the count editor means players PER TEAM.
+			if err != nil || count < 1 {
+				count = 1
+			}
+		} else if err != nil || count < 2 {
 			count = 2
 		}
 		go a.createGame(mode, count)
@@ -53,7 +61,15 @@ func (a *App) layoutLobby(gtx C) D {
 		btns := a.gameButtons(g.GameID)
 		if btns.join.Clicked(gtx) {
 			id := g.GameID
-			go a.joinGame(id)
+			go a.joinGame(id, 0)
+		}
+		if btns.joinA.Clicked(gtx) {
+			id := g.GameID
+			go a.joinGame(id, 0)
+		}
+		if btns.joinB.Clicked(gtx) {
+			id := g.GameID
+			go a.joinGame(id, 1)
 		}
 		if btns.spectate.Clicked(gtx) {
 			id := g.GameID
@@ -157,6 +173,24 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 
 // archiveLine summarizes a finished game for the history list.
 func archiveLine(r config.ArchiveRecord) string {
+	if r.Mode == config.ModeTeams {
+		// "teams · A 🏆 alice, bob · B carol, dave"
+		parts := make([]string, 0, config.TeamCount)
+		for t := 0; t < config.TeamCount; t++ {
+			var members []string
+			for _, p := range r.Players {
+				if p.Team == t {
+					members = append(members, p.PlayerID)
+				}
+			}
+			tag := ""
+			if r.WinningTeam == t {
+				tag = " 🏆"
+			}
+			parts = append(parts, fmt.Sprintf("%s%s %s", teamName(t), tag, strings.Join(members, ", ")))
+		}
+		return fmt.Sprintf("teams · %s", strings.Join(parts, " · "))
+	}
 	players := append([]config.PlayerResult(nil), r.Players...)
 	sort.Slice(players, func(i, j int) bool { return players[i].Score > players[j].Score })
 	parts := make([]string, 0, len(players))
@@ -174,6 +208,10 @@ func archiveLine(r config.ArchiveRecord) string {
 }
 
 func (a *App) createRow(gtx C) D {
+	countLabel := "Players:"
+	if a.modeEnum.Value == "teams" {
+		countLabel = "Per team:"
+	}
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			rb := material.RadioButton(a.th, &a.modeEnum, "cooperative", "Co-op")
@@ -186,8 +224,14 @@ func (a *App) createRow(gtx C) D {
 			rb.Color = colFg
 			return rb.Layout(gtx)
 		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D {
+			rb := material.RadioButton(a.th, &a.modeEnum, "teams", "Teams")
+			rb.Color = colFg
+			return rb.Layout(gtx)
+		}),
 		layout.Rigid(spacer(12)),
-		layout.Rigid(a.body("Players:", colMuted)),
+		layout.Rigid(a.body(countLabel, colMuted)),
 		layout.Rigid(spacer(4)),
 		layout.Rigid(func(gtx C) D {
 			gtx.Constraints.Max.X = gtx.Dp(48)
@@ -201,33 +245,69 @@ func (a *App) createRow(gtx C) D {
 
 func (a *App) gameRow(gtx C, g lobby.GameListing) D {
 	btns := a.gameButtons(g.GameID)
-	canJoin := (g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting) && len(g.Players) < g.PlayerCount
+	joinable := g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting
+	canJoin := joinable && len(g.Players) < g.PlayerCount
 	canSpectate := g.Status == config.GameStatusInProgress ||
-		((g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting) && len(g.Players) >= g.PlayerCount)
+		(joinable && len(g.Players) >= g.PlayerCount)
 
+	teams := g.Mode == config.ModeTeams
 	var names []string
-	for _, p := range g.Players {
-		n := p.Name
-		if p.Ready {
-			n += " ✓"
+	if teams {
+		// Group the roster by team: "A: alice, bob · B: carol"
+		for t := 0; t < config.TeamCount; t++ {
+			var team []string
+			for _, p := range g.Players {
+				if p.Team != t {
+					continue
+				}
+				n := p.Name
+				if p.Ready {
+					n += " ✓"
+				}
+				team = append(team, n)
+			}
+			names = append(names, fmt.Sprintf("%s: %s", teamName(t), strings.Join(team, ", ")))
 		}
-		names = append(names, n)
+	} else {
+		for _, p := range g.Players {
+			n := p.Name
+			if p.Ready {
+				n += " ✓"
+			}
+			names = append(names, n)
+		}
 	}
 	info := fmt.Sprintf("%s · %s · %d/%d · %s", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount, g.Status)
 
+	sep := ", "
+	if teams {
+		sep = " · "
+	}
 	return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(a.body(info, colFg)),
-					layout.Rigid(a.body(strings.Join(names, ", "), colMuted)),
+					layout.Rigid(a.body(strings.Join(names, sep), colMuted)),
 				)
 			}),
 			layout.Rigid(func(gtx C) D {
-				if canJoin {
-					return material.Button(a.th, &btns.join, "Join").Layout(gtx)
+				if !canJoin {
+					return D{}
 				}
-				return D{}
+				if teams {
+					// One join button per team, each enabled while that team has room.
+					return layout.Flex{}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							return a.teamJoinButton(gtx, &btns.joinA, g, 0)
+						}),
+						layout.Rigid(spacer(6)),
+						layout.Rigid(func(gtx C) D {
+							return a.teamJoinButton(gtx, &btns.joinB, g, 1)
+						}),
+					)
+				}
+				return material.Button(a.th, &btns.join, "Join").Layout(gtx)
 			}),
 			layout.Rigid(func(gtx C) D {
 				if canSpectate {
@@ -241,6 +321,25 @@ func (a *App) gameRow(gtx C, g lobby.GameListing) D {
 			}),
 		)
 	})
+}
+
+// teamJoinButton renders the "Join A (1/2)"-style button for one team of a
+// teams-mode listing, hidden once that team is full.
+func (a *App) teamJoinButton(gtx C, btn *widget.Clickable, g lobby.GameListing, team int) D {
+	n := g.TeamMemberCount(team)
+	if n >= g.TeamSize {
+		return D{}
+	}
+	label := fmt.Sprintf("Join %s (%d/%d)", teamName(team), n, g.TeamSize)
+	return material.Button(a.th, btn, label).Layout(gtx)
+}
+
+// teamName renders a team index as its display letter.
+func teamName(team int) string {
+	if team == 0 {
+		return "A"
+	}
+	return "B"
 }
 
 func (a *App) handleChatSubmit(gtx C) {

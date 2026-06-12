@@ -38,6 +38,7 @@ type GameMode int
 const (
 	ModeCooperative GameMode = iota
 	ModeCompetitive
+	ModeTeams
 )
 
 func (m GameMode) String() string {
@@ -46,10 +47,16 @@ func (m GameMode) String() string {
 		return "cooperative"
 	case ModeCompetitive:
 		return "competitive"
+	case ModeTeams:
+		return "teams"
 	default:
 		return "unknown"
 	}
 }
+
+// TeamCount is the number of teams in a teams-mode game. Team indices are
+// 0 ("A") and 1 ("B").
+const TeamCount = 2
 
 type GameStatus string
 
@@ -66,6 +73,7 @@ type GameMeta struct {
 	GameID      string     `json:"game_id"`
 	Mode        GameMode   `json:"mode"`
 	PlayerCount int        `json:"player_count"`
+	TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
 	Seed        uint64     `json:"seed"`
 	Status      GameStatus `json:"status"`
 	CreatorID   string     `json:"creator_id"`
@@ -82,6 +90,7 @@ type PlayerResult struct {
 	Score      int    `json:"score"`
 	PieceCount uint64 `json:"piece_count"`
 	Winner     bool   `json:"winner,omitempty"`
+	Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
 }
 
 // ArchiveRecord is published to the archive stream when a game finishes.
@@ -93,6 +102,8 @@ type ArchiveRecord struct {
 	StartedAt   time.Time      `json:"started_at"`
 	FinishedAt  time.Time      `json:"finished_at"`
 	TotalScore  int            `json:"total_score,omitempty"` // cooperative
+	TeamSize    int            `json:"team_size,omitempty"`   // teams mode
+	WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
 }
 
 const (
@@ -125,6 +136,29 @@ func CompetitiveTotalRows(playerCount int) int {
 // CompetitiveVisibleRowStart returns the first visible row index for a competitive game.
 // Always equals HeadroomRows (headroom is constant regardless of player count).
 func CompetitiveVisibleRowStart(playerCount int) int {
+	return HeadroomRows
+}
+
+// TeamBoardWidth returns the width of one team's shared board: one standard
+// 10-column section per teammate, like the cooperative board.
+func TeamBoardWidth(teamSize int) int {
+	return teamSize * StandardWidth
+}
+
+// TeamVisibleRows returns the visible rows for a team board. Like competitive,
+// the board grows one row per garbage-producing player on the opposing team
+// (which has teamSize players), leaving room for adversarial rows.
+func TeamVisibleRows(teamSize int) int {
+	return VisibleRows + teamSize
+}
+
+// TeamTotalRows returns the total rows (headroom + visible) for a team board.
+func TeamTotalRows(teamSize int) int {
+	return HeadroomRows + TeamVisibleRows(teamSize)
+}
+
+// TeamVisibleRowStart returns the first visible row index for a team board.
+func TeamVisibleRowStart(teamSize int) int {
 	return HeadroomRows
 }
 
@@ -167,6 +201,21 @@ func CompetitiveCellSubject(gameID, playerID string, row, col int) string {
 // one competitive player's board.
 func CompetitiveCellSubjectFilter(gameID, playerID string) string {
 	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell.>"
+}
+
+// TeamCellSubject is the subject one cell (row, col) of one team's shared
+// board is published to in teams mode. Like the cooperative scheme the subject
+// carries no player token — all teammates publish to and consume from the same
+// cell subjects and per-cell ownership lives in the payload via Cell.PlayerIdx —
+// but the board is scoped by team index so the two teams' boards are disjoint.
+func TeamCellSubject(gameID string, team, row, col int) string {
+	return "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+}
+
+// TeamCellSubjectFilter is the wildcard filter matching every cell of one
+// team's shared board.
+func TeamCellSubjectFilter(gameID string, team int) string {
+	return "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
 }
 
 func MetaSubject(gameID string) string {

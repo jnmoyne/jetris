@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"jetricks/internal/config"
 	"jetricks/internal/game"
 )
 
@@ -40,7 +39,7 @@ func (e *Engine) runInput(ctx context.Context) {
 			// races our own moves.
 			_ = e.attemptMove(ctx, MoveDown, true)
 
-			if e.gameMode == config.ModeCooperative {
+			if e.sharedBoard() {
 				if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {
 					level = newLevel
 				}
@@ -59,7 +58,9 @@ func (e *Engine) runInput(ctx context.Context) {
 func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
 	e.mu.Lock()
 
-	if e.gameMode == config.ModeCooperative {
+	if e.sharedBoard() {
+		// Coop and teams share the board with other players' active pieces:
+		// same collision rules, same merge-retry publish paths.
 		return e.attemptMoveCoop(ctx, move, internal)
 	}
 	return e.attemptMoveStandard(ctx, move, internal)

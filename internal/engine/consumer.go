@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"time"
 
 	"jetricks/internal/config"
 	"jetricks/internal/game"
@@ -68,8 +70,13 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				// and if that piece locks before the next echo (runInput races ahead
 				// of the consumer on fast drops) its lock-in is missed and the player
 				// stops spawning entirely.
+				//
+				// Gated on ModePlayer: an engine that is no longer playing (a
+				// spectator, or a teams-mode player whose elimination vacated
+				// their cells) must never run lock-in side effects — publishing
+				// clears or spawning — off its own echoes.
 				hasActive := pf.ActivePieceForPlayer(e.playerIdx) != nil
-				if e.hadActivePiece && !hasActive {
+				if e.hadActivePiece && !hasActive && e.getMode() == ModePlayer {
 					e.handleLockIn(ctx)
 					hasActive = pf.ActivePieceForPlayer(e.playerIdx) != nil
 				}
@@ -102,29 +109,33 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		e.totalLines.Add(int64(len(completed)))
 
 		var scoreDelta int
-		if e.gameMode == config.ModeCooperative {
+		switch e.gameMode {
+		case config.ModeCooperative:
 			// Cooperative: score = number of players per line cleared
 			scoreDelta = e.playerCount * len(completed)
-		} else {
+		case config.ModeTeams:
+			// Teams: coop scoring within the team — players per line cleared
+			scoreDelta = e.teamSize * len(completed)
+		default:
 			// Competitive: score = number of lines cleared (simple count)
 			scoreDelta = len(completed)
 		}
 		e.score.Add(int64(scoreDelta))
 
-		// Compute the cleared/shifted projection without mutating e.playfield. In
-		// coop, remaining active cells get their AnchorRow shifted by len(completed)
-		// so other players' pieces land in the right anchor position.
-		shiftAnchors := e.gameMode == config.ModeCooperative
+		// Compute the cleared/shifted projection without mutating e.playfield. On
+		// shared boards, remaining active cells get their AnchorRow shifted by
+		// len(completed) so other players' pieces land in the right anchor position.
+		shiftAnchors := e.sharedBoard()
 		projected := e.playfield.ProjectClearRows(completed, shiftAnchors)
 
 		// Republish ONLY the cells the clear actually changed (a low stack
 		// changes just a few), not the whole visible range — this slashes the
-		// per-subject CAS contention on the shared coop board that was making
+		// per-subject CAS contention on the shared board that was making
 		// the merge-retry exhaust and drop the clear. handleLockIn holds e.mu,
 		// so reading e.playfield.Rows for the diff is safe.
 		changed := changedCells(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
-		if e.gameMode == config.ModeCooperative {
-			// Shared board: CAS+merge-retry so the shift can't clobber the other
+		if e.sharedBoard() {
+			// Shared board: CAS+merge-retry so the shift can't clobber another
 			// player's mid-flight piece with our snapshot. orderedCellKeys applies
 			// another player's shifted (active) piece cells before its old
 			// positions are vacated, so its active-cell count never hits zero and
@@ -135,8 +146,8 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			e.publishProjectedCellsNoCAS(ctx, changed, true)
 		}
 
-		// Update level in cooperative mode
-		if e.gameMode == config.ModeCooperative {
+		// Update level on shared boards (level is driven by the shared line total)
+		if e.sharedBoard() {
 			newLevel := game.Level(int(e.totalLines.Load()))
 			if int64(newLevel) != e.level.Load() {
 				e.level.Store(int64(newLevel))
@@ -158,6 +169,32 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 				Score:    scoreDelta,
 			}
 			data, _ := json.Marshal(ev)
+			_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
+		}
+
+		// Teams: notify teammates of the score AND line-count change (lines keep
+		// every teammate's level/gravity in sync), then send the garbage attack
+		// to the opposing team.
+		if e.gameMode == config.ModeTeams {
+			clearEv := GameEvent{
+				Kind:         EventLineClear,
+				PlayerID:     e.playerID,
+				Team:         e.teamIdx,
+				Score:        scoreDelta,
+				LinesCleared: len(completed),
+			}
+			data, _ := json.Marshal(clearEv)
+			_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
+
+			shrinkEv := GameEvent{
+				Kind:        EventShrink,
+				PlayerID:    e.playerID,
+				PlayerIdx:   e.playerIdx,
+				Team:        e.teamIdx,
+				TargetTeam:  1 - e.teamIdx,
+				RowsRemoved: len(completed),
+			}
+			data, _ = json.Marshal(shrinkEv)
 			_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
 		}
 
@@ -298,12 +335,36 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 			e.emitFullBoardRerender()
 		}
+		// Teams: same shared-board reasoning, scoped to OUR team's clears.
+		// Also fold the line count so every teammate's level/gravity stays in
+		// sync with the team's total. The opposing team's clears reach us as
+		// an EventShrink instead, and their board repaints via its consumer.
+		if e.gameMode == config.ModeTeams && ev.Team == e.teamIdx && ev.PlayerID != e.playerID {
+			e.score.Add(int64(ev.Score))
+			e.totalLines.Add(int64(ev.LinesCleared))
+			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
+			e.emitFullBoardRerender()
+		}
 	case EventShrink:
+		if e.gameMode == config.ModeTeams {
+			// Garbage lands on the TARGET team's shared board. Every alive
+			// member of that team races to apply it; the deficit guard in
+			// applyTeamShrink makes the application idempotent. Eliminated
+			// players and spectators never apply (their alive teammates do).
+			if ev.TargetTeam == e.teamIdx && e.getMode() == ModePlayer {
+				go e.applyTeamShrink(ctx, ev)
+			}
+			return
+		}
 		// Apply shrink from any OTHER player (not ourselves)
 		if ev.PlayerID != e.playerID {
 			go e.applyOpponentShrink(ctx, ev.RowsRemoved, ev.PlayerIdx)
 		}
 	case EventGameOver:
+		if e.gameMode == config.ModeTeams {
+			e.handleTeamGameOverEvent(ctx, ev)
+			return
+		}
 		if ev.PlayerID != e.playerID {
 			if e.gameMode == config.ModeCooperative {
 				// Cooperative: any player's game over ends the game for all
@@ -376,6 +437,159 @@ func (e *Engine) applyOpponentShrink(ctx context.Context, rowsToAdd int, causerI
 	e.emitFullBoardRerender()
 
 	if topOut {
-		e.handleTopOut(ctx)
+		e.handleTopOut(ctx, false)
 	}
+}
+
+// handleTeamGameOverEvent processes a teams-mode elimination event (any
+// player's, including the echo of our own). It tracks per-team elimination
+// counts and decides the game outcome exactly once: a team loses when ALL its
+// members have topped out, at which point every member of the other team —
+// alive or already eliminated — has won.
+//
+// The events subject is a single ordered stream, so all engines see the same
+// elimination order and reach the same verdict. transitionGameToFinished is
+// CAS-protected and idempotent, so every winning engine may safely call it.
+func (e *Engine) handleTeamGameOverEvent(ctx context.Context, ev GameEvent) {
+	e.mu.Lock()
+	e.eliminatedPlayers[ev.PlayerID] = true
+	e.eliminatedTeam[ev.PlayerID] = ev.Team
+	elimMine, elimOther := 0, 0
+	for pid := range e.eliminatedPlayers {
+		if e.eliminatedTeam[pid] == e.teamIdx {
+			elimMine++
+		} else {
+			elimOther++
+		}
+	}
+	myTeamDead := elimMine >= e.teamSize
+	otherTeamDead := elimOther >= e.teamSize
+	decide := (myTeamDead || otherTeamDead) && !e.teamOutcomeDone
+	if decide {
+		e.teamOutcomeDone = true
+	}
+	e.mu.Unlock()
+
+	if ev.PlayerID != e.playerID {
+		e.emitUpdate(EngineUpdate{
+			Kind:               UpdatePlayerEliminated,
+			EliminatedPlayerID: ev.PlayerID,
+			Team:               ev.Team,
+		})
+	}
+
+	if !decide {
+		return
+	}
+
+	// Tell the UI the game is over regardless of which side we're on: an
+	// eliminated player on the losing team is showing "your team plays on"
+	// until this flips the status.
+	e.emitUpdate(EngineUpdate{Kind: UpdateGameStatus, GameStatus: string(config.GameStatusFinished)})
+
+	switch {
+	case otherTeamDead && !myTeamDead:
+		// Our team won. Alive members stop playing; already-eliminated members
+		// flip their "you lost" to the team win. Spectator engines (initialMode
+		// ModeSpectator, teamIdx 0 default) just keep watching.
+		if e.initialMode == ModePlayer {
+			e.transitionToSpectator(true)
+			go e.transitionGameToFinished(ctx)
+		}
+	case myTeamDead && !otherTeamDead:
+		// Our team lost. Each member already transitioned individually on their
+		// own top-out; the winning team's engines transition the game meta.
+	default:
+		// Defensive: both teams read as dead (shouldn't happen with an ordered
+		// event stream, where one team completes strictly first). Treat as a
+		// draw and make sure SOMEONE finishes the game so it archives.
+		if e.initialMode == ModePlayer {
+			go e.transitionGameToFinished(ctx)
+		}
+	}
+}
+
+// applyTeamShrink applies a garbage attack to this engine's shared team board.
+//
+// Unlike competitive's applyOpponentShrink (single writer, authoritative
+// NoCAS), several alive teammates receive the same event and race to apply
+// the identical transform to the same subjects. Two mechanisms make that safe:
+//
+//   - Idempotency guard: expectedGarbage accumulates the rows owed to this
+//     board across all shrink events; AdversarialRowCount() is what the
+//     converged board actually shows. Garbage rows are permanent and
+//     bottom-anchored, so the count grows monotonically toward the target and
+//     "deficit <= 0" means the shift (ours or a teammate's) already landed.
+//   - Recompute-on-CAS-failure: the batch publishes WITH per-subject CAS, and
+//     a failure throws away the projection entirely — waiting for the local
+//     consumer to converge, re-checking the guard, and re-projecting from
+//     fresh state. A blind merge-retry would republish a stale shift after a
+//     teammate's shift committed and double-shift the stack; recomputing
+//     cannot. Any batch computed from a torn/stale board necessarily carries
+//     a stale expectation on at least one garbage-row cell (the winning batch
+//     wrote the full board width), so CAS rejects it.
+//
+// Exactly one teammate's batch commits per deficit; the rest converge and
+// stop. Active pieces are overlaid in place by the projection (no lift — see
+// ProjectShrinkShared), so the batch never touches piece cells and no
+// spurious lock-in can fire on any teammate.
+func (e *Engine) applyTeamShrink(ctx context.Context, ev GameEvent) {
+	e.mu.Lock()
+	e.expectedGarbage += ev.RowsRemoved
+	e.mu.Unlock()
+
+	const maxAttempts = 16
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Wait for the local board to take new writes (the winning batch
+			// echoing back, or our own write-throughs), capped so a quiet
+			// stretch still retries; the per-player offset desynchronizes
+			// teammates' retry loops like the merge-retry backoff does.
+			wait := time.Duration(attempt+e.playerIdx) * time.Millisecond
+			if wait > 10*time.Millisecond {
+				wait = 10 * time.Millisecond
+			}
+			select {
+			case <-e.cellUpdated:
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		e.mu.Lock()
+		deficit := e.expectedGarbage - e.playfield.AdversarialRowCount()
+		if deficit <= 0 {
+			e.mu.Unlock()
+			break // already applied by us or a teammate
+		}
+		projected := e.playfield.ProjectShrinkShared(deficit, ev.PlayerIdx)
+		changed := changedCells(e.playfield.Rows, projected, e.visibleRowStart, e.playfield.Height)
+		keys := orderedCellKeys(changed)
+		updates, err := e.buildBatchUpdates(keys, changed, true)
+		e.mu.Unlock()
+		if err != nil {
+			log.Printf("team shrink: build batch: %v", err)
+			return
+		}
+		if len(updates) == 0 {
+			break
+		}
+
+		seq, pubErr := natspkg.PublishMoveAtomically(ctx, e.js, updates)
+		if pubErr == nil {
+			e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return changed[k] }, seq, false)
+			break
+		}
+		if !errors.Is(pubErr, natspkg.ErrCASFailure) {
+			log.Printf("team shrink: publish batch: %v", pubErr)
+			return
+		}
+		// CAS conflict: a teammate's shift (or move) landed first — loop,
+		// converge, re-check the guard, recompute.
+	}
+
+	// The shift touches most of the board; force a full re-render so no row is
+	// left stale if per-row triggers were dropped.
+	e.emitFullBoardRerender()
 }

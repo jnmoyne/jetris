@@ -3,6 +3,8 @@ package lobby
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -266,8 +268,10 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 	}
 }
 
-// CreateGame creates a new game.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount int) (string, error) {
+// CreateGame creates a new game. For teams mode, teamSize is the number of
+// players per team and playerCount must be the total (TeamCount*teamSize);
+// other modes pass teamSize 0.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize int) (string, error) {
 	gameID := uuid.New().String()
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
@@ -278,6 +282,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		GameID:      gameID,
 		Mode:        mode,
 		PlayerCount: playerCount,
+		TeamSize:    teamSize,
 		Seed:        uint64(time.Now().UnixNano()),
 		Status:      config.GameStatusCreated,
 		CreatorID:   l.playerID,
@@ -297,6 +302,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Mode:        mode,
 		Status:      config.GameStatusCreated,
 		PlayerCount: playerCount,
+		TeamSize:    teamSize,
 		Players:     nil,
 		CreatedAt:   meta.CreatedAt,
 	}
@@ -306,32 +312,88 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	return gameID, nil
 }
 
-// JoinGame joins an existing game.
-func (l *Lobby) JoinGame(ctx context.Context, gameID string) (int, error) {
-	// Check if already in the game
-	l.mu.RLock()
-	g, exists := l.games[gameID]
-	l.mu.RUnlock()
-	if exists {
+// ErrTeamFull is returned by JoinGame when the requested team already has
+// teamSize members.
+var ErrTeamFull = errors.New("team is full")
+
+// JoinResult is the roster position assigned to a player by JoinGame.
+type JoinResult struct {
+	PlayerIdx int // global index in the roster (all modes)
+	Team      int // teams mode: 0 = A, 1 = B
+	TeamSlot  int // teams mode: section index within the team board
+}
+
+// JoinGame joins an existing game. For teams mode, team selects which team to
+// join (0 or 1) and may fail with ErrTeamFull; other modes ignore it.
+//
+// The listing update runs as a CAS loop (like ToggleReady): team capacity
+// validation and TeamSlot assignment must be atomic with the roster append or
+// concurrent joins could both land on a full team / claim the same slot. The
+// roster entry is published only after the CAS commit so roster and listing
+// agree.
+func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResult, error) {
+	var res JoinResult
+	var summary PlayerSummary
+	for {
+		entry, err := l.kv.Get(ctx, config.LobbyGameKey(gameID))
+		if err != nil {
+			return JoinResult{}, err
+		}
+		var g GameListing
+		if err := json.Unmarshal(entry.Value(), &g); err != nil {
+			return JoinResult{}, err
+		}
+
+		// Already in the game — just update presence and return our position.
+		already := false
 		for i, p := range g.Players {
 			if p.PlayerID == l.playerID {
-				// Already in this game — just update presence and return
-				l.mu.Lock()
-				l.status = StatusInGame
-				l.currentGameID = gameID
-				l.mu.Unlock()
-				l.publishPresence(ctx)
-				return i, nil
+				res = JoinResult{PlayerIdx: i, Team: p.Team, TeamSlot: p.TeamSlot}
+				already = true
+				break
 			}
 		}
-	}
+		if already {
+			break
+		}
 
-	// Publish roster entry
-	roster := PlayerSummary{PlayerID: l.playerID, Name: l.name}
-	rosterData, _ := json.Marshal(roster)
-	_, err := l.js.Publish(ctx, config.RosterSubject(gameID, l.playerID), rosterData)
-	if err != nil {
-		return 0, err
+		summary = PlayerSummary{PlayerID: l.playerID, Name: l.name}
+		if g.Mode == config.ModeTeams {
+			if team < 0 || team >= config.TeamCount {
+				return JoinResult{}, fmt.Errorf("invalid team %d", team)
+			}
+			if g.TeamMemberCount(team) >= g.TeamSize {
+				return JoinResult{}, ErrTeamFull
+			}
+			summary.Team = team
+			summary.TeamSlot = g.TeamMemberCount(team)
+		}
+		g.Players = append(g.Players, summary)
+		res = JoinResult{PlayerIdx: len(g.Players) - 1, Team: summary.Team, TeamSlot: summary.TeamSlot}
+
+		// Game full → transition to starting (for teams this is exactly
+		// "both teams full", since per-team capacity is enforced above).
+		full := len(g.Players) >= g.PlayerCount
+		if full {
+			g.Status = config.GameStatusStarting
+		}
+
+		listingData, _ := json.Marshal(g)
+		if _, err := l.kv.Update(ctx, config.LobbyGameKey(gameID), listingData, entry.Revision()); err != nil {
+			continue // CAS conflict, retry
+		}
+
+		// Publish roster entry (after the CAS commit)
+		rosterData, _ := json.Marshal(summary)
+		if _, err := l.js.Publish(ctx, config.RosterSubject(gameID, l.playerID), rosterData); err != nil {
+			return JoinResult{}, err
+		}
+
+		if full {
+			// Also update meta
+			go l.transitionGameStatus(context.Background(), gameID, config.GameStatusStarting)
+		}
+		break
 	}
 
 	// Update presence
@@ -342,25 +404,7 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string) (int, error) {
 
 	l.publishPresence(ctx)
 
-	// Update game listing with new player
-	playerIdx := 0
-	l.mu.RLock()
-	g, exists = l.games[gameID]
-	l.mu.RUnlock()
-	if exists {
-		g.Players = append(g.Players, roster)
-		playerIdx = len(g.Players) - 1
-		// Check if game is full → transition to starting
-		if len(g.Players) >= g.PlayerCount {
-			g.Status = config.GameStatusStarting
-			// Also update meta
-			go l.transitionGameStatus(context.Background(), gameID, config.GameStatusStarting)
-		}
-		listingData, _ := json.Marshal(g)
-		_, _ = l.kv.Put(ctx, config.LobbyGameKey(gameID), listingData)
-	}
-
-	return playerIdx, nil
+	return res, nil
 }
 
 // LeaveGame leaves a game and returns to lobby.

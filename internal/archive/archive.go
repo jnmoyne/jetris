@@ -44,12 +44,17 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// top out. On a draw (all topped out), there is no winner.
 	playerResults := make(map[string]config.PlayerResult)
 	eventSenders := make(map[string]bool)
+	// playerTeams maps playerID → team (teams mode). The roster listing is the
+	// authoritative source; EventGameOver's Team field is the fallback for
+	// players missing from the snapshot.
+	playerTeams := make(map[string]int)
 	// Add our own data first
 	playerResults[eng.PlayerID()] = config.PlayerResult{
 		PlayerID:   eng.PlayerID(),
 		Score:      eng.Score(),
 		PieceCount: eng.PieceIdx(),
 	}
+	playerTeams[eng.PlayerID()] = eng.TeamIdx()
 	// Read EventGameOver events from others
 	evtCh, evtCancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
 		Stream:        config.GameStream(eng.GameID()),
@@ -73,6 +78,9 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 				var ev engine.GameEvent
 				if json.Unmarshal(msg.Data(), &ev) == nil && ev.Kind == engine.EventGameOver {
 					eventSenders[ev.PlayerID] = true
+					if _, exists := playerTeams[ev.PlayerID]; !exists {
+						playerTeams[ev.PlayerID] = ev.Team
+					}
 					if _, exists := playerResults[ev.PlayerID]; !exists {
 						playerResults[ev.PlayerID] = config.PlayerResult{
 							PlayerID:   ev.PlayerID,
@@ -96,7 +104,9 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		evtCancel()
 	}
 	// Also add players from the game listing who might not have topped out
+	// (and take their team assignment as authoritative in teams mode)
 	for _, p := range gamePlayers {
+		playerTeams[p.PlayerID] = p.Team
 		if _, exists := playerResults[p.PlayerID]; !exists {
 			playerResults[p.PlayerID] = config.PlayerResult{PlayerID: p.PlayerID}
 		}
@@ -112,6 +122,31 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 			}
 		}
 	}
+	// Determine the winning team in teams mode: a team loses when EVERY member
+	// sent an EventGameOver. Every member of the other team wins — including
+	// its already-eliminated players (a team win is shared). If both teams are
+	// fully out (defensive; shouldn't happen with an ordered event stream),
+	// there is no winner.
+	winningTeam := -1
+	if meta.Mode == config.ModeTeams {
+		teamDead := [config.TeamCount]bool{true, true}
+		for id, t := range playerTeams {
+			if t >= 0 && t < config.TeamCount && !eventSenders[id] {
+				teamDead[t] = false
+			}
+		}
+		switch {
+		case teamDead[0] && !teamDead[1]:
+			winningTeam = 1
+		case teamDead[1] && !teamDead[0]:
+			winningTeam = 0
+		}
+		for id, pr := range playerResults {
+			pr.Team = playerTeams[id]
+			pr.Winner = winningTeam >= 0 && pr.Team == winningTeam
+			playerResults[id] = pr
+		}
+	}
 
 	var results []config.PlayerResult
 	for _, pr := range playerResults {
@@ -125,6 +160,8 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		StartedAt:   meta.StartedAt,
 		FinishedAt:  meta.FinishedAt,
 		Players:     results,
+		TeamSize:    meta.TeamSize,
+		WinningTeam: winningTeam,
 	}
 	if meta.Mode == config.ModeCooperative {
 		record.TotalScore = eng.Score()

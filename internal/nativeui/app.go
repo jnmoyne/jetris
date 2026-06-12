@@ -65,6 +65,8 @@ var (
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
 type gameRowBtns struct {
 	join     widget.Clickable
+	joinA    widget.Clickable // teams mode: join team A
+	joinB    widget.Clickable // teams mode: join team B
 	spectate widget.Clickable
 }
 

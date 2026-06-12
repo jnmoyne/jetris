@@ -72,7 +72,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("game-coop-player", func(t *testing.T) {
 		a := newTestApp()
-		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0)
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 		a.gamePlayers = players
 		a.readyPlayers = players
 		a.screen = screenGame
@@ -81,7 +81,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("game-competitive-player", func(t *testing.T) {
 		a := newTestApp()
-		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0)
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0, 0, 0)
 		a.gamePlayers = players
 		a.readyPlayers = players
 		a.screen = screenGame
@@ -91,7 +91,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("game-spectator-competitive", func(t *testing.T) {
 		a := newTestApp()
-		a.eng = engine.New(nil, "g1", "spec", "", config.ModeCompetitive, engine.ModeSpectator, 0)
+		a.eng = engine.New(nil, "g1", "spec", "", config.ModeCompetitive, engine.ModeSpectator, 0, 0, 0)
 		a.gamePlayers = players
 		a.screen = screenGame
 		renderOnce(t, a)
@@ -99,7 +99,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("game-over", func(t *testing.T) {
 		a := newTestApp()
-		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0)
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0, 0, 0)
 		a.gamePlayers = players
 		a.screen = screenGame
 		a.gameOver = true

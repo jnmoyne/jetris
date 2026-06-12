@@ -109,7 +109,7 @@ func (a *App) layoutGame(gtx C) D {
 			})
 		}),
 		layout.Rigid(func(gtx C) D {
-			if mode == engine.ModeSpectator || gmode != config.ModeCompetitive {
+			if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
 				return D{}
 			}
 			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
@@ -122,8 +122,14 @@ func (a *App) layoutGame(gtx C) D {
 func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	started := view.status == string(config.GameStatusInProgress)
 	modeLabel := "Cooperative"
-	if gmode == config.ModeCompetitive {
+	switch gmode {
+	case config.ModeCompetitive:
 		modeLabel = "Competitive"
+	case config.ModeTeams:
+		modeLabel = "Teams"
+		if mode != engine.ModeSpectator {
+			modeLabel += " · TEAM " + teamName(eng.TeamIdx())
+		}
 	}
 	if mode == engine.ModeSpectator {
 		modeLabel = "Spectating · " + modeLabel
@@ -167,11 +173,10 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.GameMode) D {
 	var children []layout.FlexChild
-	children = append(children, layout.Rigid(a.header("PLAYERS")))
-	for i, p := range view.players {
-		i, p := i, p
-		children = append(children, layout.Rigid(func(gtx C) D {
-			elim := gmode == config.ModeCompetitive && eng.IsEliminated(p.PlayerID)
+
+	playerRow := func(i int, p lobby.PlayerSummary) layout.FlexChild {
+		return layout.Rigid(func(gtx C) D {
+			elim := (gmode == config.ModeCompetitive || gmode == config.ModeTeams) && eng.IsEliminated(p.PlayerID)
 			name := p.Name
 			textCol := colFg
 			if elim {
@@ -185,7 +190,29 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 					layout.Rigid(a.body(name, textCol)),
 				)
 			})
-		}))
+		})
+	}
+
+	if gmode == config.ModeTeams {
+		// Group players under TEAM A / TEAM B headers. Swatch colors stay
+		// keyed by the GLOBAL roster index, matching Cell.PlayerIdx on boards.
+		for t := 0; t < config.TeamCount; t++ {
+			children = append(children, layout.Rigid(a.header("TEAM "+teamName(t))))
+			for i, p := range view.players {
+				if p.Team == t {
+					children = append(children, playerRow(i, p))
+				}
+			}
+			if t < config.TeamCount-1 {
+				children = append(children, layout.Rigid(spacer(6)))
+			}
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	}
+
+	children = append(children, layout.Rigid(a.header("PLAYERS")))
+	for i, p := range view.players {
+		children = append(children, playerRow(i, p))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
@@ -216,6 +243,9 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if mode == engine.ModeSpectator && gmode == config.ModeCompetitive {
 		return a.spectatorBoards(gtx, eng, view)
 	}
+	if mode == engine.ModeSpectator && gmode == config.ModeTeams {
+		return a.spectatorTeamBoards(gtx, eng)
+	}
 
 	snap := eng.Snapshot()
 	localIdx := eng.PlayerIdx()
@@ -230,7 +260,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	case view.gameOver:
 		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
 			layout.Expanded(board),
-			layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view.won) }),
+			layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view) }),
 		)
 	case countdownVisible(view, mode):
 		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
@@ -310,10 +340,13 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 	cell := gtx.Dp(unit.Dp(10))
 	var children []layout.FlexChild
 	for _, id := range ids {
-		id := id
 		snap := opps[id]
+		label := id
+		if eng.GameMode() == config.ModeTeams {
+			label = "OPPOSING TEAM"
+		}
 		children = append(children,
-			layout.Rigid(a.body(id, colMuted)),
+			layout.Rigid(a.body(label, colMuted)),
 			layout.Rigid(spacer(2)),
 			layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now)),
 			layout.Rigid(spacer(12)),
@@ -322,22 +355,77 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
-func (a *App) gameOverBox(gtx C, gmode config.GameMode, won bool) D {
+// spectatorTeamBoards renders both teams' shared boards side by side for a
+// teams-mode spectator. The spectator engine consumes team 0 as its "own"
+// board and team 1 via the opponent consumer (see Engine.Start).
+func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine) D {
+	cell := gtx.Dp(unit.Dp(14))
+	teamB, okB := eng.OpponentSnapshots()[engine.TeamBoardKey(1)]
+	boards := []struct {
+		label string
+		snap  engine.BoardSnapshot
+		ok    bool
+	}{
+		{"TEAM A", eng.Snapshot(), true},
+		{"TEAM B", teamB, okB},
+	}
+	var children []layout.FlexChild
+	for _, b := range boards {
+		b := b
+		children = append(children, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.body(b.label, colMuted)),
+					layout.Rigid(spacer(4)),
+					layout.Rigid(func(gtx C) D {
+						if !b.ok {
+							return a.body("Loading…", colMuted)(gtx)
+						}
+						return a.boardWidget(b.snap, -1, cell, true, nil, gtx.Now)(gtx)
+					}),
+				)
+			})
+		}))
+	}
+	return layout.Flex{}.Layout(gtx, children...)
+}
+
+func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView) D {
+	won := view.won
+	// Teams: a player can be out while their team plays on — show an interim
+	// message (and no Back button pressure) until the game actually finishes.
+	teamPlaysOn := gmode == config.ModeTeams && view.status == string(config.GameStatusInProgress) && !won
+	title := "GAME OVER"
+	if teamPlaysOn {
+		title = "YOU'RE OUT"
+	}
 	return widget.Border{Color: colAccent, Width: unit.Dp(2), CornerRadius: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 		return background(gtx, colBg, func(gtx C) D {
 			return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
 				children := []layout.FlexChild{
 					layout.Rigid(func(gtx C) D {
-						l := material.H5(a.th, "GAME OVER")
+						l := material.H5(a.th, title)
 						l.Color = colFg
 						return l.Layout(gtx)
 					}),
 				}
-				if gmode == config.ModeCompetitive {
-					msg, c := "YOU LOST", colErr
+				var msg string
+				var c colorN
+				switch {
+				case teamPlaysOn:
+					msg, c = "Your team plays on", colMuted
+				case gmode == config.ModeTeams:
+					msg, c = "YOUR TEAM LOST", colErr
+					if won {
+						msg, c = "YOUR TEAM WON!", colAccent
+					}
+				case gmode == config.ModeCompetitive:
+					msg, c = "YOU LOST", colErr
 					if won {
 						msg, c = "YOU WON!", colAccent
 					}
+				}
+				if msg != "" {
 					children = append(children, layout.Rigid(spacer(6)), layout.Rigid(func(gtx C) D {
 						l := material.H6(a.th, msg)
 						l.Color = c

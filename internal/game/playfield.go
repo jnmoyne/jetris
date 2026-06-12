@@ -347,3 +347,83 @@ func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Ro
 	// Leave the doomed piece unstamped so the board shows the risen stack only.
 	return out, true
 }
+
+// ProjectShrinkShared is the teams-mode variant of ProjectShrink for a shared
+// team board where several teammates' active pieces coexist. The locked stack
+// shifts up by rowsToAdd and rowsToAdd permanent adversarial rows tagged with
+// causerIdx are added at the bottom.
+//
+// Unlike the competitive ProjectShrink, NO piece is lifted: every player's
+// active cells (the applier's own included) are overlaid back at their
+// CURRENT, unshifted positions. Any teammate may win the race to apply a
+// shared-board shrink, and a lift would relocate other players' mid-flight
+// pieces from a snapshot that may already be stale; holding every piece in
+// place keeps the transform pure and symmetric. A piece overtaken by the
+// risen stack simply sits in the holes its overlay preserved and locks there
+// on its next blocked drop — it is "crushed" rather than carried up. Top-out
+// on a full team board therefore happens at spawn time, not during a shrink.
+func (pf *Playfield) ProjectShrinkShared(rowsToAdd, causerIdx int) []Row {
+	out := make([]Row, pf.Height)
+	// Shift the locked stack up by rowsToAdd, stripping ALL active cells.
+	for i := 0; i < pf.Height-rowsToAdd; i++ {
+		cells := make([]Cell, pf.Width)
+		for j, c := range pf.Rows[i+rowsToAdd].Cells {
+			if !c.Active {
+				cells[j] = c
+			}
+		}
+		out[i] = Row{Cells: cells}
+	}
+	// Permanent adversarial garbage fills the bottom rows.
+	for i := pf.Height - rowsToAdd; i < pf.Height; i++ {
+		cells := make([]Cell, pf.Width)
+		for c := range cells {
+			cells[c] = Cell{
+				Occupied:    true,
+				PieceType:   PieceO,
+				Adversarial: true,
+				PlayerIdx:   causerIdx,
+			}
+		}
+		out[i] = Row{Cells: cells}
+	}
+	// Overlay every player's active cells at their current positions.
+	for i := range pf.Rows {
+		for j, c := range pf.Rows[i].Cells {
+			if c.Active {
+				out[i].Cells[j] = c
+			}
+		}
+	}
+	return out
+}
+
+// AdversarialRowCount returns the number of garbage rows at the bottom of the
+// board: contiguous bottom rows containing at least one adversarial cell.
+// Garbage rows are permanent (never cleared) and bottom-anchored, so this
+// count is monotonically non-decreasing over a game's lifetime — the engine
+// uses it as the idempotency guard when several teammates race to apply the
+// same shrink to their shared board.
+//
+// "At least one" rather than "all" because a garbage row can transiently hold
+// a teammate's overlaid active piece and can permanently keep the empty holes
+// that piece leaves behind (the documented shared-board skip artifact); a
+// piece covers at most 4 of the row's 10-per-teammate cells, so a garbage row
+// always retains adversarial cells.
+func (pf *Playfield) AdversarialRowCount() int {
+	count := 0
+	for i := pf.Height - 1; i >= 0; i-- {
+		any := false
+		for _, c := range pf.Rows[i].Cells {
+			if c.Adversarial {
+				any = true
+				break
+			}
+		}
+		if !any {
+			break
+		}
+		count++
+	}
+	return count
+}

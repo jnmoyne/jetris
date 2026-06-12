@@ -2311,6 +2311,13 @@ Supporting code change: `cmd/jetricks/main.go` declares `var version = "dev"` an
 `--version` flag that prints it and exits; the workflow stamps the tag into it via
 `-X main.version`.
 
+Dependency note: Gio is pinned at **v0.8.0 or later** because v0.7.x depends on
+`gioui.org/cpu`, whose cgo type aliases fail to compile on Linux under Go 1.24+
+("cannot define new methods on non-local type"). Gio v0.8.0 removed the compute
+renderer and with it that dependency. The breakage only manifests on Linux cgo
+builds — macOS/Windows compile the stub variant — so it surfaces in CI, not in
+local macOS development.
+
 ---
 
 ## Cross-Cutting Implementation Rules

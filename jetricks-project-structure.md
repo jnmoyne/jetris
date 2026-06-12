@@ -1783,7 +1783,7 @@ Pushing a git tag matching `v*` (e.g. `v0.1.0`) triggers a GitHub Actions workfl
 
 ### Why native runners per OS
 
-Gio is not cross-compilable from a single host: on Linux it uses cgo against the X11/Wayland/EGL development headers (installed via `apt-get` in the workflow), and on macOS it uses cgo against the Apple frameworks. Windows is the exception — Gio's Windows backend is pure Go (win32 syscalls), so both Windows architectures build with `CGO_ENABLED=0`. Both macOS architectures build on the one macOS runner since the Apple SDK is multi-arch. linux/arm64 builds natively on `ubuntu-24.04-arm`; note that GitHub's free arm64 Linux runners are available to public repositories only, so the repo must be public for that matrix entry to run.
+Gio is not cross-compilable from a single host: on Linux it uses cgo against the X11/Wayland/EGL development headers (installed via `apt-get` in the workflow), and on macOS it uses cgo against the Apple frameworks. Gio must be v0.8.0+ — v0.7.x's `gioui.org/cpu` dependency does not compile on Linux under Go 1.24+. Windows is the exception — Gio's Windows backend is pure Go (win32 syscalls), so both Windows architectures build with `CGO_ENABLED=0`. Both macOS architectures build on the one macOS runner since the Apple SDK is multi-arch. linux/arm64 builds natively on `ubuntu-24.04-arm`; note that GitHub's free arm64 Linux runners are available to public repositories only, so the repo must be public for that matrix entry to run.
 
 ### Versioning
 

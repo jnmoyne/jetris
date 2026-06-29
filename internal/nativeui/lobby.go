@@ -167,7 +167,17 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 		layout.Flexed(1, func(gtx C) D {
 			return bordered(gtx, func(gtx C) D {
 				return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
-					return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(archiveLine(archives[i]), colMuted))
+					for len(a.archiveBtns) <= i {
+						a.archiveBtns = append(a.archiveBtns, widget.Clickable{})
+					}
+					btn := &a.archiveBtns[i]
+					if btn.Clicked(gtx) {
+						a.openArchive(archives[i])
+					}
+					rec := archives[i]
+					return material.Clickable(gtx, btn, func(gtx C) D {
+						return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(archiveLine(rec), colMuted))
+					})
 				})
 			})
 		}),

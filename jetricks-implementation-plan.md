@@ -171,6 +171,24 @@ type ArchiveRecord struct {
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only
     TeamSize    int            `json:"team_size,omitempty"`   // teams mode
     WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
+    Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s)
+}
+
+// BoardPicture is the saved end-of-game state of one board (latest cell message
+// per cell of the visible region). One per cooperative game, one per player for
+// competitive, one per team for teams. BoardCell.Data is the raw cell message.
+type BoardPicture struct {
+    Label  string      `json:"label,omitempty"` // player ID, "Team A"/"Team B", or "" (cooperative)
+    Idx    int         `json:"idx"`             // player/team index for coloring; -1 if n/a
+    Width  int         `json:"w"`
+    Height int         `json:"h"` // visible row count (row 0 = first visible row)
+    Cells  []BoardCell `json:"cells,omitempty"`
+}
+
+type BoardCell struct {
+    Row  int             `json:"r"`
+    Col  int             `json:"c"`
+    Data json.RawMessage `json:"d"`
 }
 ```
 
@@ -1986,9 +2004,14 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
 games), chat (lines plus a message editor), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
 archived games with mode, players, duration, and scores — fetched from the
-`JETRICKS_ARCHIVE` stream on lobby load. A centered branding banner spans the top of
-the screen: the nats.io "N" logo flanking "Jetricks: peer to peer and made with
-NATS.io" (the "NATS.io" text in the accent color).
+`JETRICKS_ARCHIVE` stream on lobby load. Each history row is **clickable**: it opens
+the `screenArchive` viewer (`archive_view.go`), which rebuilds the saved
+`ArchiveRecord.Boards` into `engine.BoardSnapshot`s (`boardSnapshotFromPicture`) and
+redraws the playfield exactly as it stood when that game ended — the single wide board
+for cooperative, one board per player (labeled by ID in player color) for competitive,
+and both team boards for teams. A "Back to Lobby" `secondaryButton` returns. A centered
+branding banner spans the top of the screen: the nats.io "N" logo flanking "Jetricks:
+peer to peer and made with NATS.io" (the "NATS.io" text in the accent color).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
 messages" checkbox. While checked, a 170 dp monospace strip across the bottom of the
@@ -2254,6 +2277,15 @@ read as dead — draw). Every winning-team member gets `Winner: true` (the
 eliminated ones included) and every `PlayerResult` carries `Team`; the record
 carries `TeamSize` and `WinningTeam`. `TotalScore` stays unset for teams
 (it remains cooperative-only).
+
+`buildBoardPictures` captures the end-of-game playfield into `record.Boards`
+**before** the game stream is deleted: for each board it builds the cell
+subjects of the visible region and calls `FetchPlayfieldState` (latest message
+per cell), then stores the non-empty cells sparsely as a `BoardPicture` (raw
+cell messages, rows renumbered from the first visible row). The board set is
+mode-driven — cooperative one shared board (`CoopCellSubject`), competitive one
+per player ordered by ID for stable coloring (`CompetitiveCellSubject`), teams
+one per team (`TeamCellSubject`) — so the snapshot is complete for every mode.
 
 ### 8.6 `internal/nativeui`
 

@@ -319,11 +319,14 @@ Published to `JETRICKS_ARCHIVE` stream when a game finishes:
   ],
   "started_at": "2026-03-21T10:00:00Z",
   "finished_at": "2026-03-21T10:05:30Z",
-  "total_score": 42
+  "total_score": 42,
+  "boards": [ /* end-of-game playfield snapshot(s) — see below */ ]
 }
 ```
 
 Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or not a team game), and a `team` field on each player result. Every member of the winning team has `winner: true`, eliminated members included — a team win is shared.
+
+**End-of-game playfield snapshot.** The record also carries `boards`: a snapshot of every board exactly as it stood when the game ended, captured by the winning/finishing client from the game stream (latest message per cell) just before that stream is deleted. There is one board for cooperative, one per player for competitive, and one per team for teams mode — so the snapshot is complete for every mode. Each board stores its width, visible height, and the non-empty cells (the raw cell messages). In the lobby, clicking a game in **GAME HISTORY** opens a viewer that redraws these boards — the picture of the playfield at the moment that game ended.
 
 ---
 

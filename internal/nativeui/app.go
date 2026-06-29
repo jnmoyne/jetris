@@ -22,6 +22,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"jetricks/internal/config"
 	"jetricks/internal/engine"
 	"jetricks/internal/lobby"
 )
@@ -39,6 +40,7 @@ const (
 	screenLogin screenKind = iota
 	screenLobby
 	screenGame
+	screenArchive // viewing a finished game's end-of-game playfield from the history list
 )
 
 const flashDur = 600 * time.Millisecond
@@ -145,6 +147,11 @@ type App struct {
 	showMsgs widget.Bool // "Show NATS messages" checkbox
 	msgList  widget.List
 	boardTag int // address used as the key-input focus tag
+
+	// archive (history) viewer
+	archiveSel     *config.ArchiveRecord // the finished game whose boards are being shown
+	archiveBtns    []widget.Clickable    // one per history row (indexed by list position)
+	archiveBackBtn widget.Clickable      // "Back to Lobby" from the archive viewer
 }
 
 // New builds the App. The window is created later, in Run, on the UI goroutine.
@@ -210,6 +217,8 @@ func (a *App) layout(gtx C) D {
 		return a.layoutLobby(gtx)
 	case screenGame:
 		return a.layoutGame(gtx)
+	case screenArchive:
+		return a.layoutArchive(gtx)
 	}
 	return D{}
 }

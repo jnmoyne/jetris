@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -104,6 +105,29 @@ type ArchiveRecord struct {
 	TotalScore  int            `json:"total_score,omitempty"` // cooperative
 	TeamSize    int            `json:"team_size,omitempty"`   // teams mode
 	WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
+	Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s) for the lobby's history view
+}
+
+// BoardPicture is a saved snapshot of one board as it stood when the game
+// ended: the latest cell messages from the (now-deleted) game stream for the
+// board's visible region. It is embedded in an ArchiveRecord so the lobby can
+// redraw the final playfield. There is one picture for cooperative, one per
+// player for competitive, and one per team for teams mode.
+type BoardPicture struct {
+	Label  string      `json:"label,omitempty"` // player ID, "Team A"/"Team B", or "" (cooperative)
+	Idx    int         `json:"idx"`             // player/team index for coloring; -1 if not applicable
+	Width  int         `json:"w"`               // board width in cells
+	Height int         `json:"h"`               // visible row count stored (row 0 = first visible row)
+	Cells  []BoardCell `json:"cells,omitempty"` // sparse: only the non-empty cells
+}
+
+// BoardCell is one non-empty cell of a BoardPicture. Data is the raw cell
+// message exactly as it was published to the game stream (see game.Cell), so a
+// renderer reconstructs the cell with the same unmarshal path used live.
+type BoardCell struct {
+	Row  int             `json:"r"` // 0-based within the stored visible region
+	Col  int             `json:"c"`
+	Data json.RawMessage `json:"d"`
 }
 
 const (

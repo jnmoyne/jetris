@@ -82,6 +82,7 @@ jetricks/
 │   │   └── colors.go
 │   ├── nativeui/
 │   │   ├── app.go
+│   │   ├── archive_view.go
 │   │   ├── board.go
 │   │   ├── bridge.go
 │   │   ├── game.go
@@ -112,7 +113,7 @@ cmd/jetricks
     ├── internal/engine            ← depends on: nats, game, rng, config
     ├── internal/lobby             ← depends on: nats, config
     ├── internal/cleanup           ← depends on: nats, lobby, config
-    ├── internal/archive           ← depends on: nats, engine, lobby, config
+    ├── internal/archive           ← depends on: nats, engine, game, lobby, config
     ├── internal/render            ← depends on: game (cell/board appearance)
     └── internal/nativeui          ← depends on: engine, lobby, render, config (the front end)
 
@@ -277,6 +278,28 @@ type ArchiveRecord struct {
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only (unset for teams)
     TeamSize    int            `json:"team_size,omitempty"`   // teams mode
     WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
+    Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s)
+}
+
+// BoardPicture is a saved snapshot of one board as it stood when the game
+// ended — the latest cell messages from the (now-deleted) game stream for the
+// board's visible region. One picture for cooperative, one per player for
+// competitive, one per team for teams mode. Rebuilt into an engine.BoardSnapshot
+// and redrawn by the lobby's history viewer.
+type BoardPicture struct {
+    Label  string      `json:"label,omitempty"` // player ID, "Team A"/"Team B", or "" (cooperative)
+    Idx    int         `json:"idx"`             // player/team index for coloring; -1 if not applicable
+    Width  int         `json:"w"`
+    Height int         `json:"h"`               // visible row count stored (row 0 = first visible row)
+    Cells  []BoardCell `json:"cells,omitempty"` // sparse: only the non-empty cells
+}
+
+// BoardCell is one non-empty cell of a BoardPicture. Data is the raw cell
+// message exactly as published to the game stream (see game.Cell).
+type BoardCell struct {
+    Row  int             `json:"r"` // 0-based within the stored visible region
+    Col  int             `json:"c"`
+    Data json.RawMessage `json:"d"`
 }
 ```
 
@@ -1601,13 +1624,15 @@ All transitions go through CAS on `jetricks.game.<id>.meta`. If a CAS fails duri
 
 Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logic. It depends on `engine` and `lobby` (one-way) and communicates with them exclusively through their `Updates` channels and exported method calls — it is never imported by the business logic.
 
-**`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — and the lobby branding banner), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
+**`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `archive_view.go` (the `screenArchive` history viewer — redraws a finished game's saved end-of-game boards), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — and the lobby branding banner), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
 
 **Button styling.** Primary actions (Join, Ready, Create Game, Send) are the default filled-accent `material.Button`. Non-primary actions — Spectate, Quit, Back to Lobby, and the login collision-dialog Cancel — use the `secondaryButton(gtx, btn, label)` helper (`lobby.go`): an accent-colored (`colAccent`) label and 1 dp accent border over the `colPanel` background, so they read as clearly clickable instead of blending into the near-black window background (a bare `colPanel` fill made them look disabled even though they worked). The spectator's HUD keeps the "Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a spectator can always return to the lobby.
 
 Two small packages support the front end:
 - **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math) for the native UI. Exposes a single decision function, `CellStyle`, plus the RGBA surface (`CellAppearance`, `PlayerColorRGBA`, `PlayerColorHex`), so every render path (own board, opponent boards, spectator view) draws from one visual model.
-- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources.
+- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources. Before deleting the game stream it calls `buildBoardPictures`, which reads the latest message per cell (`FetchPlayfieldState`) for every board in the game — one for cooperative, one per player for competitive, one per team for teams — and stores them sparsely (non-empty cells only) as `ArchiveRecord.Boards`, so the end-of-game playfield survives the stream deletion.
+
+**History viewer.** `GAME HISTORY` rows in the lobby are clickable (`archiveBtns` Clickables, one per row); clicking opens `screenArchive` (`archive_view.go`), which rebuilds each saved `BoardPicture` into an `engine.BoardSnapshot` (`boardSnapshotFromPicture`) and redraws it with the same `boardWidget` used live — cooperative shows the single wide board, competitive a board per player labeled by ID in player color, teams the two team boards. A `secondaryButton` "Back to Lobby" returns to the lobby.
 
 **Cell appearance — single source of truth.** Every cell is drawn with an explicit fill color and outline computed by `internal/render`. Piece fills come from a piece-color table composited over the board background via `blend(fg, bg, alpha)` (active ≈0.9, locked ≈0.7, adversarial ≈0.8). Outlines: own active → white; spectator (`localPlayerIdx < 0`) → per-player color on active/locked cells; other player's active piece in a player view → grid line; locked non-adversarial → per-player color when `showOutline` (suppressed to the grid line on compact opponent boards). Because appearance is computed in one package, the visual model stays consistent across own/spectator/opponent renders. In competitive mode the UI distinguishes own-field updates (`UpdatePlayfield`) from opponent updates (`UpdateOpponentField`, keyed by `OpponentID`) and redraws the corresponding sidebar board. In cooperative mode the single wide playfield (playerCount × StandardWidth columns) is drawn directly — already the correct width, so there is no concatenation or visual separator between player sections.
 

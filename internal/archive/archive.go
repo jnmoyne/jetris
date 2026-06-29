@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
 	"jetricks/internal/engine"
+	"jetricks/internal/game"
 	"jetricks/internal/lobby"
 	natspkg "jetricks/internal/nats"
 )
@@ -167,6 +169,11 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		record.TotalScore = eng.Score()
 	}
 
+	// Capture each board's final state from the game stream (latest message per
+	// cell) before the stream is deleted below, so the lobby can redraw the
+	// end-of-game playfield from the archive record alone.
+	record.Boards = buildBoardPictures(ctx, js, meta, results)
+
 	data, _ := json.Marshal(record)
 	if _, err := js.Publish(ctx, config.ArchiveSubject, data); err != nil {
 		log.Printf("archive: publish: %v", err)
@@ -181,4 +188,100 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	if lb != nil {
 		_ = lb.LeaveGame(ctx, eng.GameID())
 	}
+}
+
+// buildBoardPictures captures the final visible state of every board in the
+// game from the game stream (one message per cell, latest wins). The set of
+// boards depends on the mode: cooperative has one shared board, competitive has
+// one private board per player, and teams has one shared board per team. It
+// must run before the game stream is deleted.
+func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config.GameMeta, players []config.PlayerResult) []config.BoardPicture {
+	gameID := meta.GameID
+	switch meta.Mode {
+	case config.ModeCooperative:
+		pic, ok := capturePicture(ctx, js, gameID,
+			meta.PlayerCount*config.StandardWidth, config.HeadroomRows+config.VisibleRows, config.VisibleRowStart,
+			"", -1, func(r, c int) string { return config.CoopCellSubject(gameID, r, c) })
+		if !ok {
+			return nil
+		}
+		return []config.BoardPicture{pic}
+
+	case config.ModeTeams:
+		w := config.TeamBoardWidth(meta.TeamSize)
+		h := config.TeamTotalRows(meta.TeamSize)
+		vs := config.TeamVisibleRowStart(meta.TeamSize)
+		var out []config.BoardPicture
+		for t := 0; t < config.TeamCount; t++ {
+			t := t
+			if pic, ok := capturePicture(ctx, js, gameID, w, h, vs, teamLabel(t), t,
+				func(r, c int) string { return config.TeamCellSubject(gameID, t, r, c) }); ok {
+				out = append(out, pic)
+			}
+		}
+		return out
+
+	default: // competitive: one board per player, ordered by player ID for stable coloring
+		w := config.StandardWidth
+		h := config.CompetitiveTotalRows(meta.PlayerCount)
+		vs := config.CompetitiveVisibleRowStart(meta.PlayerCount)
+		ids := make([]string, 0, len(players))
+		for _, p := range players {
+			ids = append(ids, p.PlayerID)
+		}
+		sort.Strings(ids)
+		var out []config.BoardPicture
+		for i, id := range ids {
+			id := id
+			if pic, ok := capturePicture(ctx, js, gameID, w, h, vs, id, i,
+				func(r, c int) string { return config.CompetitiveCellSubject(gameID, id, r, c) }); ok {
+				out = append(out, pic)
+			}
+		}
+		return out
+	}
+}
+
+// capturePicture fetches the latest message for every cell of one board's
+// visible region (rows [visibleStart, height)) and stores the non-empty cells
+// sparsely, with rows renumbered so the first visible row is 0.
+func capturePicture(ctx context.Context, js jetstream.JetStream, gameID string, width, height, visibleStart int, label string, idx int, subjectFor func(row, col int) string) (config.BoardPicture, bool) {
+	subjects := make([]string, 0, (height-visibleStart)*width)
+	for r := visibleStart; r < height; r++ {
+		for c := 0; c < width; c++ {
+			subjects = append(subjects, subjectFor(r, c))
+		}
+	}
+	cells, err := natspkg.FetchPlayfieldState(ctx, js, gameID, subjects)
+	if err != nil {
+		log.Printf("archive: capture board %q: %v", label, err)
+		return config.BoardPicture{}, false
+	}
+	pic := config.BoardPicture{Label: label, Idx: idx, Width: width, Height: height - visibleStart}
+	for _, c := range cells {
+		cell, err := game.UnmarshalCell(c.Payload)
+		if err != nil || isBlankCell(cell) {
+			continue
+		}
+		pic.Cells = append(pic.Cells, config.BoardCell{
+			Row:  c.Row - visibleStart,
+			Col:  c.Col,
+			Data: append(json.RawMessage(nil), c.Payload...),
+		})
+	}
+	return pic, true
+}
+
+// isBlankCell reports whether a cell carries nothing worth drawing (a vacated
+// cell is published as an empty "{}" message).
+func isBlankCell(c game.Cell) bool {
+	return !c.Occupied && !c.Active && !c.Adversarial
+}
+
+// teamLabel is the human label stored for a team board ("Team A" / "Team B").
+func teamLabel(team int) string {
+	if team == 0 {
+		return "Team A"
+	}
+	return "Team B"
 }

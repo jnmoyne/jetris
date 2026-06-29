@@ -175,8 +175,14 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 						a.openArchive(archives[i])
 					}
 					rec := archives[i]
-					return material.Clickable(gtx, btn, func(gtx C) D {
-						return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(archiveLine(rec), colMuted))
+					return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Flexed(1, a.body(archiveLine(rec), colMuted)),
+							layout.Rigid(spacer(8)),
+							layout.Rigid(func(gtx C) D {
+								return a.viewBoardButton(gtx, btn)
+							}),
+						)
 					})
 				})
 			})
@@ -394,6 +400,21 @@ func (a *App) secondaryButton(gtx C, btn *widget.Clickable, label string) D {
 		b := material.Button(a.th, btn, label)
 		b.Background = colPanel
 		b.Color = colAccent
+		return b.Layout(gtx)
+	})
+}
+
+// viewBoardButton is the compact accent-bordered "View board" action on each
+// GAME HISTORY row, making it obvious that a finished game can be opened to see
+// its final playfield. It mirrors secondaryButton's styling but with tighter
+// padding and a smaller label so it fits a list row.
+func (a *App) viewBoardButton(gtx C, btn *widget.Clickable) D {
+	return widget.Border{Color: colAccent, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		b := material.Button(a.th, btn, "View board")
+		b.Background = colPanel
+		b.Color = colAccent
+		b.TextSize = unit.Sp(13)
+		b.Inset = layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(10), Right: unit.Dp(10)}
 		return b.Layout(gtx)
 	})
 }

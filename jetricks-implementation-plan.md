@@ -2004,7 +2004,8 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
 games), chat (lines plus a message editor), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
 archived games with mode, players, duration, and scores — fetched from the
-`JETRICKS_ARCHIVE` stream on lobby load. Each history row is **clickable**: it opens
+`JETRICKS_ARCHIVE` stream on lobby load. Each history row carries an accent-bordered
+**"View board"** button (`viewBoardButton`) on the right that opens
 the `screenArchive` viewer (`archive_view.go`), which rebuilds the saved
 `ArchiveRecord.Boards` into `engine.BoardSnapshot`s (`boardSnapshotFromPicture`) and
 redraws the playfield exactly as it stood when that game ended — the single wide board

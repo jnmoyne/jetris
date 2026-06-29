@@ -338,11 +338,11 @@ All subject and stream names in the application are produced exclusively through
 
 ### Stream Configuration Notes
 
-`JETRICKS_GAME_<id>` is created with `FileStorage`, `LimitsPolicy` retention, and two stream-level flags:
+`JETRICKS_GAME_<id>` is created with `MemoryStorage`, `MaxMsgsPerSubject: 1`, `LimitsPolicy` retention, and two stream-level flags:
 - `AllowAtomicPublish: true` — required for jetstreamext atomic batch move publishing
 - `AllowDirect: true` — enables direct get / `GetLastMsgsFor` for fast playfield reconstruction and per-subject refetch
 
-Both flags are set unconditionally on every game stream regardless of mode. No `MaxAge` is set (game streams are deleted at game end), and `AllowMsgCounter` is **not** set — the cooperative score is a plain local counter propagated via events, not a server-side counter CRDT.
+The stream uses **memory storage** (game streams are ephemeral and deleted at game end, so there is no need to persist them to disk) and retains **only the latest message per subject** (`MaxMsgsPerSubject: 1`) — only the current state for each subject/key is needed. Both flags are set unconditionally on every game stream regardless of mode. No `MaxAge` is set (game streams are deleted at game end), and `AllowMsgCounter` is **not** set — the cooperative score is a plain local counter propagated via events, not a server-side counter CRDT.
 
 ### GameMeta Struct
 
@@ -1602,6 +1602,8 @@ All transitions go through CAS on `jetricks.game.<id>.meta`. If a CAS fails duri
 Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logic. It depends on `engine` and `lobby` (one-way) and communicates with them exclusively through their `Updates` channels and exported method calls — it is never imported by the business logic.
 
 **`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — and the lobby branding banner), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
+
+**Button styling.** Primary actions (Join, Ready, Create Game, Send) are the default filled-accent `material.Button`. Non-primary actions — Spectate, Quit, Back to Lobby, and the login collision-dialog Cancel — use the `secondaryButton(gtx, btn, label)` helper (`lobby.go`): an accent-colored (`colAccent`) label and 1 dp accent border over the `colPanel` background, so they read as clearly clickable instead of blending into the near-black window background (a bare `colPanel` fill made them look disabled even though they worked). The spectator's HUD keeps the "Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a spectator can always return to the lobby.
 
 Two small packages support the front end:
 - **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math) for the native UI. Exposes a single decision function, `CellStyle`, plus the RGBA surface (`CellAppearance`, `PlayerColorRGBA`, `PlayerColorHex`), so every render path (own board, opponent boards, spectator view) draws from one visual model.

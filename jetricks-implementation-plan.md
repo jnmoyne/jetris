@@ -682,7 +682,8 @@ jetstream.StreamConfig{
     Subjects:           []string{config.GameSubjectFilter(gameID)},
     AllowAtomicPublish: true,  // required for jetstreamext batch publish
     AllowDirect:        true,  // direct get for fast last-message-per-subject fetches
-    Storage:            jetstream.FileStorage,
+    MaxMsgsPerSubject:  1,     // only the latest message per subject is needed
+    Storage:            jetstream.MemoryStorage,
     Retention:          jetstream.LimitsPolicy,
 }
 ```
@@ -2001,7 +2002,18 @@ consumer-side hook); the log resets on game entry/exit.
 
 **Spectator mode.** The lobby's "Spectate" button creates an engine in `ModeSpectator`
 (no gravity, no moves, no controls). The game screen hides controls and the ready
-button, showing "Spectating" as the player status.
+button, showing "Spectating" as the player status. The spectator's HUD keeps the
+"Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a
+spectator can leave at any time.
+
+**Secondary button style.** Non-primary actions — the lobby "Spectate" and "Quit"
+buttons, the in-game "Back to Lobby" button, and the login collision-dialog "Cancel"
+button — render via the `secondaryButton` helper: an accent
+(`colAccent`) label and 1 dp accent border over the `colPanel` background. This makes
+them read as clearly clickable instead of blending into the near-black window
+background, which a bare `colPanel` fill did (the buttons looked disabled even though
+they worked). Primary actions (Join, Ready) stay as the default filled-accent
+`material.Button`.
 
 **Per-square rendering** (`internal/render`). Cell appearance is computed by a single
 helper, `render.CellStyle(cell, localPlayerIdx, showOutline)`, which is the one source

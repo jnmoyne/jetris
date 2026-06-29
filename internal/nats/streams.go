@@ -22,8 +22,12 @@ func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 		// briefly behind; if that ever causes useless retries we'd switch the
 		// merge-retry refetch to a consistent read.)
 		AllowDirect: true,
-		Storage:     jetstream.FileStorage,
-		Retention:   jetstream.LimitsPolicy,
+		// The game stream only needs the latest message per subject (the current
+		// state for each key), so cap it at one message per subject and keep it in
+		// memory rather than on disk.
+		MaxMsgsPerSubject: 1,
+		Storage:           jetstream.MemoryStorage,
+		Retention:         jetstream.LimitsPolicy,
 	})
 	return err
 }

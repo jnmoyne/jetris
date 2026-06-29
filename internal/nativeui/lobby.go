@@ -147,9 +147,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 					return t.Layout(gtx)
 				}),
 				layout.Rigid(func(gtx C) D {
-					b := material.Button(a.th, &a.quitBtn, "Quit")
-					b.Background = colPanel
-					return b.Layout(gtx)
+					return a.secondaryButton(gtx, &a.quitBtn, "Quit")
 				}),
 			)
 		}),
@@ -317,9 +315,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing) D {
 			layout.Rigid(func(gtx C) D {
 				if canSpectate {
 					return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-						b := material.Button(a.th, &btns.spectate, "Spectate")
-						b.Background = colPanel
-						return b.Layout(gtx)
+						return a.secondaryButton(gtx, &btns.spectate, "Spectate")
 					})
 				}
 				return D{}
@@ -377,6 +373,20 @@ func (a *App) gameButtons(id string) *gameRowBtns {
 }
 
 // --- small layout helpers ---
+
+// secondaryButton renders a non-primary action (Spectate, Back to Lobby) so it
+// reads as clearly clickable: accent-colored label and border over the panel
+// background, visually distinct from the filled-accent primary buttons (Join,
+// Ready) without blending into the near-black window background the way a bare
+// colPanel fill did.
+func (a *App) secondaryButton(gtx C, btn *widget.Clickable, label string) D {
+	return widget.Border{Color: colAccent, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		b := material.Button(a.th, btn, label)
+		b.Background = colPanel
+		b.Color = colAccent
+		return b.Layout(gtx)
+	})
+}
 
 func (a *App) header(txt string) layout.Widget {
 	return func(gtx C) D {

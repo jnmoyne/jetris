@@ -186,9 +186,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		}),
 		layout.Rigid(spacer(18)),
 		layout.Rigid(func(gtx C) D {
-			b := material.Button(a.th, &a.backBtn, "Back to Lobby")
-			b.Background = colPanel
-			return b.Layout(gtx)
+			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
 		}),
 	)
 
@@ -470,9 +468,9 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView) D {
 						return l.Layout(gtx)
 					}))
 				}
-				children = append(children, layout.Rigid(spacer(14)), layout.Rigid(
-					material.Button(a.th, &a.backBtn, "Back to Lobby").Layout,
-				))
+				children = append(children, layout.Rigid(spacer(14)), layout.Rigid(func(gtx C) D {
+					return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
+				}))
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx, children...)
 			})
 		})

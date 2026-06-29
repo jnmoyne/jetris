@@ -359,6 +359,7 @@ Any player in the lobby can spectate an in-progress game:
 - **Player legend:** Shows each player's name with their assigned color swatch
 - **Colored outlines:** Each player's active piece has a distinct colored outline (not white)
 - Spectators see the same real-time playfield updates as players
+- The HUD keeps a "Back to Lobby" button, so a spectator can leave the game and return to the lobby at any time
 
 ---
 

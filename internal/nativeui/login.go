@@ -124,9 +124,7 @@ func (a *App) loginCollisionContent(gtx C) D {
 				layout.Rigid(material.Button(a.th, &a.collisionYes, "Yes, join").Layout),
 				layout.Rigid(spacer(10)),
 				layout.Rigid(func(gtx C) D {
-					b := material.Button(a.th, &a.collisionNo, "Cancel")
-					b.Background = colPanel
-					return b.Layout(gtx)
+					return a.secondaryButton(gtx, &a.collisionNo, "Cancel")
 				}),
 			)
 		}),

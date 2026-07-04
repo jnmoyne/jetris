@@ -20,6 +20,13 @@ func fillRect(ops *op.Ops, r image.Rectangle, c color.NRGBA) {
 	paint.Fill(ops, c)
 }
 
+// fillRRect paints r with c using rounded corners of the given radius (pass
+// half the height for a pill shape).
+func fillRRect(ops *op.Ops, r image.Rectangle, radius int, c color.NRGBA) {
+	defer clip.RRect{Rect: r, NW: radius, NE: radius, SW: radius, SE: radius}.Push(ops).Pop()
+	paint.Fill(ops, c)
+}
+
 // rainbow returns the CAS-flash border color for a given progress through the
 // flash, reproducing the web's 7-stop keyframe palette.
 func rainbow(elapsed time.Duration) color.NRGBA {

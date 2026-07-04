@@ -26,6 +26,8 @@ import (
 // layout never reads fields the pump goroutine is writing.
 type gameView struct {
 	score, level         int
+	teamScores           [config.TeamCount]int
+	teamLevels           [config.TeamCount]int
 	rtt                  time.Duration
 	status               string
 	countdown            int
@@ -51,6 +53,8 @@ func (a *App) snapshotGame(now time.Time) gameView {
 	return gameView{
 		score:       a.score,
 		level:       a.level,
+		teamScores:  a.teamScores,
+		teamLevels:  a.teamLevels,
 		rtt:         a.rtt,
 		status:      a.gameStatus,
 		countdown:   a.countdown,
@@ -161,8 +165,30 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D { return a.legend(gtx, eng, view, gmode) }),
 		layout.Rigid(spacer(14)),
-		layout.Rigid(a.hudStat("SCORE", view.score)),
-		layout.Rigid(a.hudStat("LEVEL", view.level)),
+	}
+
+	if gmode == config.ModeTeams {
+		// Teams: live per-team scoreboard (folded from every team's line-clear
+		// events on every engine), shown to players and spectators alike. The
+		// player's own team is highlighted; spectators have no own team and see
+		// each team's level inline instead of the single LEVEL stat.
+		for t := 0; t < config.TeamCount; t++ {
+			valCol := colFg
+			if mode != engine.ModeSpectator && t == eng.TeamIdx() {
+				valCol = colAccent
+			}
+			val := fmt.Sprintf("%d", view.teamScores[t])
+			if mode == engine.ModeSpectator {
+				val = fmt.Sprintf("%d · lvl %d", view.teamScores[t], view.teamLevels[t])
+			}
+			children = append(children,
+				layout.Rigid(a.hudStatColored("TEAM "+teamName(t), val, valCol)))
+		}
+	} else {
+		children = append(children, layout.Rigid(a.hudStat("SCORE", view.score)))
+	}
+	if !(gmode == config.ModeTeams && mode == engine.ModeSpectator) {
+		children = append(children, layout.Rigid(a.hudStat("LEVEL", view.level)))
 	}
 
 	if mode == engine.ModePlayer {
@@ -250,15 +276,41 @@ func (a *App) readyArea(gtx C, view gameView) D {
 		layout.Rigid(func(gtx C) D {
 			var rows []layout.FlexChild
 			for _, p := range view.readyPlayer {
-				mark := "…"
-				if p.Ready {
-					mark = "✓"
-				}
-				rows = append(rows, layout.Rigid(a.body(mark+" "+p.Name, colMuted)))
+				p := p
+				rows = append(rows, layout.Rigid(func(gtx C) D {
+					return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Flexed(1, a.body(p.Name, colFg)),
+							layout.Rigid(spacer(8)),
+							layout.Rigid(a.readyBadge(p.Ready)),
+						)
+					})
+				}))
 			}
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
 		}),
 	)
+}
+
+// readyBadge renders a filled pill reading READY (green) or NOT READY (red) —
+// the per-player status shown while waiting for everyone to ready up.
+func (a *App) readyBadge(ready bool) layout.Widget {
+	return func(gtx C) D {
+		txt, col := "NOT READY", colErr
+		if ready {
+			txt, col = "READY", colGo
+		}
+		l := material.Label(a.th, unit.Sp(11), txt)
+		l.Color = colBg
+		l.Font.Weight = font.Bold
+		inset := layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(8), Right: unit.Dp(8)}
+		macro := op.Record(gtx.Ops)
+		dims := inset.Layout(gtx, l.Layout)
+		call := macro.Stop()
+		fillRRect(gtx.Ops, image.Rect(0, 0, dims.Size.X, dims.Size.Y), dims.Size.Y/2, col)
+		call.Add(gtx.Ops)
+		return dims
+	}
 }
 
 func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {

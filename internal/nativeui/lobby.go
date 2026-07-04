@@ -193,7 +193,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 // archiveLine summarizes a finished game for the history list.
 func archiveLine(r config.ArchiveRecord) string {
 	if r.Mode == config.ModeTeams {
-		// "teams · A 🏆 alice, bob · B carol, dave"
+		// "teams · A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave"
 		parts := make([]string, 0, config.TeamCount)
 		for t := 0; t < config.TeamCount; t++ {
 			var members []string
@@ -206,7 +206,15 @@ func archiveLine(r config.ArchiveRecord) string {
 			if r.WinningTeam == t {
 				tag = " 🏆"
 			}
-			parts = append(parts, fmt.Sprintf("%s%s %s", teamName(t), tag, strings.Join(members, ", ")))
+			stats := ""
+			if t < len(r.TeamScores) {
+				// Older records predate per-team totals — skip stats for those.
+				stats = fmt.Sprintf(" %d", r.TeamScores[t])
+				if t < len(r.TeamLevels) {
+					stats += fmt.Sprintf(" (lvl %d)", r.TeamLevels[t])
+				}
+			}
+			parts = append(parts, fmt.Sprintf("%s%s%s %s", teamName(t), tag, stats, strings.Join(members, ", ")))
 		}
 		return fmt.Sprintf("teams · %s", strings.Join(parts, " · "))
 	}
@@ -221,7 +229,16 @@ func archiveLine(r config.ArchiveRecord) string {
 		parts = append(parts, fmt.Sprintf("%s %d%s", p.PlayerID, p.Score, tag))
 	}
 	if r.Mode == config.ModeCooperative {
-		return fmt.Sprintf("co-op · total %d · %s", r.TotalScore, strings.Join(parts, ", "))
+		return fmt.Sprintf("co-op · total %d (lvl %d) · %s", r.TotalScore, r.FinalLevel, strings.Join(parts, ", "))
+	}
+	// Competitive: append each player's achieved level to their score.
+	parts = parts[:0]
+	for _, p := range players {
+		tag := ""
+		if p.Winner {
+			tag = " 🏆"
+		}
+		parts = append(parts, fmt.Sprintf("%s %d (lvl %d)%s", p.PlayerID, p.Score, p.Level, tag))
 	}
 	return fmt.Sprintf("competitive · %s", strings.Join(parts, ", "))
 }

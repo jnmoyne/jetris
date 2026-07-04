@@ -261,6 +261,7 @@ func TeamVisibleRowStart(teamSize int) int {
 type PlayerResult struct {
     PlayerID   string `json:"player_id"`
     Score      int    `json:"score"`
+    Level      int    `json:"level,omitempty"` // level achieved at game end (from the player's line total)
     PieceCount uint64 `json:"piece_count"`
     Winner     bool   `json:"winner,omitempty"`
     Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
@@ -276,8 +277,11 @@ type ArchiveRecord struct {
     StartedAt   time.Time      `json:"started_at"`
     FinishedAt  time.Time      `json:"finished_at"`
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only (unset for teams)
+    FinalLevel  int            `json:"final_level,omitempty"` // cooperative: shared level at game end
     TeamSize    int            `json:"team_size,omitempty"`   // teams mode
     WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
+    TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team (indexed by team)
+    TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team (indexed by team)
     Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s)
 }
 
@@ -1090,7 +1094,7 @@ Between teams the competitive mechanics apply at team granularity:
 - **No piece is lifted by a shared-board shrink.** `ProjectShrinkShared` overlays every player's active cells at their current, unshifted positions (see §`internal/game`); a piece overtaken by the risen stack is "crushed" — it locks where it is on its next blocked drop. A shrink can therefore never top a player out; top-out happens at spawn time only.
 - **Per-player elimination, per-team game over.** A topped-out player vacates their piece and spectates while their team plays on; a team loses only when ALL its members have topped out, and every member of the other team — already-eliminated ones included — wins.
 
-Teams scoring is the coop rule per team: a clear scores `teamSize × lines`, and the clearing engine publishes `EventLineClear{Team, Score, LinesCleared}` — teammates fold **both** the score delta and the line count (unlike coop, which only folds score) so every teammate's level and gravity interval stay in sync with the team total. The opposing team's clears reach an engine only as `EventShrink`.
+Teams scoring is the coop rule per team: a clear scores `teamSize × lines`, and the clearing engine publishes `EventLineClear{Team, Score, LinesCleared}` — teammates fold **both** the score delta and the line count (as coop does too) so every teammate's level and gravity interval stay in sync with the team total. The opposing team's clears do not touch an engine's own `score`; their garbage reaches it as `EventShrink`. However **every** engine (both teams, eliminated players, spectators) also folds every `EventLineClear` into the per-team scoreboard `teamScores[ev.Team]`/`teamLines[ev.Team]` and emits `UpdateTeamStats`, so the live TEAM A / TEAM B scores (and per-team levels) render on every screen (see "Score tracking" below).
 
 One subtle gate: lock-in detection in `runConsumer` only runs when `e.getMode() == ModePlayer`. A spectator — or an eliminated teams player, whose elimination vacated their piece on the still-live shared board — must never run lock-in side effects off the echoes of their teammates' play.
 
@@ -1268,6 +1272,8 @@ const (
     UpdatePlayerEliminated                    // competitive/teams: a player was eliminated
     UpdateCASFlash                            // a CAS-failure flash should be rendered
     UpdateRTT                                // a new publish→echo round-trip measurement
+    UpdateBufferedMoves                       // the buffered-input queue changed
+    UpdateTeamStats                           // teams: a team's score or level changed (totals in TeamScores/TeamLevels)
 )
 
 type EngineUpdate struct {
@@ -1284,6 +1290,8 @@ type EngineUpdate struct {
     FlashCells         [][2]int // for UpdateCASFlash: cells to flash
     FlashPlayerIdx     int      // for UpdateCASFlash: player index for flash color
     RTT               time.Duration // for UpdateRTT: latest publish→echo round trip
+    TeamScores        [config.TeamCount]int // for UpdateTeamStats: both teams' scores
+    TeamLevels        [config.TeamCount]int // for UpdateTeamStats: both teams' levels
 }
 ```
 
@@ -1351,6 +1359,7 @@ type GameEvent struct {
     RowsRemoved  int       `json:"rows_removed,omitempty"`  // for EventShrink: how many rows
     ClearedRows  []int     `json:"cleared_rows,omitempty"`  // for EventLineClear: which rows
     Score        int       `json:"score,omitempty"`         // EventGameOver: final score; EventLineClear (coop/teams): score delta
+    Level        int       `json:"level,omitempty"`         // EventGameOver: level achieved (from the sender's line total)
     PieceCount   uint64    `json:"piece_count,omitempty"`   // for EventGameOver: total pieces placed
     PlayerIdx    int       `json:"player_idx,omitempty"`    // causer's index (for EventShrink)
     Team         int       `json:"team"`                    // teams: sender's team (0 = A, 1 = B)
@@ -1370,7 +1379,7 @@ type GameEvent struct {
 
 **Score tracking:**
 
-In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta}` on the events subject; every other player's events consumer folds that delta into its own local `score` so all clients converge on the same combined team total. This is **not** a server-side counter CRDT and uses no score subject. See `jetricks-gameplays.md` for the authoritative scoring rules.
+In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta, LinesCleared: n}` on the events subject; every other player's events consumer folds the delta into its own local `score` **and** the line count into `totalLines` (then `refreshLevel()` stores/emits the new level), so all clients converge on the same combined team total, shared level, and gravity. This is **not** a server-side counter CRDT and uses no score subject. See `jetricks-gameplays.md` for the authoritative scoring rules.
 
 **Line clear publishing:** The cells changed by a clear (`changedCells` over the shifted projection) are published using a no-CAS publish in competitive mode (the cleared state is authoritative on a single-writer board) and through CAS+merge-retry in coop (so the shift can never overwrite the other player's mid-flight piece — `refetchAndMerge` skips any cell currently holding their active piece, and the category order applies their shifted piece before vacating its old positions). After the clear cells are published, the per-cell `LastSeq` entries are advanced by the write-through from the publish acknowledgment so subsequent CAS publishes use the correct sequences.
 
@@ -1378,20 +1387,22 @@ In **cooperative mode** the team score is a plain local counter (`score atomic.I
 
 In **competitive mode** each player keeps its own local score counter (`score atomic.Int64`), incremented by the number of lines it clears. The score is reported to other clients only at game end via the `EventGameOver` event (and rendered locally via `UpdateScore`); the per-player `score` subject is not used.
 
-In **teams mode** each team's score follows the cooperative scheme: a clear adds `teamSize × lines`, published as `EventLineClear{Team, Score, LinesCleared}` and folded by every same-team engine — **both** the score delta and the line count, so teammates' levels and gravity intervals stay in sync (coop folds only the score). Events from the other team are never folded into the score; they arrive as `EventShrink` garbage instead.
+In **teams mode** each team's score follows the cooperative scheme: a clear adds `teamSize × lines`, published as `EventLineClear{Team, Score, LinesCleared}` and folded by every same-team engine — **both** the score delta and the line count, so teammates' levels and gravity intervals stay in sync (coop folds only the score). Events from the other team are never folded into the own-team `score`; their garbage arrives as `EventShrink` instead.
+
+Additionally every engine keeps a **per-team scoreboard** (`teamScores` / `teamLines`, both `[config.TeamCount]atomic.Int64`): the clearing player folds its score delta and line count into its own team's slots in `handleLockIn`, and every other engine — teammates, the opposing team's players, eliminated players, and spectators — folds `EventLineClear.Score`/`LinesCleared` into `teamScores[ev.Team]`/`teamLines[ev.Team]` in `handleGameEvent`, regardless of team. Each fold emits `UpdateTeamStats` with both teams' score totals and levels (per-team level = `game.Level(teamLines[t])`; also exposed via `Engine.TeamScores()`/`Engine.TeamLevels()`), which drives the live `TEAM A` / `TEAM B` HUD scoreboard on every screen. The events subject is an ordered stream consumed from the start, so a spectator joining mid-game converges on the same totals.
 
 **Top-out transition:**
 
 When Player A's engine detects that the newly spawned piece (at the top of the playfield) cannot be placed without collision, `handleTopOut(ctx, locked)` (`locked` = caller already holds `e.mu`; `spawnPiece`'s top-out branch always does):
-1. Publishes `GameEvent{Kind: EventGameOver, PlayerID: playerA, Score: e.score, PieceCount: e.pieceIdx}` to the events subject.
+1. Publishes `GameEvent{Kind: EventGameOver, PlayerID: playerA, Score: e.score, Level: e.AchievedLevel(), PieceCount: e.pieceIdx}` to the events subject (`AchievedLevel` = `game.Level(totalLines)`, the level reached at the moment of top-out — recorded in the archive).
 2. Calls `e.transitionToSpectator(false)` — sets `mode = ModeGameOver` and emits `UpdateGameOver{Won: false}`. It does **not** itself stop the gravity ticker or move processor; those goroutines self-exit on their next iteration because they guard on `mode == ModePlayer`, and the consumers keep running. `handleTopOut` does not archive, delete the stream, or remove the KV entry.
 3. In **cooperative mode**, any top-out ends the game for everyone: `handleTopOut` kicks off `transitionGameToFinished` (CAS the meta to `finished`).
 4. In **competitive mode**, finishing is driven by last-player-standing in `handleGameEvent` rather than by `handleTopOut`: each engine tracks `eliminatedPlayers`; when a player receives game-over events for all but one player it calls `transitionToSpectator(true)` for itself if it is the survivor (win) and kicks off `transitionGameToFinished`. A simultaneous top-out (all eliminated) is a draw with no winner. The UI shows a player status list (playing/eliminated) and "YOU WON!"/"YOU LOST" at game over. See `jetricks-gameplays.md` for the authoritative game-over rules.
 5. In **teams mode**, `handleTopOut` routes to `handleTeamTopOut` instead: the player vacates their piece from the still-live shared board and spectates while their team plays on, and finishing is driven by whole-team elimination in `handleTeamGameOverEvent` — see the "Teams mode design" section above and `jetricks-gameplays.md` for the authoritative rules.
 
-**Meta transition + game archiving:** `transitionGameToFinished` CAS-retries the meta status to `finished` (setting `FinishedAt`), then — after `time.Sleep(5 * time.Second)`, giving every player time to receive the game-over — invokes `OnGameFinished`, which the front end wires to `archive.ArchiveAndCleanup`. That callback CAS-transitions the meta `finished → archived`, publishes an `ArchiveRecord` to the `JETRICKS_ARCHIVE` stream (subject `jetricks.archive`) with game ID, mode, player count, per-player results (ID, score, piece count, winner), start/finish timestamps, and total score (cooperative), then deletes the game stream and removes the KV entry. Archiving is therefore **delayed by ~5 s after game end**, not immediate, and is CAS-protected so only one client performs it.
+**Meta transition + game archiving:** `transitionGameToFinished` CAS-retries the meta status to `finished` (setting `FinishedAt`), then — after `time.Sleep(5 * time.Second)`, giving every player time to receive the game-over — invokes `OnGameFinished`, which the front end wires to `archive.ArchiveAndCleanup`. That callback CAS-transitions the meta `finished → archived`, publishes an `ArchiveRecord` to the `JETRICKS_ARCHIVE` stream (subject `jetricks.archive`) with game ID, mode, player count, per-player results (ID, score, achieved level, piece count, winner), start/finish timestamps, and — for cooperative — the total score and final shared level (`TotalScore`/`FinalLevel`), then deletes the game stream and removes the KV entry. Archiving is therefore **delayed by ~5 s after game end**, not immediate, and is CAS-protected so only one client performs it.
 
-For **teams mode** the archive builds `playerTeams` from the roster snapshot (the authoritative source) with `EventGameOver`'s `Team` field as the fallback for any player missing from it. The losing team is the team whose **every** member sent an `EventGameOver`; `WinningTeam` is the other team's index (or `-1` if both are dead — a draw). `Winner: true` is set on EVERY member of the winning team, eliminated members included (a team win is shared), `PlayerResult.Team` records each player's team, the record carries `TeamSize`/`WinningTeam`, and `TotalScore` is left unset.
+For **teams mode** the archive builds `playerTeams` from the roster snapshot (the authoritative source) with `EventGameOver`'s `Team` field as the fallback for any player missing from it. The losing team is the team whose **every** member sent an `EventGameOver`; `WinningTeam` is the other team's index (or `-1` if both are dead — a draw). `Winner: true` is set on EVERY member of the winning team, eliminated members included (a team win is shared), `PlayerResult.Team` records each player's team, the record carries `TeamSize`/`WinningTeam`, `TotalScore` is left unset, and the final per-team totals are recorded in `TeamScores`/`TeamLevels` (slices indexed by team, taken from the archiving engine's converged `Engine.TeamScores()`/`TeamLevels()`) — the lobby history line renders them as `A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave` (stats omitted for pre-existing records without them).
 
 ---
 
@@ -1626,6 +1637,8 @@ Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logi
 
 **`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `archive_view.go` (the `screenArchive` history viewer — redraws a finished game's saved end-of-game boards), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — and the lobby branding banner), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
 
+**Ready checklist styling.** While waiting for players to ready up, the HUD's ready list (`readyArea`, `game.go`) shows each player's name with a filled pill badge on the right — green "READY" (`colGo`) or red "NOT READY" (`colErr`), dark bold text, drawn by `readyBadge` over `fillRRect` (`board.go`) — replacing the earlier subtle "✓ / …" prefix marks.
+
 **Button styling.** Primary actions (Join, Ready, Create Game, Send) are the default filled-accent `material.Button`. Non-primary actions — Spectate, Quit, Back to Lobby, and the login collision-dialog Cancel — use the `secondaryButton(gtx, btn, label)` helper (`lobby.go`): an accent-colored (`colAccent`) label and 1 dp accent border over the `colPanel` background, so they read as clearly clickable instead of blending into the near-black window background (a bare `colPanel` fill made them look disabled even though they worked). The spectator's HUD keeps the "Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a spectator can always return to the lobby.
 
 Two small packages support the front end:
@@ -1640,7 +1653,7 @@ Two small packages support the front end:
 
 The game over overlay is shown on `UpdateGameOver`: in cooperative mode any top-out ends the game for all; in competitive mode it shows "YOU WON!"/"YOU LOST" once the player is eliminated or is the last standing. The game screen hides controls and the ready button for spectators, showing "Spectating" as the player status instead.
 
-**Teams mode UI.** In the lobby, the create-game form has a third mode radio ("teams"); for teams the count editor means players **per team** (its label flips to "Per team:") and `createGame` converts it to `(playerCount, teamSize)` for `lobby.CreateGame`. Each game row (`gameRow`) shows per-team rosters ("A: alice ✓ · B: bob") and **two** join buttons — "Join A (n/size)" / "Join B (n/size)" (`teamJoinButton`, `teamName` helpers; each button is hidden when its team is full; `gameRowBtns` gains `joinA`/`joinB` Clickables in `app.go`). `joinGame(gameID, team)` passes the resulting `JoinResult{PlayerIdx, Team, TeamSlot}` into `engine.New`; `spectateGame` passes `0,0`. The archive history line (`archiveLine`) renders "teams · A 🏆 alice, bob · B carol, dave" using `WinningTeam`. On the game screen the HUD label reads "Teams · TEAM A/B", the legend groups players under TEAM A / TEAM B headers (swatch colors stay keyed by the global roster index), eliminated players get an "(out)" marker, and the opponent sidebar — fed by `OpponentSnapshots()` under `TeamBoardKey` — is shown labeled "OPPOSING TEAM". `gameOverBox` takes the game view and shows an interim "YOU'RE OUT / Your team plays on" while the player is eliminated mid-game, then "YOUR TEAM WON!"/"YOUR TEAM LOST" once the outcome is decided; spectators get `spectatorTeamBoards`, which renders both team boards side by side.
+**Teams mode UI.** In the lobby, the create-game form has a third mode radio ("teams"); for teams the count editor means players **per team** (its label flips to "Per team:") and `createGame` converts it to `(playerCount, teamSize)` for `lobby.CreateGame`. Each game row (`gameRow`) shows per-team rosters ("A: alice ✓ · B: bob") and **two** join buttons — "Join A (n/size)" / "Join B (n/size)" (`teamJoinButton`, `teamName` helpers; each button is hidden when its team is full; `gameRowBtns` gains `joinA`/`joinB` Clickables in `app.go`). `joinGame(gameID, team)` passes the resulting `JoinResult{PlayerIdx, Team, TeamSlot}` into `engine.New`; `spectateGame` passes `0,0`. The archive history line (`archiveLine`) renders "teams · A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave" using `WinningTeam` and the record's `TeamScores`/`TeamLevels` (stats omitted for older records without them); coop lines show `total N (lvl L)` and competitive lines show each player's `score (lvl L)`. On the game screen the HUD label reads "Teams · TEAM A/B", the single SCORE stat is replaced by a live per-team scoreboard — one `TEAM A` / `TEAM B` stat per team fed by `UpdateTeamStats` (own team's value in the accent color; spectators see each team's `score · lvl N` inline and no single SCORE/LEVEL stat), the legend groups players under TEAM A / TEAM B headers (swatch colors stay keyed by the global roster index), eliminated players get an "(out)" marker, and the opponent sidebar — fed by `OpponentSnapshots()` under `TeamBoardKey` — is shown labeled "OPPOSING TEAM". `gameOverBox` takes the game view and shows an interim "YOU'RE OUT / Your team plays on" while the player is eliminated mid-game, then "YOUR TEAM WON!"/"YOUR TEAM LOST" once the outcome is decided; spectators get `spectatorTeamBoards`, which renders both team boards side by side.
 
 ---
 

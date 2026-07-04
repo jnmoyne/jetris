@@ -27,6 +27,9 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				a.score = u.Score
 			case engine.UpdateLevel:
 				a.level = u.Level
+			case engine.UpdateTeamStats:
+				a.teamScores = u.TeamScores
+				a.teamLevels = u.TeamLevels
 			case engine.UpdateGameStatus:
 				a.gameStatus = u.GameStatus
 			case engine.UpdateCountdown:

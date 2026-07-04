@@ -1,6 +1,10 @@
 package engine
 
-import "time"
+import (
+	"time"
+
+	"jetricks/internal/config"
+)
 
 // UpdateKind identifies the type of engine update sent to the UI.
 type UpdateKind int
@@ -20,6 +24,7 @@ const (
 	UpdateCASFlash         // a CAS failure flash should be rendered
 	UpdateRTT              // a new publish→echo round-trip measurement
 	UpdateBufferedMoves    // the buffered-input queue changed (read via Engine.BufferedMoves)
+	UpdateTeamStats        // teams: a team's score or level changed (both teams' totals in TeamScores/TeamLevels)
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -29,14 +34,16 @@ type EngineUpdate struct {
 	Score              int
 	Level              int
 	GameStatus         string
-	Countdown          int           // seconds remaining (0 = GO!)
-	Won                bool          // competitive/teams: true if this player('s team) won
-	EliminatedPlayerID string        // competitive/teams: which player was eliminated
-	Team               int           // teams: team of the eliminated player (UpdatePlayerEliminated)
-	OpponentID         string        // which opponent's board changed (UpdateOpponentField)
-	FlashCells         [][2]int      // cells to flash (UpdateCASFlash)
-	FlashPlayerIdx     int           // player index for flash color
-	RTT                time.Duration // latest publish→echo round trip (UpdateRTT)
+	Countdown          int                   // seconds remaining (0 = GO!)
+	Won                bool                  // competitive/teams: true if this player('s team) won
+	EliminatedPlayerID string                // competitive/teams: which player was eliminated
+	Team               int                   // teams: team of the eliminated player (UpdatePlayerEliminated)
+	OpponentID         string                // which opponent's board changed (UpdateOpponentField)
+	FlashCells         [][2]int              // cells to flash (UpdateCASFlash)
+	FlashPlayerIdx     int                   // player index for flash color
+	RTT                time.Duration         // latest publish→echo round trip (UpdateRTT)
+	TeamScores         [config.TeamCount]int // teams: both teams' scores (UpdateTeamStats)
+	TeamLevels         [config.TeamCount]int // teams: both teams' levels (UpdateTeamStats)
 }
 
 // EventKind identifies the type of game event published to the events subject.
@@ -62,6 +69,7 @@ type GameEvent struct {
 	RowsRemoved  int       `json:"rows_removed,omitempty"`
 	ClearedRows  []int     `json:"cleared_rows,omitempty"`
 	Score        int       `json:"score,omitempty"`
+	Level        int       `json:"level,omitempty"` // EventGameOver: level achieved (from the sender's line total)
 	PieceCount   uint64    `json:"piece_count,omitempty"`
 	PlayerIdx    int       `json:"player_idx,omitempty"` // causer's index for EventShrink
 	Team         int       `json:"team"`                 // teams: sender's team (0 = A, 1 = B)

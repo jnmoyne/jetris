@@ -54,6 +54,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	playerResults[eng.PlayerID()] = config.PlayerResult{
 		PlayerID:   eng.PlayerID(),
 		Score:      eng.Score(),
+		Level:      eng.AchievedLevel(),
 		PieceCount: eng.PieceIdx(),
 	}
 	playerTeams[eng.PlayerID()] = eng.TeamIdx()
@@ -87,6 +88,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 						playerResults[ev.PlayerID] = config.PlayerResult{
 							PlayerID:   ev.PlayerID,
 							Score:      ev.Score,
+							Level:      ev.Level,
 							PieceCount: ev.PieceCount,
 						}
 					}
@@ -167,6 +169,14 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	}
 	if meta.Mode == config.ModeCooperative {
 		record.TotalScore = eng.Score()
+		record.FinalLevel = eng.AchievedLevel()
+	}
+	if meta.Mode == config.ModeTeams {
+		// The archiving engine folded every team's line-clear events, so its
+		// per-team scoreboard is the authoritative end-of-game team totals.
+		ts, tl := eng.TeamScores(), eng.TeamLevels()
+		record.TeamScores = append([]int(nil), ts[:]...)
+		record.TeamLevels = append([]int(nil), tl[:]...)
 	}
 
 	// Capture each board's final state from the game stream (latest message per

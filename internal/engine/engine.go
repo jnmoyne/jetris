@@ -61,12 +61,14 @@ type Engine struct {
 	score             atomic.Int64
 	totalLines        atomic.Int64
 	level             atomic.Int64
-	hadActivePiece    bool            // only touched by the own-rows consumer goroutine
-	eliminatedPlayers map[string]bool // players who have topped out (competitive/teams); guarded by e.mu
-	eliminatedTeam    map[string]int  // teams: eliminated player → team; guarded by e.mu
-	teamOutcomeDone   bool            // teams: win/loss/draw already decided; guarded by e.mu
-	expectedGarbage   int             // teams: cumulative adversarial rows owed to this team's board; guarded by e.mu
-	visibleRowStart   int             // first visible row index (varies per game mode/player count)
+	teamScores        [config.TeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (both teams' players and spectators)
+	teamLines         [config.TeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
+	hadActivePiece    bool                           // only touched by the own-rows consumer goroutine
+	eliminatedPlayers map[string]bool                // players who have topped out (competitive/teams); guarded by e.mu
+	eliminatedTeam    map[string]int                 // teams: eliminated player → team; guarded by e.mu
+	teamOutcomeDone   bool                           // teams: win/loss/draw already decided; guarded by e.mu
+	expectedGarbage   int                            // teams: cumulative adversarial rows owed to this team's board; guarded by e.mu
+	visibleRowStart   int                            // first visible row index (varies per game mode/player count)
 
 	Updates        chan EngineUpdate
 	OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -397,10 +399,54 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	go e.runConsumer(ctx, pf, config.CompetitiveCellSubjectFilter(e.gameID, oppID), oppID, oppMaxSeq+1, true)
 }
 
-func (e *Engine) GameID() string            { return e.gameID }
-func (e *Engine) PlayerID() string          { return e.playerID }
-func (e *Engine) Score() int                { return int(e.score.Load()) }
-func (e *Engine) Level() int                { return int(e.level.Load()) }
+func (e *Engine) GameID() string   { return e.gameID }
+func (e *Engine) PlayerID() string { return e.playerID }
+func (e *Engine) Score() int       { return int(e.score.Load()) }
+func (e *Engine) Level() int       { return int(e.level.Load()) }
+
+// TeamScores returns both teams' current scores (teams mode). The line-clear
+// events subject is consumed by every engine, so the totals converge on both
+// teams' players, eliminated players, and spectators alike.
+func (e *Engine) TeamScores() [config.TeamCount]int {
+	var ts [config.TeamCount]int
+	for i := range ts {
+		ts[i] = int(e.teamScores[i].Load())
+	}
+	return ts
+}
+
+// TeamLevels returns both teams' current levels (teams mode), derived from the
+// per-team cleared-line totals the same way TeamScores converges everywhere.
+func (e *Engine) TeamLevels() [config.TeamCount]int {
+	var tl [config.TeamCount]int
+	for i := range tl {
+		tl[i] = game.Level(int(e.teamLines[i].Load()))
+	}
+	return tl
+}
+
+// AchievedLevel returns the level reached by this engine's line total (own
+// clears plus folded shared-board clears). Used for the end-of-game archive
+// record; unlike Level() it is meaningful in every mode.
+func (e *Engine) AchievedLevel() int {
+	return game.Level(int(e.totalLines.Load()))
+}
+
+// refreshLevel recomputes the level from the (shared) line total, stores it,
+// and notifies the UI when it changed. Called after any fold into totalLines —
+// our own clear or another shared-board player's line-clear event.
+func (e *Engine) refreshLevel() {
+	newLevel := game.Level(int(e.totalLines.Load()))
+	if int64(newLevel) != e.level.Load() {
+		e.level.Store(int64(newLevel))
+		e.emitUpdate(EngineUpdate{Kind: UpdateLevel, Level: newLevel})
+	}
+}
+
+// emitTeamStats pushes the current per-team score and level totals to the UI.
+func (e *Engine) emitTeamStats() {
+	e.emitUpdate(EngineUpdate{Kind: UpdateTeamStats, TeamScores: e.TeamScores(), TeamLevels: e.TeamLevels()})
+}
 func (e *Engine) Mode() Mode                { return e.getMode() }
 func (e *Engine) GameMode() config.GameMode { return e.gameMode }
 
@@ -745,8 +791,8 @@ func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
 		return
 	}
 
-	// Publish game over event with score and piece count
-	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), PieceCount: e.pieceIdx.Load()}
+	// Publish game over event with score, achieved level and piece count
+	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), Level: e.AchievedLevel(), PieceCount: e.pieceIdx.Load()}
 	data, _ := json.Marshal(ev)
 	_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
 	e.transitionToSpectator(false) // we topped out → we lost
@@ -797,6 +843,7 @@ func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
 		PlayerID:   e.playerID,
 		Team:       e.teamIdx,
 		Score:      int(e.score.Load()),
+		Level:      e.AchievedLevel(),
 		PieceCount: e.pieceIdx.Load(),
 	}
 	data, _ := json.Marshal(ev)

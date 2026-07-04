@@ -182,6 +182,8 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.readyPlayers = players
 	a.score = 0
 	a.level = 0
+	a.teamScores = [config.TeamCount]int{}
+	a.teamLevels = [config.TeamCount]int{}
 	a.rtt = 0
 	a.gameStatus = status
 	a.countdown = -1
@@ -247,6 +249,8 @@ func (a *App) returnToLobby() {
 	a.countdown = -1
 	a.score = 0
 	a.level = 0
+	a.teamScores = [config.TeamCount]int{}
+	a.teamLevels = [config.TeamCount]int{}
 	a.rtt = 0
 	a.gameStatus = ""
 	a.flash = map[[2]int]time.Time{}

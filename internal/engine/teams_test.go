@@ -134,6 +134,22 @@ func TestTeamsGarbageHitsOpposingBoardExactlyOnce(t *testing.T) {
 	waitUntil(t, 3*time.Second, func() bool { return p0.Score() == 2 }, "p0's clear to score")
 	waitUntil(t, 3*time.Second, func() bool { return p1.Score() == 2 }, "p1 to fold the team score")
 
+	// EVERY engine — the clearer, their teammate, AND the opposing team's
+	// players — converges on the per-team scoreboard (the opposing team folds
+	// it off the line-clear event even though their own Score() is untouched).
+	waitUntil(t, 3*time.Second, func() bool {
+		want := [config.TeamCount]int{2, 0}
+		for _, e := range engines {
+			if e.TeamScores() != want {
+				return false
+			}
+		}
+		return true
+	}, "all four engines to converge on team scores A=2 B=0")
+	if got := p2.Score(); got != 0 {
+		t.Fatalf("p2 (opposing team) own score = %d, want 0", got)
+	}
+
 	// Both alive members of team 1 raced to apply the shrink; the deficit
 	// guard must leave exactly ONE adversarial row on their shared board.
 	waitUntil(t, 3*time.Second, func() bool {

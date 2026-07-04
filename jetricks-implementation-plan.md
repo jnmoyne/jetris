@@ -156,6 +156,7 @@ func TeamVisibleRowStart(teamSize int) int {
 type PlayerResult struct {
     PlayerID   string `json:"player_id"`
     Score      int    `json:"score"`
+    Level      int    `json:"level,omitempty"` // level achieved at game end
     PieceCount uint64 `json:"piece_count"`
     Winner     bool   `json:"winner,omitempty"`
     Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
@@ -169,8 +170,11 @@ type ArchiveRecord struct {
     StartedAt   time.Time      `json:"started_at"`
     FinishedAt  time.Time      `json:"finished_at"`
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only
+    FinalLevel  int            `json:"final_level,omitempty"` // cooperative: shared level at game end
     TeamSize    int            `json:"team_size,omitempty"`   // teams mode
     WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
+    TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team
+    TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team
     Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s)
 }
 
@@ -1230,6 +1234,8 @@ const (
     UpdatePlayerEliminated // competitive: a player was eliminated
     UpdateCASFlash         // a CAS failure flash should be rendered
     UpdateRTT             // a new publish→echo round-trip measurement
+    UpdateBufferedMoves    // the buffered-input queue changed
+    UpdateTeamStats        // teams: a team's score or level changed (totals in TeamScores/TeamLevels)
 )
 
 type EngineUpdate struct {
@@ -1246,6 +1252,8 @@ type EngineUpdate struct {
     FlashPlayerIdx     int      // player index for flash color
     Team               int      // teams: team of the eliminated player (UpdatePlayerEliminated)
     RTT               time.Duration // latest publish→echo round trip (UpdateRTT)
+    TeamScores        [config.TeamCount]int // teams: both teams' scores (UpdateTeamStats)
+    TeamLevels        [config.TeamCount]int // teams: both teams' levels (UpdateTeamStats)
 }
 
 type EventKind string
@@ -1263,6 +1271,7 @@ type GameEvent struct {
     RowsRemoved  int       `json:"rows_removed,omitempty"`
     ClearedRows  []int     `json:"cleared_rows,omitempty"`
     Score        int       `json:"score,omitempty"`          // for EventGameOver: player's final score
+    Level        int       `json:"level,omitempty"`          // for EventGameOver: level achieved at game end
     PieceCount   uint64    `json:"piece_count,omitempty"`    // for EventGameOver: total pieces placed
     PlayerIdx    int       `json:"player_idx,omitempty"`     // causer's index for EventShrink
     Team         int       `json:"team"`                     // teams: sender's team (0 = A, 1 = B)
@@ -1946,7 +1955,9 @@ ready state is a toggle. It CAS-updates the player's `Ready` flag on the game-li
 KV entry (retrying on revision conflict) and reports whether all players are now
 ready via `ToggleReadyResult{AllReady, Players, MyReady}`. Advancing to
 `in_progress` is done separately by `StartGame(ctx, gameID)`, which transitions
-meta to `in_progress` (setting `StartedAt`).
+meta to `in_progress` (setting `StartedAt`). The native UI renders each
+player's state in the pre-game checklist as a filled pill badge (green
+"READY" / red "NOT READY" — `readyBadge` in `nativeui/game.go`).
 
 **Integration tests**: create/join flow, presence heartbeat renewal, KV watcher
 delivers updates to Maps.
@@ -2238,6 +2249,20 @@ teams for all three event kinds (`events.go` adds `GameEvent.Team` +
 `GameEvent.TargetTeam`, `LinesCleared` set on team clears, and
 `EngineUpdate.Team`).
 
+**Per-team scoreboard.** On top of the own-team `score`, every engine keeps
+`teamScores` and `teamLines` (both `[config.TeamCount]atomic.Int64`): the
+clearer folds its score delta and line count into its own team's slots in
+`handleLockIn`, and every OTHER engine — teammates, opposing-team players,
+eliminated players, and spectators — folds `EventLineClear.Score`/
+`LinesCleared` into `teamScores[ev.Team]`/`teamLines[ev.Team]` in
+`handleGameEvent` regardless of team. Each fold emits `UpdateTeamStats` (both
+teams' scores and levels, per-team level = `game.Level(teamLines[t])`; also
+`Engine.TeamScores()`/`TeamLevels()`), and the HUD replaces the single SCORE
+stat with live TEAM A / TEAM B stats (own team accented; spectators see each
+team's `score · lvl N` inline and no single SCORE/LEVEL stat) — without this,
+opposing players and spectators never saw a clearing team's score move (a
+spectator's default `teamIdx` 0 folded only team A's clears).
+
 **Shrink application (`applyTeamShrink`) — THE publish-path novelty.** Unlike
 competitive's `applyOpponentShrink` (single writer per board → authoritative
 NoCAS), every ALIVE member of the target team receives the same `EventShrink`
@@ -2276,7 +2301,10 @@ missing from it. The losing team is the one whose members ALL sent
 `EventGameOver`; `WinningTeam` is the other index (`-1` if both or neither
 read as dead — draw). Every winning-team member gets `Winner: true` (the
 eliminated ones included) and every `PlayerResult` carries `Team`; the record
-carries `TeamSize` and `WinningTeam`. `TotalScore` stays unset for teams
+carries `TeamSize`, `WinningTeam`, and the final per-team totals
+`TeamScores`/`TeamLevels` (from the archiving engine's converged per-team
+scoreboard — rendered in the history line, which previously showed no score
+at all for team games). `TotalScore` stays unset for teams
 (it remains cooperative-only).
 
 `buildBoardPictures` captures the end-of-game playfield into `record.Boards`
@@ -2322,7 +2350,9 @@ one per team (`TeamCellSubject`) — so the snapshot is complete for every mode.
 - `internal/engine/teams_test.go` — 2v2 integration against an embedded
   server: a clear's garbage lands on the opposing board EXACTLY once with
   both receivers racing `applyTeamShrink`, and never on the clearing team's
-  board; teammates fold the score; an elimination leaves the team playing on,
+  board; teammates fold the score; ALL four engines (opposing team included)
+  converge on the per-team scoreboard (`TeamScores()`) while the opposing
+  team's own score stays untouched; an elimination leaves the team playing on,
   the second elimination ends the game with `Won=true` on every winner
   (eliminated winner included) and meta `finished`.
 

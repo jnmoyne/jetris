@@ -149,11 +149,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 
 		// Update level on shared boards (level is driven by the shared line total)
 		if e.sharedBoard() {
-			newLevel := game.Level(int(e.totalLines.Load()))
-			if int64(newLevel) != e.level.Load() {
-				e.level.Store(int64(newLevel))
-				e.emitUpdate(EngineUpdate{Kind: UpdateLevel, Level: newLevel})
-			}
+			e.refreshLevel()
 		}
 
 		// Re-render the whole board: a clear shifts every row, and the UI
@@ -161,13 +157,23 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		// full-board update is robust against dropped per-row triggers.
 		e.emitFullBoardRerender()
 		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
+		if e.gameMode == config.ModeTeams {
+			// Fold our own clear into the per-team scoreboard; everyone else
+			// folds it off the line-clear event below.
+			e.teamScores[e.teamIdx].Add(int64(scoreDelta))
+			e.teamLines[e.teamIdx].Add(int64(len(completed)))
+			e.emitTeamStats()
+		}
 
-		// Cooperative: notify other players of the score change
+		// Cooperative: notify other players of the score change. LinesCleared
+		// lets every receiver (players and spectators) fold the shared line
+		// total too, keeping their level display and gravity in sync.
 		if e.gameMode == config.ModeCooperative {
 			ev := GameEvent{
-				Kind:     EventLineClear,
-				PlayerID: e.playerID,
-				Score:    scoreDelta,
+				Kind:         EventLineClear,
+				PlayerID:     e.playerID,
+				Score:        scoreDelta,
+				LinesCleared: len(completed),
 			}
 			data, _ := json.Marshal(ev)
 			_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
@@ -336,18 +342,30 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 		// sees the cleared board. Also fold in the shared score delta.
 		if ev.PlayerID != e.playerID && e.gameMode == config.ModeCooperative {
 			e.score.Add(int64(ev.Score))
+			e.totalLines.Add(int64(ev.LinesCleared))
+			e.refreshLevel()
 			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 			e.emitFullBoardRerender()
 		}
-		// Teams: same shared-board reasoning, scoped to OUR team's clears.
-		// Also fold the line count so every teammate's level/gravity stays in
-		// sync with the team's total. The opposing team's clears reach us as
-		// an EventShrink instead, and their board repaints via its consumer.
-		if e.gameMode == config.ModeTeams && ev.Team == e.teamIdx && ev.PlayerID != e.playerID {
-			e.score.Add(int64(ev.Score))
-			e.totalLines.Add(int64(ev.LinesCleared))
-			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
-			e.emitFullBoardRerender()
+		// Teams: EVERY engine — teammates, the opposing team's players, and
+		// spectators — folds the clear into the per-team scoreboard (the
+		// clearing player already did in handleLockIn), so the TEAM A / TEAM B
+		// scores stay live on every screen.
+		if e.gameMode == config.ModeTeams && ev.PlayerID != e.playerID {
+			e.teamScores[ev.Team].Add(int64(ev.Score))
+			e.teamLines[ev.Team].Add(int64(ev.LinesCleared))
+			e.emitTeamStats()
+			// Our own team's clear: same shared-board reasoning as cooperative
+			// above. Also fold the line count so every teammate's level/gravity
+			// stays in sync with the team's total. The opposing team's board
+			// repaints via its own consumer.
+			if ev.Team == e.teamIdx {
+				e.score.Add(int64(ev.Score))
+				e.totalLines.Add(int64(ev.LinesCleared))
+				e.refreshLevel()
+				e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
+				e.emitFullBoardRerender()
+			}
 		}
 	case EventShrink:
 		if e.gameMode == config.ModeTeams {

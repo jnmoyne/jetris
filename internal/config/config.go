@@ -89,6 +89,7 @@ type GameMeta struct {
 type PlayerResult struct {
 	PlayerID   string `json:"player_id"`
 	Score      int    `json:"score"`
+	Level      int    `json:"level,omitempty"` // level achieved at game end (from the player's line total)
 	PieceCount uint64 `json:"piece_count"`
 	Winner     bool   `json:"winner,omitempty"`
 	Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
@@ -103,8 +104,11 @@ type ArchiveRecord struct {
 	StartedAt   time.Time      `json:"started_at"`
 	FinishedAt  time.Time      `json:"finished_at"`
 	TotalScore  int            `json:"total_score,omitempty"` // cooperative
+	FinalLevel  int            `json:"final_level,omitempty"` // cooperative: shared level at game end
 	TeamSize    int            `json:"team_size,omitempty"`   // teams mode
 	WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
+	TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team (indexed by team)
+	TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team (indexed by team)
 	Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s) for the lobby's history view
 }
 

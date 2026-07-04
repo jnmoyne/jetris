@@ -147,9 +147,9 @@ There is no level-based multiplier in cooperative mode. The score is intentional
 ### Shared Score
 
 There is a single shared score visible to all players. When any player clears lines:
-1. That player adds the score delta locally
-2. An `EventLineClear` is published to NATS with the `Score` delta
-3. All other players receive the event and add the delta to their local score
+1. That player adds the score delta (and the cleared-line count) locally
+2. An `EventLineClear` is published to NATS with the `Score` delta and `LinesCleared`
+3. All other players (and spectators) receive the event and add the delta to their local score **and** the line count to their local `totalLines` — so the shared level stays in sync on every engine
 4. All players' UIs update simultaneously
 
 ### Level Progression
@@ -248,7 +248,9 @@ Identical to cooperative mode, scoped to the team board: teammates' active piece
 
 ### Line Clears & Scoring
 
-Coop scoring within the team: a clear scores `teamSize × lines` to the **team score**; every teammate folds the clearing player's score **and line count** from the line-clear event, so the team's level (and gravity speed) stays in sync for all members. The opposing team's clears do not affect your score.
+Coop scoring within the team: a clear scores `teamSize × lines` to the **team score**; every teammate folds the clearing player's score **and line count** from the line-clear event, so the team's level (and gravity speed) stays in sync for all members. The opposing team's clears do not affect your own team's score.
+
+In addition to the own-team score, **every** engine — both teams' players, eliminated players, and spectators — folds **every** team's line-clear events into a per-team scoreboard: `TEAM A` / `TEAM B` score totals **and** per-team cleared-line totals, from which each team's level is derived. Both teams' scores (and, for spectators, levels) are therefore visible and live on every screen. Spectators who join mid-game converge by replaying the ordered events subject from the start.
 
 ### Garbage Attack (team shrink)
 
@@ -267,7 +269,7 @@ A team **loses when ALL its members have topped out**. At that point every membe
 
 ### Visual Indicators
 
-- HUD shows `Teams · TEAM A/B`, the team score, and the team level
+- HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
 - Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
 - The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
 - Spectators see both team boards side by side
@@ -297,7 +299,7 @@ created → starting → [countdown] → in_progress → finished → archived
 ### Ready Flow
 
 1. Players join the game and see the game page with a "WAITING FOR PLAYERS" header
-2. Each player's ready state is shown (green checkmark = ready, red cross = not ready)
+2. Each player's ready state is shown as a filled pill badge next to their name: green "READY" / red "NOT READY"
 3. Players toggle READY/NOT READY by clicking the button
 4. Ready state is stored in the KV game listing with CAS (prevents lost updates)
 5. When ALL players are ready: countdown begins, ready toggle is locked
@@ -314,17 +316,20 @@ Published to `JETRICKS_ARCHIVE` stream when a game finishes:
   "mode": 0,
   "player_count": 2,
   "players": [
-    {"player_id": "Alice", "score": 42, "piece_count": 30, "winner": false},
-    {"player_id": "Bob", "score": 42, "piece_count": 25, "winner": false}
+    {"player_id": "Alice", "score": 42, "level": 2, "piece_count": 30, "winner": false},
+    {"player_id": "Bob", "score": 42, "level": 2, "piece_count": 25, "winner": false}
   ],
   "started_at": "2026-03-21T10:00:00Z",
   "finished_at": "2026-03-21T10:05:30Z",
   "total_score": 42,
+  "final_level": 2,
   "boards": [ /* end-of-game playfield snapshot(s) — see below */ ]
 }
 ```
 
-Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or not a team game), and a `team` field on each player result. Every member of the winning team has `winner: true`, eliminated members included — a team win is shared.
+Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`). Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
+
+Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or not a team game), a `team` field on each player result, and the final per-team totals `team_scores` and `team_levels` (indexed by team, taken from the archiving engine's converged per-team scoreboard) — these are what the history list shows for a teams game (`A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave`). Every member of the winning team has `winner: true`, eliminated members included — a team win is shared.
 
 **End-of-game playfield snapshot.** The record also carries `boards`: a snapshot of every board exactly as it stood when the game ended, captured by the winning/finishing client from the game stream (latest message per cell) just before that stream is deleted. There is one board for cooperative, one per player for competitive, and one per team for teams mode — so the snapshot is complete for every mode. Each board stores its width, visible height, and the non-empty cells (the raw cell messages). In the lobby, each game in **GAME HISTORY** has a **"View board"** button that opens a viewer redrawing these boards — the picture of the playfield at the moment that game ended.
 

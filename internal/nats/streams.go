@@ -32,11 +32,13 @@ func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 	return err
 }
 
-// EnsureLobbyChatStream creates the lobby chat stream.
+// EnsureLobbyChatStream creates the chat stream. It carries BOTH the lobby
+// chat and every game's chat, distinguished purely by subject (lobby messages
+// on LobbyChatSubject, per-game messages on GameChatSubject).
 func EnsureLobbyChatStream(ctx context.Context, js jetstream.JetStream) error {
 	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     config.LobbyChatStream,
-		Subjects: []string{config.LobbyChatSubject},
+		Subjects: []string{config.LobbyChatSubject, config.GameChatSubjectFilter},
 		MaxAge:   config.LobbyChatMaxAge,
 		Storage:  jetstream.FileStorage,
 	})

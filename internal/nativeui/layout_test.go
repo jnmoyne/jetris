@@ -83,6 +83,40 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 	})
 
+	t.Run("login-picker-server-flag", func(t *testing.T) {
+		// --server seeds the URL field and makes the URL option the default,
+		// beating the CLI's selected context.
+		a := NewWithPicker(config.Config{NATSURL: "nats://example:4222"}, []string{"alpha"}, "alpha")
+		a.th = newTestApp().th
+		if a.connEnum.Value != "url" {
+			t.Fatalf("default choice = %q, want url when --server is given", a.connEnum.Value)
+		}
+		if a.connURLEd.Text() != "nats://example:4222" {
+			t.Fatalf("URL field = %q, want the --server value", a.connURLEd.Text())
+		}
+		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-context-flag", func(t *testing.T) {
+		// --context preselects that context, adding it to the list if the
+		// lister didn't discover it.
+		a := NewWithPicker(config.Config{NATSContext: "mine"}, []string{"alpha"}, "alpha")
+		a.th = newTestApp().th
+		if a.connEnum.Value != "ctx:mine" {
+			t.Fatalf("default choice = %q, want ctx:mine when --context is given", a.connEnum.Value)
+		}
+		found := false
+		for _, c := range a.connContexts {
+			if c == "mine" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("contexts %v should include the --context value", a.connContexts)
+		}
+		renderOnce(t, a)
+	})
+
 	t.Run("lobby", func(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
@@ -127,4 +161,35 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.won = true
 		renderOnce(t, a)
 	})
+
+	t.Run("game-with-chat", func(t *testing.T) {
+		// The in-game chat panel shows this game's messages plus lobby lines;
+		// other games' messages are filtered out.
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+		a.gamePlayers = players
+		a.readyPlayers = players
+		a.screen = screenGame
+		a.chatLog = []lobby.ChatMessage{
+			{Name: "carol", Text: "hi from the lobby"},                     // GameID "" → shown as @lobby
+			{Name: "bob", Text: "good luck", GameID: "g1"},                 // this game
+			{Name: "dave", Text: "you can't see me", GameID: "other-game"}, // filtered out
+			{Name: "eve", Text: "watching", GameID: "g1", Spectator: true}, // (spec) marker
+		}
+		renderOnce(t, a)
+	})
+}
+
+// TestChatLine pins the in-game chat formatting: lobby messages get the @lobby
+// prefix and their own color; spectators are marked.
+func TestChatLine(t *testing.T) {
+	if txt, col := chatLine(lobby.ChatMessage{Name: "carol", Text: "hey"}); txt != "@lobby carol: hey" || col != colLobby {
+		t.Fatalf("lobby line = %q (col %v)", txt, col)
+	}
+	if txt, col := chatLine(lobby.ChatMessage{Name: "bob", Text: "gl", GameID: "g1"}); txt != "bob: gl" || col != colFg {
+		t.Fatalf("game line = %q (col %v)", txt, col)
+	}
+	if txt, _ := chatLine(lobby.ChatMessage{Name: "eve", Text: "hi", GameID: "g1", Spectator: true}); txt != "eve (spec): hi" {
+		t.Fatalf("spectator line = %q", txt)
+	}
 }

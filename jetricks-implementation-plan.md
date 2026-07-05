@@ -246,8 +246,11 @@ func EventsSubject(gameID string) string
 func CountdownSubject(gameID string) string
 // → "jetricks.game." + gameID + ".countdown"
 
-func ChatSubject(gameID string) string
-// → "jetricks.game." + gameID + ".chat"
+func GameChatSubject(gameID string) string
+// → "jetricks.lobby.chat.game." + gameID (on the CHAT stream, not the game
+//   stream — game streams keep only the latest message per subject). Lobby and
+//   game chat share one stream, distinguished purely by subject; the consumer
+//   derives the scope via GameIDFromChatSubject(subject) ("" = lobby).
 
 func LobbyPlayerKey(playerID string) string
 // → "players." + playerID
@@ -713,11 +716,12 @@ jetstream.StreamConfig{
 Use `js.CreateOrUpdateStream(ctx, cfg)` — idempotent if stream already exists with
 compatible config.
 
-`EnsureLobbyChatStream`:
+`EnsureLobbyChatStream` (carries the lobby chat AND every game's chat,
+distinguished by subject):
 ```go
 jetstream.StreamConfig{
     Name:     config.LobbyChatStream,
-    Subjects: []string{config.LobbyChatSubject},
+    Subjects: []string{config.LobbyChatSubject, config.GameChatSubjectFilter},
     MaxAge:   config.LobbyChatMaxAge,
     Storage:  jetstream.FileStorage,
 }
@@ -2012,7 +2016,8 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   decoded once) and `lobbyBanner`, the branding strip across the top of the lobby.
 
 **Lobby screen.** Player sidebar, game list (with a "Spectate" button on in-progress
-games), chat (lines plus a message editor), a create game form (with a "Players"
+games), chat (lobby-scoped lines plus a message editor — per-game messages are
+filtered out here), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
 archived games with mode, players, duration, and scores — fetched from the
 `JETRICKS_ARCHIVE` stream on lobby load. Each history row carries an accent-bordered
@@ -2072,10 +2077,10 @@ Follow the bootstrap sequence from Section 14 of the spec exactly. Use `flag` pa
 for CLI flags. Use `os.Signal` channel with `signal.Notify` for graceful shutdown.
 
 The lobby is **not** created at startup — it is created when the player enters their
-name in the UI (`nativeui.App.initLobby`). The entrypoint chooses between two launch
-paths (see Phase 10 — Connection Picker): with `--server`/`--context` it connects and
-ensures infrastructure BEFORE the window opens (fail fast); without them it opens the
-window immediately and the login screen's connection picker drives the connection.
+name in the UI (`nativeui.App.initLobby`). No NATS connection is made at startup
+either (see Phase 10 — Connection Picker): the window opens immediately and the
+single combined login screen (name + CONNECT TO chooser) drives the connection.
+`--server`/`--context` only seed the picker's defaults.
 
 ```go
 func main() {
@@ -2083,30 +2088,20 @@ func main() {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
-    if cfg.NATSURL != "" || cfg.NATSContext != "" {
-        // Flags path: connect + provision before the window (Bootstrap wraps
-        // ConnectURL/Connect and the three Ensure* calls).
-        nc, js, kv, err := natspkg.Bootstrap(ctx, cfg)
-        fatalOnErr(err)
-        defer nc.Close()
-        runNative(ctx, cancel, nc, nativeui.New(js, kv))
-        return
-    }
-    // Picker path: no connection yet; the App dials NATS itself on Play.
+    // The App dials NATS itself when the player hits Play; the flags only
+    // seed the picker's defaults.
     names, selected, _ := natspkg.ListContexts()
-    runNative(ctx, cancel, nil, nativeui.NewWithPicker(cfg, names, selected))
+    runNative(ctx, cancel, nativeui.NewWithPicker(cfg, names, selected))
 }
 
 // Gio's app.Main() owns the OS main thread and blocks forever, so App.Run runs on a
 // goroutine and the process exits when the window closes (or on Ctrl-C via a
-// signal.Notify goroutine — the OS main loop has no signal hook). nc may be nil
-// (picker path); shutdown drains main's nc AND calls a.DrainConn() for an
-// app-owned connection.
-func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, a *nativeui.App) {
+// signal.Notify goroutine — the OS main loop has no signal hook). The App owns
+// the connection it dials; shutdown calls a.DrainConn() (nil-safe).
+func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) {
     go func() {
         defer cancel()
         _ = a.Run(ctx)   // creates the window, runs the frame loop
-        if nc != nil { nc.Drain() }
         a.DrainConn()
         os.Exit(0)
     }()
@@ -2402,10 +2397,12 @@ local macOS development.
 
 ## Phase 10 — Connection Picker (login-screen server selection)
 
-Launching without `--server`/`--context` no longer connects at startup: the
-window opens immediately and the login screen combines name entry with a
-CONNECT TO chooser. With flags, behavior is unchanged (connect before the
-window, fail fast).
+Jetricks never connects at startup: the window opens immediately and the ONE
+login screen combines name entry with a CONNECT TO chooser (contexts + URL).
+`--server`/`--context` only seed the chooser's defaults — `--server` selects
+the URL option and replaces the default URL text with its value; `--context`
+preselects that context radio (appended to the list if the lister didn't find
+it). Quitting the lobby disconnects and returns to this same screen.
 
 **internal/nats:**
 - `contexts.go` — `ListContexts() (names, selected, err)`: enumerates
@@ -2414,40 +2411,72 @@ window, fail fast).
   (reported only if its context file exists). Hand-rolled because
   `orbit.go/natscontext` exposes no lister — path resolution mirrors it.
 - `Bootstrap(ctx, cfg)` (`connection.go`) — the single connect+provision path
-  for both launches: `ConnectURL` when `cfg.NATSURL` set (with a 5 s dial
-  timeout), else context `Connect`; then the three `Ensure*` calls, closing
-  `nc` on any post-connect failure.
+  (invoked from `doConnectAndLogin`): `ConnectURL` when `cfg.NATSURL` set
+  (with a 5 s dial timeout), else context `Connect`; then the three `Ensure*`
+  calls, closing `nc` on any post-connect failure.
 - `CheckConnection(cfg)` (`connection.go`) — dial, flush-ping RTT, close;
   provisions nothing (backs the "Check connection" button).
 
-**cmd/jetricks/main.go:** two launch paths — flags → `Bootstrap` before the
-window + `nativeui.New(js, kv)` (main owns `nc`); no flags → `ListContexts` +
-`nativeui.NewWithPicker(cfg, names, selected)` with no connection (`runNative`
-takes a possibly-nil `nc`; shutdown drains main's `nc` and calls
-`App.DrainConn()` for an app-owned one).
+**cmd/jetricks/main.go:** never connects — `ListContexts` +
+`nativeui.NewWithPicker(cfg, names, selected)`; `runNative(ctx, cancel, a)`;
+shutdown calls `App.DrainConn()` (nil-safe) for the app-owned connection.
 
-**internal/nativeui:** `NewWithPicker` (app.go) starts the App disconnected,
-pre-sets the URL editor to `DefaultNATSURL` (`nats://demo.nats.io:4222`) and
-defaults `connEnum` to the CLI's selected context, else the URL option.
+**internal/nativeui:** `NewWithPicker` (app.go) starts the App disconnected
+and seeds the chooser from the flags (precedence: `--server` → URL option
+with that value; `--context` → that radio, appended if undiscovered; CLI's
+selected context; else URL with `DefaultNATSURL` = `nats://demo.nats.io:4222`).
 `connSection` (login.go) renders the chooser (scroll-capped context radio
 list + URL radio/editor row + Check connection row); `pickerConfig` resolves
-the choice; `doConnectAndLogin` (lifecycle.go) runs `Bootstrap` (15 s cap) off
+the choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
+connection left from a previous attempt, then runs `Bootstrap` (15 s cap) off
 the UI goroutine — failure lands on `loginErr` for retry, success stores
-`a.nc/js/kv` and falls into the normal `doLogin` flow, after which the picker
-is replaced by a "Connected to <url>" line with a "Change server" button
-(`doChangeServer`: drains the app-owned `nc`, clears the handles and messages,
-picker reappears — gated on no login in flight; `teardown` also drains an
-app-owned `nc`). `doCheckConn` runs `CheckConnection` and renders
-`✓ <server> · ping <rtt>` (green, `formatRTT`) or `✗ <error>` (red) next to
-the button.
+`a.nc/js/kv` (App-owned; `teardown`/`DrainConn` drain it) and falls into the
+normal `doLogin` flow. `quit()` also `disconnect()`s, returning the player to
+the same combined screen to pick another server. `doCheckConn` runs
+`CheckConnection` and renders `✓ <server> · ping <rtt>` (green, `formatRTT`)
+or `✗ <error>` (red) next to the button.
 
 **Tests:** `internal/nats/contexts_test.go` (XDG temp-dir lister cases:
 missing dir, filtering/sorting, selected, stale selection),
 `internal/nats/bootstrap_test.go` (Bootstrap provisions all three resources
 against the embedded server; bad URL errors without leaking; CheckConnection
 returns a positive RTT and errors on an unroutable URL), and
-`layout_test.go` picker render subtests (with contexts + selected default,
-and with none → URL default).
+`layout_test.go` picker render subtests (contexts + selected default, none →
+URL default, `--server` seeds the URL field and choice, `--context`
+preselects and appends an undiscovered context).
+
+---
+
+## Phase 11 — Per-Game Chat
+
+Lobby chat and per-game chat share the `JETRICKS_LOBBY_CHAT` stream,
+distinguished purely by subject: lobby on `jetricks.lobby.chat`, a game's
+messages on `jetricks.lobby.chat.game.<gameID>` (`config.GameChatSubject`; the
+stream config adds `GameChatSubjectFilter`). Game chat cannot live on the game
+stream (MaxMsgsPerSubject: 1 keeps only the latest message).
+
+- **lobby:** `ChatMessage.GameID` (`json:"-"`, derived from the delivery
+  subject via `config.GameIDFromChatSubject` — "" = lobby); `runChatConsumer`
+  consumes the whole chat stream unfiltered and tags each message;
+  `SendGameChat(ctx, gameID, text, spectator)` publishes to the game subject
+  (shared `publishChat` helper with `SendChat`).
+- **nativeui:** the game screen (player or spectator) shows a chat strip at
+  the bottom (`gameChatPanel`): this game's messages plus lobby lines folded
+  in — lobby lines prefixed `@lobby` in `colLobby`; spectator messages marked
+  `(spec)` (`chatLine`). Typing: players until the game starts, spectators and
+  eliminated players always (`canType`); `handleKeys` grabs board focus only
+  while `ModePlayer && in_progress`, so the editor can hold focus pre-start
+  and the playing player's keys drive the piece afterwards (muted hint shown
+  instead of the editor). Messages starting with `@lobby` route to the lobby
+  chat (`sendGameChat`). The lobby screen's chat panel filters to
+  `GameID == ""`.
+- **archive:** archiving a game purges its chat subject from the shared chat
+  stream.
+
+**Tests:** `TestGameChatScoping` (lobby: game vs lobby message tagging off the
+subject, spectator flag round-trip), `TestGameIDFromChatSubject` (config),
+`TestChatLine` + a `game-with-chat` render subtest (nativeui: formatting,
+cross-game filtering).
 
 ---
 

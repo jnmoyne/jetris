@@ -98,6 +98,48 @@ func TestLobbySendChat(t *testing.T) {
 	}
 }
 
+// TestGameChatScoping verifies that lobby and game chat share one stream and
+// are distinguished by subject: a game message arrives tagged with its game ID
+// (parsed from the subject) and a lobby message with GameID "".
+func TestGameChatScoping(t *testing.T) {
+	lb, _ := setupLobby(t)
+	ctx := context.Background()
+
+	if err := lb.SendGameChat(ctx, "game-42", "gg", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := lb.SendChat(ctx, "hi lobby"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{"gg": "game-42", "hi lobby": ""}
+	specWant := map[string]bool{"gg": true, "hi lobby": false}
+	got := 0
+	timeout := time.After(3 * time.Second)
+	for got < len(want) {
+		select {
+		case update := <-lb.Updates:
+			if update.Kind != LobbyUpdateChat || update.ChatMsg == nil {
+				continue
+			}
+			m := update.ChatMsg
+			wantID, ok := want[m.Text]
+			if !ok {
+				continue
+			}
+			if m.GameID != wantID {
+				t.Fatalf("message %q GameID = %q, want %q", m.Text, m.GameID, wantID)
+			}
+			if m.Spectator != specWant[m.Text] {
+				t.Fatalf("message %q Spectator = %v, want %v", m.Text, m.Spectator, specWant[m.Text])
+			}
+			got++
+		case <-timeout:
+			t.Fatalf("received %d of %d chat updates before timeout", got, len(want))
+		}
+	}
+}
+
 func TestLobbyPresence(t *testing.T) {
 	lb, _ := setupLobby(t)
 

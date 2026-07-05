@@ -280,14 +280,14 @@ A team **loses when ALL its members have topped out**. At that point every membe
 
 ### Login & Server Selection
 
-Before the lobby, the player logs in with a name on the login screen. When Jetricks is launched **without** `--server`/`--context` flags, the same screen also asks where to connect:
+There is a single login screen where the player both picks where to connect and enters their name — no connection is made until they hit Play:
 
-- If NATS CLI contexts are defined on the machine, they are listed as radio options with the currently selected context (per `nats context select`) picked by default and labeled "(selected)".
+- If NATS CLI contexts are defined on the machine, they are listed as radio options; the currently selected context (per `nats context select`) is labeled "(selected)".
 - A "NATS URL" option is **always** available, pre-filled with `nats://demo.nats.io:4222`; typing in the URL field selects it automatically.
+- The `--server`/`--context` flags don't connect directly — they only set the picker's starting choice: `--server` selects the URL option and replaces the default URL text with its value; `--context` preselects that context.
 - A **Check connection** button tests the current choice without joining: it connects, measures the server's ping (round-trip time), shows `✓ <server> · ping <rtt>` in green (or the error in red), and disconnects.
-- Hitting Play connects with the chosen context/URL; a connection failure keeps the player on the login screen with the error shown so they can retry with a different choice. Once connected, the login screen shows "Connected to <url>" with a **Change server** button that disconnects and brings the server chooser back — so returning to the login screen (e.g. via Quit) lets the player switch to another server.
-
-When launched **with** `--server` or `--context`, the connection is made before the window opens (as before) and the login screen only asks for the name.
+- Hitting Play connects with the chosen context/URL and logs in; a connection failure keeps the player on the login screen with the error shown so they can retry with a different choice.
+- Quitting the lobby disconnects and returns to this same screen, so the player can connect to another server.
 
 ```
 created → starting → [countdown] → in_progress → finished → archived
@@ -343,6 +343,21 @@ Each player result carries the `level` achieved at game end (derived from that e
 Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or not a team game), a `team` field on each player result, and the final per-team totals `team_scores` and `team_levels` (indexed by team, taken from the archiving engine's converged per-team scoreboard) — these are what the history list shows for a teams game (`A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave`). Every member of the winning team has `winner: true`, eliminated members included — a team win is shared.
 
 **End-of-game playfield snapshot.** The record also carries `boards`: a snapshot of every board exactly as it stood when the game ended, captured by the winning/finishing client from the game stream (latest message per cell) just before that stream is deleted. There is one board for cooperative, one per player for competitive, and one per team for teams mode — so the snapshot is complete for every mode. Each board stores its width, visible height, and the non-empty cells (the raw cell messages). In the lobby, each game in **GAME HISTORY** has a **"View board"** button that opens a viewer redrawing these boards — the picture of the playfield at the moment that game ended.
+
+---
+
+## 6b. Chat
+
+There are two chat scopes, sharing one NATS stream and distinguished purely by subject naming: the **lobby chat** (`jetricks.lobby.chat`, shown on the lobby screen) and a **per-game chat** (`jetricks.lobby.chat.game.<gameID>`), seen only by that game's players and spectators.
+
+On the game screen (player or spectator) a chat strip is displayed at the bottom:
+
+- It shows the game's messages, plus the lobby chat folded in — lobby lines are prefixed `@lobby` and rendered in a distinct color so they're obviously not from the game. Spectators' game messages are marked `(spec)`.
+- **Before the game starts**, both players and spectators can type.
+- **Once the game is in progress**, only spectators (and eliminated players) can type — a playing player's keyboard drives the piece, so their input line is replaced by a "read-only while playing" hint.
+- A message starting with `@lobby` is sent to the lobby chat (everyone sees it); anything else goes to the game's chat.
+
+Lobby chat history is retained for 7 days; a game's chat messages are purged from the stream when the game is archived.
 
 ---
 

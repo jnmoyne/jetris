@@ -138,25 +138,23 @@ The entrypoint. Responsible only for wiring — it constructs all top-level comp
 ### Responsibilities
 
 - Parse CLI flags into a `config.Config`
-- Choose one of two launch paths:
-  - **Flags path** (`--server` or `--context` given): `natspkg.Bootstrap(ctx, cfg)` connects and provisions the lobby streams/KV *before* the window opens, failing fast on error; the App is built with live handles (`nativeui.New(js, kv)`) and `main` owns (and closes/drains) the connection.
-  - **Picker path** (no server flags): the window opens immediately with nil NATS handles — `natspkg.ListContexts()` enumerates the NATS CLI contexts and `nativeui.NewWithPicker(cfg, names, selected)` builds an App whose login screen shows the CONNECT TO chooser; the App dials NATS itself on Play and owns that connection (`main`'s shutdown paths call `a.DrainConn()`, nil-safe on both paths).
-- Run the Gio front end (`internal/nativeui`): `runNative(ctx, cancel, nc, a)` opens a native OS window (`nc` may be nil on the picker path). Gio's `app.Main()` owns the OS main thread, so the app logic runs on a goroutine that calls `App.Run`.
+- Open the window immediately — **no NATS connection is made at startup**. `natspkg.ListContexts()` enumerates the NATS CLI contexts and `nativeui.NewWithPicker(cfg, names, selected)` builds the App; there is a single combined login screen (name entry + CONNECT TO chooser) and the App dials NATS itself when the player hits Play. `--server`/`--context` never connect directly — they only seed the picker's defaults. The App owns the connection; `main`'s shutdown paths call `a.DrainConn()` (nil-safe).
+- Run the Gio front end (`internal/nativeui`): `runNative(ctx, cancel, a)` opens a native OS window. Gio's `app.Main()` owns the OS main thread, so the app logic runs on a goroutine that calls `App.Run`.
 - Block on OS signal / window close and perform graceful shutdown
 
-The player enters a name on a login screen; identity is NATS-backed presence. Lobby creation is deferred until the player enters their name.
+The player enters a name on the same screen; identity is NATS-backed presence. Lobby creation is deferred until the player connects and enters their name.
 
 ### CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--context` | `""` | NATS context name (as configured with `nats context add`). Empty string uses the currently selected context. |
-| `--server` / `--user` / `--password` | `""` | Explicit NATS URL + credentials, overriding `--context`. |
+| `--context` | `""` | NATS context (as configured with `nats context add`) to preselect in the login screen's connection picker. |
+| `--server` / `--user` / `--password` | `""` | NATS URL + credentials: `--server` pre-fills the picker's URL field and makes the URL option the starting choice (beating `--context`); user/password apply to URL connects. |
 | `--version` | `false` | Print the version and exit. The `main.version` variable defaults to `dev` and is overridden at release time via `-ldflags "-X main.version=<tag>"` (see [Section 20 — Release Pipeline](#20-release-pipeline)). |
 
-The `--context` flag maps directly to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
+Connecting via a context ultimately maps to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
 
-When neither `--server` nor `--context` is given, no connection is made at startup: the login screen shows a **CONNECT TO** section listing the machine's NATS CLI contexts (radio buttons, the CLI's currently selected context pre-picked and labeled "(selected)") plus an always-present **NATS URL** option pre-filled with `nats://demo.nats.io:4222` (`nativeui.DefaultNATSURL`). Any `--user`/`--password` flags carry through to URL connects made from the picker. A **Check connection** button dials the current choice, measures the server ping (flush round trip), reports `✓ <server> · ping <rtt>` or `✗ <error>` — and closes that probe connection without provisioning anything.
+The login screen always shows the **CONNECT TO** section listing the machine's NATS CLI contexts (radio buttons, the CLI's currently selected context labeled "(selected)") plus an always-present **NATS URL** option, default `nats://demo.nats.io:4222` (`nativeui.DefaultNATSURL`). The default choice precedence is `--server` (URL option, field pre-filled with its value) → `--context` (that radio preselected; appended to the list if the lister didn't find it) → the CLI's selected context → the URL option. A **Check connection** button dials the current choice, measures the server ping (flush round trip), reports `✓ <server> · ping <rtt>` or `✗ <error>` — and closes that probe connection without provisioning anything.
 
 ### Bootstrap Order
 
@@ -355,7 +353,15 @@ func MetaSubject(gameID string) string
 func RosterSubject(gameID string, playerID string) string
 func EventsSubject(gameID string) string
 func CountdownSubject(gameID string) string
-func ChatSubject(gameID string) string
+
+// Lobby chat and per-game chat share the SAME stream (LobbyChatStream),
+// distinguished purely by subject: lobby messages on LobbyChatSubject
+// ("jetricks.lobby.chat"), a game's messages on GameChatSubject
+// ("jetricks.lobby.chat.game.<id>"). Game chat cannot live on the game stream
+// because game streams keep only the latest message per subject.
+func GameChatSubject(gameID string) string
+const GameChatSubjectFilter = "jetricks.lobby.chat.game.*" // stream config
+func GameIDFromChatSubject(subject string) string          // "" = lobby
 
 func LobbyPlayerKey(playerID string) string
 func LobbyGameKey(gameID string) string
@@ -479,7 +485,7 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*nats.Conn, jetstream.Je
 func CheckConnection(cfg config.Config) (serverURL string, rtt time.Duration, err error)
 ```
 
-`Bootstrap` is the single connect+provision path used by both launches (flags in `main`, and the login screen's picker via `doConnectAndLogin`). The URL path adds `nats.Timeout(5s)` so a black-holed address fails promptly instead of hanging the UI's "Connecting…" state.
+`Bootstrap` is the single connect+provision path, invoked from the login screen's picker via `doConnectAndLogin`. The URL path adds `nats.Timeout(5s)` so a black-holed address fails promptly instead of hanging the UI's "Connecting…" state.
 
 #### `contexts.go`
 
@@ -499,7 +505,9 @@ Hand-rolled because `orbit.go/natscontext` exposes only `Connect` — no lister.
 // Called when creating a new game.
 func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error
 
-// EnsureLobbyChatStream creates the lobby chat stream if it does not exist.
+// EnsureLobbyChatStream creates the chat stream if it does not exist. It
+// carries BOTH the lobby chat and every game's chat (subjects
+// LobbyChatSubject + GameChatSubjectFilter), distinguished purely by subject.
 func EnsureLobbyChatStream(ctx context.Context, js jetstream.JetStream) error
 
 // EnsureArchiveStream creates the game archive stream if it does not exist.
@@ -1431,7 +1439,7 @@ When Player A's engine detects that the newly spawned piece (at the top of the p
 4. In **competitive mode**, finishing is driven by last-player-standing in `handleGameEvent` rather than by `handleTopOut`: each engine tracks `eliminatedPlayers`; when a player receives game-over events for all but one player it calls `transitionToSpectator(true)` for itself if it is the survivor (win) and kicks off `transitionGameToFinished`. A simultaneous top-out (all eliminated) is a draw with no winner. The UI shows a player status list (playing/eliminated) and "YOU WON!"/"YOU LOST" at game over. See `jetricks-gameplays.md` for the authoritative game-over rules.
 5. In **teams mode**, `handleTopOut` routes to `handleTeamTopOut` instead: the player vacates their piece from the still-live shared board and spectates while their team plays on, and finishing is driven by whole-team elimination in `handleTeamGameOverEvent` — see the "Teams mode design" section above and `jetricks-gameplays.md` for the authoritative rules.
 
-**Meta transition + game archiving:** `transitionGameToFinished` CAS-retries the meta status to `finished` (setting `FinishedAt`), then — after `time.Sleep(5 * time.Second)`, giving every player time to receive the game-over — invokes `OnGameFinished`, which the front end wires to `archive.ArchiveAndCleanup`. That callback CAS-transitions the meta `finished → archived`, publishes an `ArchiveRecord` to the `JETRICKS_ARCHIVE` stream (subject `jetricks.archive`) with game ID, mode, player count, per-player results (ID, score, achieved level, piece count, winner), start/finish timestamps, and — for cooperative — the total score and final shared level (`TotalScore`/`FinalLevel`), then deletes the game stream and removes the KV entry. Archiving is therefore **delayed by ~5 s after game end**, not immediate, and is CAS-protected so only one client performs it.
+**Meta transition + game archiving:** `transitionGameToFinished` CAS-retries the meta status to `finished` (setting `FinishedAt`), then — after `time.Sleep(5 * time.Second)`, giving every player time to receive the game-over — invokes `OnGameFinished`, which the front end wires to `archive.ArchiveAndCleanup`. That callback CAS-transitions the meta `finished → archived`, publishes an `ArchiveRecord` to the `JETRICKS_ARCHIVE` stream (subject `jetricks.archive`) with game ID, mode, player count, per-player results (ID, score, achieved level, piece count, winner), start/finish timestamps, and — for cooperative — the total score and final shared level (`TotalScore`/`FinalLevel`), then deletes the game stream, removes the KV entry, and purges the game's chat messages from the shared chat stream (`Purge` with the game's `GameChatSubject`). Archiving is therefore **delayed by ~5 s after game end**, not immediate, and is CAS-protected so only one client performs it.
 
 For **teams mode** the archive builds `playerTeams` from the roster snapshot (the authoritative source) with `EventGameOver`'s `Team` field as the fallback for any player missing from it. The losing team is the team whose **every** member sent an `EventGameOver`; `WinningTeam` is the other team's index (or `-1` if both are dead — a draw). `Winner: true` is set on EVERY member of the winning team, eliminated members included (a team win is shared), `PlayerResult.Team` records each player's team, the record carries `TeamSize`/`WinningTeam`, `TotalScore` is left unset, and the final per-team totals are recorded in `TeamScores`/`TeamLevels` (slices indexed by team, taken from the archiving engine's converged `Engine.TeamScores()`/`TeamLevels()`) — the lobby history line renders them as `A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave` (stats omitted for pre-existing records without them).
 
@@ -1518,7 +1526,8 @@ func (l *Lobby) LeaveGame(ctx context.Context, gameID string) error
 // whether all players are now ready, the player list, and the caller's new state.
 func (l *Lobby) ToggleReady(ctx context.Context, gameID string) (ToggleReadyResult, error)
 func (l *Lobby) StartGame(ctx context.Context, gameID string)  // transitions game to in_progress after countdown
-func (l *Lobby) SendChat(ctx context.Context, text string) error
+func (l *Lobby) SendChat(ctx context.Context, text string) error                                  // lobby chat
+func (l *Lobby) SendGameChat(ctx context.Context, gameID, text string, spectator bool) error      // one game's chat
 
 type ToggleReadyResult struct {
     AllReady bool
@@ -1620,8 +1629,17 @@ type ChatMessage struct {
     Text      string    `json:"text"`
     Timestamp time.Time `json:"timestamp"`
     Spectator bool      `json:"spectator,omitempty"`
+    // GameID scopes the message ("" = lobby). Not part of the payload — the
+    // chat consumer derives it from the delivery subject, since lobby and
+    // game chat share one stream distinguished purely by subject naming.
+    GameID string `json:"-"`
 }
 ```
+
+The lobby's chat consumer (`runChatConsumer`) consumes the whole chat stream
+unfiltered and tags each message with `GameIDFromChatSubject(msg.Subject())`;
+the UI filters per screen (lobby screen: `GameID == ""`; a game's screen: that
+game's ID plus lobby messages).
 
 ---
 
@@ -1668,7 +1686,9 @@ Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logi
 
 **`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `archive_view.go` (the `screenArchive` history viewer — redraws a finished game's saved end-of-game boards), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — and the lobby branding banner), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
 
-**Login screen connection picker.** When built via `NewWithPicker` (launched without `--server`/`--context`), the App starts with nil `js`/`kv` and the login screen combines name entry with a **CONNECT TO** section (`connSection`, `login.go`): a bordered, scroll-capped (`~180dp`) `material.List` of radio buttons — one per NATS CLI context from `nats.ListContexts`, the CLI's selected context labeled "(selected)" and picked by default — plus a "NATS URL" radio whose editor is pre-set to `DefaultNATSURL` (`nats://demo.nats.io:4222`); typing in the URL editor auto-selects its radio. A **Check connection** row (`connCheckRow`) dials the current choice off the UI goroutine (`doCheckConn` → `nats.CheckConnection`), shows "Checking…" while busy, and renders `✓ <server> · ping <rtt>` (green, via `formatRTT`) or `✗ <error>` (red); the probe connection is closed immediately and provisions nothing. On Play, `submitLogin` resolves the choice (`pickerConfig`) and dispatches `doConnectAndLogin` (`lifecycle.go`): `nats.Bootstrap` under a 15 s cap, errors land on the login screen for retry, success stores `a.nc/a.js/a.kv` (the App owns this connection — `teardown`/`DrainConn` drain it; on the flags path `main` owns it and `a.nc` stays nil) and falls through into the normal `doLogin` flow. Once connected the picker is replaced by a muted "Connected to <url>" line plus a **Change server** button (`connChangeBtn` → `doChangeServer`, gated on no login being in flight): it drains the app-owned connection, nils `a.nc/js/kv` and the check/error messages, and the CONNECT TO chooser reappears — so a player back on the login screen (e.g. after Quit, a name collision, or a lobby init failure) can connect to a different server. On the flags path there is no picker state and the connection stays fixed for the process lifetime. New `App` state: `nc`, `needConn`/`connContexts`/`connSelected`/`connCfg` (immutable after construction), `connChecking`/`connCheckOK`/`connCheckMsg` (mu-guarded), and the `connEnum`/`connURLEd`/`connList`/`connCheckBtn`/`connChangeBtn` widgets.
+**Login screen connection picker.** The App is built via `NewWithPicker` and starts with nil `js`/`kv`; there is a single combined login screen — name entry plus a **CONNECT TO** section (`connSection`, `login.go`): a bordered, scroll-capped (`~180dp`) `material.List` of radio buttons — one per NATS CLI context from `nats.ListContexts`, the CLI's selected context labeled "(selected)" — plus a "NATS URL" radio with an editable URL field; typing in the URL editor auto-selects its radio. Default choice and URL text are seeded from the CLI flags (`--server` → URL option with that value; `--context` → that radio, appended to the list if undiscovered; else the CLI's selected context; else the URL option with `DefaultNATSURL`). A **Check connection** row (`connCheckRow`) dials the current choice off the UI goroutine (`doCheckConn` → `nats.CheckConnection`), shows "Checking…" while busy, and renders `✓ <server> · ping <rtt>` (green, via `formatRTT`) or `✗ <error>` (red); the probe connection is closed immediately and provisions nothing. On Play, `submitLogin` resolves the choice (`pickerConfig`) and dispatches `doConnectAndLogin` (`lifecycle.go`): it first `disconnect()`s any connection left over from a previous attempt (e.g. a cancelled name collision), then runs `nats.Bootstrap` under a 15 s cap — errors land on the login screen for retry, success stores `a.nc/a.js/a.kv` (the App owns the connection — `teardown`/`DrainConn` drain it) and falls through into the normal `doLogin` flow. `quit()` (lobby → login) also `disconnect()`s, so the player always lands back on the full chooser and can switch servers. `App` state: `nc`, `needConn`/`connContexts`/`connSelected`/`connCfg` (immutable after construction), `connChecking`/`connCheckOK`/`connCheckMsg` (mu-guarded), and the `connEnum`/`connURLEd`/`connList`/`connCheckBtn` widgets.
+
+**In-game chat.** The game screen has a chat strip at the bottom (`gameChatPanel`, `game.go`), shown to players and spectators: a scroll-capped list of this game's messages plus the lobby chat folded in — lobby lines are prefixed `@lobby` and colored `colLobby` so they're obviously not from the game (`chatLine` formats rows; game messages from spectators are marked `(spec)`). Typing rules (`canType` in `layoutGame`): players may type until the game starts; once `in_progress` their keyboard drives the piece — `handleKeys` grabs board focus only while `mode == ModePlayer && started`, which both frees the editor pre-start and locks it out during play — so only spectators and eliminated players can type (players see a muted "read-only while playing" hint instead of the editor). A message starting with `@lobby` is routed to the lobby chat; anything else goes to this game's chat subject (`sendGameChat`, `lifecycle.go` → `Lobby.SendGameChat`). Widgets: `gameChatEd`/`gameChatBtn`/`gameChatList` (scroll-to-end). The lobby screen's chat panel shows only lobby-scoped messages.
 
 **Ready checklist styling.** While waiting for players to ready up, the HUD's ready list (`readyArea`, `game.go`) shows each player's name with a filled pill badge on the right — green "READY" (`colGo`) or red "NOT READY" (`colErr`), dark bold text, drawn by `readyBadge` over `fillRRect` (`board.go`) — replacing the earlier subtle "✓ / …" prefix marks.
 
@@ -1709,38 +1729,35 @@ Channels are never closed by the sender — they are abandoned when the owning g
 The following steps happen in order at startup. Steps that can fail cause the application to exit with a clear error message.
 
 ```
-1.  Parse CLI flags → config.Config
-2.  Choose the launch path:
-    FLAGS PATH (--server or --context given):
-      2a. natspkg.Bootstrap(ctx, cfg): connect (ConnectURL when --server, else
-          natscontext.Connect) then EnsureLobbyChatStream, EnsureLobbyKV,
-          EnsureArchiveStream — any failure exits with a clear error (and
-          Bootstrap closes the connection on post-connect failures)
-      2b. nativeui.New(js, kv); main owns nc
-    PICKER PATH (no server flags):
-      2c. natspkg.ListContexts() → context names + selected (warn-only on error)
-      2d. nativeui.NewWithPicker(cfg, names, selected); no connection yet
-3.  runNative: a goroutine calls App.Run (opens the Gio window); app.Main()
-    owns the OS main thread → the native window shows the login screen
-    (picker path: the login screen includes the CONNECT TO section; the
-    optional "Check connection" button dials + pings + closes, no side effects)
-4.  Player enters name (and, on the picker path, a connection choice) and hits
-    Play: validate (config.ValidatePlayerName), then
-    a. Picker path only: doConnectAndLogin → natspkg.Bootstrap for the chosen
-       context/URL (15 s cap); on failure the error shows on the login screen
-       and the player can retry with a different choice; on success a.nc/js/kv
-       are set (App owns the connection) and the flow continues below
+1.  Parse CLI flags → config.Config (no connection is made at startup;
+    --server/--context only seed the connection picker's defaults)
+2.  natspkg.ListContexts() → context names + selected (warn-only on error)
+3.  nativeui.NewWithPicker(cfg, names, selected); runNative: a goroutine calls
+    App.Run (opens the Gio window); app.Main() owns the OS main thread
+    → the native window shows the single combined login screen: name entry +
+    CONNECT TO chooser (the optional "Check connection" button dials + pings +
+    closes, no side effects)
+4.  Player enters name, picks a connection (context or URL), and hits Play:
+    validate (config.ValidatePlayerName), then doConnectAndLogin:
+    a. disconnect() any connection left from a previous attempt, then
+       natspkg.Bootstrap for the chosen context/URL (15 s cap): connect
+       (ConnectURL when a URL, else natscontext.Connect) then
+       EnsureLobbyChatStream, EnsureLobbyKV, EnsureArchiveStream — on failure
+       the error shows on the login screen and the player retries with a
+       different choice; on success a.nc/js/kv are set (the App owns the
+       connection)
     b. Check lobby.IsNameInUse
     c. Create lobby.Lobby with playerName as both playerID and name
     d. Start lobby (KV watcher, chat consumer, archive consumer, heartbeat)
     e. Wait for initial KV load
     f. Run cleanup.Run
     g. Move to the lobby screen
-5.  Block on window close / os.Signal (SIGINT / SIGTERM)
-6.  On exit: stop engine + lobby, cancel root context → goroutines exit,
-    Drain/Close NATS (main drains the flags-path connection; teardown /
-    App.DrainConn drains an app-owned picker-path connection)
-7.  Exit
+5.  Quit (lobby) → stop the lobby, disconnect(), back to the combined login
+    screen — the player can connect to a different server
+6.  Block on window close / os.Signal (SIGINT / SIGTERM)
+7.  On exit: stop engine + lobby, cancel root context → goroutines exit,
+    teardown / App.DrainConn drain the app-owned connection
+8.  Exit
 ```
 
 Step 4e — waiting for the KV watcher to finish its initial load — is critical for correctness of the cleanup pass (step 4f). The initial load is complete when the KV watcher receives a nil entry, which NATS delivers after all existing entries have been sent.

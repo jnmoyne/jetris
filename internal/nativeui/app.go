@@ -7,6 +7,8 @@ package nativeui
 import (
 	"context"
 	"image/color"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -65,6 +67,7 @@ var (
 	colGo     = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
 	colWarn   = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
 	colOrange = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
+	colLobby  = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
 )
 
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
@@ -81,11 +84,11 @@ type gameRowBtns struct {
 type App struct {
 	js jetstream.JetStream
 	kv jetstream.KeyValue
-	nc *nats.Conn // non-nil only when the app dialed NATS itself (picker path); guarded by mu
+	nc *nats.Conn // the app-dialed NATS connection (nil until the player connects); guarded by mu
 
-	// Connection picker (launched without --server/--context): set at
-	// construction by NewWithPicker, immutable afterwards. connCfg carries any
-	// --user/--password flags through to URL connects.
+	// Connection picker: set at construction by NewWithPicker, immutable
+	// afterwards. connCfg carries any --user/--password flags through to URL
+	// connects.
 	needConn     bool
 	connContexts []string
 	connSelected string
@@ -142,15 +145,14 @@ type App struct {
 	msgLog  []streamMsg
 
 	// --- UI-goroutine-only widgets ---
-	loginEd       widget.Editor
-	loginBtn      widget.Clickable
-	collisionYes  widget.Clickable
-	collisionNo   widget.Clickable
-	connEnum      widget.Enum      // connection choice: "ctx:<name>" per context, "url" for the URL row
-	connURLEd     widget.Editor    // NATS URL entry (pre-set to the demo server)
-	connList      widget.List      // scrollable context radio list
-	connCheckBtn  widget.Clickable // "Check connection" (connect + ping, no side effects)
-	connChangeBtn widget.Clickable // "Change server": drop the app-owned connection, reopen the picker
+	loginEd      widget.Editor
+	loginBtn     widget.Clickable
+	collisionYes widget.Clickable
+	collisionNo  widget.Clickable
+	connEnum     widget.Enum      // connection choice: "ctx:<name>" per context, "url" for the URL row
+	connURLEd    widget.Editor    // NATS URL entry (pre-set to the demo server or --server)
+	connList     widget.List      // scrollable context radio list
+	connCheckBtn widget.Clickable // "Check connection" (connect + ping, no side effects)
 
 	createBtn  widget.Clickable
 	modeEnum   widget.Enum
@@ -169,6 +171,11 @@ type App struct {
 	showMsgs widget.Bool // "Show NATS messages" checkbox
 	msgList  widget.List
 	boardTag int // address used as the key-input focus tag
+
+	// game-screen chat panel (game chat + folded-in lobby messages)
+	gameChatEd   widget.Editor
+	gameChatBtn  widget.Clickable
+	gameChatList widget.List
 
 	// archive (history) viewer
 	archiveSel     *config.ArchiveRecord // the finished game whose boards are being shown
@@ -199,17 +206,24 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.chatList.Axis = layout.Vertical
 	a.msgList.Axis = layout.Vertical
 	a.msgList.ScrollToEnd = true
+	a.gameChatEd.SingleLine = true
+	a.gameChatEd.Submit = true
+	a.gameChatList.Axis = layout.Vertical
+	a.gameChatList.ScrollToEnd = true
 	return a
 }
 
 // DefaultNATSURL pre-fills the login screen's NATS URL field.
 const DefaultNATSURL = "nats://demo.nats.io:4222"
 
-// NewWithPicker builds an App that starts disconnected: the login screen shows
-// a CONNECT TO section (one radio per known NATS CLI context plus a NATS URL
-// entry) and the app dials NATS itself when the player hits Play. cfg carries
-// any --user/--password flags for the URL option; contexts/selected come from
-// nats.ListContexts.
+// NewWithPicker builds the App for the single combined login screen: name
+// entry plus a CONNECT TO section (one radio per known NATS CLI context plus a
+// NATS URL entry). The app dials NATS itself when the player hits Play, and
+// quitting the lobby returns to this same screen (disconnected). CLI flags
+// only seed the picker's defaults: --server pre-fills the URL field and makes
+// the URL option the starting choice; --context preselects that context radio
+// (added to the list if it isn't among the discovered ones); --user/--password
+// ride along in connCfg and apply to URL connects.
 func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	a := New(nil, nil)
 	a.needConn = true
@@ -220,18 +234,29 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	a.connURLEd.Submit = true
 	a.connURLEd.SetText(DefaultNATSURL)
 	a.connList.Axis = layout.Vertical
-	// Default choice: the CLI's currently selected context when there is one,
-	// otherwise the always-available URL option (pre-set to the demo server).
-	if selected != "" {
+
+	// Default choice precedence: --server, then --context, then the CLI's
+	// currently selected context, then the always-available URL option.
+	switch {
+	case cfg.NATSURL != "":
+		a.connURLEd.SetText(cfg.NATSURL)
+		a.connEnum.Value = "url"
+	case cfg.NATSContext != "":
+		if !slices.Contains(a.connContexts, cfg.NATSContext) {
+			a.connContexts = append(a.connContexts, cfg.NATSContext)
+			sort.Strings(a.connContexts)
+		}
+		a.connEnum.Value = "ctx:" + cfg.NATSContext
+	case selected != "":
 		a.connEnum.Value = "ctx:" + selected
-	} else {
+	default:
 		a.connEnum.Value = "url"
 	}
 	return a
 }
 
-// DrainConn drains the app-owned NATS connection, if any (picker path). The
-// flags path leaves a.nc nil — main owns and closes that connection.
+// DrainConn drains the app-owned NATS connection, if any. Safe to call at any
+// point in the lifecycle (a.nc is nil until the player connects).
 func (a *App) DrainConn() {
 	a.mu.Lock()
 	nc := a.nc
@@ -241,13 +266,10 @@ func (a *App) DrainConn() {
 	}
 }
 
-// pickerActive reports whether the login screen should render the connection
-// chooser: the app owns connection choice and has not connected yet.
-func (a *App) pickerActive() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.needConn && a.js == nil
-}
+// pickerActive reports whether the login screen includes the connection
+// chooser. True for every NewWithPicker app — the combined screen is the only
+// login screen; false only for bare New(js, kv) apps (tests).
+func (a *App) pickerActive() bool { return a.needConn }
 
 // Run creates the window and pumps its event loop until the window is closed.
 // It must run on a goroutine other than the one that calls app.Main().

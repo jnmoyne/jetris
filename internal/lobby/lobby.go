@@ -203,9 +203,11 @@ func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
 }
 
 func (l *Lobby) runChatConsumer(ctx context.Context) {
+	// No filter: the chat stream carries the lobby chat AND every game's chat,
+	// distinguished by subject. Each message is tagged with the game ID parsed
+	// from its subject ("" = lobby); the UI filters per screen.
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, l.js, natspkg.OrderedConsumerConfig{
-		Stream:        config.LobbyChatStream,
-		FilterSubject: config.LobbyChatSubject,
+		Stream: config.LobbyChatStream,
 	})
 	if err != nil {
 		log.Printf("chat consumer error: %v", err)
@@ -225,6 +227,7 @@ func (l *Lobby) runChatConsumer(ctx context.Context) {
 			if err := json.Unmarshal(msg.Data(), &cm); err != nil {
 				continue
 			}
+			cm.GameID = config.GameIDFromChatSubject(msg.Subject())
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateChat, ChatMsg: &cm})
 		}
 	}
@@ -488,17 +491,29 @@ func (l *Lobby) StartGame(ctx context.Context, gameID string) {
 
 // SendChat sends a message to the lobby chat.
 func (l *Lobby) SendChat(ctx context.Context, text string) error {
+	return l.publishChat(ctx, config.LobbyChatSubject, text, false)
+}
+
+// SendGameChat sends a message to one game's chat — seen only by that game's
+// players and spectators (the UI shows a game's messages only on that game's
+// screen). spectator marks the sender as watching rather than playing.
+func (l *Lobby) SendGameChat(ctx context.Context, gameID, text string, spectator bool) error {
+	return l.publishChat(ctx, config.GameChatSubject(gameID), text, spectator)
+}
+
+func (l *Lobby) publishChat(ctx context.Context, subject, text string, spectator bool) error {
 	msg := ChatMessage{
 		PlayerID:  l.playerID,
 		Name:      l.name,
 		Text:      text,
 		Timestamp: time.Now(),
+		Spectator: spectator,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	_, err = l.js.Publish(ctx, config.LobbyChatSubject, data)
+	_, err = l.js.Publish(ctx, subject, data)
 	return err
 }
 

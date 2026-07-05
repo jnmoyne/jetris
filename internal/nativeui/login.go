@@ -62,17 +62,6 @@ func (a *App) layoutLogin(gtx C) D {
 		a.submitLogin()
 	}
 
-	if a.connChangeBtn.Clicked(gtx) && a.needConn {
-		// Re-read loggingIn under the lock: a Play click earlier this frame may
-		// have just set it, and we must not drop the connection under doLogin.
-		a.mu.Lock()
-		busy := a.loggingIn
-		a.mu.Unlock()
-		if !busy {
-			go a.doChangeServer()
-		}
-	}
-
 	if a.connCheckBtn.Clicked(gtx) && a.pickerActive() {
 		a.mu.Lock()
 		checking := a.connChecking
@@ -178,7 +167,7 @@ func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
 			if a.pickerActive() {
 				return a.connSection(gtx)
 			}
-			return a.connectedLine(gtx)
+			return D{}
 		}),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
@@ -308,32 +297,6 @@ func (a *App) connCheckRow(gtx C) D {
 			l := material.Body2(a.th, msg)
 			l.Color = col
 			return l.Layout(gtx)
-		}),
-	)
-}
-
-// connectedLine shows which server the app-dialed connection reached (picker
-// path, after connecting) with a "Change server" button that drops that
-// connection and reopens the CONNECT TO chooser; it renders nothing on the
-// flags path, where the launcher chose the server for the process lifetime.
-func (a *App) connectedLine(gtx C) D {
-	a.mu.Lock()
-	nc := a.nc
-	a.mu.Unlock()
-	if !a.needConn || nc == nil {
-		return D{}
-	}
-	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-		layout.Flexed(1, func(gtx C) D {
-			l := material.Body2(a.th, "Connected to "+nc.ConnectedUrl())
-			l.Color = colMuted
-			return l.Layout(gtx)
-		}),
-		layout.Rigid(func(gtx C) D {
-			return layout.Spacer{Width: unit.Dp(10)}.Layout(gtx)
-		}),
-		layout.Rigid(func(gtx C) D {
-			return a.secondaryButton(gtx, &a.connChangeBtn, "Change server")
 		}),
 	)
 }

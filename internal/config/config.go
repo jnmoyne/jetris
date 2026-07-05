@@ -262,8 +262,27 @@ func CountdownSubject(gameID string) string {
 	return "jetricks.game." + gameID + ".countdown"
 }
 
-func ChatSubject(gameID string) string {
-	return "jetricks.game." + gameID + ".chat"
+// Lobby chat and per-game chat share the SAME stream (LobbyChatStream) and are
+// distinguished purely by subject: lobby messages on LobbyChatSubject, a
+// game's messages on GameChatSubject(gameID). Game chat cannot live on the
+// game stream because game streams keep only the latest message per subject.
+
+// GameChatSubject is the subject one game's chat messages are published to.
+func GameChatSubject(gameID string) string {
+	return LobbyChatSubject + ".game." + gameID
+}
+
+// GameChatSubjectFilter matches every game's chat subject (stream config).
+const GameChatSubjectFilter = LobbyChatSubject + ".game.*"
+
+// GameIDFromChatSubject extracts the game ID from a chat-stream subject; it
+// returns "" for the lobby chat subject.
+func GameIDFromChatSubject(subject string) string {
+	const prefix = LobbyChatSubject + ".game."
+	if len(subject) > len(prefix) && subject[:len(prefix)] == prefix {
+		return subject[len(prefix):]
+	}
+	return ""
 }
 
 func LobbyPlayerKey(playerID string) string {

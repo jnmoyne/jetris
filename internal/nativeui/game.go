@@ -77,11 +77,20 @@ func (a *App) layoutGame(gtx C) D {
 	mode := eng.Mode()
 	gmode := eng.GameMode()
 
+	view := a.snapshotGame(gtx.Now)
+	started := view.status == string(config.GameStatusInProgress)
+	// Chat typing rule: players may chat until the game starts; once it is in
+	// progress their keyboard drives the piece, so only spectators (and
+	// eliminated players, whose keys no longer play) can type.
+	canType := !started || mode != engine.ModePlayer
+
 	// Register the whole window as a key-input target, then dispatch moves.
+	// Focus is grabbed for the board only while actually playing — before the
+	// game starts the chat editor must be able to hold keyboard focus.
 	st := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	event.Op(gtx.Ops, &a.boardTag)
 	st.Pop()
-	if mode == engine.ModePlayer {
+	if mode == engine.ModePlayer && started {
 		a.handleKeys(gtx, eng)
 	}
 
@@ -91,8 +100,7 @@ func (a *App) layoutGame(gtx C) D {
 	if a.backBtn.Clicked(gtx) {
 		go a.returnToLobby()
 	}
-
-	view := a.snapshotGame(gtx.Now)
+	a.handleGameChatSubmit(gtx, eng, canType)
 	if view.flashActive {
 		a.invalidate() // keep animating the flash until it expires
 	}
@@ -131,13 +139,103 @@ func (a *App) layoutGame(gtx C) D {
 			}),
 		)
 	}
-	if !showMsgs {
-		return content(gtx)
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	children := []layout.FlexChild{
 		layout.Flexed(1, content),
-		layout.Rigid(a.natsMsgPanel),
-	)
+		layout.Rigid(func(gtx C) D { return a.gameChatPanel(gtx, eng, canType) }),
+	}
+	if showMsgs {
+		children = append(children, layout.Rigid(a.natsMsgPanel))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// handleGameChatSubmit dispatches the game screen's chat input. canType gates
+// sending (see layoutGame); the editor is hidden when typing is disabled, so a
+// stale click can't send either.
+func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine, canType bool) {
+	send := a.gameChatBtn.Clicked(gtx)
+	for {
+		ev, ok := a.gameChatEd.Update(gtx)
+		if !ok {
+			break
+		}
+		if _, ok := ev.(widget.SubmitEvent); ok {
+			send = true
+		}
+	}
+	if !send || !canType {
+		return
+	}
+	text := strings.TrimSpace(a.gameChatEd.Text())
+	if text == "" {
+		return
+	}
+	a.gameChatEd.SetText("")
+	go a.sendGameChat(eng, text)
+}
+
+// gameChatPanel renders the chat strip at the bottom of the game screen: this
+// game's messages plus the lobby chat folded in — lobby lines are prefixed
+// "@lobby" and colored colLobby so they're obviously not from the game. Game
+// messages are seen only by this game's players and spectators (per-game chat
+// subject); a message typed here goes to the game chat, or to the lobby chat
+// when it starts with "@lobby".
+func (a *App) gameChatPanel(gtx C, eng *engine.Engine, canType bool) D {
+	gameID := eng.GameID()
+	a.mu.Lock()
+	msgs := make([]lobby.ChatMessage, 0, len(a.chatLog))
+	for _, m := range a.chatLog {
+		if m.GameID == gameID || m.GameID == "" {
+			msgs = append(msgs, m)
+		}
+	}
+	a.mu.Unlock()
+
+	return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.header("CHAT")),
+			layout.Rigid(func(gtx C) D {
+				return bordered(gtx, func(gtx C) D {
+					if max := gtx.Dp(96); gtx.Constraints.Max.Y > max {
+						gtx.Constraints.Max.Y = max
+					}
+					return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
+						txt, col := chatLine(msgs[i])
+						return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
+					})
+				})
+			}),
+			layout.Rigid(spacer(6)),
+			layout.Rigid(func(gtx C) D {
+				if !canType {
+					return a.body("Chat is read-only while playing — spectators can still type.", colMuted)(gtx)
+				}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, func(gtx C) D {
+						return a.editorBox(gtx, &a.gameChatEd, "Message… (start with @lobby to message the lobby)")
+					}),
+					layout.Rigid(func(gtx C) D {
+						return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+					}),
+					layout.Rigid(material.Button(a.th, &a.gameChatBtn, "Send").Layout),
+				)
+			}),
+		)
+	})
+}
+
+// chatLine formats one message for the in-game chat list: lobby messages get
+// an "@lobby" prefix and their own color; game messages from spectators are
+// marked "(spec)".
+func chatLine(m lobby.ChatMessage) (string, colorN) {
+	name := m.Name
+	if m.Spectator {
+		name += " (spec)"
+	}
+	if m.GameID == "" {
+		return fmt.Sprintf("@lobby %s: %s", name, m.Text), colLobby
+	}
+	return fmt.Sprintf("%s: %s", name, m.Text), colFg
 }
 
 func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {

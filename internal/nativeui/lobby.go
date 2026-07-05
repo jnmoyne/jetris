@@ -52,8 +52,15 @@ func (a *App) layoutLobby(gtx C) D {
 	games := sortedGames(lb.Games())
 	players := sortedPlayers(lb.Players())
 
+	// The lobby screen shows only lobby-scoped messages; per-game messages
+	// (GameID != "") appear on that game's screen instead.
 	a.mu.Lock()
-	chat := append([]lobby.ChatMessage(nil), a.chatLog...)
+	chat := make([]lobby.ChatMessage, 0, len(a.chatLog))
+	for _, m := range a.chatLog {
+		if m.GameID == "" {
+			chat = append(chat, m)
+		}
+	}
 	a.mu.Unlock()
 
 	// dispatch per-game buttons

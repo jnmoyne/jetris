@@ -16,7 +16,7 @@ var (
 	RosterSubject               = config.RosterSubject
 	EventsSubject               = config.EventsSubject
 	CountdownSubject            = config.CountdownSubject
-	ChatSubject                 = config.ChatSubject
+	GameChatSubject             = config.GameChatSubject
 	LobbyPlayerKey              = config.LobbyPlayerKey
 	LobbyGameKey                = config.LobbyGameKey
 )

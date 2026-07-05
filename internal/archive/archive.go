@@ -194,6 +194,12 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	_ = natspkg.DeleteGameStream(ctx, js, eng.GameID())
 	_ = kv.Delete(ctx, config.LobbyGameKey(eng.GameID()))
 
+	// Purge the game's chat messages from the shared chat stream (they live
+	// there under a per-game subject, not on the deleted game stream).
+	if s, err := js.Stream(ctx, config.LobbyChatStream); err == nil {
+		_ = s.Purge(ctx, jetstream.WithPurgeSubject(config.GameChatSubject(eng.GameID())))
+	}
+
 	// Leave game in lobby
 	if lb != nil {
 		_ = lb.LeaveGame(ctx, eng.GameID())

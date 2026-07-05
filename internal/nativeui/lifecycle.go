@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"jetricks/internal/archive"
@@ -20,6 +21,11 @@ import (
 // was already set by the submit handler. On failure the player stays on the
 // login screen with the error shown and can retry with a different choice.
 func (a *App) doConnectAndLogin(name string, cfg config.Config) {
+	// A previous Play may have connected without reaching the lobby (name
+	// collision cancelled, lobby init failed) — drop that connection first so
+	// every attempt connects fresh per the current picker choice.
+	a.disconnect()
+
 	connCtx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 	nc, js, kv, err := natspkg.Bootstrap(connCtx, cfg)
 	cancel()
@@ -61,23 +67,17 @@ func (a *App) doCheckConn(cfg config.Config) {
 	a.invalidate()
 }
 
-// doChangeServer drops the app-owned NATS connection and clears the handles so
-// the login screen's CONNECT TO chooser reappears and the player can connect to
-// a different server. Only reachable from the login screen while no login is in
-// flight (the click handler re-checks loggingIn), which means no lobby or
-// engine is using the connection. Runs off the UI goroutine (Drain blocks).
-func (a *App) doChangeServer() {
+// disconnect drops the app-owned NATS connection and clears the handles.
+// Called with no lobby or engine running (from quit, or at the top of a fresh
+// connect attempt), off the UI goroutine — Drain blocks.
+func (a *App) disconnect() {
 	a.mu.Lock()
 	nc := a.nc
 	a.nc, a.js, a.kv = nil, nil, nil
-	a.loginErr = ""
-	a.connCheckMsg = ""
-	a.connCheckOK = false
 	a.mu.Unlock()
 	if nc != nil {
 		nc.Drain()
 	}
-	a.invalidate()
 }
 
 // doLogin runs the (blocking) name-collision check and lobby bring-up off the UI
@@ -338,7 +338,10 @@ func (a *App) returnToLobby() {
 	a.invalidate()
 }
 
-// quit leaves the lobby and returns to the login screen.
+// quit leaves the lobby and returns to the combined login screen. The
+// app-owned NATS connection is dropped too, so the player lands back on the
+// connection picker and can log in to a different server (runs off the UI
+// goroutine — the quit button dispatches with `go a.quit()`).
 func (a *App) quit() {
 	a.mu.Lock()
 	lb := a.lobby
@@ -354,6 +357,7 @@ func (a *App) quit() {
 	if lobbyCancel != nil {
 		lobbyCancel()
 	}
+	a.disconnect()
 	a.invalidate()
 }
 
@@ -364,6 +368,28 @@ func (a *App) sendChat(text string) {
 	}
 	if err := lb.SendChat(context.Background(), text); err != nil {
 		log.Printf("send chat: %v", err)
+	}
+}
+
+// sendGameChat routes one game-screen chat line: a leading "@lobby" sends the
+// rest to the lobby chat (visible to everyone), anything else to this game's
+// chat subject (visible only to the game's players and spectators).
+func (a *App) sendGameChat(eng *engine.Engine, text string) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	if rest, ok := strings.CutPrefix(text, "@lobby"); ok {
+		if rest = strings.TrimSpace(rest); rest != "" {
+			if err := lb.SendChat(context.Background(), rest); err != nil {
+				log.Printf("send lobby chat: %v", err)
+			}
+		}
+		return
+	}
+	spectator := eng.Mode() != engine.ModePlayer
+	if err := lb.SendGameChat(context.Background(), eng.GameID(), text, spectator); err != nil {
+		log.Printf("send game chat: %v", err)
 	}
 }
 

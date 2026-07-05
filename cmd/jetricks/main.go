@@ -10,7 +10,6 @@ import (
 	"syscall"
 
 	"gioui.org/app"
-	"github.com/nats-io/nats.go"
 
 	"jetricks/internal/config"
 	"jetricks/internal/nativeui"
@@ -27,48 +26,28 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if cfg.NATSURL != "" || cfg.NATSContext != "" {
-		// Flags path: the launcher chose the server, so connect before the
-		// window opens and fail fast on error (the pre-picker behavior).
-		nc, js, kv, err := natspkg.Bootstrap(ctx, cfg)
-		if err != nil {
-			log.Fatalf("connect NATS: %v", err)
-		}
-		defer nc.Close()
-		fmt.Printf("Connected to NATS at %s\n", nc.ConnectedUrl())
-		runNative(ctx, cancel, nc, nativeui.New(js, kv))
-		return
-	}
-
-	// No server flags: open the window immediately and let the login screen's
-	// connection picker choose a NATS context or URL. The app dials NATS itself
-	// once the player hits Play.
+	// The window opens immediately; the login screen combines name entry with
+	// the connection picker, and the app dials NATS when the player hits Play.
+	// --server/--context don't connect here — they only seed the picker's
+	// defaults (the URL field text, or which context radio starts selected).
 	names, selected, err := natspkg.ListContexts()
 	if err != nil {
 		log.Printf("warning: listing NATS contexts: %v", err)
 	}
-	runNative(ctx, cancel, nil, nativeui.NewWithPicker(cfg, names, selected))
+	runNative(ctx, cancel, nativeui.NewWithPicker(cfg, names, selected))
 }
 
 // runNative opens the native (Gio) window. Gio's app.Main() owns the OS main
 // thread and blocks forever, so all application logic runs on a goroutine; when
-// the window closes (or on Ctrl-C) the process exits. nc is the main-owned
-// connection (flags path) and may be nil (picker path, where the App owns the
-// connection it dials — drained via a.DrainConn).
-func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, a *nativeui.App) {
-	drain := func() {
-		if nc != nil {
-			nc.Drain()
-		}
-		a.DrainConn()
-	}
-
+// the window closes (or on Ctrl-C) the process exits. The App owns the NATS
+// connection it dials from the login screen; DrainConn is nil-safe.
+func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) {
 	go func() {
 		defer cancel()
 		if err := a.Run(ctx); err != nil {
 			log.Printf("native UI error: %v", err)
 		}
-		drain()
+		a.DrainConn()
 		os.Exit(0)
 	}()
 
@@ -79,7 +58,7 @@ func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, a 
 		select {
 		case <-sig:
 			fmt.Println("\nShutting down...")
-			drain()
+			a.DrainConn()
 			os.Exit(0)
 		case <-ctx.Done():
 		}
@@ -91,8 +70,8 @@ func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, a 
 func parseFlags() config.Config {
 	cfg := config.Config{}
 
-	flag.StringVar(&cfg.NATSContext, "context", "", "NATS context name (empty = default)")
-	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL (overrides --context when set)")
+	flag.StringVar(&cfg.NATSContext, "context", "", "NATS context to preselect in the connection picker")
+	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL to pre-fill in the connection picker (overrides --context as the default choice)")
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
 	showVersion := flag.Bool("version", false, "print version and exit")

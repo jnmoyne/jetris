@@ -20,6 +20,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
@@ -80,6 +81,20 @@ type gameRowBtns struct {
 type App struct {
 	js jetstream.JetStream
 	kv jetstream.KeyValue
+	nc *nats.Conn // non-nil only when the app dialed NATS itself (picker path); guarded by mu
+
+	// Connection picker (launched without --server/--context): set at
+	// construction by NewWithPicker, immutable afterwards. connCfg carries any
+	// --user/--password flags through to URL connects.
+	needConn     bool
+	connContexts []string
+	connSelected string
+	connCfg      config.Config
+
+	// "Check connection" result state (written by doCheckConn; guarded by mu)
+	connChecking bool
+	connCheckOK  bool
+	connCheckMsg string
 
 	win *app.Window
 	th  *material.Theme
@@ -127,10 +142,15 @@ type App struct {
 	msgLog  []streamMsg
 
 	// --- UI-goroutine-only widgets ---
-	loginEd      widget.Editor
-	loginBtn     widget.Clickable
-	collisionYes widget.Clickable
-	collisionNo  widget.Clickable
+	loginEd       widget.Editor
+	loginBtn      widget.Clickable
+	collisionYes  widget.Clickable
+	collisionNo   widget.Clickable
+	connEnum      widget.Enum      // connection choice: "ctx:<name>" per context, "url" for the URL row
+	connURLEd     widget.Editor    // NATS URL entry (pre-set to the demo server)
+	connList      widget.List      // scrollable context radio list
+	connCheckBtn  widget.Clickable // "Check connection" (connect + ping, no side effects)
+	connChangeBtn widget.Clickable // "Change server": drop the app-owned connection, reopen the picker
 
 	createBtn  widget.Clickable
 	modeEnum   widget.Enum
@@ -180,6 +200,53 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.msgList.Axis = layout.Vertical
 	a.msgList.ScrollToEnd = true
 	return a
+}
+
+// DefaultNATSURL pre-fills the login screen's NATS URL field.
+const DefaultNATSURL = "nats://demo.nats.io:4222"
+
+// NewWithPicker builds an App that starts disconnected: the login screen shows
+// a CONNECT TO section (one radio per known NATS CLI context plus a NATS URL
+// entry) and the app dials NATS itself when the player hits Play. cfg carries
+// any --user/--password flags for the URL option; contexts/selected come from
+// nats.ListContexts.
+func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
+	a := New(nil, nil)
+	a.needConn = true
+	a.connCfg = cfg
+	a.connContexts = contexts
+	a.connSelected = selected
+	a.connURLEd.SingleLine = true
+	a.connURLEd.Submit = true
+	a.connURLEd.SetText(DefaultNATSURL)
+	a.connList.Axis = layout.Vertical
+	// Default choice: the CLI's currently selected context when there is one,
+	// otherwise the always-available URL option (pre-set to the demo server).
+	if selected != "" {
+		a.connEnum.Value = "ctx:" + selected
+	} else {
+		a.connEnum.Value = "url"
+	}
+	return a
+}
+
+// DrainConn drains the app-owned NATS connection, if any (picker path). The
+// flags path leaves a.nc nil — main owns and closes that connection.
+func (a *App) DrainConn() {
+	a.mu.Lock()
+	nc := a.nc
+	a.mu.Unlock()
+	if nc != nil {
+		nc.Drain()
+	}
+}
+
+// pickerActive reports whether the login screen should render the connection
+// chooser: the app owns connection choice and has not connected yet.
+func (a *App) pickerActive() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.needConn && a.js == nil
 }
 
 // Run creates the window and pumps its event loop until the window is closed.

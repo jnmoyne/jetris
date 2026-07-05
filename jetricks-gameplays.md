@@ -278,6 +278,17 @@ A team **loses when ALL its members have topped out**. At that point every membe
 
 ## 6. Game Lifecycle
 
+### Login & Server Selection
+
+Before the lobby, the player logs in with a name on the login screen. When Jetricks is launched **without** `--server`/`--context` flags, the same screen also asks where to connect:
+
+- If NATS CLI contexts are defined on the machine, they are listed as radio options with the currently selected context (per `nats context select`) picked by default and labeled "(selected)".
+- A "NATS URL" option is **always** available, pre-filled with `nats://demo.nats.io:4222`; typing in the URL field selects it automatically.
+- A **Check connection** button tests the current choice without joining: it connects, measures the server's ping (round-trip time), shows `✓ <server> · ping <rtt>` in green (or the error in red), and disconnects.
+- Hitting Play connects with the chosen context/URL; a connection failure keeps the player on the login screen with the error shown so they can retry with a different choice. Once connected, the login screen shows "Connected to <url>" with a **Change server** button that disconnects and brings the server chooser back — so returning to the login screen (e.g. via Quit) lets the player switch to another server.
+
+When launched **with** `--server` or `--context`, the connection is made before the window opens (as before) and the login screen only asks for the name.
+
 ```
 created → starting → [countdown] → in_progress → finished → archived
                                                       ↑

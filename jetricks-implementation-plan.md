@@ -2072,8 +2072,10 @@ Follow the bootstrap sequence from Section 14 of the spec exactly. Use `flag` pa
 for CLI flags. Use `os.Signal` channel with `signal.Notify` for graceful shutdown.
 
 The lobby is **not** created at startup — it is created when the player enters their
-name in the UI (`nativeui.App.initLobby`). The entrypoint only connects to NATS,
-ensures infrastructure, then opens the native window.
+name in the UI (`nativeui.App.initLobby`). The entrypoint chooses between two launch
+paths (see Phase 10 — Connection Picker): with `--server`/`--context` it connects and
+ensures infrastructure BEFORE the window opens (fail fast); without them it opens the
+window immediately and the login screen's connection picker drives the connection.
 
 ```go
 func main() {
@@ -2081,33 +2083,36 @@ func main() {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
-    nc, js, _, err := natspkg.Connect(cfg.NATSContext) // or ConnectURL when --server set
-    fatalOnErr(err)
-    defer nc.Close()
-    fatalOnErr(natspkg.EnsureLobbyChatStream(ctx, js))
-    fatalOnErr(natspkg.EnsureLobbyKV(ctx, js)) // returns kv
-    fatalOnErr(natspkg.EnsureArchiveStream(ctx, js))
-
-    runNative(ctx, cancel, nc, js, kv)         // Gio window
+    if cfg.NATSURL != "" || cfg.NATSContext != "" {
+        // Flags path: connect + provision before the window (Bootstrap wraps
+        // ConnectURL/Connect and the three Ensure* calls).
+        nc, js, kv, err := natspkg.Bootstrap(ctx, cfg)
+        fatalOnErr(err)
+        defer nc.Close()
+        runNative(ctx, cancel, nc, nativeui.New(js, kv))
+        return
+    }
+    // Picker path: no connection yet; the App dials NATS itself on Play.
+    names, selected, _ := natspkg.ListContexts()
+    runNative(ctx, cancel, nil, nativeui.NewWithPicker(cfg, names, selected))
 }
 
 // Gio's app.Main() owns the OS main thread and blocks forever, so App.Run runs on a
 // goroutine and the process exits when the window closes (or on Ctrl-C via a
-// signal.Notify goroutine — the OS main loop has no signal hook).
-func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, js jetstream.JetStream, kv jetstream.KeyValue) {
-    a := nativeui.New(js, kv)
+// signal.Notify goroutine — the OS main loop has no signal hook). nc may be nil
+// (picker path); shutdown drains main's nc AND calls a.DrainConn() for an
+// app-owned connection.
+func runNative(ctx context.Context, cancel context.CancelFunc, nc *nats.Conn, a *nativeui.App) {
     go func() {
         defer cancel()
         _ = a.Run(ctx)   // creates the window, runs the frame loop
-        nc.Drain()
+        if nc != nil { nc.Drain() }
+        a.DrainConn()
         os.Exit(0)
     }()
     app.Main()
 }
 ```
-
-`connectNATS` picks `natspkg.ConnectURL` when `--server` is set, otherwise
-`natspkg.Connect` with the `--context` name.
 
 ---
 
@@ -2392,6 +2397,57 @@ Dependency note: Gio is pinned at **v0.8.0 or later** because v0.7.x depends on
 renderer and with it that dependency. The breakage only manifests on Linux cgo
 builds — macOS/Windows compile the stub variant — so it surfaces in CI, not in
 local macOS development.
+
+---
+
+## Phase 10 — Connection Picker (login-screen server selection)
+
+Launching without `--server`/`--context` no longer connects at startup: the
+window opens immediately and the login screen combines name entry with a
+CONNECT TO chooser. With flags, behavior is unchanged (connect before the
+window, fail fast).
+
+**internal/nats:**
+- `contexts.go` — `ListContexts() (names, selected, err)`: enumerates
+  `<XDG_CONFIG_HOME|~/.config>/nats/context/*.json` (sorted; skips non-`.json`
+  and directories) and reads the selected name from `<parent>/nats/context.txt`
+  (reported only if its context file exists). Hand-rolled because
+  `orbit.go/natscontext` exposes no lister — path resolution mirrors it.
+- `Bootstrap(ctx, cfg)` (`connection.go`) — the single connect+provision path
+  for both launches: `ConnectURL` when `cfg.NATSURL` set (with a 5 s dial
+  timeout), else context `Connect`; then the three `Ensure*` calls, closing
+  `nc` on any post-connect failure.
+- `CheckConnection(cfg)` (`connection.go`) — dial, flush-ping RTT, close;
+  provisions nothing (backs the "Check connection" button).
+
+**cmd/jetricks/main.go:** two launch paths — flags → `Bootstrap` before the
+window + `nativeui.New(js, kv)` (main owns `nc`); no flags → `ListContexts` +
+`nativeui.NewWithPicker(cfg, names, selected)` with no connection (`runNative`
+takes a possibly-nil `nc`; shutdown drains main's `nc` and calls
+`App.DrainConn()` for an app-owned one).
+
+**internal/nativeui:** `NewWithPicker` (app.go) starts the App disconnected,
+pre-sets the URL editor to `DefaultNATSURL` (`nats://demo.nats.io:4222`) and
+defaults `connEnum` to the CLI's selected context, else the URL option.
+`connSection` (login.go) renders the chooser (scroll-capped context radio
+list + URL radio/editor row + Check connection row); `pickerConfig` resolves
+the choice; `doConnectAndLogin` (lifecycle.go) runs `Bootstrap` (15 s cap) off
+the UI goroutine — failure lands on `loginErr` for retry, success stores
+`a.nc/js/kv` and falls into the normal `doLogin` flow, after which the picker
+is replaced by a "Connected to <url>" line with a "Change server" button
+(`doChangeServer`: drains the app-owned `nc`, clears the handles and messages,
+picker reappears — gated on no login in flight; `teardown` also drains an
+app-owned `nc`). `doCheckConn` runs `CheckConnection` and renders
+`✓ <server> · ping <rtt>` (green, `formatRTT`) or `✗ <error>` (red) next to
+the button.
+
+**Tests:** `internal/nats/contexts_test.go` (XDG temp-dir lister cases:
+missing dir, filtering/sorting, selected, stale selection),
+`internal/nats/bootstrap_test.go` (Bootstrap provisions all three resources
+against the embedded server; bad URL errors without leaking; CheckConnection
+returns a positive RTT and errors on an unroutable URL), and
+`layout_test.go` picker render subtests (with contexts + selected default,
+and with none → URL default).
 
 ---
 

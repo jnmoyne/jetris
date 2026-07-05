@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"errors"
 	"strings"
 
 	"gioui.org/layout"
@@ -21,6 +22,19 @@ func (a *App) layoutLogin(gtx C) D {
 		}
 		if _, ok := ev.(widget.SubmitEvent); ok {
 			submitted = true
+		}
+	}
+	for {
+		ev, ok := a.connURLEd.Update(gtx)
+		if !ok {
+			break
+		}
+		switch ev.(type) {
+		case widget.SubmitEvent:
+			submitted = true
+		case widget.ChangeEvent:
+			// Typing a URL implies choosing the URL option.
+			a.connEnum.Value = "url"
 		}
 	}
 
@@ -45,17 +59,35 @@ func (a *App) layoutLogin(gtx C) D {
 			a.mu.Unlock()
 		}
 	} else if submitted && !loggingIn {
-		name := strings.TrimSpace(a.loginEd.Text())
-		if err := config.ValidatePlayerName(name); err != nil {
-			a.mu.Lock()
-			a.loginErr = err.Error()
-			a.mu.Unlock()
-		} else {
-			a.mu.Lock()
-			a.loginErr = ""
-			a.loggingIn = true
-			a.mu.Unlock()
-			go a.doLogin(name, false)
+		a.submitLogin()
+	}
+
+	if a.connChangeBtn.Clicked(gtx) && a.needConn {
+		// Re-read loggingIn under the lock: a Play click earlier this frame may
+		// have just set it, and we must not drop the connection under doLogin.
+		a.mu.Lock()
+		busy := a.loggingIn
+		a.mu.Unlock()
+		if !busy {
+			go a.doChangeServer()
+		}
+	}
+
+	if a.connCheckBtn.Clicked(gtx) && a.pickerActive() {
+		a.mu.Lock()
+		checking := a.connChecking
+		a.mu.Unlock()
+		if !checking {
+			if cfg, err := a.pickerConfig(); err != nil {
+				a.setLoginErr(err.Error())
+			} else {
+				a.setLoginErr("")
+				a.mu.Lock()
+				a.connChecking = true
+				a.connCheckMsg = ""
+				a.mu.Unlock()
+				go a.doCheckConn(cfg)
+			}
 		}
 	}
 
@@ -80,10 +112,73 @@ func (a *App) layoutLogin(gtx C) D {
 	})
 }
 
+// submitLogin validates the entered name and kicks off the async login: in
+// picker mode it first resolves the connection choice (context or URL) and
+// dispatches doConnectAndLogin; otherwise (already connected) plain doLogin.
+// Runs on the UI goroutine.
+func (a *App) submitLogin() {
+	name := strings.TrimSpace(a.loginEd.Text())
+	if err := config.ValidatePlayerName(name); err != nil {
+		a.setLoginErr(err.Error())
+		return
+	}
+	if !a.pickerActive() {
+		a.setLoginErr("")
+		a.mu.Lock()
+		a.loggingIn = true
+		a.mu.Unlock()
+		go a.doLogin(name, false)
+		return
+	}
+
+	cfg, err := a.pickerConfig()
+	if err != nil {
+		a.setLoginErr(err.Error())
+		return
+	}
+	a.setLoginErr("")
+	a.mu.Lock()
+	a.loggingIn = true
+	a.mu.Unlock()
+	go a.doConnectAndLogin(name, cfg)
+}
+
+// pickerConfig resolves the current CONNECT TO choice into a config: the URL
+// field when the URL radio is active (errors when empty), otherwise the chosen
+// context name. The base is connCfg, so --user/--password flags carry through
+// to URL connects. Runs on the UI goroutine (reads widgets).
+func (a *App) pickerConfig() (config.Config, error) {
+	cfg := a.connCfg
+	cfg.NATSURL, cfg.NATSContext = "", ""
+	if a.connEnum.Value == "url" {
+		cfg.NATSURL = strings.TrimSpace(a.connURLEd.Text())
+		if cfg.NATSURL == "" {
+			return cfg, errors.New("enter a NATS URL")
+		}
+	} else {
+		cfg.NATSContext = strings.TrimPrefix(a.connEnum.Value, "ctx:")
+	}
+	return cfg, nil
+}
+
+// setLoginErr sets (or clears) the login screen's error line.
+func (a *App) setLoginErr(msg string) {
+	a.mu.Lock()
+	a.loginErr = msg
+	a.mu.Unlock()
+}
+
 func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
 	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return a.editorBox(gtx, &a.loginEd, "Enter your name")
+		}),
+		layout.Rigid(spacer(14)),
+		layout.Rigid(func(gtx C) D {
+			if a.pickerActive() {
+				return a.connSection(gtx)
+			}
+			return a.connectedLine(gtx)
 		}),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
@@ -127,6 +222,118 @@ func (a *App) loginCollisionContent(gtx C) D {
 					return a.secondaryButton(gtx, &a.collisionNo, "Cancel")
 				}),
 			)
+		}),
+	)
+}
+
+// connSection renders the CONNECT TO chooser shown while the app has not yet
+// connected (launched without --server/--context): one radio per known NATS
+// CLI context — the CLI's currently selected context is labeled and picked by
+// default — plus an always-present "NATS URL" radio with an editable URL
+// pre-set to the demo server. Long context lists scroll inside a capped box.
+func (a *App) connSection(gtx C) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.header("CONNECT TO")),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(func(gtx C) D {
+			if len(a.connContexts) == 0 {
+				return D{}
+			}
+			return bordered(gtx, func(gtx C) D {
+				if max := gtx.Dp(180); gtx.Constraints.Max.Y > max {
+					gtx.Constraints.Max.Y = max
+				}
+				gtx.Constraints.Min.Y = 0
+				return material.List(a.th, &a.connList).Layout(gtx, len(a.connContexts), func(gtx C, i int) D {
+					name := a.connContexts[i]
+					label := "context: " + name
+					if name == a.connSelected {
+						label += " (selected)"
+					}
+					rb := material.RadioButton(a.th, &a.connEnum, "ctx:"+name, label)
+					rb.Color = colFg
+					return rb.Layout(gtx)
+				})
+			})
+		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					rb := material.RadioButton(a.th, &a.connEnum, "url", "NATS URL:")
+					rb.Color = colFg
+					return rb.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+				}),
+				layout.Flexed(1, func(gtx C) D {
+					return a.editorBox(gtx, &a.connURLEd, "nats://host:4222")
+				}),
+			)
+		}),
+		layout.Rigid(spacer(8)),
+		layout.Rigid(a.connCheckRow),
+	)
+}
+
+// connCheckRow renders the "Check connection" button and, next to it, the last
+// check's outcome: "✓ <server> · ping <rtt>" in green or "✗ <error>" in red.
+func (a *App) connCheckRow(gtx C) D {
+	a.mu.Lock()
+	checking := a.connChecking
+	ok := a.connCheckOK
+	msg := a.connCheckMsg
+	a.mu.Unlock()
+
+	label := "Check connection"
+	if checking {
+		label = "Checking…"
+	}
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			return a.secondaryButton(gtx, &a.connCheckBtn, label)
+		}),
+		layout.Rigid(func(gtx C) D {
+			return layout.Spacer{Width: unit.Dp(10)}.Layout(gtx)
+		}),
+		layout.Flexed(1, func(gtx C) D {
+			if msg == "" {
+				return D{}
+			}
+			col := colErr
+			if ok {
+				col = colGo
+			}
+			l := material.Body2(a.th, msg)
+			l.Color = col
+			return l.Layout(gtx)
+		}),
+	)
+}
+
+// connectedLine shows which server the app-dialed connection reached (picker
+// path, after connecting) with a "Change server" button that drops that
+// connection and reopens the CONNECT TO chooser; it renders nothing on the
+// flags path, where the launcher chose the server for the process lifetime.
+func (a *App) connectedLine(gtx C) D {
+	a.mu.Lock()
+	nc := a.nc
+	a.mu.Unlock()
+	if !a.needConn || nc == nil {
+		return D{}
+	}
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Flexed(1, func(gtx C) D {
+			l := material.Body2(a.th, "Connected to "+nc.ConnectedUrl())
+			l.Color = colMuted
+			return l.Layout(gtx)
+		}),
+		layout.Rigid(func(gtx C) D {
+			return layout.Spacer{Width: unit.Dp(10)}.Layout(gtx)
+		}),
+		layout.Rigid(func(gtx C) D {
+			return a.secondaryButton(gtx, &a.connChangeBtn, "Change server")
 		}),
 	)
 }

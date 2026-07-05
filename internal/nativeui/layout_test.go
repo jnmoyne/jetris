@@ -62,6 +62,27 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 	})
 
+	t.Run("login-picker", func(t *testing.T) {
+		a := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta")
+		a.th = newTestApp().th
+		if a.connEnum.Value != "ctx:beta" {
+			t.Fatalf("default choice = %q, want ctx:beta (the selected context)", a.connEnum.Value)
+		}
+		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-no-contexts", func(t *testing.T) {
+		a := NewWithPicker(config.Config{}, nil, "")
+		a.th = newTestApp().th
+		if a.connEnum.Value != "url" {
+			t.Fatalf("default choice = %q, want url when no contexts exist", a.connEnum.Value)
+		}
+		if a.connURLEd.Text() != DefaultNATSURL {
+			t.Fatalf("URL field = %q, want %q", a.connURLEd.Text(), DefaultNATSURL)
+		}
+		renderOnce(t, a)
+	})
+
 	t.Run("lobby", func(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")

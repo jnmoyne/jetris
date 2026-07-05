@@ -11,7 +11,74 @@ import (
 	"jetricks/internal/config"
 	"jetricks/internal/engine"
 	"jetricks/internal/lobby"
+	natspkg "jetricks/internal/nats"
 )
+
+// doConnectAndLogin dials NATS per the player's connection-picker choice (cfg
+// holds either a context name or a URL), provisions the streams/KV, then
+// continues into the normal login flow. Runs off the UI goroutine; loggingIn
+// was already set by the submit handler. On failure the player stays on the
+// login screen with the error shown and can retry with a different choice.
+func (a *App) doConnectAndLogin(name string, cfg config.Config) {
+	connCtx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	nc, js, kv, err := natspkg.Bootstrap(connCtx, cfg)
+	cancel()
+	if err != nil {
+		a.mu.Lock()
+		a.loginErr = "connect failed: " + err.Error()
+		a.loggingIn = false
+		a.mu.Unlock()
+		a.invalidate()
+		return
+	}
+	if a.ctx.Err() != nil {
+		nc.Close() // window closed while we were connecting
+		return
+	}
+	log.Printf("connected to NATS at %s", nc.ConnectedUrl())
+	a.mu.Lock()
+	a.nc, a.js, a.kv = nc, js, kv
+	a.mu.Unlock()
+	a.doLogin(name, false)
+}
+
+// doCheckConn validates a connection-picker choice without committing to it:
+// dial, measure the server ping (flush round trip), close. Runs off the UI
+// goroutine; connChecking was already set by the click handler. The outcome
+// lands in connCheckMsg (rendered green/red next to the button).
+func (a *App) doCheckConn(cfg config.Config) {
+	url, rtt, err := natspkg.CheckConnection(cfg)
+	a.mu.Lock()
+	a.connChecking = false
+	if err != nil {
+		a.connCheckOK = false
+		a.connCheckMsg = "✗ " + err.Error()
+	} else {
+		a.connCheckOK = true
+		a.connCheckMsg = "✓ " + url + " · ping " + formatRTT(rtt)
+	}
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// doChangeServer drops the app-owned NATS connection and clears the handles so
+// the login screen's CONNECT TO chooser reappears and the player can connect to
+// a different server. Only reachable from the login screen while no login is in
+// flight (the click handler re-checks loggingIn), which means no lobby or
+// engine is using the connection. Runs off the UI goroutine (Drain blocks).
+func (a *App) doChangeServer() {
+	a.mu.Lock()
+	nc := a.nc
+	a.nc, a.js, a.kv = nil, nil, nil
+	a.loginErr = ""
+	a.connCheckMsg = ""
+	a.connCheckOK = false
+	a.mu.Unlock()
+	if nc != nil {
+		nc.Drain()
+	}
+	a.invalidate()
+}
 
 // doLogin runs the (blocking) name-collision check and lobby bring-up off the UI
 // goroutine, then transitions to the lobby screen.
@@ -300,15 +367,18 @@ func (a *App) sendChat(text string) {
 	}
 }
 
-// teardown stops the engine and lobby when the window closes.
+// teardown stops the engine and lobby when the window closes, and drains the
+// NATS connection if the app dialed it itself (picker path).
 func (a *App) teardown() {
 	a.mu.Lock()
 	eng := a.eng
 	engCancel := a.engCancel
 	lb := a.lobby
 	lobbyCancel := a.lobbyCancel
+	nc := a.nc
 	a.eng = nil
 	a.lobby = nil
+	a.nc = nil
 	a.mu.Unlock()
 
 	if engCancel != nil {
@@ -322,5 +392,8 @@ func (a *App) teardown() {
 	}
 	if lobbyCancel != nil {
 		lobbyCancel()
+	}
+	if nc != nil {
+		nc.Drain()
 	}
 }

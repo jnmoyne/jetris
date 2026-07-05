@@ -460,7 +460,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	case view.gameOver:
 		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
 			layout.Expanded(board),
-			layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view) }),
+			layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view, eng.TeamIdx()) }),
 		)
 	case countdownVisible(view, mode):
 		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
@@ -590,7 +590,10 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine) D {
 	return layout.Flex{}.Layout(gtx, children...)
 }
 
-func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView) D {
+// gameOverBox is the centered overlay shown once the local player is out (or
+// the game is over): title, win/loss message, the final score, and the Back to
+// Lobby button. myTeam is the local player's team index (teams mode only).
+func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam int) D {
 	won := view.won
 	// Teams: a player can be out while their team plays on — show an interim
 	// message (and no Back button pressure) until the game actually finishes.
@@ -629,6 +632,30 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView) D {
 					children = append(children, layout.Rigid(spacer(6)), layout.Rigid(func(gtx C) D {
 						l := material.H6(a.th, msg)
 						l.Color = c
+						return l.Layout(gtx)
+					}))
+				}
+				// Final score: the shared total for cooperative, the player's own
+				// score for competitive, both team totals (own team first) for
+				// teams — while the team plays on these are the live totals.
+				var scoreLine string
+				switch gmode {
+				case config.ModeCooperative:
+					scoreLine = fmt.Sprintf("Score: %d (level %d)", view.score, view.level)
+				case config.ModeCompetitive:
+					scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
+				case config.ModeTeams:
+					if myTeam >= 0 && myTeam < config.TeamCount {
+						other := 1 - myTeam
+						scoreLine = fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
+							teamName(myTeam), view.teamScores[myTeam], view.teamLevels[myTeam],
+							teamName(other), view.teamScores[other], view.teamLevels[other])
+					}
+				}
+				if scoreLine != "" {
+					children = append(children, layout.Rigid(spacer(8)), layout.Rigid(func(gtx C) D {
+						l := material.Body1(a.th, scoreLine)
+						l.Color = colGold
 						return l.Layout(gtx)
 					}))
 				}

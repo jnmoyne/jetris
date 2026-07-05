@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gioui.org/layout"
 	"gioui.org/unit"
@@ -96,7 +97,7 @@ func (a *App) layoutLobby(gtx C) D {
 				}),
 				layout.Flexed(2, func(gtx C) D {
 					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyRight(gtx, games, lb.Archives(), lb.PlayerName())
+						return a.lobbyRight(gtx, games, sortedArchives(lb.Archives()), lb.PlayerName())
 					})
 				}),
 			)
@@ -197,8 +198,87 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 	)
 }
 
+// sortedArchives orders the history list by headline score (highest first);
+// between two games with the same score the shorter game ranks higher, and
+// remaining ties show the most recently finished game first.
+func sortedArchives(recs []config.ArchiveRecord) []config.ArchiveRecord {
+	sort.SliceStable(recs, func(i, j int) bool {
+		si, sj := archiveScore(recs[i]), archiveScore(recs[j])
+		if si != sj {
+			return si > sj
+		}
+		di, dj := archiveDuration(recs[i]), archiveDuration(recs[j])
+		if di != dj {
+			return di < dj
+		}
+		return recs[i].FinishedAt.After(recs[j].FinishedAt)
+	})
+	return recs
+}
+
+// archiveScore is the headline score a finished game is ranked by: the shared
+// total for cooperative, the winning-side total for teams, and the best
+// player's score for competitive.
+func archiveScore(r config.ArchiveRecord) int {
+	switch r.Mode {
+	case config.ModeCooperative:
+		return r.TotalScore
+	case config.ModeTeams:
+		if len(r.TeamScores) > 0 {
+			best := r.TeamScores[0]
+			for _, s := range r.TeamScores[1:] {
+				if s > best {
+					best = s
+				}
+			}
+			return best
+		}
+	}
+	best := 0
+	for _, p := range r.Players {
+		if p.Score > best {
+			best = p.Score
+		}
+	}
+	return best
+}
+
+// archiveDuration is how long the game lasted; zero for records missing either
+// timestamp (or with a clock skew that made finish precede start).
+func archiveDuration(r config.ArchiveRecord) time.Duration {
+	if r.StartedAt.IsZero() || r.FinishedAt.IsZero() {
+		return 0
+	}
+	if d := r.FinishedAt.Sub(r.StartedAt); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// archiveWhen renders a record's start date/time (in the viewer's local
+// timezone) and duration, e.g. "2026-07-06 14:03 PDT · 4m32s".
+func archiveWhen(r config.ArchiveRecord) string {
+	if r.StartedAt.IsZero() {
+		return ""
+	}
+	s := r.StartedAt.Local().Format("2006-01-02 15:04 MST")
+	if d := archiveDuration(r); d > 0 {
+		s += " · " + d.Round(time.Second).String()
+	}
+	return s
+}
+
 // archiveLine summarizes a finished game for the history list.
 func archiveLine(r config.ArchiveRecord) string {
+	if when := archiveWhen(r); when != "" {
+		return when + " · " + archiveModeLine(r)
+	}
+	return archiveModeLine(r)
+}
+
+// archiveModeLine is the mode-specific part of a history line (players,
+// scores, levels, winners).
+func archiveModeLine(r config.ArchiveRecord) string {
 	if r.Mode == config.ModeTeams {
 		// "teams · A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave"
 		parts := make([]string, 0, config.TeamCount)

@@ -2035,8 +2035,16 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
 games), chat (lobby-scoped lines plus a message editor — per-game messages are
 filtered out here), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
-archived games with mode, players, duration, and scores — fetched from the
-`JETRICKS_ARCHIVE` stream on lobby load. Each history row carries an accent-bordered
+archived games with mode, players, and scores — fetched from the
+`JETRICKS_ARCHIVE` stream on lobby load. Each history line is prefixed with the
+game's start date/time in the viewer's local timezone (`2006-01-02 15:04 MST`)
+and its duration (`FinishedAt - StartedAt`, rounded to the second) via
+`archiveWhen`; records missing timestamps omit the prefix. The list is ordered
+by `sortedArchives`: headline score first (highest on top — `archiveScore`:
+co-op total, best team total for teams, best player score for competitive),
+then, between games with the same score, the one with the **shorter duration**
+ranks higher (`archiveDuration`), with most-recently-finished breaking any
+remaining tie. Each history row carries an accent-bordered
 **"View board"** button (`viewBoardButton`) on the right that opens
 the `screenArchive` viewer (`archive_view.go`), which rebuilds the saved
 `ArchiveRecord.Boards` into `engine.BoardSnapshot`s (`boardSnapshotFromPicture`) and
@@ -2348,7 +2356,11 @@ one per team (`TeamCellSubject`) — so the snapshot is complete for every mode.
   "YOU'RE OUT / Your team plays on" while the game is still in progress
   (driven by `UpdatePlayerEliminated` + the engine's interim `Won=false`
   spectator transition), then "YOUR TEAM WON!" / "YOUR TEAM LOST" once the
-  outcome lands.
+  outcome lands. Below the verdict it shows the final score in gold
+  (`Score: N (level L)` shared total for co-op, `Your score: N (level L)`
+  for competitive, `TEAM A 42 (lvl 3) · TEAM B 17 (lvl 1)` — own team
+  first, via the `eng.TeamIdx()` parameter — for teams) above the
+  "Back to Lobby" button.
 - **Lifecycle:** `joinGame(gameID, team)` threads `lobby.JoinGame`'s
   `JoinResult` into `engine.New(..., res.PlayerIdx, res.Team, res.TeamSlot)`;
   spectate passes `0, 0, 0`.

@@ -210,9 +210,24 @@ func TestFireworksOverlay(t *testing.T) {
 	if len(colors) < 3 {
 		t.Fatalf("logo particles use %d colors, want >= 3 (quadrants + white N)", len(colors))
 	}
+	syn := fwSynadiaPoints()
+	if len(syn) < 50 {
+		t.Fatalf("synadia sampling yielded %d particles, want >= 50", len(syn))
+	}
+	synColors := map[colorN]bool{}
+	for _, p := range syn {
+		synColors[p.col] = true
+	}
+	if len(synColors) < 2 {
+		t.Fatalf("synadia particles use %d colors, want >= 2 (green square + white S)", len(synColors))
+	}
 
 	start := time.Unix(1_000_000, 0)
 	fw := newFireworksShow(start)
+	// Force one rocket of each logo kind so both burst draw paths are
+	// exercised regardless of what the show's RNG rolled.
+	fw.rockets[0].synadia = false
+	fw.rockets[1].synadia = true
 	if !fw.active(start) {
 		t.Fatal("show should be active at its start")
 	}

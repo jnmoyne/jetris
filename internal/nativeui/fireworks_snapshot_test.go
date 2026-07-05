@@ -33,6 +33,9 @@ func TestFireworksSnapshots(t *testing.T) {
 
 	start := time.Unix(1_000_000, 0)
 	fw := newFireworksShow(start)
+	// Guarantee a Synadia burst is visible in the early frames regardless of
+	// what the show's RNG rolled (live shows get one rocket in ten).
+	fw.rockets[1].synadia = true
 	t.Logf("show cycle: %v", fw.cycle)
 
 	for _, dt := range []time.Duration{

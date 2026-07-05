@@ -2019,12 +2019,16 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   `fireworksOverlay` (a paint-only full-screen `layout.Stack` layer over the game
   screen; each frame is a pure function of `gtx.Now` in the countdown/CAS-flash
   idiom, drawn at elapsed time modulo the ~8 s `cycle` and kept animating via
-  `invalidate()` — the show loops until dropped), and `fwLogoPoints`, which
-  samples the embedded `nats-icon.png` on a 22×22 grid — with per-particle
-  radial scatter velocities — so every rocket explodes into a small particle
-  NATS "N" logo that pops in, holds, then splits into its small squares and
+  `invalidate()` — the show loops until dropped), and
+  `fwLogoPoints`/`fwSynadiaPoints` (via `sampleLogoPoints`), which sample the
+  embedded `nats-icon.png`/`synadia-icon.png` on a 22×22 grid — with
+  per-particle radial scatter velocities — so every rocket explodes into a
+  small particle logo (the NATS "N"; one rocket in ten bursts into the
+  synadia.com logo instead) that pops in, holds, then splits into its small squares and
   flies apart in all directions, the blocks shrinking away rather than fading
-  in place (`drawLogoBurst`, phases split at `fwScatterStart`). Cleared in
+  in place and — per rocket, at random — either keeping the logo colors or
+  recoloring toward one traditional fireworks color from `fwBurstPalette`
+  (`drawLogoBurst`, phases split at `fwScatterStart`). Cleared in
   `startGameScreen`/`returnToLobby`, which is what ends the show.
 
 **Lobby screen.** Player sidebar, game list (with a "Spectate" button on in-progress

@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"bytes"
+	_ "embed"
 	"image"
 	"image/color"
 	"math"
@@ -19,11 +20,13 @@ import (
 // function of gtx.Now — the countdown/CAS-flash idiom: layoutGame keeps
 // calling invalidate() while the show is active, and no per-frame state is
 // mutated. Rockets launch from the bottom edge, rise to a random apex, and
-// every one explodes into a small NATS "N" logo built from particles sampled
-// off the embedded nats-icon.png: the logo pops in, holds, then splits into
-// its small squares and flies apart in all directions like a bursting shell.
-// The show loops — the overlay draws at elapsed time modulo the cycle — until
-// the App drops it (back to lobby, or a new game starting).
+// every one explodes into a small logo built from particles sampled off an
+// embedded icon — the NATS "N" (nats-icon.png), except one rocket in ten,
+// which bursts into the synadia.com logo (synadia-icon.png) instead. The logo
+// pops in, holds, then splits into its small squares and flies apart in all
+// directions like a bursting shell. The show loops — the overlay draws at
+// elapsed time modulo the cycle — until the App drops it (back to lobby, or
+// a new game starting).
 
 const (
 	fwRocketCount = 12
@@ -35,13 +38,34 @@ const (
 // fwWhite is the warm white of the rising rocket streaks.
 var fwWhite = colorN{R: 0xff, G: 0xf2, B: 0xd0, A: 0xff}
 
+// synadiaIconPNG is the synadia.com logo (Synadia, the company behind
+// NATS.io) — the rare one-in-ten fireworks burst.
+//
+//go:embed synadia-icon.png
+var synadiaIconPNG []byte
+
+// fwBurstPalette are the traditional fireworks colors a burst's scattering
+// blocks may transition toward as they fly out; a burst may instead keep the
+// logo's own colors — chosen per rocket at show creation.
+var fwBurstPalette = []colorN{
+	{R: 0xff, G: 0xd7, B: 0x00, A: 0xff}, // gold
+	{R: 0xff, G: 0x40, B: 0x40, A: 0xff}, // red
+	{R: 0x30, G: 0xff, B: 0x60, A: 0xff}, // green
+	{R: 0x40, G: 0x80, B: 0xff, A: 0xff}, // blue
+	{R: 0xc0, G: 0x60, B: 0xff, A: 0xff}, // purple
+	{R: 0xff, G: 0xff, B: 0xff, A: 0xff}, // silver-white
+}
+
 // fwRocket is one launch: positions are window fractions so the show scales
 // with the window; times are offsets from the show start.
 type fwRocket struct {
-	fx     float64       // launch/apex x, fraction of width
-	apexFy float64       // apex y, fraction of height
-	launch time.Duration // when the rocket leaves the bottom edge
-	rise   time.Duration // bottom edge → apex
+	fx      float64       // launch/apex x, fraction of width
+	apexFy  float64       // apex y, fraction of height
+	launch  time.Duration // when the rocket leaves the bottom edge
+	rise    time.Duration // bottom edge → apex
+	synadia bool          // burst into the synadia.com logo instead of the NATS "N"
+	tinted  bool          // scatter blocks transition to tintCol (else they keep the logo colors)
+	tintCol colorN        // the traditional fireworks color this burst scatters in
 }
 
 type fireworksShow struct {
@@ -62,6 +86,13 @@ func newFireworksShow(now time.Time) *fireworksShow {
 			apexFy: 0.10 + 0.35*rng.Float64(),
 			launch: time.Duration(i)*fwLaunchGap + time.Duration(rng.Int63n(int64(200*time.Millisecond))),
 			rise:   550*time.Millisecond + time.Duration(rng.Int63n(int64(350*time.Millisecond))),
+			// One rocket in ten bursts into the synadia.com logo instead of
+			// the NATS "N".
+			synadia: rng.Intn(10) == 0,
+			// Roughly one burst in three scatters in the logo's own colors;
+			// the rest recolor toward one traditional fireworks color.
+			tinted:  rng.Float64() >= 1.0/3,
+			tintCol: fwBurstPalette[rng.Intn(len(fwBurstPalette))],
 		}
 		if end := r.launch + r.rise + fwLogoDur; end > show.cycle {
 			show.cycle = end
@@ -103,7 +134,7 @@ func fireworksOverlay(gtx C, fw *fireworksShow) D {
 			drawRocketStreak(gtx.Ops, x, apexY, h, m, float64(t)/float64(r.rise))
 		} else {
 			// 0..1 through the explosion
-			drawLogoBurst(gtx.Ops, x, apexY, m, float64(t-r.rise)/float64(fwLogoDur))
+			drawLogoBurst(gtx.Ops, r, x, apexY, m, float64(t-r.rise)/float64(fwLogoDur))
 		}
 	}
 	return D{Size: sz}
@@ -137,8 +168,16 @@ const fwScatterStart = 0.5
 // radial direction with per-block speed jitter, drooping under gravity. The
 // split reads through size, not alpha — the debris keeps shrinking as it
 // flies instead of dimming in place, with a short fade only at the very tail.
-func drawLogoBurst(ops *op.Ops, cx, cy, m, te float64) {
+// On tinted rockets the flying blocks also transition from their logo color
+// to the rocket's traditional fireworks color over the first 60% of the
+// scatter; untinted rockets keep the logo colors all the way out.
+func drawLogoBurst(ops *op.Ops, r *fwRocket, cx, cy, m, te float64) {
 	pts := fwLogoPoints()
+	if r.synadia {
+		if sp := fwSynadiaPoints(); len(sp) > 0 { // fall back to the "N" if decoding failed
+			pts = sp
+		}
+	}
 	if len(pts) == 0 {
 		return
 	}
@@ -153,10 +192,18 @@ func drawLogoBurst(ops *op.Ops, cx, cy, m, te float64) {
 	dot := int(math.Max(2, 0.15*m/fwLogoGrid))
 	blk := int(math.Max(1, float64(dot)*(1-0.75*ts))) // block edge shrinks from a full cell to a spark
 	off := (dot - blk) / 2                            // keep each shrinking block centered in its cell
+	tint := 0.0
+	if r.tinted {
+		tint = easeOutCubic(clampF(ts/0.6, 0, 1))
+	}
 	for _, p := range pts {
+		col := p.col
+		if tint > 0 {
+			col = lerpColor(p.col, r.tintCol, tint)
+		}
 		px := int(math.Round(cx+p.dx*side+p.sx*fling)) + off
 		py := int(math.Round(cy+p.dy*side+p.sy*fling+droop)) + off
-		fillRect(ops, image.Rect(px, py, px+blk, py+blk), withAlpha(p.col, alpha))
+		fillRect(ops, image.Rect(px, py, px+blk, py+blk), withAlpha(col, alpha))
 	}
 }
 
@@ -179,48 +226,62 @@ type fwLogoPt struct {
 var (
 	fwLogoOnce sync.Once
 	fwLogoPts  []fwLogoPt
+	fwSynOnce  sync.Once
+	fwSynPts   []fwLogoPt
 )
 
-// fwLogoPoints samples the embedded nats-icon.png once on a fwLogoGrid² grid,
-// keeping a particle (with the pixel's color) for every mostly-opaque sample —
-// so the burst reproduces the real logo, white "N" and all four quadrants.
-// Each particle also gets its scatter velocity: outward through its own
-// position (so the explosion radiates from the logo center), a random
-// direction for blocks sitting at the very center, and 0.6–1.4× speed jitter
-// so the blow-apart looks like debris rather than a scaled-up logo. The
-// jitter comes from a fixed-seed RNG — the table is deterministic, and shows
-// still differ from each other via rocket timing/placement.
+// fwLogoPoints samples the embedded nats-icon.png once — so the burst
+// reproduces the real logo, white "N" and all four quadrants.
 func fwLogoPoints() []fwLogoPt {
-	fwLogoOnce.Do(func() {
-		img, _, err := image.Decode(bytes.NewReader(natsIconPNG))
-		if err != nil {
-			return
-		}
-		rng := rand.New(rand.NewSource(42))
-		b := img.Bounds()
-		for gy := 0; gy < fwLogoGrid; gy++ {
-			for gx := 0; gx < fwLogoGrid; gx++ {
-				px := b.Min.X + (2*gx+1)*b.Dx()/(2*fwLogoGrid)
-				py := b.Min.Y + (2*gy+1)*b.Dy()/(2*fwLogoGrid)
-				c := color.NRGBAModel.Convert(img.At(px, py)).(color.NRGBA)
-				if c.A < 128 {
-					continue
-				}
-				c.A = 0xff
-				dx := float64(gx)/(fwLogoGrid-1) - 0.5
-				dy := float64(gy)/(fwLogoGrid-1) - 0.5
-				ang := math.Atan2(dy, dx)
-				if math.Hypot(dx, dy) < 0.05 {
-					ang = 2 * math.Pi * rng.Float64()
-				}
-				speed := 0.6 + 0.8*rng.Float64()
-				fwLogoPts = append(fwLogoPts, fwLogoPt{
-					dx: dx, dy: dy,
-					sx: speed * math.Cos(ang), sy: speed * math.Sin(ang),
-					col: c,
-				})
-			}
-		}
-	})
+	fwLogoOnce.Do(func() { fwLogoPts = sampleLogoPoints(natsIconPNG, 42) })
 	return fwLogoPts
+}
+
+// fwSynadiaPoints samples the embedded synadia-icon.png once — the white "S"
+// swirl on the green square, for the rare Synadia burst.
+func fwSynadiaPoints() []fwLogoPt {
+	fwSynOnce.Do(func() { fwSynPts = sampleLogoPoints(synadiaIconPNG, 43) })
+	return fwSynPts
+}
+
+// sampleLogoPoints samples a PNG on a fwLogoGrid² grid, keeping a particle
+// (with the pixel's color) for every mostly-opaque sample. Each particle also
+// gets its scatter velocity: outward through its own position (so the
+// explosion radiates from the logo center), a random direction for blocks
+// sitting at the very center, and 0.6–1.4× speed jitter so the blow-apart
+// looks like debris rather than a scaled-up logo. The jitter comes from a
+// fixed-seed RNG — the table is deterministic, and shows still differ from
+// each other via rocket timing/placement. Returns nil if decoding fails.
+func sampleLogoPoints(pngData []byte, seed int64) []fwLogoPt {
+	img, _, err := image.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		return nil
+	}
+	rng := rand.New(rand.NewSource(seed))
+	b := img.Bounds()
+	var pts []fwLogoPt
+	for gy := 0; gy < fwLogoGrid; gy++ {
+		for gx := 0; gx < fwLogoGrid; gx++ {
+			px := b.Min.X + (2*gx+1)*b.Dx()/(2*fwLogoGrid)
+			py := b.Min.Y + (2*gy+1)*b.Dy()/(2*fwLogoGrid)
+			c := color.NRGBAModel.Convert(img.At(px, py)).(color.NRGBA)
+			if c.A < 128 {
+				continue
+			}
+			c.A = 0xff
+			dx := float64(gx)/(fwLogoGrid-1) - 0.5
+			dy := float64(gy)/(fwLogoGrid-1) - 0.5
+			ang := math.Atan2(dy, dx)
+			if math.Hypot(dx, dy) < 0.05 {
+				ang = 2 * math.Pi * rng.Float64()
+			}
+			speed := 0.6 + 0.8*rng.Float64()
+			pts = append(pts, fwLogoPt{
+				dx: dx, dy: dy,
+				sx: speed * math.Cos(ang), sy: speed * math.Sin(ang),
+				col: c,
+			})
+		}
+	}
+	return pts
 }

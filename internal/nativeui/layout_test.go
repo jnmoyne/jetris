@@ -3,6 +3,7 @@ package nativeui
 import (
 	"image"
 	"testing"
+	"time"
 
 	"gioui.org/font/gofont"
 	"gioui.org/layout"
@@ -65,9 +66,18 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 	t.Run("login-picker", func(t *testing.T) {
 		a := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta")
 		a.th = newTestApp().th
-		if a.connEnum.Value != "ctx:beta" {
-			t.Fatalf("default choice = %q, want ctx:beta (the selected context)", a.connEnum.Value)
+		if a.connEnum.Value != "context" || a.connCtx != "beta" {
+			t.Fatalf("default choice = %q/%q, want context/beta (the selected context)", a.connEnum.Value, a.connCtx)
 		}
+		renderOnce(t, a)
+		// The constructor's SetText on the URL editor queues a synthetic
+		// ChangeEvent; the first frame must swallow it rather than let it
+		// flip the choice to the URL option.
+		if a.connEnum.Value != "context" {
+			t.Fatalf("choice after first frame = %q, want context (SetText must not pick the URL option)", a.connEnum.Value)
+		}
+		// Render again with the context pull-down expanded.
+		a.connDropOpen = true
 		renderOnce(t, a)
 	})
 
@@ -102,8 +112,8 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		// lister didn't discover it.
 		a := NewWithPicker(config.Config{NATSContext: "mine"}, []string{"alpha"}, "alpha")
 		a.th = newTestApp().th
-		if a.connEnum.Value != "ctx:mine" {
-			t.Fatalf("default choice = %q, want ctx:mine when --context is given", a.connEnum.Value)
+		if a.connEnum.Value != "context" || a.connCtx != "mine" {
+			t.Fatalf("default choice = %q/%q, want context/mine when --context is given", a.connEnum.Value, a.connCtx)
 		}
 		found := false
 		for _, c := range a.connContexts {
@@ -159,6 +169,9 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.screen = screenGame
 		a.gameOver = true
 		a.won = true
+		// A won game carries a fireworks show; renderOnce's zero gtx.Now equals
+		// the zero start time, so the overlay's Stack path is exercised at t=0.
+		a.fireworks = newFireworksShow(time.Time{})
 		renderOnce(t, a)
 	})
 
@@ -178,6 +191,59 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		}
 		renderOnce(t, a)
 	})
+}
+
+// TestFireworksOverlay pins the victory-fireworks building blocks: the logo
+// sampling yields a real particle set from the embedded icon, the show loops
+// (active forever once started, drawing wraps modulo the cycle), and drawing
+// panics at no point of the show (rise, logo pop-in, hold, scatter, fade-out,
+// and a wrapped second cycle all covered by the sampled times).
+func TestFireworksOverlay(t *testing.T) {
+	pts := fwLogoPoints()
+	if len(pts) < 50 {
+		t.Fatalf("logo sampling yielded %d particles, want >= 50", len(pts))
+	}
+	colors := map[colorN]bool{}
+	for _, p := range pts {
+		colors[p.col] = true
+	}
+	if len(colors) < 3 {
+		t.Fatalf("logo particles use %d colors, want >= 3 (quadrants + white N)", len(colors))
+	}
+
+	start := time.Unix(1_000_000, 0)
+	fw := newFireworksShow(start)
+	if !fw.active(start) {
+		t.Fatal("show should be active at its start")
+	}
+	if !fw.active(start.Add(fw.cycle + time.Hour)) {
+		t.Fatal("show should loop forever until the App drops it")
+	}
+	if fw.active(start.Add(-time.Second)) {
+		t.Fatal("show should not be active before its start")
+	}
+
+	for _, dt := range []time.Duration{
+		0,
+		300 * time.Millisecond, // rockets rising
+		1500 * time.Millisecond,
+		3 * time.Second, // logo bursts in flight
+		5 * time.Second,
+		fw.cycle - time.Millisecond,        // tail end of the first cycle
+		fw.cycle + 1500*time.Millisecond,   // wrapped into the second cycle
+		10*fw.cycle + 300*time.Millisecond, // deep into the loop
+	} {
+		var ops op.Ops
+		gtx := layout.Context{
+			Ops:         &ops,
+			Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+			Constraints: layout.Exact(image.Pt(1200, 820)),
+			Now:         start.Add(dt),
+		}
+		if d := fireworksOverlay(gtx, fw); d.Size.X == 0 || d.Size.Y == 0 {
+			t.Fatalf("overlay at +%v produced zero dimensions", dt)
+		}
+	}
 }
 
 // TestChatLine pins the in-game chat formatting: lobby messages get the @lobby

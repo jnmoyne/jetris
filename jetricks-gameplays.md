@@ -222,7 +222,7 @@ When a player clears 1 or more lines, a shrink event is sent to **all** other pl
 
 ### Game Over
 
-The game continues until only **one player remains**. When a player tops out (either the newly spawned piece cannot be placed, or an opponent's line clear pushed the rising stack into the falling piece and the conflict-resolving upward shift ran the piece off the top), that player is eliminated and transitions to spectator mode — they can watch the remaining players continue. The last player standing wins. The game UI shows a player status list with each player marked as playing (green dot) or eliminated (red cross, struck through name). At game over, winners see "YOU WON!" and the loser(s) see "YOU LOST".
+The game continues until only **one player remains**. When a player tops out (either the newly spawned piece cannot be placed, or an opponent's line clear pushed the rising stack into the falling piece and the conflict-resolving upward shift ran the piece off the top), that player is eliminated and transitions to spectator mode — they can watch the remaining players continue. The last player standing wins. The game UI shows a player status list with each player marked as playing (green dot) or eliminated (red cross, struck through name). At game over, winners see "YOU WON!" and the loser(s) see "YOU LOST". The winner’s screen also plays a **victory fireworks show** over the whole game screen: rockets rise from the bottom edge and every one bursts into a small **NATS "N" logo** (particles sampled from the embedded nats.io icon), which pops in, holds for a beat, and then visibly splits into its small squares and blows apart — the blocks flying out in every direction like a bursting shell and shrinking away as they go, rather than fading in place. The show loops until the winner heads back to the lobby, and is paint-only — it never blocks input or the "Back to Lobby" button.
 
 ---
 
@@ -265,7 +265,7 @@ A known cosmetic artifact (same class as the documented coop merge-skip): the wi
 
 **A player out is not a team out.** When a player tops out (their next spawn cannot be placed), they vacate any of their active cells from the team board, publish their elimination, and become a spectator of their own team's board — but their teammates play on. The UI shows "YOU'RE OUT — your team plays on" until the game resolves.
 
-A team **loses when ALL its members have topped out**. At that point every member of the other team — alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Losers see "YOUR TEAM LOST". All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines.
+A team **loses when ALL its members have topped out**. At that point every member of the other team — alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Losers see "YOUR TEAM LOST". All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines. Every member of the winning team — including already-eliminated members, whose engines re-emit the win — gets the same victory fireworks show as a competitive winner (rockets bursting into small NATS "N" logos that then blow apart) on their own screen.
 
 ### Visual Indicators
 
@@ -282,9 +282,9 @@ A team **loses when ALL its members have topped out**. At that point every membe
 
 There is a single login screen where the player both picks where to connect and enters their name — no connection is made until they hit Play:
 
-- If NATS CLI contexts are defined on the machine, they are listed as radio options; the currently selected context (per `nats context select`) is labeled "(selected)".
+- If NATS CLI contexts are defined on the machine, a "Context:" option offers them in a pull-down button. The pull-down starts on the currently selected context (per `nats context select`); opening it lists every context — the selected one labeled "(selected)" — and picking one closes the list and makes it the choice.
 - A "NATS URL" option is **always** available, pre-filled with `nats://demo.nats.io:4222`; typing in the URL field selects it automatically.
-- The `--server`/`--context` flags don't connect directly — they only set the picker's starting choice: `--server` selects the URL option and replaces the default URL text with its value; `--context` preselects that context.
+- The `--server`/`--context` flags don't connect directly — they only set the picker's starting choice: `--server` selects the URL option and replaces the default URL text with its value; `--context` picks the context option with the pull-down preset to that context.
 - A **Check connection** button tests the current choice without joining: it connects, measures the server's ping (round-trip time), shows `✓ <server> · ping <rtt>` in green (or the error in red), and disconnects.
 - Hitting Play connects with the chosen context/URL and logs in; a connection failure keeps the player on the login screen with the error shown so they can retry with a different choice.
 - Quitting the lobby disconnects and returns to this same screen, so the player can connect to another server.

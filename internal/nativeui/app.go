@@ -134,6 +134,7 @@ type App struct {
 	myReady      bool
 	readyPlayers []lobby.PlayerSummary
 	flash        map[[2]int]time.Time
+	fireworks    *fireworksShow // victory fireworks show; nil until a competitive/teams win
 
 	// chat log (written by pumpLobby)
 	chatLog []lobby.ChatMessage
@@ -145,14 +146,19 @@ type App struct {
 	msgLog  []streamMsg
 
 	// --- UI-goroutine-only widgets ---
-	loginEd      widget.Editor
-	loginBtn     widget.Clickable
-	collisionYes widget.Clickable
-	collisionNo  widget.Clickable
-	connEnum     widget.Enum      // connection choice: "ctx:<name>" per context, "url" for the URL row
-	connURLEd    widget.Editor    // NATS URL entry (pre-set to the demo server or --server)
-	connList     widget.List      // scrollable context radio list
-	connCheckBtn widget.Clickable // "Check connection" (connect + ping, no side effects)
+	loginEd       widget.Editor
+	loginBtn      widget.Clickable
+	collisionYes  widget.Clickable
+	collisionNo   widget.Clickable
+	connEnum      widget.Enum        // connection choice: "context" for the context pull-down, "url" for the URL row
+	connCtx       string             // context chosen in the pull-down (seeded from --context or the CLI's selected context)
+	connDropOpen  bool               // whether the context pull-down list is expanded
+	connDropBtn   widget.Clickable   // the pull-down button itself
+	connOptBtns   []widget.Clickable // one per context row in the expanded pull-down
+	connURLEd     widget.Editor      // NATS URL entry (pre-set to the demo server or --server)
+	connURLSeeded bool               // swallow the ChangeEvent queued by the constructor's SetText (it isn't a user edit)
+	connList      widget.List        // scrollable pull-down option list
+	connCheckBtn  widget.Clickable   // "Check connection" (connect + ping, no side effects)
 
 	createBtn  widget.Clickable
 	modeEnum   widget.Enum
@@ -217,13 +223,14 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 const DefaultNATSURL = "nats://demo.nats.io:4222"
 
 // NewWithPicker builds the App for the single combined login screen: name
-// entry plus a CONNECT TO section (one radio per known NATS CLI context plus a
-// NATS URL entry). The app dials NATS itself when the player hits Play, and
-// quitting the lobby returns to this same screen (disconnected). CLI flags
-// only seed the picker's defaults: --server pre-fills the URL field and makes
-// the URL option the starting choice; --context preselects that context radio
-// (added to the list if it isn't among the discovered ones); --user/--password
-// ride along in connCfg and apply to URL connects.
+// entry plus a CONNECT TO section (a "Context:" pull-down over the known NATS
+// CLI contexts plus a NATS URL entry). The app dials NATS itself when the
+// player hits Play, and quitting the lobby returns to this same screen
+// (disconnected). CLI flags only seed the picker's defaults: --server
+// pre-fills the URL field and makes the URL option the starting choice;
+// --context presets the pull-down (added to the list if it isn't among the
+// discovered ones); --user/--password ride along in connCfg and apply to URL
+// connects.
 func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	a := New(nil, nil)
 	a.needConn = true
@@ -233,10 +240,14 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	a.connURLEd.SingleLine = true
 	a.connURLEd.Submit = true
 	a.connURLEd.SetText(DefaultNATSURL)
+	a.connURLSeeded = true // the SetText above queues a ChangeEvent; don't let it pick the URL option
 	a.connList.Axis = layout.Vertical
 
 	// Default choice precedence: --server, then --context, then the CLI's
-	// currently selected context, then the always-available URL option.
+	// currently selected context, then the always-available URL option. The
+	// pull-down itself is preset to --context / the CLI's selected context
+	// (falling back to the first known context) whichever option starts out.
+	a.connCtx = selected
 	switch {
 	case cfg.NATSURL != "":
 		a.connURLEd.SetText(cfg.NATSURL)
@@ -246,12 +257,17 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 			a.connContexts = append(a.connContexts, cfg.NATSContext)
 			sort.Strings(a.connContexts)
 		}
-		a.connEnum.Value = "ctx:" + cfg.NATSContext
+		a.connCtx = cfg.NATSContext
+		a.connEnum.Value = "context"
 	case selected != "":
-		a.connEnum.Value = "ctx:" + selected
+		a.connEnum.Value = "context"
 	default:
 		a.connEnum.Value = "url"
 	}
+	if a.connCtx == "" && len(a.connContexts) > 0 {
+		a.connCtx = a.connContexts[0]
+	}
+	a.connOptBtns = make([]widget.Clickable, len(a.connContexts))
 	return a
 }
 

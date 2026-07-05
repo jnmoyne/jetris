@@ -2014,6 +2014,18 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   a display-only JSON syntax colorizer rendered in the Go Mono face.
 - `brand.go` — the nats.io "N" logo (`nats-icon.png`, embedded via `go:embed`,
   decoded once) and `lobbyBanner`, the branding strip across the top of the lobby.
+- `fireworks.go` — the victory fireworks overlay: `newFireworksShow` (rolled once in
+  `pumpEngine` when `UpdateGameOver{Won: true}` arrives for a competitive/teams win),
+  `fireworksOverlay` (a paint-only full-screen `layout.Stack` layer over the game
+  screen; each frame is a pure function of `gtx.Now` in the countdown/CAS-flash
+  idiom, drawn at elapsed time modulo the ~8 s `cycle` and kept animating via
+  `invalidate()` — the show loops until dropped), and `fwLogoPoints`, which
+  samples the embedded `nats-icon.png` on a 22×22 grid — with per-particle
+  radial scatter velocities — so every rocket explodes into a small particle
+  NATS "N" logo that pops in, holds, then splits into its small squares and
+  flies apart in all directions, the blocks shrinking away rather than fading
+  in place (`drawLogoBurst`, phases split at `fwScatterStart`). Cleared in
+  `startGameScreen`/`returnToLobby`, which is what ends the show.
 
 **Lobby screen.** Player sidebar, game list (with a "Spectate" button on in-progress
 games), chat (lobby-scoped lines plus a message editor — per-game messages are
@@ -2401,8 +2413,9 @@ Jetricks never connects at startup: the window opens immediately and the ONE
 login screen combines name entry with a CONNECT TO chooser (contexts + URL).
 `--server`/`--context` only seed the chooser's defaults — `--server` selects
 the URL option and replaces the default URL text with its value; `--context`
-preselects that context radio (appended to the list if the lister didn't find
-it). Quitting the lobby disconnects and returns to this same screen.
+picks the context option with its pull-down preset to that context (appended
+to the list if the lister didn't find it). Quitting the lobby disconnects and
+returns to this same screen.
 
 **internal/nats:**
 - `contexts.go` — `ListContexts() (names, selected, err)`: enumerates
@@ -2423,11 +2436,15 @@ shutdown calls `App.DrainConn()` (nil-safe) for the app-owned connection.
 
 **internal/nativeui:** `NewWithPicker` (app.go) starts the App disconnected
 and seeds the chooser from the flags (precedence: `--server` → URL option
-with that value; `--context` → that radio, appended if undiscovered; CLI's
-selected context; else URL with `DefaultNATSURL` = `nats://demo.nats.io:4222`).
-`connSection` (login.go) renders the chooser (scroll-capped context radio
-list + URL radio/editor row + Check connection row); `pickerConfig` resolves
-the choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
+with that value; `--context` → the context option with the pull-down preset
+to it, appended if undiscovered; CLI's selected context; else URL with
+`DefaultNATSURL` = `nats://demo.nats.io:4222`; the pull-down's `connCtx`
+falls back to the first known context). `connSection` (login.go) renders the
+chooser (a "Context:" radio + pull-down button `connDropButton` that expands
+`connDropList`, a scroll-capped clickable context list; a URL radio/editor
+row — the constructor's `SetText` ChangeEvent is swallowed once via
+`connURLSeeded` so it can't steal the default; and the Check connection
+row); `pickerConfig` resolves the choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
 connection left from a previous attempt, then runs `Bootstrap` (15 s cap) off
 the UI goroutine — failure lands on `loginErr` for retry, success stores
 `a.nc/js/kv` (App-owned; `teardown`/`DrainConn` drain it) and falls into the

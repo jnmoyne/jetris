@@ -37,6 +37,7 @@ type gameView struct {
 	players, readyPlayer []lobby.PlayerSummary
 	flash                map[[2]int]time.Time
 	flashActive          bool
+	fireworks            *fireworksShow // nil unless this player/team won (competitive/teams)
 }
 
 func (a *App) snapshotGame(now time.Time) gameView {
@@ -66,6 +67,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		readyPlayer: append([]lobby.PlayerSummary(nil), a.readyPlayers...),
 		flash:       fc,
 		flashActive: len(fc) > 0,
+		fireworks:   a.fireworks,
 	}
 }
 
@@ -107,6 +109,9 @@ func (a *App) layoutGame(gtx C) D {
 	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
 		a.invalidate() // keep animating the countdown pop until it settles
 	}
+	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
+		a.invalidate() // keep the victory fireworks animating until the show ends
+	}
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
 	// message tap (recordStreamMsg runs on the engine's consumer goroutines).
@@ -146,7 +151,16 @@ func (a *App) layoutGame(gtx C) D {
 	if showMsgs {
 		children = append(children, layout.Rigid(a.natsMsgPanel))
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	root := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
+	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
+		// Victory fireworks paint over the whole game screen; pure paint ops,
+		// so clicks and typing still reach the widgets underneath.
+		return layout.Stack{}.Layout(gtx,
+			layout.Stacked(root),
+			layout.Expanded(func(gtx C) D { return fireworksOverlay(gtx, view.fireworks) }),
+		)
+	}
+	return root(gtx)
 }
 
 // handleGameChatSubmit dispatches the game screen's chat input. canType gates

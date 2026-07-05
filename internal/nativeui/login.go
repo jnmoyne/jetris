@@ -33,8 +33,15 @@ func (a *App) layoutLogin(gtx C) D {
 		case widget.SubmitEvent:
 			submitted = true
 		case widget.ChangeEvent:
-			// Typing a URL implies choosing the URL option.
-			a.connEnum.Value = "url"
+			// Typing a URL implies choosing the URL option — but the
+			// constructor's programmatic SetText also queues one ChangeEvent
+			// on the first frame, and that must not override the context
+			// default.
+			if a.connURLSeeded {
+				a.connURLSeeded = false
+			} else {
+				a.connEnum.Value = "url"
+			}
 		}
 	}
 
@@ -133,9 +140,10 @@ func (a *App) submitLogin() {
 }
 
 // pickerConfig resolves the current CONNECT TO choice into a config: the URL
-// field when the URL radio is active (errors when empty), otherwise the chosen
-// context name. The base is connCfg, so --user/--password flags carry through
-// to URL connects. Runs on the UI goroutine (reads widgets).
+// field when the URL radio is active (errors when empty), otherwise the
+// context chosen in the pull-down. The base is connCfg, so --user/--password
+// flags carry through to URL connects. Runs on the UI goroutine (reads
+// widgets).
 func (a *App) pickerConfig() (config.Config, error) {
 	cfg := a.connCfg
 	cfg.NATSURL, cfg.NATSContext = "", ""
@@ -145,7 +153,10 @@ func (a *App) pickerConfig() (config.Config, error) {
 			return cfg, errors.New("enter a NATS URL")
 		}
 	} else {
-		cfg.NATSContext = strings.TrimPrefix(a.connEnum.Value, "ctx:")
+		if a.connCtx == "" {
+			return cfg, errors.New("no NATS context selected")
+		}
+		cfg.NATSContext = a.connCtx
 	}
 	return cfg, nil
 }
@@ -216,36 +227,53 @@ func (a *App) loginCollisionContent(gtx C) D {
 }
 
 // connSection renders the CONNECT TO chooser shown while the app has not yet
-// connected (launched without --server/--context): one radio per known NATS
-// CLI context — the CLI's currently selected context is labeled and picked by
-// default — plus an always-present "NATS URL" radio with an editable URL
-// pre-set to the demo server. Long context lists scroll inside a capped box.
+// connected (launched without --server/--context): a "Context:" radio with a
+// pull-down button over the known NATS CLI contexts — preset to --context or
+// the CLI's currently selected context — plus an always-present "NATS URL"
+// radio with an editable URL pre-set to the demo server. Opening the
+// pull-down expands a scroll-capped option list under the button; picking a
+// row (or just touching the pull-down) also selects the context radio, the
+// same way typing a URL selects the URL radio.
 func (a *App) connSection(gtx C) D {
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	if a.connDropBtn.Clicked(gtx) {
+		a.connDropOpen = !a.connDropOpen
+		a.connEnum.Value = "context" // touching the pull-down implies choosing the context option
+	}
+	for i := range a.connOptBtns {
+		if a.connOptBtns[i].Clicked(gtx) {
+			a.connCtx = a.connContexts[i]
+			a.connEnum.Value = "context"
+			a.connDropOpen = false
+		}
+	}
+
+	children := []layout.FlexChild{
 		layout.Rigid(a.header("CONNECT TO")),
 		layout.Rigid(spacer(4)),
-		layout.Rigid(func(gtx C) D {
-			if len(a.connContexts) == 0 {
-				return D{}
-			}
-			return bordered(gtx, func(gtx C) D {
-				if max := gtx.Dp(180); gtx.Constraints.Max.Y > max {
-					gtx.Constraints.Max.Y = max
-				}
-				gtx.Constraints.Min.Y = 0
-				return material.List(a.th, &a.connList).Layout(gtx, len(a.connContexts), func(gtx C, i int) D {
-					name := a.connContexts[i]
-					label := "context: " + name
-					if name == a.connSelected {
-						label += " (selected)"
-					}
-					rb := material.RadioButton(a.th, &a.connEnum, "ctx:"+name, label)
+	}
+	if len(a.connContexts) > 0 {
+		children = append(children, layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					rb := material.RadioButton(a.th, &a.connEnum, "context", "Context:")
 					rb.Color = colFg
 					return rb.Layout(gtx)
-				})
-			})
-		}),
-		layout.Rigid(spacer(6)),
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+				}),
+				layout.Flexed(1, a.connDropButton),
+			)
+		}))
+		if a.connDropOpen {
+			children = append(children,
+				layout.Rigid(spacer(4)),
+				layout.Rigid(a.connDropList),
+			)
+		}
+		children = append(children, layout.Rigid(spacer(6)))
+	}
+	children = append(children,
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
@@ -264,6 +292,55 @@ func (a *App) connSection(gtx C) D {
 		layout.Rigid(spacer(8)),
 		layout.Rigid(a.connCheckRow),
 	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// connDropButton is the collapsed pull-down: an editor-style bordered box
+// holding the chosen context name and a drop arrow (flipped while open).
+func (a *App) connDropButton(gtx C) D {
+	return material.Clickable(gtx, &a.connDropBtn, func(gtx C) D {
+		return widget.Border{Color: colMuted, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				arrow := "▼"
+				if a.connDropOpen {
+					arrow = "▲"
+				}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, a.body(a.connCtx, colFg)),
+					layout.Rigid(a.body(arrow, colAccent)),
+				)
+			})
+		})
+	})
+}
+
+// connDropList is the expanded pull-down: one clickable row per known
+// context, scrolling inside a capped box. The CLI's currently selected
+// context is marked "(selected)" and the pull-down's current choice is
+// highlighted in the accent color.
+func (a *App) connDropList(gtx C) D {
+	return bordered(gtx, func(gtx C) D {
+		if max := gtx.Dp(180); gtx.Constraints.Max.Y > max {
+			gtx.Constraints.Max.Y = max
+		}
+		gtx.Constraints.Min.Y = 0
+		return material.List(a.th, &a.connList).Layout(gtx, len(a.connContexts), func(gtx C, i int) D {
+			name := a.connContexts[i]
+			label := name
+			if name == a.connSelected {
+				label += " (selected)"
+			}
+			col := colFg
+			if name == a.connCtx {
+				col = colAccent
+			}
+			return material.Clickable(gtx, &a.connOptBtns[i], func(gtx C) D {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, a.body(label, col))
+			})
+		})
+	})
 }
 
 // connCheckRow renders the "Check connection" button and, next to it, the last

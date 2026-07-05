@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"jetricks/internal/config"
 	"jetricks/internal/engine"
 	"jetricks/internal/lobby"
 )
@@ -40,6 +41,14 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 			case engine.UpdateGameOver:
 				a.gameOver = true
 				a.won = u.Won
+				// A competitive or teams win earns a fireworks show. Teams
+				// re-emits Won:true to already-eliminated members of the
+				// winning team, so their screens celebrate too.
+				if u.Won {
+					if gm := e.GameMode(); gm == config.ModeCompetitive || gm == config.ModeTeams {
+						a.fireworks = newFireworksShow(time.Now())
+					}
+				}
 			case engine.UpdateCASFlash:
 				now := time.Now()
 				for _, rc := range u.FlashCells {

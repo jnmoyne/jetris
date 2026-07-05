@@ -256,6 +256,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.countdown = -1
 	a.gameOver = false
 	a.won = false
+	a.fireworks = nil
 	a.myReady = false
 	a.flash = map[[2]int]time.Time{}
 	a.msgLog = nil
@@ -313,6 +314,7 @@ func (a *App) returnToLobby() {
 	a.engCancel = nil
 	a.gameOver = false
 	a.won = false
+	a.fireworks = nil
 	a.countdown = -1
 	a.score = 0
 	a.level = 0

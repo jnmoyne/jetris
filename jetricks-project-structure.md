@@ -1841,6 +1841,10 @@ These are the only two orbit.go modules used (`natsext` comes in as an indirect 
 
 The `internal/testutil` package (`nats.go`) provides helpers for spinning up an **embedded** NATS server for integration tests. Tests run against that real server rather than mocking NATS behind interfaces.
 
+### Visual snapshots (opt-in, need a GPU)
+
+`internal/nativeui` has three snapshot suites, all skipped unless `FW_SNAPSHOT_DIR` is set: `TestPickerSnapshots` (the login context pull-down, closed and open), `TestScreenSnapshots` (login/lobby/game screens plus a hand-built sample board — the 8-bit look verification), and `TestCaptureREADMEScreenshots` (renders the README's screenshots from a **real** 2v2 teams game running against an embedded JetStream server — four player engines plus a spectator, prefilled stacks, live gravity — at 2x resolution via a headless GPU window).
+
 ### End-to-end
 
 Two engine instances running against a shared NATS server, simulating a competitive game. Assert that line clears on one side produce shrink events on the other, that the CAS mechanism correctly serialises simultaneous moves, and that the archive sequence runs correctly at game end (record published, then the game stream deleted — normal game end deletes the stream rather than sealing it).

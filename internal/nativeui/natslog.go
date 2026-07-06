@@ -25,11 +25,11 @@ const msgLogCap = 200
 // msgPanelHeight is the height of the bottom message strip.
 const msgPanelHeight = 170
 
-// JSON syntax colors for the panel payloads (keys blue, strings green — a nod
-// to the NATS logo — numbers gold, true/false/null orange, punctuation muted).
+// JSON syntax colors for the panel payloads (keys NATS blue, strings NATS
+// green, numbers gold, true/false/null orange, punctuation muted).
 var (
-	colJSONKey = colorN{R: 0x27, G: 0xaa, B: 0xe1, A: 0xff}
-	colJSONStr = colorN{R: 0x8d, G: 0xc6, B: 0x3f, A: 0xff}
+	colJSONKey = colAccent
+	colJSONStr = colNATSGreen
 	colJSONNum = colGold
 	colJSONLit = colOrange
 )

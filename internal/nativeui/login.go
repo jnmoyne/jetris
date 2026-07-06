@@ -93,9 +93,14 @@ func (a *App) layoutLogin(gtx C) D {
 		gtx.Constraints.Min.X = gtx.Dp(440)
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
-				t := material.H3(a.th, "JETRICKS")
-				t.Color = colAccent
-				return t.Layout(gtx)
+				// The title flanked by NATS "N" logos, arcade-marquee style.
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+					layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(14)}.Layout(gtx) }),
+					layout.Rigid(a.pixel(unit.Sp(28), "JETRICKS", colAccent).Layout),
+					layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(14)}.Layout(gtx) }),
+					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+				)
 			}),
 			layout.Rigid(spacer(16)),
 			layout.Rigid(func(gtx C) D {
@@ -103,6 +108,14 @@ func (a *App) layoutLogin(gtx C) D {
 					return a.loginCollisionContent(gtx)
 				}
 				return a.loginNormalContent(gtx, loggingIn, loginErr)
+			}),
+			layout.Rigid(spacer(20)),
+			layout.Rigid(func(gtx C) D {
+				// Branding tagline at the foot of the login card.
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.pixel(unit.Sp(9), "peer to peer · made with ", colMuted).Layout),
+					layout.Rigid(a.natsTag(18, 9)),
+				)
 			}),
 		)
 	})
@@ -186,8 +199,7 @@ func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
 			if loggingIn {
 				label = "Connecting…"
 			}
-			btn := material.Button(a.th, &a.loginBtn, label)
-			return btn.Layout(gtx)
+			return a.primaryButton(gtx, &a.loginBtn, label)
 		}),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(func(gtx C) D {
@@ -216,7 +228,7 @@ func (a *App) loginCollisionContent(gtx C) D {
 		layout.Rigid(spacer(12)),
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{}.Layout(gtx,
-				layout.Rigid(material.Button(a.th, &a.collisionYes, "Yes, join").Layout),
+				layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.collisionYes, "Yes, join") }),
 				layout.Rigid(spacer(10)),
 				layout.Rigid(func(gtx C) D {
 					return a.secondaryButton(gtx, &a.collisionNo, "Cancel")
@@ -299,7 +311,7 @@ func (a *App) connSection(gtx C) D {
 // holding the chosen context name and a drop arrow (flipped while open).
 func (a *App) connDropButton(gtx C) D {
 	return material.Clickable(gtx, &a.connDropBtn, func(gtx C) D {
-		return widget.Border{Color: colMuted, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return widget.Border{Color: colBorder, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
 				gtx.Constraints.Min.X = gtx.Constraints.Max.X
 				arrow := "▼"
@@ -380,12 +392,14 @@ func (a *App) connCheckRow(gtx C) D {
 
 // editorBox draws a bordered, padded box around a single-line editor.
 func (a *App) editorBox(gtx C, ed *widget.Editor, hint string) D {
-	return widget.Border{Color: colMuted, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-		return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
-			e := material.Editor(a.th, ed, hint)
-			e.Color = colFg
-			e.HintColor = colMuted
-			return e.Layout(gtx)
+	return widget.Border{Color: colBorder, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+		return background(gtx, colPanel, func(gtx C) D {
+			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+				e := material.Editor(a.th, ed, hint)
+				e.Color = colFg
+				e.HintColor = colMuted
+				return e.Layout(gtx)
+			})
 		})
 	})
 }

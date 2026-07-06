@@ -7,12 +7,10 @@ import (
 	_ "image/png" // decoder for the embedded logo
 	"sync"
 
-	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/op/paint"
 	"gioui.org/unit"
 	"gioui.org/widget"
-	"gioui.org/widget/material"
 )
 
 // natsIconPNG is the official nats.io "N" logo (https://nats.io).
@@ -50,8 +48,22 @@ func natsLogo(gtx C, size unit.Dp) D {
 	return widget.Image{Src: src, Fit: widget.Contain}.Layout(gtx)
 }
 
-// lobbyBanner is the branding strip across the top of the lobby screen:
-// the NATS "N" logo flanking "Jetricks: peer to peer and made with NATS.io".
+// natsTag renders the inline NATS branding chip — the "N" logo followed by
+// "NATS.io" in the pixel face — reused across the login screen, the game HUD,
+// and anywhere else the branding belongs.
+func (a *App) natsTag(size unit.Dp, sp unit.Sp) layout.Widget {
+	return func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return natsLogo(gtx, size) }),
+			layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx) }),
+			layout.Rigid(a.pixel(sp, "NATS.io", colAccent).Layout),
+		)
+	}
+}
+
+// lobbyBanner is the branding strip across the top of the lobby (and archive)
+// screen: the NATS "N" logo flanking "JETRICKS: peer to peer and made with
+// NATS.io".
 func (a *App) lobbyBanner(gtx C) D {
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
 	return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
@@ -59,17 +71,8 @@ func (a *App) lobbyBanner(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
 				layout.Rigid(spacer(10)),
-				layout.Rigid(func(gtx C) D {
-					l := material.H6(a.th, "Jetricks: peer to peer and made with ")
-					l.Color = colFg
-					return l.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					l := material.H6(a.th, "NATS.io")
-					l.Color = colAccent
-					l.Font.Weight = font.Bold
-					return l.Layout(gtx)
-				}),
+				layout.Rigid(a.pixel(unit.Sp(12), "JETRICKS: peer to peer and made with ", colFg).Layout),
+				layout.Rigid(a.pixel(unit.Sp(12), "NATS.io", colAccent).Layout),
 				layout.Rigid(spacer(10)),
 				layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
 			)

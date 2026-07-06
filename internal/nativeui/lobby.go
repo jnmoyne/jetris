@@ -139,7 +139,7 @@ func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.Chat
 					return a.editorBox(gtx, &a.chatEd, "Message…")
 				}),
 				layout.Rigid(spacer(6)),
-				layout.Rigid(material.Button(a.th, &a.chatBtn, "Send").Layout),
+				layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.chatBtn, "Send") }),
 			)
 		}),
 	)
@@ -150,9 +150,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D {
-					t := material.H6(a.th, "Lobby — "+playerName)
-					t.Color = colFg
-					return t.Layout(gtx)
+					return a.pixel(unit.Sp(13), "LOBBY — "+playerName, colFg).Layout(gtx)
 				}),
 				layout.Rigid(func(gtx C) D {
 					return a.secondaryButton(gtx, &a.quitBtn, "Quit")
@@ -362,7 +360,7 @@ func (a *App) createRow(gtx C) D {
 			return a.editorBox(gtx, &a.countEd, "2")
 		}),
 		layout.Rigid(spacer(10)),
-		layout.Rigid(material.Button(a.th, &a.createBtn, "Create Game").Layout),
+		layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.createBtn, "Create Game") }),
 	)
 }
 
@@ -430,7 +428,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing) D {
 						}),
 					)
 				}
-				return material.Button(a.th, &btns.join, "Join").Layout(gtx)
+				return a.primaryButton(gtx, &btns.join, "Join")
 			}),
 			layout.Rigid(func(gtx C) D {
 				if canSpectate {
@@ -452,7 +450,7 @@ func (a *App) teamJoinButton(gtx C, btn *widget.Clickable, g lobby.GameListing, 
 		return D{}
 	}
 	label := fmt.Sprintf("Join %s (%d/%d)", teamName(team), n, g.TeamSize)
-	return material.Button(a.th, btn, label).Layout(gtx)
+	return a.primaryButton(gtx, btn, label)
 }
 
 // teamName renders a team index as its display letter.
@@ -494,17 +492,35 @@ func (a *App) gameButtons(id string) *gameRowBtns {
 
 // --- small layout helpers ---
 
+// pixelize restyles a material button into the 8-bit chrome: pixel face,
+// square corners, and a smaller size (the pixel face runs large per point).
+func pixelize(b material.ButtonStyle) material.ButtonStyle {
+	b.CornerRadius = 0
+	b.Font.Typeface = pixelTypeface
+	b.TextSize = unit.Sp(11)
+	return b
+}
+
+// primaryButton renders a filled-accent action (Join, Ready, Create Game,
+// Send) in the 8-bit chrome: pixel face, square corners, hard offset shadow.
+func (a *App) primaryButton(gtx C, btn *widget.Clickable, label string) D {
+	return hardShadow(gtx, func(gtx C) D {
+		return pixelize(material.Button(a.th, btn, label)).Layout(gtx)
+	})
+}
+
 // secondaryButton renders a non-primary action (Spectate, Back to Lobby) so it
-// reads as clearly clickable: accent-colored label and border over the panel
-// background, visually distinct from the filled-accent primary buttons (Join,
-// Ready) without blending into the near-black window background the way a bare
-// colPanel fill did.
+// reads as clearly clickable: accent-colored pixel label and a chunky accent
+// border over the panel background, visually distinct from the filled-accent
+// primary buttons without blending into the dark window background.
 func (a *App) secondaryButton(gtx C, btn *widget.Clickable, label string) D {
-	return widget.Border{Color: colAccent, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-		b := material.Button(a.th, btn, label)
-		b.Background = colPanel
-		b.Color = colAccent
-		return b.Layout(gtx)
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colAccent, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+			b := pixelize(material.Button(a.th, btn, label))
+			b.Background = colPanel
+			b.Color = colAccent
+			return b.Layout(gtx)
+		})
 	})
 }
 
@@ -513,11 +529,11 @@ func (a *App) secondaryButton(gtx C, btn *widget.Clickable, label string) D {
 // its final playfield. It mirrors secondaryButton's styling but with tighter
 // padding and a smaller label so it fits a list row.
 func (a *App) viewBoardButton(gtx C, btn *widget.Clickable) D {
-	return widget.Border{Color: colAccent, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-		b := material.Button(a.th, btn, "View board")
+	return widget.Border{Color: colAccent, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+		b := pixelize(material.Button(a.th, btn, "View board"))
 		b.Background = colPanel
 		b.Color = colAccent
-		b.TextSize = unit.Sp(13)
+		b.TextSize = unit.Sp(9)
 		b.Inset = layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(10), Right: unit.Dp(10)}
 		return b.Layout(gtx)
 	})
@@ -525,9 +541,8 @@ func (a *App) viewBoardButton(gtx C, btn *widget.Clickable) D {
 
 func (a *App) header(txt string) layout.Widget {
 	return func(gtx C) D {
-		l := material.Body2(a.th, txt)
-		l.Color = colAccent
-		return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, l.Layout)
+		l := a.pixel(unit.Sp(10), txt, colAccent)
+		return layout.Inset{Bottom: unit.Dp(5)}.Layout(gtx, l.Layout)
 	}
 }
 
@@ -540,7 +555,7 @@ func (a *App) body(txt string, c colorN) layout.Widget {
 }
 
 func bordered(gtx C, w layout.Widget) D {
-	return widget.Border{Color: colPanel, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+	return widget.Border{Color: colBorder, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 		return layout.UniformInset(unit.Dp(4)).Layout(gtx, w)
 	})
 }

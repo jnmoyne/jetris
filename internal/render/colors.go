@@ -128,17 +128,25 @@ func appearanceHex(c game.Cell, localPlayerIdx int, showOutline bool) (fill, out
 // CellAppearance is the resolved visual of one square for native rendering.
 // OutlineW is 1 (grid line) or 2 (ownership/active outline). The native drawer
 // fills the cell with Fill, then strokes a 1px-inset border of width OutlineW
-// in Outline.
+// in Outline. Bevel marks filled cells (active, locked, adversarial): the
+// drawer shades them with the 8-bit top-left highlight / bottom-right shadow;
+// empty cells stay flat.
 type CellAppearance struct {
 	Fill     color.NRGBA
 	Outline  color.NRGBA
 	OutlineW int
+	Bevel    bool
 }
 
 // CellStyle is the canonical appearance for native rendering.
 func CellStyle(c game.Cell, localPlayerIdx int, showOutline bool) CellAppearance {
 	fill, outline, outlineW := appearanceHex(c, localPlayerIdx, showOutline)
-	return CellAppearance{Fill: nrgbaFromHex(fill), Outline: nrgbaFromHex(outline), OutlineW: outlineW}
+	return CellAppearance{
+		Fill:     nrgbaFromHex(fill),
+		Outline:  nrgbaFromHex(outline),
+		OutlineW: outlineW,
+		Bevel:    c.Active || c.Occupied || c.Adversarial,
+	}
 }
 
 // PlayerColorRGBA returns the player outline color as an NRGBA (cycled).

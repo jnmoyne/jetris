@@ -20,13 +20,6 @@ func fillRect(ops *op.Ops, r image.Rectangle, c color.NRGBA) {
 	paint.Fill(ops, c)
 }
 
-// fillRRect paints r with c using rounded corners of the given radius (pass
-// half the height for a pill shape).
-func fillRRect(ops *op.Ops, r image.Rectangle, radius int, c color.NRGBA) {
-	defer clip.RRect{Rect: r, NW: radius, NE: radius, SW: radius, SE: radius}.Push(ops).Pop()
-	paint.Fill(ops, c)
-}
-
 // rainbow returns the CAS-flash border color for a given progress through the
 // flash, reproducing the web's 7-stop keyframe palette.
 func rainbow(elapsed time.Duration) color.NRGBA {
@@ -75,34 +68,71 @@ func withAlpha(c color.NRGBA, a float64) color.NRGBA {
 	return c
 }
 
+// lighten lerps c toward white by t (0..1).
+func lighten(c color.NRGBA, t float64) color.NRGBA {
+	return lerpColor(c, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: c.A}, t)
+}
+
+// darken lerps c toward black by t (0..1).
+func darken(c color.NRGBA, t float64) color.NRGBA {
+	return lerpColor(c, color.NRGBA{A: c.A}, t)
+}
+
 // drawCell paints a single board square: the whole cell is filled with the
 // outline color, then an inner rectangle (inset by the outline width) is filled
 // with the cell color — giving a colored frame around the fill, matching the
-// web's outline-offset:-1px look.
-func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW int) {
+// web's outline-offset:-1px look. With bevel set (filled cells) the inner fill
+// gets the 8-bit block shading: a lighter strip along the top and left edges, a
+// darker strip along the bottom and right, and a gloss pixel in the top-left.
+func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW int, bevel bool) {
 	fillRect(ops, image.Rect(x, y, x+size, y+size), outline)
 	if outlineW < 0 {
 		outlineW = 0
 	}
 	inner := image.Rect(x+outlineW, y+outlineW, x+size-outlineW, y+size-outlineW)
-	if inner.Dx() > 0 && inner.Dy() > 0 {
-		fillRect(ops, inner, fill)
+	if inner.Dx() <= 0 || inner.Dy() <= 0 {
+		return
 	}
+	fillRect(ops, inner, fill)
+	bw := size / 8
+	if bw < 1 {
+		bw = 1
+	}
+	if !bevel || inner.Dx() <= 3*bw || inner.Dy() <= 3*bw {
+		return
+	}
+	hi, lo := lighten(fill, 0.4), darken(fill, 0.45)
+	// Lit from the upper-left: top + left highlight, bottom + right shadow.
+	fillRect(ops, image.Rect(inner.Min.X, inner.Min.Y, inner.Max.X-bw, inner.Min.Y+bw), hi)
+	fillRect(ops, image.Rect(inner.Min.X, inner.Min.Y, inner.Min.X+bw, inner.Max.Y-bw), hi)
+	fillRect(ops, image.Rect(inner.Min.X+bw, inner.Max.Y-bw, inner.Max.X, inner.Max.Y), lo)
+	fillRect(ops, image.Rect(inner.Max.X-bw, inner.Min.Y+bw, inner.Max.X, inner.Max.Y), lo)
+	// Gloss pixel just inside the highlight corner.
+	fillRect(ops, image.Rect(inner.Min.X+bw, inner.Min.Y+bw, inner.Min.X+2*bw, inner.Min.Y+2*bw), lighten(fill, 0.75))
 }
 
 // drawBoard renders a playfield snapshot at the current transform origin and
-// returns its pixel dimensions. localIdx is the viewer's player index (-1 for
-// spectators). flash (may be nil) overlays a rainbow border on recently
-// CAS-rejected cells, keyed by absolute (row, col).
+// returns its pixel dimensions (cells plus the surrounding "well" frame).
+// localIdx is the viewer's player index (-1 for spectators). flash (may be
+// nil) overlays a rainbow border on recently CAS-rejected cells, keyed by
+// absolute (row, col).
 func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, flash map[[2]int]time.Time, now time.Time) D {
-	w := snap.Width * cellPx
-	h := (snap.Height - snap.VisibleStart) * cellPx
-	if h < 0 {
-		h = 0
+	fw := cellPx / 8 // chunky arcade-well frame around the playfield
+	if fw < 2 {
+		fw = 2
 	}
+	w := snap.Width*cellPx + 2*fw
+	h := (snap.Height-snap.VisibleStart)*cellPx + 2*fw
+	if h < 2*fw {
+		h = 2 * fw
+	}
+	fillRect(gtx.Ops, image.Rect(0, 0, w, fw), colBorder)
+	fillRect(gtx.Ops, image.Rect(0, h-fw, w, h), colBorder)
+	fillRect(gtx.Ops, image.Rect(0, 0, fw, h), colBorder)
+	fillRect(gtx.Ops, image.Rect(w-fw, 0, w, h), colBorder)
 	for r := snap.VisibleStart; r < snap.Height && r < len(snap.Rows); r++ {
 		row := snap.Rows[r]
-		y := (r - snap.VisibleStart) * cellPx
+		y := fw + (r-snap.VisibleStart)*cellPx
 		for c := 0; c < snap.Width && c < len(row.Cells); c++ {
 			ap := render.CellStyle(row.Cells[c], localIdx, showOutline)
 			outline, outlineW := ap.Outline, ap.OutlineW
@@ -113,10 +143,39 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 					}
 				}
 			}
-			drawCell(gtx.Ops, c*cellPx, y, cellPx, ap.Fill, outline, outlineW)
+			drawCell(gtx.Ops, fw+c*cellPx, y, cellPx, ap.Fill, outline, outlineW, ap.Bevel)
 		}
 	}
 	return D{Size: image.Pt(w, h)}
+}
+
+// scanlines draws the subtle CRT overlay across the whole window: one thin
+// dark line every few pixels. Paint-only and drawn last, so it dims chrome and
+// boards alike without intercepting input.
+func scanlines(gtx C) {
+	w, h := gtx.Constraints.Max.X, gtx.Constraints.Max.Y
+	step := gtx.Dp(3)
+	if step < 3 {
+		step = 3
+	}
+	th := step / 3
+	col := color.NRGBA{A: 0x12}
+	for y := 0; y < h; y += step {
+		fillRect(gtx.Ops, image.Rect(0, y, w, y+th), col)
+	}
+}
+
+// hardShadow lays w over a solid offset copy of its bounds — the chunky
+// "sticker" drop shadow of the 8-bit chrome. The shadow bleeds a few pixels
+// past the reported size; neighbors simply overlap it.
+func hardShadow(gtx C, w layout.Widget) D {
+	off := gtx.Dp(3)
+	macro := op.Record(gtx.Ops)
+	dims := w(gtx)
+	call := macro.Stop()
+	fillRect(gtx.Ops, image.Rect(off, off, dims.Size.X+off, dims.Size.Y+off), colShadow)
+	call.Add(gtx.Ops)
+	return dims
 }
 
 // boardWidget wraps drawBoard as a layout.Widget for placement in a Flex/Stack.

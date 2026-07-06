@@ -5,12 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"gioui.org/font/gofont"
 	"gioui.org/layout"
 	"gioui.org/op"
-	"gioui.org/text"
 	"gioui.org/unit"
-	"gioui.org/widget/material"
 
 	"jetricks/internal/config"
 	"jetricks/internal/engine"
@@ -21,8 +18,7 @@ import (
 // used by background goroutines, never by the layout code) and a real theme.
 func newTestApp() *App {
 	a := New(nil, nil)
-	a.th = material.NewTheme()
-	a.th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
+	a.th = newUITheme()
 	return a
 }
 

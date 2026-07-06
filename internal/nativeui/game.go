@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"gioui.org/font"
 	"gioui.org/io/event"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -231,7 +230,7 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, canType bool) D {
 					layout.Rigid(func(gtx C) D {
 						return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
 					}),
-					layout.Rigid(material.Button(a.th, &a.gameChatBtn, "Send").Layout),
+					layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
 				)
 			}),
 		)
@@ -270,9 +269,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
-			l := material.Body1(a.th, modeLabel)
-			l.Color = colAccent
-			return l.Layout(gtx)
+			return a.pixel(unit.Sp(11), modeLabel, colAccent).Layout(gtx)
 		}),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D { return a.legend(gtx, eng, view, gmode) }),
@@ -326,6 +323,8 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		layout.Rigid(func(gtx C) D {
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
 		}),
+		layout.Rigid(spacer(20)),
+		layout.Rigid(a.natsTag(22, 10)),
 	)
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
@@ -383,7 +382,7 @@ func (a *App) readyArea(gtx C, view gameView) D {
 		label = "NOT READY"
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(material.Button(a.th, &a.readyBtn, label).Layout),
+		layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.readyBtn, label) }),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(func(gtx C) D {
 			var rows []layout.FlexChild
@@ -404,22 +403,21 @@ func (a *App) readyArea(gtx C, view gameView) D {
 	)
 }
 
-// readyBadge renders a filled pill reading READY (green) or NOT READY (red) —
-// the per-player status shown while waiting for everyone to ready up.
+// readyBadge renders a filled square-cornered tag reading READY (green) or NOT
+// READY (red) — the per-player status shown while waiting for everyone to
+// ready up.
 func (a *App) readyBadge(ready bool) layout.Widget {
 	return func(gtx C) D {
 		txt, col := "NOT READY", colErr
 		if ready {
 			txt, col = "READY", colGo
 		}
-		l := material.Label(a.th, unit.Sp(11), txt)
-		l.Color = colBg
-		l.Font.Weight = font.Bold
-		inset := layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(8), Right: unit.Dp(8)}
+		l := a.pixel(unit.Sp(8), txt, colBg)
+		inset := layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(8), Right: unit.Dp(8)}
 		macro := op.Record(gtx.Ops)
 		dims := inset.Layout(gtx, l.Layout)
 		call := macro.Stop()
-		fillRRect(gtx.Ops, image.Rect(0, 0, dims.Size.X, dims.Size.Y), dims.Size.Y/2, col)
+		fillRect(gtx.Ops, image.Rect(0, 0, dims.Size.X, dims.Size.Y), col)
 		call.Add(gtx.Ops)
 		return dims
 	}
@@ -492,9 +490,7 @@ func (a *App) countdownOverlay(gtx C, view gameView) D {
 	scale := 0.4 + 0.6*easeOutBack(t)
 	alpha := clampF(t/0.3, 0, 1)
 
-	l := material.Label(a.th, unit.Sp(float32(countdownBaseSp*scale)), txt)
-	l.Color = withAlpha(col, alpha)
-	l.Font.Weight = font.Bold
+	l := a.pixel(unit.Sp(float32(countdownBaseSp*scale)), txt, withAlpha(col, alpha))
 	return l.Layout(gtx)
 }
 
@@ -602,67 +598,61 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam in
 	if teamPlaysOn {
 		title = "YOU'RE OUT"
 	}
-	return widget.Border{Color: colAccent, Width: unit.Dp(2), CornerRadius: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-		return background(gtx, colBg, func(gtx C) D {
-			return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
-				children := []layout.FlexChild{
-					layout.Rigid(func(gtx C) D {
-						l := material.H5(a.th, title)
-						l.Color = colFg
-						return l.Layout(gtx)
-					}),
-				}
-				var msg string
-				var c colorN
-				switch {
-				case teamPlaysOn:
-					msg, c = "Your team plays on", colMuted
-				case gmode == config.ModeTeams:
-					msg, c = "YOUR TEAM LOST", colErr
-					if won {
-						msg, c = "YOUR TEAM WON!", colAccent
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+			return background(gtx, colBg, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
+					children := []layout.FlexChild{
+						layout.Rigid(a.pixel(unit.Sp(18), title, colFg).Layout),
 					}
-				case gmode == config.ModeCompetitive:
-					msg, c = "YOU LOST", colErr
-					if won {
-						msg, c = "YOU WON!", colAccent
+					var msg string
+					var c colorN
+					switch {
+					case teamPlaysOn:
+						msg, c = "Your team plays on", colMuted
+					case gmode == config.ModeTeams:
+						msg, c = "YOUR TEAM LOST", colErr
+						if won {
+							msg, c = "YOUR TEAM WON!", colAccent
+						}
+					case gmode == config.ModeCompetitive:
+						msg, c = "YOU LOST", colErr
+						if won {
+							msg, c = "YOU WON!", colAccent
+						}
 					}
-				}
-				if msg != "" {
-					children = append(children, layout.Rigid(spacer(6)), layout.Rigid(func(gtx C) D {
-						l := material.H6(a.th, msg)
-						l.Color = c
-						return l.Layout(gtx)
+					if msg != "" {
+						children = append(children, layout.Rigid(spacer(10)), layout.Rigid(a.pixel(unit.Sp(12), msg, c).Layout))
+					}
+					// Final score: the shared total for cooperative, the player's own
+					// score for competitive, both team totals (own team first) for
+					// teams — while the team plays on these are the live totals.
+					var scoreLine string
+					switch gmode {
+					case config.ModeCooperative:
+						scoreLine = fmt.Sprintf("Score: %d (level %d)", view.score, view.level)
+					case config.ModeCompetitive:
+						scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
+					case config.ModeTeams:
+						if myTeam >= 0 && myTeam < config.TeamCount {
+							other := 1 - myTeam
+							scoreLine = fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
+								teamName(myTeam), view.teamScores[myTeam], view.teamLevels[myTeam],
+								teamName(other), view.teamScores[other], view.teamLevels[other])
+						}
+					}
+					if scoreLine != "" {
+						children = append(children, layout.Rigid(spacer(8)), layout.Rigid(func(gtx C) D {
+							l := material.Body1(a.th, scoreLine)
+							l.Color = colGold
+							return l.Layout(gtx)
+						}))
+					}
+					children = append(children, layout.Rigid(spacer(14)), layout.Rigid(func(gtx C) D {
+						return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
 					}))
-				}
-				// Final score: the shared total for cooperative, the player's own
-				// score for competitive, both team totals (own team first) for
-				// teams — while the team plays on these are the live totals.
-				var scoreLine string
-				switch gmode {
-				case config.ModeCooperative:
-					scoreLine = fmt.Sprintf("Score: %d (level %d)", view.score, view.level)
-				case config.ModeCompetitive:
-					scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
-				case config.ModeTeams:
-					if myTeam >= 0 && myTeam < config.TeamCount {
-						other := 1 - myTeam
-						scoreLine = fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
-							teamName(myTeam), view.teamScores[myTeam], view.teamLevels[myTeam],
-							teamName(other), view.teamScores[other], view.teamLevels[other])
-					}
-				}
-				if scoreLine != "" {
-					children = append(children, layout.Rigid(spacer(8)), layout.Rigid(func(gtx C) D {
-						l := material.Body1(a.th, scoreLine)
-						l.Color = colGold
-						return l.Layout(gtx)
-					}))
-				}
-				children = append(children, layout.Rigid(spacer(14)), layout.Rigid(func(gtx C) D {
-					return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
-				}))
-				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx, children...)
+					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx, children...)
+				})
 			})
 		})
 	})
@@ -678,18 +668,10 @@ func (a *App) hudStatText(label, val string) layout.Widget {
 
 func (a *App) hudStatColored(label, val string, valCol colorN) layout.Widget {
 	return func(gtx C) D {
-		return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					l := material.Body2(a.th, label+"  ")
-					l.Color = colMuted
-					return l.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					l := material.H6(a.th, val)
-					l.Color = valCol
-					return l.Layout(gtx)
-				}),
+				layout.Rigid(a.pixel(unit.Sp(9), label+"  ", colMuted).Layout),
+				layout.Rigid(a.pixel(unit.Sp(13), val, valCol).Layout),
 			)
 		})
 	}

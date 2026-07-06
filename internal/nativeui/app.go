@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"gioui.org/app"
-	"gioui.org/font/gofont"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/paint"
@@ -49,25 +48,33 @@ const (
 const flashDur = 600 * time.Millisecond
 
 // countdownAnimDur is the pop-in duration for each pre-game countdown number;
-// countdownBaseSp is the settled font size of the centered number.
+// countdownBaseSp is the settled font size of the centered number (drawn in
+// the pixel face, whose glyphs run much larger per point than the Go faces).
 const (
 	countdownAnimDur = 450 * time.Millisecond
-	countdownBaseSp  = 132.0
+	countdownBaseSp  = 96.0
 )
 
-// UI chrome colors (the board itself uses internal/render).
+// UI chrome colors (the board itself uses internal/render). The chrome is the
+// "modern 8-bit" theme: a dark blue-black backdrop with neon accents, chunky
+// square-cornered borders (colBorder), and hard offset shadows (colShadow).
+// The accent is the NATS brand blue, so the whole chrome carries the branding;
+// colNATSGreen is the logo's green, used for positive highlights.
 var (
-	colBg     = color.NRGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff}
-	colPanel  = color.NRGBA{R: 0x1c, G: 0x1c, B: 0x1c, A: 0xff}
-	colFg     = color.NRGBA{R: 0xe6, G: 0xe6, B: 0xe6, A: 0xff}
-	colMuted  = color.NRGBA{R: 0x88, G: 0x88, B: 0x88, A: 0xff}
-	colAccent = color.NRGBA{R: 0x00, G: 0xcc, B: 0xcc, A: 0xff}
-	colErr    = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
-	colGold   = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
-	colGo     = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
-	colWarn   = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
-	colOrange = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
-	colLobby  = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
+	colBg        = color.NRGBA{R: 0x0d, G: 0x0d, B: 0x16, A: 0xff}
+	colPanel     = color.NRGBA{R: 0x16, G: 0x16, B: 0x24, A: 0xff}
+	colBorder    = color.NRGBA{R: 0x2c, G: 0x2c, B: 0x44, A: 0xff} // panel frames
+	colShadow    = color.NRGBA{A: 0x8c}                            // hard offset shadow under buttons/dialogs
+	colFg        = color.NRGBA{R: 0xe6, G: 0xe6, B: 0xe6, A: 0xff}
+	colMuted     = color.NRGBA{R: 0x8a, G: 0x8a, B: 0x9e, A: 0xff}
+	colAccent    = color.NRGBA{R: 0x27, G: 0xaa, B: 0xe1, A: 0xff} // NATS brand blue
+	colNATSGreen = color.NRGBA{R: 0x8d, G: 0xc6, B: 0x3f, A: 0xff} // NATS brand green
+	colErr       = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
+	colGold      = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
+	colGo        = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
+	colWarn      = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
+	colOrange    = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
+	colLobby     = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
 )
 
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
@@ -287,6 +294,19 @@ func (a *App) DrainConn() {
 // login screen; false only for bare New(js, kv) apps (tests).
 func (a *App) pickerActive() bool { return a.needConn }
 
+// newUITheme builds the app's material theme: the 8-bit palette over a shaper
+// carrying the Go faces plus the pixel face. Shared by Run and the layout
+// tests so snapshots render exactly what the window shows.
+func newUITheme() *material.Theme {
+	th := material.NewTheme()
+	th.Shaper = text.NewShaper(text.WithCollection(uiFontCollection()))
+	th.Palette.Bg = colBg
+	th.Palette.Fg = colFg
+	th.Palette.ContrastBg = colAccent
+	th.Palette.ContrastFg = colBg
+	return th
+}
+
 // Run creates the window and pumps its event loop until the window is closed.
 // It must run on a goroutine other than the one that calls app.Main().
 func (a *App) Run(ctx context.Context) error {
@@ -294,12 +314,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.win = new(app.Window)
 	a.win.Option(app.Title("Jetricks"), app.Size(unit.Dp(1200), unit.Dp(820)))
 
-	a.th = material.NewTheme()
-	a.th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
-	a.th.Palette.Bg = colBg
-	a.th.Palette.Fg = colFg
-	a.th.Palette.ContrastBg = colAccent
-	a.th.Palette.ContrastFg = colBg
+	a.th = newUITheme()
 
 	var ops op.Ops
 	for {
@@ -317,17 +332,19 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) layout(gtx C) D {
 	paint.Fill(gtx.Ops, colBg)
+	var d D
 	switch a.getScreen() {
 	case screenLogin:
-		return a.layoutLogin(gtx)
+		d = a.layoutLogin(gtx)
 	case screenLobby:
-		return a.layoutLobby(gtx)
+		d = a.layoutLobby(gtx)
 	case screenGame:
-		return a.layoutGame(gtx)
+		d = a.layoutGame(gtx)
 	case screenArchive:
-		return a.layoutArchive(gtx)
+		d = a.layoutArchive(gtx)
 	}
-	return D{}
+	scanlines(gtx) // CRT overlay over the whole frame, screens and chrome alike
+	return d
 }
 
 // --- locked accessors ---

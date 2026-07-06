@@ -2001,7 +2001,19 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
 - `bridge.go` — `pumpEngine` / `pumpLobby`: drain `engine.Updates` / `lobby.Updates`, fold
   scalar state under a mutex, and call `window.Invalidate()`. No polling.
 - `login.go` / `lobby.go` / `game.go` — the three screens.
-- `board.go` — board drawing via `internal/render.CellStyle` (RGBA).
+- `board.go` — board drawing via `internal/render.CellStyle` (RGBA). `drawCell` shades
+  filled cells with the 8-bit bevel (lighter top/left strips, darker bottom/right,
+  a gloss pixel in the corner — `CellAppearance.Bevel` gates it so empty squares stay
+  flat), `drawBoard` surrounds every playfield with a chunky `colBorder` arcade-well
+  frame, `scanlines` is the subtle full-window CRT overlay painted last in
+  `App.layout`, and `hardShadow` is the offset "sticker" drop shadow under
+  buttons and dialogs.
+- `fonts.go` — the embedded "Press Start 2P" pixel face (`PressStart2P-Regular.ttf`,
+  SIL OFL 1.1 — license in `PressStart2P-OFL.txt`): `uiFontCollection()` (the Go faces
+  plus the pixel face under the `pixelTypeface` name, shared by `newUITheme` and the
+  layout tests) and the `a.pixel(size, txt, col)` label helper. The pixel face is the
+  display font — title, headers, buttons, HUD stats, badges, countdown, banner — while
+  body text (chat, lists, editors) stays in the Go faces for readability.
 - `input.go` — keyboard → engine moves. The board tag registers `key.FocusFilter` +
   `key.Filter{Focus: tag, …}` each frame and is focused with `key.FocusCmd`; ←/→ move,
   ↓ soft drop, ↑/X rotate CW, Z rotate CCW, Space hard drop.
@@ -2013,7 +2025,11 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   `natsMsgPanel` (fixed-height bottom strip, scroll-to-end list), and `jsonSpans`,
   a display-only JSON syntax colorizer rendered in the Go Mono face.
 - `brand.go` — the nats.io "N" logo (`nats-icon.png`, embedded via `go:embed`,
-  decoded once) and `lobbyBanner`, the branding strip across the top of the lobby.
+  decoded once), `lobbyBanner` (the branding strip across the top of the lobby and
+  archive screens), and `natsTag` (the inline "N"-logo + "NATS.io" chip reused on the
+  login screen's tagline and at the foot of the game HUD). NATS branding is deliberately
+  liberal: the chrome accent is the NATS brand blue and `colNATSGreen` is the logo's
+  green, so the brand colors run through headers, buttons, and borders everywhere.
 - `fireworks.go` — the victory fireworks overlay: `newFireworksShow` (rolled once in
   `pumpEngine` when `UpdateGameOver{Won: true}` arrives for a competitive/teams win),
   `fireworksOverlay` (a paint-only full-screen `layout.Stack` layer over the game
@@ -2051,8 +2067,9 @@ the `screenArchive` viewer (`archive_view.go`), which rebuilds the saved
 redraws the playfield exactly as it stood when that game ended — the single wide board
 for cooperative, one board per player (labeled by ID in player color) for competitive,
 and both team boards for teams. A "Back to Lobby" `secondaryButton` returns. A centered
-branding banner spans the top of the screen: the nats.io "N" logo flanking "Jetricks:
-peer to peer and made with NATS.io" (the "NATS.io" text in the accent color).
+branding banner spans the top of both the lobby and the archive screen: the nats.io "N"
+logo flanking "JETRICKS: peer to peer and made with NATS.io" in the pixel face (the
+"NATS.io" text in the NATS-blue accent).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
 messages" checkbox. While checked, a 170 dp monospace strip across the bottom of the
@@ -2070,21 +2087,35 @@ button, showing "Spectating" as the player status. The spectator's HUD keeps the
 "Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a
 spectator can leave at any time.
 
-**Secondary button style.** Non-primary actions — the lobby "Spectate" and "Quit"
-buttons, the in-game "Back to Lobby" button, and the login collision-dialog "Cancel"
-button — render via the `secondaryButton` helper: an accent
-(`colAccent`) label and 1 dp accent border over the `colPanel` background. This makes
-them read as clearly clickable instead of blending into the near-black window
-background, which a bare `colPanel` fill did (the buttons looked disabled even though
-they worked). Primary actions (Join, Ready) stay as the default filled-accent
-`material.Button`.
+**8-bit look and feel.** The whole UI is styled as "modern 8-bit": every label that
+functions as display type (title, section headers, buttons, HUD stats, ready badges,
+countdown, game-over dialog, branding banner) renders in the embedded "Press Start 2P"
+pixel face while body text stays in the Go faces; chrome corners are square everywhere
+(no rounded rects); panels and editors carry chunky 2 dp `colBorder` frames; buttons
+and the game-over dialog sit on `hardShadow`'s offset solid shadow; filled board cells
+get the classic bevel shading plus a corner gloss pixel; each playfield is wrapped in
+an arcade-well frame; and a subtle `scanlines` CRT overlay is painted over every frame.
+The palette is a dark blue-black (`colBg` #0d0d16, `colPanel` #16161a-ish) with the
+NATS brand blue (#27aae1) as the accent. The board's cell color math
+(`internal/render` blends over #111111) is unchanged.
+
+**Button styles.** Primary actions (Play, Join, Ready, Create Game, Send) render via
+`primaryButton`: the filled-accent `material.Button` restyled by `pixelize` (square
+corners, pixel face) over a hard shadow. Non-primary actions — the lobby "Spectate"
+and "Quit" buttons, the in-game "Back to Lobby" button, and the login collision-dialog
+"Cancel" button — render via the `secondaryButton` helper: an accent (`colAccent`)
+pixel-face label and 2 dp accent border over the `colPanel` background, also on a hard
+shadow. This makes them read as clearly clickable instead of blending into the dark
+window background.
 
 **Per-square rendering** (`internal/render`). Cell appearance is computed by a single
 helper, `render.CellStyle(cell, localPlayerIdx, showOutline)`, which is the one source
 of truth used by every render path (own board, spectator boards, compact opponent
-boards). It returns a `CellAppearance` (fill, outline color, outline width); the
-native drawer fills the cell with `Fill`, then strokes a 1px-inset border of width
-`OutlineW` in `Outline`. Fill is the tetromino's base color composited over the board
+boards). It returns a `CellAppearance` (fill, outline color, outline width, and a
+`Bevel` flag set for active/locked/adversarial cells); the
+native drawer fills the cell with `Fill`, strokes a 1px-inset border of width
+`OutlineW` in `Outline`, and — when `Bevel` is set — shades the fill with the 8-bit
+highlight/shadow bevel. Fill is the tetromino's base color composited over the board
 background (`blendHex(fg, "#111111", alpha)`; active ≈0.9, locked ≈0.7, adversarial
 ≈0.8) so opacity layering becomes a concrete color. Outline rules: own active piece →
 white 2px; spectator → per-player color on active/locked; other player's active

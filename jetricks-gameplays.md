@@ -179,6 +179,18 @@ with a thin grid-line outline, so literally every square has an outline.
 - **Locked cells:** dimmed piece color with a 2px per-player outline (non-adversarial)
 - **Spectator view:** Per-player colored outlines on every active and locked cell (P0=cyan #00ffff, P1=magenta #ff00ff, P2=yellow #ffff00, P3=orange #ff8800, …)
 - **No divider:** The board is rendered as one seamless playfield with no visual separator between player sections
+- **8-bit block shading:** every filled square (active, locked, adversarial) is drawn
+  as a classic 8-bit block — a lighter bevel strip along its top and left edges, a
+  darker strip along the bottom and right, and a small gloss pixel in the top-left —
+  while empty squares stay flat (`CellAppearance.Bevel`). Each playfield sits inside a
+  chunky arcade-well frame.
+
+The whole UI shares this "modern 8-bit" look: display text (titles, headers, buttons,
+HUD stats, the countdown, the game-over dialog) is set in the embedded "Press Start 2P"
+pixel font, chrome corners are square with thick borders and hard offset shadows, a
+subtle CRT scanline overlay covers every frame, and the accent color throughout is the
+NATS brand blue — with NATS.io logos and "made with NATS.io" branding on the login
+screen, lobby/archive banner, and game HUD.
 
 ---
 

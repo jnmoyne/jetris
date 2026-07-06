@@ -1,2 +1,4 @@
 nats-data/
 .DS_Store
+.idea/
+/jetricks

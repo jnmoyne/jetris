@@ -48,6 +48,7 @@ jetricks/
 │   │   └── config.go
 │   ├── nats/
 │   │   ├── connection.go
+│   │   ├── embedded.go
 │   │   ├── streams.go
 │   │   ├── kv.go
 │   │   ├── consumer.go
@@ -157,7 +158,7 @@ The player enters a name on the same screen; identity is NATS-backed presence. L
 
 Connecting via a context ultimately maps to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
 
-The login screen always shows the **CONNECT TO** section offering the machine's NATS CLI contexts through a "Context:" pull-down button (preset to the CLI's currently selected context, which is labeled "(selected)" in the opened list) plus an always-present **NATS URL** option, default `nats://demo.nats.io:4222` (`nativeui.DefaultNATSURL`). The default choice precedence is `--server` (URL option, field pre-filled with its value) → `--context` (context option, the pull-down preset to it; appended to the list if the lister didn't find it) → the CLI's selected context → the URL option. A **Check connection** button dials the current choice, measures the server ping (flush round trip), reports `✓ <server> · ping <rtt>` or `✗ <error>` — and closes that probe connection without provisioning anything.
+The login screen always shows the **CONNECT TO** section offering the machine's NATS CLI contexts through a "Context:" pull-down button (preset to the CLI's currently selected context, which is labeled "(selected)" in the opened list), an always-present **NATS URL** option, default `nats://demo.nats.io:4222` (`nativeui.DefaultNATSURL`), and an always-present **Run own NATS server** option — Play with it selected starts an in-process JetStream-enabled `nats-server` (port `config.EmbeddedPort` = 4222 on all interfaces, storage in `./nats-data`), connects over loopback, and the lobby then displays the server's LAN address to share with other players. The default choice precedence is `--server` (URL option, field pre-filled with its value) → `--context` (context option, the pull-down preset to it; appended to the list if the lister didn't find it) → the CLI's selected context → the URL option. A **Check connection** button dials the current choice, measures the server ping (flush round trip), reports `✓ <server> · ping <rtt>` or `✗ <error>` — and closes that probe connection without provisioning anything (for the embedded option it dials nothing and reports the address the server serves, or would serve, on).
 
 ### Bootstrap Order
 
@@ -179,7 +180,16 @@ type Config struct {
     NATSURL      string // explicit server URL (overrides context)
     NATSUser     string
     NATSPassword string
+    RunEmbedded  bool   // run an in-process JetStream-enabled nats-server and connect to it
 }
+
+// Embedded-server settings for the login screen's "Run own NATS server"
+// option: the port the in-process server listens on (all interfaces) and the
+// local directory holding its JetStream storage.
+const (
+    EmbeddedPort     = 4222
+    EmbeddedStoreDir = "nats-data"
+)
 
 type GameMode int
 
@@ -500,6 +510,23 @@ func ListContexts() (names []string, selected string, err error)
 ```
 
 Hand-rolled because `orbit.go/natscontext` exposes only `Connect` — no lister. It mirrors that package's path resolution exactly. A missing context directory yields `(nil, "", nil)`; non-`.json` entries and subdirectories are skipped; a `context.txt` naming a context that no longer exists reports `selected == ""`.
+
+#### `embedded.go`
+
+```go
+// StartEmbeddedServer runs a JetStream-enabled nats-server inside this
+// process, listening on every interface at the given port and storing stream
+// data under storeDir. The returned server is ready for connections; stop it
+// with Shutdown(). Backs the login screen's "Run own NATS server" option
+// (port config.EmbeddedPort, storage config.EmbeddedStoreDir).
+func StartEmbeddedServer(storeDir string, port int) (*natsserver.Server, error)
+
+// LanIP returns the machine's primary IPv4 address on the local network — the
+// address other players should dial to reach an embedded server. The UDP dial
+// sends nothing; it only resolves which local address routes outward. Falls
+// back to scanning the interfaces, then to the loopback address.
+func LanIP() string
+```
 
 #### `streams.go`
 
@@ -1692,6 +1719,8 @@ Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logi
 **Look and feel — modern 8-bit, NATS-branded.** Display type (the login title, section headers, buttons, HUD stats, ready badges, the countdown, the game-over dialog, and the branding banner) renders in the pixel face (`pixelTypeface`); body text (chat, lists, editors) stays in the Go faces for readability. All chrome corners are square; panels, editors, and the context pull-down carry chunky 2 dp `colBorder` frames; buttons and the game-over dialog sit on `hardShadow`'s offset solid shadow (`board.go`). Every playfield is drawn inside a `colBorder` arcade-well frame (`drawBoard`), filled cells are shaded with the classic 8-bit bevel — lighter top/left strips, darker bottom/right, a gloss pixel — gated by `CellAppearance.Bevel`, and `scanlines` paints a subtle CRT overlay over every frame (last in `App.layout`). The palette (`app.go`) is a dark blue-black (`colBg`/`colPanel`/`colBorder`) with the **NATS brand blue** `#27aae1` as `colAccent` and the NATS logo green as `colNATSGreen`, so the branding runs through the whole chrome; the login screen flanks the "JETRICKS" pixel title with NATS logos and ends with a "peer to peer · made with NATS.io" tagline. The theme is built by `newUITheme` (shared with the layout tests, so snapshots match the live window).
 
 **Login screen connection picker.** The App is built via `NewWithPicker` and starts with nil `js`/`kv`; there is a single combined login screen — name entry plus a **CONNECT TO** section (`connSection`, `login.go`): a "Context:" radio paired with a pull-down button (`connDropButton`, an editor-style bordered box showing the chosen context `connCtx` and a ▼/▲ arrow); clicking it expands `connDropList`, a bordered scroll-capped (`~180dp`) `material.List` of the contexts from `nats.ListContexts` — the CLI's selected context labeled "(selected)", the current choice highlighted in the accent color — and picking a row (or merely touching the pull-down) also selects the context radio. Below it sits a "NATS URL" radio with an editable URL field; typing in the URL editor auto-selects its radio, but the constructor's programmatic `SetText` queues one synthetic `ChangeEvent` that is swallowed via the `connURLSeeded` flag so it cannot override the context default on the first frame. Default choice and URL text are seeded from the CLI flags (`--server` → URL option with that value; `--context` → the context option with the pull-down preset to it, appended to the list if undiscovered; else the CLI's selected context; else the URL option with `DefaultNATSURL`); whichever option starts out, `connCtx` is preset to `--context`, else the CLI's selected context, else the first known context. A **Check connection** row (`connCheckRow`) dials the current choice off the UI goroutine (`doCheckConn` → `nats.CheckConnection`), shows "Checking…" while busy, and renders `✓ <server> · ping <rtt>` (green, via `formatRTT`) or `✗ <error>` (red); the probe connection is closed immediately and provisions nothing. On Play, `submitLogin` resolves the choice (`pickerConfig`) and dispatches `doConnectAndLogin` (`lifecycle.go`): it first `disconnect()`s any connection left over from a previous attempt (e.g. a cancelled name collision), then runs `nats.Bootstrap` under a 15 s cap — errors land on the login screen for retry, success stores `a.nc/a.js/a.kv` (the App owns the connection — `teardown`/`DrainConn` drain it) and falls through into the normal `doLogin` flow. `quit()` (lobby → login) also `disconnect()`s, so the player always lands back on the full chooser and can switch servers. `App` state: `nc`, `needConn`/`connContexts`/`connSelected`/`connCfg` (immutable after construction), `connChecking`/`connCheckOK`/`connCheckMsg` (mu-guarded), and the `connEnum`/`connCtx`/`connDropOpen`/`connDropBtn`/`connOptBtns`/`connURLEd`/`connList`/`connCheckBtn` widget state (all UI-goroutine only).
+
+**Run own NATS server.** The chooser's third, always-present option (`connEnum` value "embedded") makes the player the host: `pickerConfig` marks the config with `RunEmbedded`, and `doConnectAndLogin` calls `ensureEmbeddedServer` (lifecycle.go), which starts `nats.StartEmbeddedServer(config.EmbeddedStoreDir, config.EmbeddedPort)` — an in-process JetStream-enabled `nats-server` on `0.0.0.0:4222` with its storage in `./nats-data` — once per app run, records the shareable address `<lan-ip>:<port>` (`nats.LanIP`) in `embAddr`, and rewrites the config to `nats://<lan-ip>:<port>` so the normal `Bootstrap` path provisions and connects through the same address other players dial. Not loopback: a foreign nats-server holding a `127.0.0.1:4222`-specific bind would intercept a loopback dial even though the embedded `0.0.0.0` bind succeeded; as belt and braces, after connecting the app compares `nc.ConnectedServerId()` with the embedded server's `ID()` and fails the login with a clear "port already in use by another NATS server" error on a mismatch. While the current connection is to the embedded server (`usingEmbedded`, cleared by `disconnect`), the lobby header shows `YOUR SERVER nats://<ip>:<port> — share this address so others can join you` (`embeddedAddr`); other players connect to that address via the NATS URL option. The server outlives lobby exits (quit keeps it up for connected friends) and is shut down in `teardown` when the window closes. `App` state: `embSrv`/`embAddr`/`usingEmbedded` (mu-guarded).
 
 **In-game chat.** The game screen has a chat strip at the bottom (`gameChatPanel`, `game.go`), shown to players and spectators: a scroll-capped list of this game's messages plus the lobby chat folded in — lobby lines are prefixed `@lobby` and colored `colLobby` so they're obviously not from the game (`chatLine` formats rows; game messages from spectators are marked `(spec)`). Typing rules (`canType` in `layoutGame`): players may type until the game starts; once `in_progress` their keyboard drives the piece — `handleKeys` grabs board focus only while `mode == ModePlayer && started`, which both frees the editor pre-start and locks it out during play — so only spectators and eliminated players can type (players see a muted "read-only while playing" hint instead of the editor). A message starting with `@lobby` is routed to the lobby chat; anything else goes to this game's chat subject (`sendGameChat`, `lifecycle.go` → `Lobby.SendGameChat`). Widgets: `gameChatEd`/`gameChatBtn`/`gameChatList` (scroll-to-end). The lobby screen's chat panel shows only lobby-scoped messages.
 

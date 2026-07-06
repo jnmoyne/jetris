@@ -157,6 +157,21 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 				}),
 			)
 		}),
+		layout.Rigid(func(gtx C) D {
+			// While hosting the embedded server, show the address other
+			// players should dial so the host can share it.
+			addr := a.embeddedAddr()
+			if addr == "" {
+				return D{}
+			}
+			return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(a.pixel(unit.Sp(9), "YOUR SERVER  ", colMuted).Layout),
+					layout.Rigid(a.pixel(unit.Sp(10), "nats://"+addr, colNATSGreen).Layout),
+					layout.Rigid(a.body("  — share this address so others can join you", colMuted)),
+				)
+			})
+		}),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(a.createRow),
 		layout.Rigid(spacer(10)),

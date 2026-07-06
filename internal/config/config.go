@@ -12,7 +12,16 @@ type Config struct {
 	NATSURL      string
 	NATSUser     string
 	NATSPassword string
+	RunEmbedded  bool // run an in-process JetStream-enabled nats-server and connect to it
 }
+
+// Embedded-server settings for the login screen's "Run own NATS server"
+// option: the port the in-process server listens on (all interfaces) and the
+// local directory holding its JetStream storage.
+const (
+	EmbeddedPort     = 4222
+	EmbeddedStoreDir = "nats-data"
+)
 
 // ValidatePlayerName checks that a player name is valid for use as a
 // NATS subject token (and thus as a player ID). It rejects empty names,

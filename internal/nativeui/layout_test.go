@@ -123,11 +123,37 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 	})
 
+	t.Run("login-picker-embedded", func(t *testing.T) {
+		// The "Run own NATS server" option resolves to the embedded mark, no
+		// URL or context, and its row renders.
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
+		a.th = newTestApp().th
+		a.connEnum.Value = "embedded"
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.RunEmbedded || cfg.NATSURL != "" || cfg.NATSContext != "" {
+			t.Fatalf("embedded pickerConfig = %+v, want RunEmbedded only", cfg)
+		}
+		renderOnce(t, a)
+	})
+
 	t.Run("lobby", func(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
 		a.chatLog = []lobby.ChatMessage{{Name: "alice", Text: "hi"}}
+		renderOnce(t, a)
+	})
+
+	t.Run("lobby-embedded-server", func(t *testing.T) {
+		// Hosting the embedded server adds the shareable YOUR SERVER line.
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		a.usingEmbedded = true
+		a.embAddr = "192.168.1.23:4222"
 		renderOnce(t, a)
 	})
 

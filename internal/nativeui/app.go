@@ -21,6 +21,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -105,6 +106,15 @@ type App struct {
 	connChecking bool
 	connCheckOK  bool
 	connCheckMsg string
+
+	// Embedded server ("Run own NATS server" option; guarded by mu). The
+	// server starts on the first embedded login and runs until the window
+	// closes — quitting to the login screen leaves it up for connected
+	// friends. usingEmbedded marks the CURRENT connection as being to it,
+	// which is what gates the lobby's shareable-address line.
+	embSrv        *natsserver.Server
+	embAddr       string // shareable "<lan-ip>:<port>"
+	usingEmbedded bool
 
 	win *app.Window
 	th  *material.Theme
@@ -365,6 +375,17 @@ func (a *App) getEngine() *engine.Engine {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.eng
+}
+
+// embeddedAddr returns the shareable address of the embedded server while the
+// current connection is to it, "" otherwise (gates the lobby's YOUR SERVER line).
+func (a *App) embeddedAddr() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.usingEmbedded {
+		return ""
+	}
+	return a.embAddr
 }
 
 func (a *App) snapshotGamePlayers() []lobby.PlayerSummary {

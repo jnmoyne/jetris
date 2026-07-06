@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"gioui.org/layout"
@@ -153,19 +154,22 @@ func (a *App) submitLogin() {
 }
 
 // pickerConfig resolves the current CONNECT TO choice into a config: the URL
-// field when the URL radio is active (errors when empty), otherwise the
-// context chosen in the pull-down. The base is connCfg, so --user/--password
-// flags carry through to URL connects. Runs on the UI goroutine (reads
-// widgets).
+// field when the URL radio is active (errors when empty), the embedded-server
+// mark for the "Run own NATS server" radio, otherwise the context chosen in
+// the pull-down. The base is connCfg, so --user/--password flags carry
+// through to URL connects. Runs on the UI goroutine (reads widgets).
 func (a *App) pickerConfig() (config.Config, error) {
 	cfg := a.connCfg
-	cfg.NATSURL, cfg.NATSContext = "", ""
-	if a.connEnum.Value == "url" {
+	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
+	switch a.connEnum.Value {
+	case "url":
 		cfg.NATSURL = strings.TrimSpace(a.connURLEd.Text())
 		if cfg.NATSURL == "" {
 			return cfg, errors.New("enter a NATS URL")
 		}
-	} else {
+	case "embedded":
+		cfg.RunEmbedded = true
+	default:
 		if a.connCtx == "" {
 			return cfg, errors.New("no NATS context selected")
 		}
@@ -299,6 +303,20 @@ func (a *App) connSection(gtx C) D {
 				layout.Flexed(1, func(gtx C) D {
 					return a.editorBox(gtx, &a.connURLEd, "nats://host:4222")
 				}),
+			)
+		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					rb := material.RadioButton(a.th, &a.connEnum, "embedded", "Run own NATS server")
+					rb.Color = colFg
+					return rb.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+				}),
+				layout.Flexed(1, a.body(fmt.Sprintf("port %d · data in ./%s", config.EmbeddedPort, config.EmbeddedStoreDir), colMuted)),
 			)
 		}),
 		layout.Rigid(spacer(8)),

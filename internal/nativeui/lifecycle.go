@@ -3,7 +3,9 @@ package nativeui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"strings"
 	"time"
 
@@ -26,6 +28,24 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 	// every attempt connects fresh per the current picker choice.
 	a.disconnect()
 
+	if cfg.RunEmbedded {
+		// "Run own NATS server": bring up (or reuse) the in-process server,
+		// then connect to it via the same LAN address other players dial.
+		// (Not loopback: another NATS server holding a 127.0.0.1:4222-specific
+		// bind would intercept a loopback dial even though our 0.0.0.0 bind
+		// succeeded — a real setup on NATS developer machines.)
+		addr, err := a.ensureEmbeddedServer()
+		if err != nil {
+			a.mu.Lock()
+			a.loginErr = err.Error()
+			a.loggingIn = false
+			a.mu.Unlock()
+			a.invalidate()
+			return
+		}
+		cfg.NATSURL = "nats://" + addr
+	}
+
 	connCtx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
 	nc, js, kv, err := natspkg.Bootstrap(connCtx, cfg)
 	cancel()
@@ -41,11 +61,62 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 		nc.Close() // window closed while we were connecting
 		return
 	}
+	if cfg.RunEmbedded {
+		// Belt and braces for the interception case above: make sure the
+		// server we reached is OUR embedded server, not a stranger on the
+		// same port.
+		a.mu.Lock()
+		srv := a.embSrv
+		a.mu.Unlock()
+		if srv != nil && nc.ConnectedServerId() != srv.ID() {
+			nc.Close()
+			a.mu.Lock()
+			a.loginErr = fmt.Sprintf("another NATS server is already using port %d — connect to it via the URL option instead, or stop it", config.EmbeddedPort)
+			a.loggingIn = false
+			a.mu.Unlock()
+			a.invalidate()
+			return
+		}
+	}
 	log.Printf("connected to NATS at %s", nc.ConnectedUrl())
 	a.mu.Lock()
 	a.nc, a.js, a.kv = nc, js, kv
+	a.usingEmbedded = cfg.RunEmbedded
 	a.mu.Unlock()
 	a.doLogin(name, false)
+}
+
+// ensureEmbeddedServer starts the in-process JetStream-enabled nats-server
+// once — port config.EmbeddedPort on all interfaces, storage in
+// ./config.EmbeddedStoreDir — and records its shareable "<lan-ip>:<port>"
+// address. Reused by later login attempts; it runs until the window closes so
+// friends stay connected across the host's lobby exits. Returns that address —
+// which is also the one the app connects through (see doConnectAndLogin on
+// why not loopback).
+func (a *App) ensureEmbeddedServer() (string, error) {
+	a.mu.Lock()
+	srv := a.embSrv
+	a.mu.Unlock()
+	if srv == nil {
+		var err error
+		srv, err = natspkg.StartEmbeddedServer(config.EmbeddedStoreDir, config.EmbeddedPort)
+		if err != nil {
+			return "", err
+		}
+		a.mu.Lock()
+		a.embSrv = srv
+		a.mu.Unlock()
+	}
+	port := config.EmbeddedPort
+	if tcp, ok := srv.Addr().(*net.TCPAddr); ok {
+		port = tcp.Port
+	}
+	addr := fmt.Sprintf("%s:%d", natspkg.LanIP(), port)
+	a.mu.Lock()
+	a.embAddr = addr
+	a.mu.Unlock()
+	log.Printf("embedded nats-server serving on %s (JetStream data in ./%s)", addr, config.EmbeddedStoreDir)
+	return addr, nil
 }
 
 // doCheckConn validates a connection-picker choice without committing to it:
@@ -53,6 +124,26 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 // goroutine; connChecking was already set by the click handler. The outcome
 // lands in connCheckMsg (rendered green/red next to the button).
 func (a *App) doCheckConn(cfg config.Config) {
+	if cfg.RunEmbedded {
+		// Nothing to dial: report where the embedded server serves (or would).
+		a.mu.Lock()
+		running := a.embSrv != nil
+		addr := a.embAddr
+		a.mu.Unlock()
+		verb := "will serve"
+		if running {
+			verb = "serving"
+		} else {
+			addr = fmt.Sprintf("%s:%d", natspkg.LanIP(), config.EmbeddedPort)
+		}
+		a.mu.Lock()
+		a.connChecking = false
+		a.connCheckOK = true
+		a.connCheckMsg = fmt.Sprintf("✓ %s on nats://%s · data in ./%s", verb, addr, config.EmbeddedStoreDir)
+		a.mu.Unlock()
+		a.invalidate()
+		return
+	}
 	url, rtt, err := natspkg.CheckConnection(cfg)
 	a.mu.Lock()
 	a.connChecking = false
@@ -69,11 +160,14 @@ func (a *App) doCheckConn(cfg config.Config) {
 
 // disconnect drops the app-owned NATS connection and clears the handles.
 // Called with no lobby or engine running (from quit, or at the top of a fresh
-// connect attempt), off the UI goroutine — Drain blocks.
+// connect attempt), off the UI goroutine — Drain blocks. An embedded server
+// keeps running (friends may be connected to it); only the usingEmbedded mark
+// is cleared until the next embedded login.
 func (a *App) disconnect() {
 	a.mu.Lock()
 	nc := a.nc
 	a.nc, a.js, a.kv = nil, nil, nil
+	a.usingEmbedded = false
 	a.mu.Unlock()
 	if nc != nil {
 		nc.Drain()
@@ -404,9 +498,11 @@ func (a *App) teardown() {
 	lb := a.lobby
 	lobbyCancel := a.lobbyCancel
 	nc := a.nc
+	srv := a.embSrv
 	a.eng = nil
 	a.lobby = nil
 	a.nc = nil
+	a.embSrv = nil
 	a.mu.Unlock()
 
 	if engCancel != nil {
@@ -423,5 +519,8 @@ func (a *App) teardown() {
 	}
 	if nc != nil {
 		nc.Drain()
+	}
+	if srv != nil {
+		srv.Shutdown()
 	}
 }

@@ -2490,8 +2490,10 @@ falls back to the first known context). `connSection` (login.go) renders the
 chooser (a "Context:" radio + pull-down button `connDropButton` that expands
 `connDropList`, a scroll-capped clickable context list; a URL radio/editor
 row — the constructor's `SetText` ChangeEvent is swallowed once via
-`connURLSeeded` so it can't steal the default; and the Check connection
-row); `pickerConfig` resolves the choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
+`connURLSeeded` so it can't steal the default; a "Run own NATS server" radio
+row — `connEnum` value "embedded" — with a muted `port 4222 · data in
+./nats-data` hint; and the Check connection row); `pickerConfig` resolves the
+choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
 connection left from a previous attempt, then runs `Bootstrap` (15 s cap) off
 the UI goroutine — failure lands on `loginErr` for retry, success stores
 `a.nc/js/kv` (App-owned; `teardown`/`DrainConn` drain it) and falls into the
@@ -2499,6 +2501,34 @@ normal `doLogin` flow. `quit()` also `disconnect()`s, returning the player to
 the same combined screen to pick another server. `doCheckConn` runs
 `CheckConnection` and renders `✓ <server> · ping <rtt>` (green, `formatRTT`)
 or `✗ <error>` (red) next to the button.
+
+**Embedded server option** ("Run own NATS server"). `pickerConfig` maps the
+third radio to `cfg.RunEmbedded`; `doConnectAndLogin` then calls
+`ensureEmbeddedServer` (lifecycle.go), which starts
+`nats.StartEmbeddedServer(config.EmbeddedStoreDir, config.EmbeddedPort)` — an
+in-process JetStream-enabled `nats-server` on `0.0.0.0:4222` storing its data
+in `./nats-data` — once per app run, records the shareable `<lan-ip>:<port>`
+(`nats.LanIP`, an outbound-route probe with an interface-scan fallback) in
+`embAddr`, and rewrites the config to `nats://<lan-ip>:<port>` so the normal
+Bootstrap path connects through the same address other players dial. NOT
+loopback: a foreign nats-server holding a `127.0.0.1:4222`-specific bind
+would intercept a loopback dial even though our `0.0.0.0` bind succeeded (a
+real setup on NATS developer machines) — and as belt and braces, after
+connecting the app compares `nc.ConnectedServerId()` against the embedded
+server's `ID()` and fails the login with a clear "port already in use by
+another NATS server" error on a mismatch. `usingEmbedded` marks the CURRENT connection as
+being to the embedded server; while it is set the lobby header shows
+`YOUR SERVER nats://<ip>:<port> — share this address so others can join you`
+(`embeddedAddr`, lobby.go), which is how the host invites other players (they
+connect via the NATS URL option). `disconnect` clears only the mark — the
+server itself runs until `teardown` shuts it down, so friends stay connected
+across the host's lobby exits and reconnects. `doCheckConn` with the embedded
+choice dials nothing and reports `✓ will serve/serving on nats://<addr> ·
+data in ./nats-data`. Tests: `internal/nats/embedded_test.go` (the server
+comes up JetStream-enabled on a random port, accepts a client and a stream
+create; `LanIP` yields a parseable IPv4) and `layout_test.go` subtests for
+the embedded radio's `pickerConfig` resolution and the lobby's YOUR SERVER
+line.
 
 **Tests:** `internal/nats/contexts_test.go` (XDG temp-dir lister cases:
 missing dir, filtering/sorting, selected, stale selection),

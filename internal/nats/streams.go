@@ -74,6 +74,16 @@ func DeleteGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 	return js.DeleteStream(ctx, config.GameStream(gameID))
 }
 
+// PurgeGameChat removes one game's chat messages from the shared chat stream
+// (they live there under a per-game subject, not on the game stream).
+func PurgeGameChat(ctx context.Context, js jetstream.JetStream, gameID string) error {
+	s, err := js.Stream(ctx, config.LobbyChatStream)
+	if err != nil {
+		return err
+	}
+	return s.Purge(ctx, jetstream.WithPurgeSubject(config.GameChatSubject(gameID)))
+}
+
 // ListGameStreams returns names of all streams matching the JETRICKS_GAME_ prefix.
 func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, error) {
 	sl := js.StreamNames(ctx, jetstream.WithStreamListSubject("jetricks.game.>"))

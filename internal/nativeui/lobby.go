@@ -52,6 +52,7 @@ func (a *App) layoutLobby(gtx C) D {
 
 	games := sortedGames(lb.Games())
 	players := sortedPlayers(lb.Players())
+	abandoned := lb.AbandonedGames()
 
 	// The lobby screen shows only lobby-scoped messages; per-game messages
 	// (GameID != "") appear on that game's screen instead.
@@ -83,6 +84,17 @@ func (a *App) layoutLobby(gtx C) D {
 			id := g.GameID
 			go a.spectateGame(id)
 		}
+		if btns.del.Clicked(gtx) {
+			a.confirmDeleteID = g.GameID
+		}
+		if btns.delYes.Clicked(gtx) {
+			id := g.GameID
+			a.confirmDeleteID = ""
+			go a.deleteGame(id)
+		}
+		if btns.delNo.Clicked(gtx) {
+			a.confirmDeleteID = ""
+		}
 	}
 
 	// --- render ---
@@ -97,7 +109,7 @@ func (a *App) layoutLobby(gtx C) D {
 				}),
 				layout.Flexed(2, func(gtx C) D {
 					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyRight(gtx, games, sortedArchives(lb.Archives()), lb.PlayerName())
+						return a.lobbyRight(gtx, games, abandoned, sortedArchives(lb.Archives()), lb.PlayerName())
 					})
 				}),
 			)
@@ -145,7 +157,7 @@ func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.Chat
 	)
 }
 
-func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.ArchiveRecord, playerName string) D {
+func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, playerName string) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -179,7 +191,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, archives []config.Arc
 		layout.Flexed(2, func(gtx C) D {
 			return bordered(gtx, func(gtx C) D {
 				return material.List(a.th, &a.gameList).Layout(gtx, len(games), func(gtx C, i int) D {
-					return a.gameRow(gtx, games[i])
+					return a.gameRow(gtx, games[i], abandoned[games[i].GameID])
 				})
 			})
 		}),
@@ -379,7 +391,7 @@ func (a *App) createRow(gtx C) D {
 	)
 }
 
-func (a *App) gameRow(gtx C, g lobby.GameListing) D {
+func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	btns := a.gameButtons(g.GameID)
 	joinable := g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting
 	canJoin := joinable && len(g.Players) < g.PlayerCount
@@ -419,39 +431,82 @@ func (a *App) gameRow(gtx C, g lobby.GameListing) D {
 	if teams {
 		sep = " · "
 	}
-	return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, func(gtx C) D {
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	confirming := abandoned && a.confirmDeleteID == g.GameID
+	infoCol := func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{}.Layout(gtx,
 					layout.Rigid(a.body(info, colFg)),
-					layout.Rigid(a.body(strings.Join(names, sep), colMuted)),
+					layout.Rigid(func(gtx C) D {
+						if !abandoned {
+							return D{}
+						}
+						return a.body(" · abandoned", colErr)(gtx)
+					}),
 				)
 			}),
-			layout.Rigid(func(gtx C) D {
-				if !canJoin {
-					return D{}
-				}
-				if teams {
-					// One join button per team, each enabled while that team has room.
-					return layout.Flex{}.Layout(gtx,
-						layout.Rigid(func(gtx C) D {
-							return a.teamJoinButton(gtx, &btns.joinA, g, 0)
-						}),
-						layout.Rigid(spacer(6)),
-						layout.Rigid(func(gtx C) D {
-							return a.teamJoinButton(gtx, &btns.joinB, g, 1)
-						}),
+			layout.Rigid(a.body(strings.Join(names, sep), colMuted)),
+		)
+	}
+	return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+		// The delete confirmation replaces the row's action buttons (so a stray
+		// click can't join or delete while the question is up) and gets its own
+		// line under the game info, so the question and buttons never squeeze
+		// the info text.
+		if confirming {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(infoCol),
+				layout.Rigid(spacer(6)),
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(a.body("Are you sure you want to delete this game?", colErr)),
+						layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx) }),
+						layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &btns.delYes, "Yes, delete") }),
+						layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx) }),
+						layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &btns.delNo, "Cancel") }),
 					)
-				}
-				return a.primaryButton(gtx, &btns.join, "Join")
-			}),
+				}),
+			)
+		}
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, infoCol),
 			layout.Rigid(func(gtx C) D {
-				if canSpectate {
-					return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-						return a.secondaryButton(gtx, &btns.spectate, "Spectate")
-					})
-				}
-				return D{}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						if !canJoin {
+							return D{}
+						}
+						if teams {
+							// One join button per team, each enabled while that team has room.
+							return layout.Flex{}.Layout(gtx,
+								layout.Rigid(func(gtx C) D {
+									return a.teamJoinButton(gtx, &btns.joinA, g, 0)
+								}),
+								layout.Rigid(spacer(6)),
+								layout.Rigid(func(gtx C) D {
+									return a.teamJoinButton(gtx, &btns.joinB, g, 1)
+								}),
+							)
+						}
+						return a.primaryButton(gtx, &btns.join, "Join")
+					}),
+					layout.Rigid(func(gtx C) D {
+						if canSpectate {
+							return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+								return a.secondaryButton(gtx, &btns.spectate, "Spectate")
+							})
+						}
+						return D{}
+					}),
+					layout.Rigid(func(gtx C) D {
+						if !abandoned {
+							return D{}
+						}
+						return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+							return a.dangerButton(gtx, &btns.del, "Delete")
+						})
+					}),
+				)
 			}),
 		)
 	})
@@ -534,6 +589,20 @@ func (a *App) secondaryButton(gtx C, btn *widget.Clickable, label string) D {
 			b := pixelize(material.Button(a.th, btn, label))
 			b.Background = colPanel
 			b.Color = colAccent
+			return b.Layout(gtx)
+		})
+	})
+}
+
+// dangerButton renders a destructive action (Delete, and its confirmation) in
+// the secondary chrome but with the error red, so it cannot be mistaken for
+// Join/Spectate.
+func (a *App) dangerButton(gtx C, btn *widget.Clickable, label string) D {
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colErr, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+			b := pixelize(material.Button(a.th, btn, label))
+			b.Background = colPanel
+			b.Color = colErr
 			return b.Layout(gtx)
 		})
 	})

@@ -159,6 +159,17 @@ const (
 	PresenceHeartbeat = 5 * time.Second
 )
 
+// Abandoned-game detection: every client re-checks the lobby's games on a
+// timer. A started (in-progress) game is abandoned once its stream has seen no
+// messages for AbandonedIdleTimeout; a game that was created but never started
+// is abandoned AbandonedUnstartedTimeout after creation. Abandoned games grow
+// a Delete button in the lobby.
+const (
+	AbandonedCheckInterval    = 1 * time.Minute
+	AbandonedIdleTimeout      = 1 * time.Minute
+	AbandonedUnstartedTimeout = 15 * time.Minute
+)
+
 // CompetitiveVisibleRows returns the visible rows for a competitive game.
 // Each player adds one extra row to the playfield height.
 func CompetitiveVisibleRows(playerCount int) int {

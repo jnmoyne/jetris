@@ -321,6 +321,18 @@ created → starting → [countdown] → in_progress → finished → archived
 | in_progress | finished | Game over (top-out) |
 | finished | archived | Archive record published, game stream deleted (5s delay) |
 | created/starting | cancelled | Creator absent, all players absent, or cleanup |
+| any | (deleted) | A player deletes an **abandoned** game from the lobby (see below) |
+
+### Abandoned Games
+
+Some games go nowhere: the creator never joins, the players never click READY, or everyone walks away mid-game. While the lobby is up, every client re-checks the listed games once a minute (`AbandonedCheckInterval`) and flags a game as **abandoned** when either rule holds:
+
+- **Never started** — the game is still `created` or `starting` more than **15 minutes** after creation (`AbandonedUnstartedTimeout`).
+- **Started, then deserted** — the game is `in_progress` but its game stream has seen **no messages for one minute** (`AbandonedIdleTimeout`; a live game publishes constantly, so a silent stream means every player is gone). An `in_progress` listing whose stream no longer exists is flagged immediately — it can never make progress.
+
+The check rebuilds the flag set from scratch each pass, so a game where activity resumes (e.g. a player reconnects) is un-flagged again.
+
+An abandoned game's lobby row is marked `· abandoned` in red and grows a red **Delete** button next to Join/Spectate. Clicking it replaces the row's action buttons with a confirmation on its own line under the game info (so the question never squeezes the info text) — **"Are you sure you want to delete this game?"** with **Yes, delete** / **Cancel** — so a stray click can't destroy the game. Confirming tears down everything the game left behind: the per-game stream, the game's chat messages in the shared chat stream, and the lobby KV listing (whose deletion removes the game from every player's list).
 
 ### Ready Flow
 

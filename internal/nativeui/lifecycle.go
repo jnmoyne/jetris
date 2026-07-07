@@ -258,6 +258,20 @@ func (a *App) createGame(mode config.GameMode, count int) {
 	}
 }
 
+// deleteGame removes an abandoned game and all its NATS state (game stream,
+// game chat messages, lobby KV listing). Dispatched from the lobby row's
+// Delete button after the player confirms the "Are you sure?" prompt.
+func (a *App) deleteGame(gameID string) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	if err := lb.DeleteGame(context.Background(), gameID); err != nil {
+		log.Printf("delete game: %v", err)
+	}
+	a.invalidate()
+}
+
 // joinGame mirrors ui.Server.handleJoinGame: join to get our player index, build
 // and start the engine, wire archive-on-finish, and switch to the game screen.
 // team selects which team to join in teams mode (ignored otherwise).

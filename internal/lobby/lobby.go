@@ -27,6 +27,7 @@ type Lobby struct {
 	mu              sync.RWMutex
 	players         map[string]PlayerPresence
 	games           map[string]GameListing
+	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
 	status          PresenceStatus
 	currentGameID   string
@@ -49,6 +50,7 @@ func New(
 		Updates:         make(chan LobbyUpdate, 16),
 		players:         make(map[string]PlayerPresence),
 		games:           make(map[string]GameListing),
+		abandoned:       make(map[string]bool),
 		status:          StatusInLobby,
 		initialLoadDone: make(chan struct{}),
 	}
@@ -71,6 +73,18 @@ func (l *Lobby) Games() map[string]GameListing {
 	defer l.mu.RUnlock()
 	out := make(map[string]GameListing, len(l.games))
 	for k, v := range l.games {
+		out[k] = v
+	}
+	return out
+}
+
+// AbandonedGames returns a snapshot of the game IDs the periodic checker
+// currently considers abandoned.
+func (l *Lobby) AbandonedGames() map[string]bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make(map[string]bool, len(l.abandoned))
+	for k, v := range l.abandoned {
 		out[k] = v
 	}
 	return out
@@ -101,6 +115,9 @@ func (l *Lobby) Start(ctx context.Context) error {
 
 	// Start heartbeat
 	go l.runHeartbeat(ctx)
+
+	// Start abandoned-game checker
+	go l.runAbandonedChecker(ctx)
 
 	return nil
 }
@@ -191,6 +208,7 @@ func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
 	switch entry.Operation() {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
 		delete(l.games, gameID)
+		delete(l.abandoned, gameID)
 	default:
 		var g GameListing
 		if err := json.Unmarshal(entry.Value(), &g); err != nil {
@@ -262,6 +280,93 @@ func (l *Lobby) runArchiveConsumer(ctx context.Context) {
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
 		}
 	}
+}
+
+// runAbandonedChecker re-evaluates every listed game for abandonment on a
+// timer, so games whose players never joined, never readied up, or walked away
+// mid-game grow a Delete option in the lobby.
+func (l *Lobby) runAbandonedChecker(ctx context.Context) {
+	ticker := time.NewTicker(config.AbandonedCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			l.checkAbandoned(ctx)
+		}
+	}
+}
+
+// checkAbandoned rebuilds the abandoned set from scratch (so a game where
+// activity resumes — e.g. a player reconnects — is un-flagged again) and emits
+// a games update when the set changes.
+func (l *Lobby) checkAbandoned(ctx context.Context) {
+	now := time.Now()
+	fresh := make(map[string]bool)
+	for id, g := range l.Games() {
+		if l.isAbandoned(ctx, g, now) {
+			fresh[id] = true
+		}
+	}
+
+	l.mu.Lock()
+	changed := len(fresh) != len(l.abandoned)
+	if !changed {
+		for id := range fresh {
+			if !l.abandoned[id] {
+				changed = true
+				break
+			}
+		}
+	}
+	l.abandoned = fresh
+	l.mu.Unlock()
+
+	if changed {
+		l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateGames})
+	}
+}
+
+// isAbandoned applies the abandonment rules to one listing: a game that never
+// started is abandoned AbandonedUnstartedTimeout after creation; a started game
+// is abandoned once its stream has seen no messages for AbandonedIdleTimeout.
+func (l *Lobby) isAbandoned(ctx context.Context, g GameListing, now time.Time) bool {
+	switch g.Status {
+	case config.GameStatusCreated, config.GameStatusStarting:
+		return now.Sub(g.CreatedAt) > config.AbandonedUnstartedTimeout
+	case config.GameStatusInProgress:
+		s, err := l.js.Stream(ctx, config.GameStream(g.GameID))
+		if errors.Is(err, jetstream.ErrStreamNotFound) {
+			// The listing points at a deleted stream — the game can never make
+			// progress, so offer deletion.
+			return true
+		}
+		if err != nil {
+			return false // can't tell (e.g. transient network error) — don't flag
+		}
+		return now.Sub(s.CachedInfo().State.LastTime) > config.AbandonedIdleTimeout
+	}
+	return false
+}
+
+// DeleteGame tears down an abandoned game entirely: the per-game stream, the
+// game's chat messages in the shared chat stream, and the lobby KV listing
+// (whose deletion removes the game from every player's list).
+func (l *Lobby) DeleteGame(ctx context.Context, gameID string) error {
+	if err := natspkg.DeleteGameStream(ctx, l.js, gameID); err != nil && !errors.Is(err, jetstream.ErrStreamNotFound) {
+		return err
+	}
+	if err := natspkg.PurgeGameChat(ctx, l.js, gameID); err != nil {
+		log.Printf("delete game %s: purge chat: %v", gameID, err)
+	}
+	if err := l.kv.Delete(ctx, config.LobbyGameKey(gameID)); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	delete(l.abandoned, gameID)
+	l.mu.Unlock()
+	return nil
 }
 
 func (l *Lobby) emitUpdate(u LobbyUpdate) {

@@ -223,6 +223,15 @@ const (
     PresenceHeartbeat      = 5 * time.Second
 )
 
+// Abandoned-game detection (see lobby.runAbandonedChecker): every client
+// re-checks the lobby's games on a timer; abandoned games grow a Delete
+// button in the lobby.
+const (
+    AbandonedCheckInterval    = 1 * time.Minute   // how often each client re-checks
+    AbandonedIdleTimeout      = 1 * time.Minute   // in_progress: max stream silence
+    AbandonedUnstartedTimeout = 15 * time.Minute  // created/starting: max age since CreatedAt
+)
+
 // CompetitiveVisibleRows returns the number of visible rows for a competitive
 // game with the given player count: VisibleRows + playerCount (each player adds
 // one row, so the board grows taller downward).
@@ -554,6 +563,11 @@ func DeleteGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 
 // ListGameStreams returns names of all streams matching the JETRICKS_GAME_ prefix.
 func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, error)
+
+// PurgeGameChat removes one game's chat messages from the shared chat stream
+// (purge by the game's GameChatSubject). Used by archive.ArchiveAndCleanup and
+// lobby.DeleteGame.
+func PurgeGameChat(ctx context.Context, js jetstream.JetStream, gameID string) error
 ```
 
 #### `kv.go`
@@ -1497,9 +1511,10 @@ type Lobby struct {
     // goroutines hold the write lock when updating them; UI handler goroutines
     // hold the read lock when reading them.
     mu       sync.RWMutex
-    players  map[string]PlayerPresence  // keyed by playerID — access via Players()
-    games    map[string]GameListing     // keyed by gameID — access via Games()
-    archives []config.ArchiveRecord     // game history — access via Archives()
+    players   map[string]PlayerPresence  // keyed by playerID — access via Players()
+    games     map[string]GameListing     // keyed by gameID — access via Games()
+    abandoned map[string]bool            // games flagged abandoned — access via AbandonedGames()
+    archives  []config.ArchiveRecord     // game history — access via Archives()
 
     status          PresenceStatus       // local player's current presence status
     currentGameID   string               // game the local player is in, if any
@@ -1517,6 +1532,10 @@ func (l *Lobby) Games() map[string]GameListing
 
 // Archives returns a shallow copy of the archive records (game history).
 func (l *Lobby) Archives() []config.ArchiveRecord
+
+// AbandonedGames returns a shallow copy of the game IDs the periodic checker
+// currently considers abandoned (see runAbandonedChecker below).
+func (l *Lobby) AbandonedGames() map[string]bool
 
 // New takes no ctx and returns *Lobby only (no error).
 func New(
@@ -1564,6 +1583,27 @@ type ToggleReadyResult struct {
     Players  []PlayerSummary
     MyReady  bool
 }
+
+// runAbandonedChecker (goroutine started by Start) re-evaluates every listed
+// game for abandonment every config.AbandonedCheckInterval (1 min) via
+// checkAbandoned, which rebuilds the abandoned set from scratch (so a game
+// where activity resumes is un-flagged) and emits LobbyUpdateGames on change.
+func (l *Lobby) runAbandonedChecker(ctx context.Context)
+func (l *Lobby) checkAbandoned(ctx context.Context)
+
+// isAbandoned applies the rules to one listing: created/starting games are
+// abandoned config.AbandonedUnstartedTimeout (15 min) after CreatedAt;
+// in_progress games once the game stream's State.LastTime is older than
+// config.AbandonedIdleTimeout (1 min) — or immediately if the stream is gone
+// (ErrStreamNotFound); other errors don't flag (can't tell). `now` is a
+// parameter so tests inject a future time instead of waiting.
+func (l *Lobby) isAbandoned(ctx context.Context, g GameListing, now time.Time) bool
+
+// DeleteGame tears down an abandoned game entirely: DeleteGameStream, then
+// natspkg.PurgeGameChat (the game's messages in the shared chat stream), then
+// the KV listing delete — whose watcher event removes the game (and its
+// abandoned flag) from every client's maps.
+func (l *Lobby) DeleteGame(ctx context.Context, gameID string) error
 ```
 
 `JoinGame`'s listing update runs as a **CAS loop** (Get → mutate → `kv.Update(rev)` → retry on revision mismatch, like `ToggleReady`), replacing the old plain `kv.Put`: team capacity validation and `TeamSlot` assignment (the count of existing members on that team) must be atomic with the roster append, or two concurrent joins could both land on a full team / claim the same slot. The roster entry — whose `PlayerSummary` payload now includes `Team`/`TeamSlot` — is published only AFTER the CAS commit. "Both teams full → starting" reuses the existing `len(Players) >= PlayerCount` transition, since per-team capacity is enforced before the append.
@@ -1726,7 +1766,9 @@ Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logi
 
 **Ready checklist styling.** While waiting for players to ready up, the HUD's ready list (`readyArea`, `game.go`) shows each player's name with a filled square-cornered tag on the right — green "READY" (`colGo`) or red "NOT READY" (`colErr`), dark pixel-face text, drawn by `readyBadge` over a plain `fillRect` — replacing the earlier subtle "✓ / …" prefix marks.
 
-**Button styling.** Primary actions (Play, Join, Ready, Create Game, Send) use the `primaryButton(gtx, btn, label)` helper (`lobby.go`): the filled-accent `material.Button` restyled by `pixelize` (square corners, pixel face, 11 sp) over a `hardShadow`. Non-primary actions — Spectate, Quit, Back to Lobby, and the login collision-dialog Cancel — use the `secondaryButton(gtx, btn, label)` helper: an accent-colored (`colAccent`) pixel-face label and 2 dp accent border over the `colPanel` background, also on a hard shadow, so they read as clearly clickable instead of blending into the dark window background (a bare `colPanel` fill made them look disabled even though they worked). The spectator's HUD keeps the "Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a spectator can always return to the lobby.
+**Button styling.** Primary actions (Play, Join, Ready, Create Game, Send) use the `primaryButton(gtx, btn, label)` helper (`lobby.go`): the filled-accent `material.Button` restyled by `pixelize` (square corners, pixel face, 11 sp) over a `hardShadow`. Non-primary actions — Spectate, Quit, Back to Lobby, and the login collision-dialog Cancel — use the `secondaryButton(gtx, btn, label)` helper: an accent-colored (`colAccent`) pixel-face label and 2 dp accent border over the `colPanel` background, also on a hard shadow, so they read as clearly clickable instead of blending into the dark window background (a bare `colPanel` fill made them look disabled even though they worked). Destructive actions — the abandoned-game Delete and its "Yes, delete" confirmation — use `dangerButton(gtx, btn, label)`: the same secondary chrome but with the error red (`colErr`) label and border, so they cannot be mistaken for Join/Spectate. The spectator's HUD keeps the "Back to Lobby" button (the same `backBtn` → `returnToLobby` path as a player), so a spectator can always return to the lobby.
+
+**Abandoned-game deletion (lobby).** `layoutLobby` reads `lb.AbandonedGames()` each frame (the set is maintained by the lobby package's minute-interval `runAbandonedChecker` — see Section on `internal/lobby`) and passes each row's flag into `gameRow(gtx, g, abandoned)`. An abandoned row appends a red `· abandoned` tag to its info line and shows a `dangerButton` **Delete** after Join/Spectate (`gameRowBtns` gains `del`/`delYes`/`delNo` Clickables in `app.go`). Clicking Delete stores the game in `App.confirmDeleteID` (UI-goroutine only); while it matches, the row's action buttons are replaced by a confirmation rendered on its **own line under the game info** (a vertical flex — beside the info it would squeeze the `· abandoned` tag): "Are you sure you want to delete this game?" in `colErr` with **Yes, delete** (`dangerButton`) and **Cancel** (`secondaryButton`) — so a stray click can't join or delete. Confirming clears `confirmDeleteID` and dispatches `go a.deleteGame(id)` (`lifecycle.go`) → `lobby.DeleteGame`, which deletes the game stream, purges the game's chat from the shared chat stream, and deletes the KV listing (removing the row everywhere).
 
 Two small packages support the front end:
 - **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math) for the native UI. Exposes a single decision function, `CellStyle`, plus the RGBA surface (`CellAppearance` — fill, outline, outline width, and the `Bevel` flag that gates the drawer's 8-bit shading on filled cells — `PlayerColorRGBA`, `PlayerColorHex`), so every render path (own board, opponent boards, spectator view) draws from one visual model.
@@ -1786,7 +1828,8 @@ The following steps happen in order at startup. Steps that can fail cause the ap
        connection)
     b. Check lobby.IsNameInUse
     c. Create lobby.Lobby with playerName as both playerID and name
-    d. Start lobby (KV watcher, chat consumer, archive consumer, heartbeat)
+    d. Start lobby (KV watcher, chat consumer, archive consumer, heartbeat,
+       abandoned-game checker)
     e. Wait for initial KV load
     f. Run cleanup.Run
     g. Move to the lobby screen
@@ -1818,6 +1861,7 @@ All goroutines are started with a context derived from the root context and exit
 | Lobby chat consumer (`runChatConsumer`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby archive consumer (`runArchiveConsumer`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby presence heartbeat (`runHeartbeat`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
+| Abandoned-game checker (`runAbandonedChecker`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Own-cells consumer (`runConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Events consumer (`runEventsConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
 | Meta consumer (`runMetaConsumer`) | `engine.Engine` | `engine.Start()` | ctx cancel |
@@ -1865,7 +1909,7 @@ These are the only two orbit.go modules used (`natsext` comes in as an indirect 
 
 - `internal/nats` — stream creation, KV operations, atomic batch publish happy path, CAS failure path, stream sealing, `FetchPlayfieldState` via `GetLastMsgsFor`. Tests use a local NATS context pointing at the test server so that `natscontext.Connect` is exercised end-to-end rather than bypassed.
 - `internal/engine` — start an engine against a real NATS server with a test game stream. Submit moves and verify the playfield reaches the expected state. Simulate CAS failure by publishing a conflicting update from a second client. Verify the `FetchPlayfieldState` snapshot correctly seeds `LastSeq` before the ordered consumer starts. Verify cooperative score deltas propagated via `EventLineClear` converge to the same local total across two engine instances. `teams_test.go` covers teams mode end-to-end: garbage is applied to the target team's shared board **exactly once** despite racing teammates, and the elimination/team-win flow (eliminated player spectates while the team plays on; whole-team elimination flips every winning-team member to `Won: true`).
-- `internal/lobby` — create/join/leave game operations, presence heartbeat expiry, KV watcher delivery. `teamjoin_test.go` covers the teams join CAS loop: team capacity (`ErrTeamFull`), atomic `TeamSlot` assignment under concurrent joins, and the both-teams-full → `starting` transition.
+- `internal/lobby` — create/join/leave game operations, presence heartbeat expiry, KV watcher delivery. `teamjoin_test.go` covers the teams join CAS loop: team capacity (`ErrTeamFull`), atomic `TeamSlot` assignment under concurrent joins, and the both-teams-full → `starting` transition. `abandoned_test.go` covers the abandonment rules (`isAbandoned` takes `now` as a parameter precisely so tests inject a future time instead of waiting out the timeouts, plus the deleted-stream case and a `checkAbandoned` end-to-end pass) and `DeleteGame`'s full teardown (stream gone, KV listing gone, game chat purged, lobby chat untouched, idempotent re-delete).
 - `internal/cleanup` — seed a NATS server with stale game streams in various states and verify cleanup produces the correct outcomes, including orphaned-stream deletion (via the `StreamNames` listing) when KV entries are missing.
 
 The `internal/testutil` package (`nats.go`) provides helpers for spinning up an **embedded** NATS server for integration tests. Tests run against that real server rather than mocking NATS behind interfaces.

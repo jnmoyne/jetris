@@ -84,6 +84,9 @@ type gameRowBtns struct {
 	joinA    widget.Clickable // teams mode: join team A
 	joinB    widget.Clickable // teams mode: join team B
 	spectate widget.Clickable
+	del      widget.Clickable // abandoned games: opens the delete confirmation
+	delYes   widget.Clickable // delete confirmation: "Yes, delete"
+	delNo    widget.Clickable // delete confirmation: "Cancel"
 }
 
 // App holds all native-UI state. Fields read or written by more than one
@@ -188,6 +191,9 @@ type App struct {
 	archiveLst widget.List
 	chatList   widget.List
 	gameBtns   map[string]*gameRowBtns
+	// confirmDeleteID is the abandoned game whose row currently shows the
+	// "Are you sure you want to delete this game?" confirmation ("" = none).
+	confirmDeleteID string
 
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable

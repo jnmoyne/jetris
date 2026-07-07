@@ -105,6 +105,11 @@ const (
     ArchiveSubject         = "jetricks.archive"
 
     PresenceHeartbeat      = 5 * time.Second
+
+    // Abandoned-game detection (lobby.runAbandonedChecker)
+    AbandonedCheckInterval    = 1 * time.Minute   // how often each client re-checks
+    AbandonedIdleTimeout      = 1 * time.Minute   // in_progress: max stream silence
+    AbandonedUnstartedTimeout = 15 * time.Minute  // created/starting: max age since CreatedAt
 )
 
 // CompetitiveVisibleRows returns the number of visible rows for a competitive
@@ -1878,6 +1883,7 @@ type Lobby struct {
     mu              sync.RWMutex
     players         map[string]PlayerPresence
     games           map[string]GameListing
+    abandoned       map[string]bool
     archives        []config.ArchiveRecord
     status          PresenceStatus
     currentGameID   string
@@ -1900,8 +1906,8 @@ func (l *Lobby) Players() map[string]PlayerPresence {
 func (l *Lobby) Games() map[string]GameListing  // same pattern
 ```
 
-`Start()` starts four goroutines: KV watcher, lobby chat consumer, archive
-consumer, and heartbeat.
+`Start()` starts five goroutines: KV watcher, lobby chat consumer, archive
+consumer, heartbeat, and the abandoned-game checker.
 
 **KV watcher**: `kv.WatchAll(ctx)` — on each update, decode the key prefix to
 determine if it's a player or game entry, update the appropriate map under `l.mu.Lock()`,
@@ -1963,8 +1969,35 @@ meta to `in_progress` (setting `StartedAt`). The native UI renders each
 player's state in the pre-game checklist as a filled pill badge (green
 "READY" / red "NOT READY" — `readyBadge` in `nativeui/game.go`).
 
+**Abandoned-game detection & deletion.** `runAbandonedChecker` (goroutine,
+started by `Start`) re-evaluates every listed game once per
+`config.AbandonedCheckInterval` (1 min) via `checkAbandoned`:
+
+- `created`/`starting` games are abandoned once
+  `now - CreatedAt > config.AbandonedUnstartedTimeout` (15 min) — the creator
+  never joined, or the players never readied up.
+- `in_progress` games are abandoned once the game stream's `State.LastTime` is
+  older than `config.AbandonedIdleTimeout` (1 min) — a live game publishes
+  constantly, so a silent stream means everyone left. An `in_progress` listing
+  whose stream returns `ErrStreamNotFound` is flagged immediately; other stream
+  lookup errors do NOT flag (can't tell — transient failure).
+
+The rules live in `isAbandoned(ctx, g, now)`; `now` is a parameter so tests
+inject a future time rather than waiting out the timeouts. Each pass rebuilds
+the `abandoned` set from scratch (resumed activity un-flags a game) and emits
+`LobbyUpdateGames` when the set changes; the UI reads it via
+`AbandonedGames()`. `DeleteGame(ctx, gameID)` is the user-confirmed teardown:
+`natspkg.DeleteGameStream` (tolerating `ErrStreamNotFound`), then
+`natspkg.PurgeGameChat` (the game's messages in the shared chat stream), then
+the `games.<id>` KV delete, whose watcher event removes the listing — and its
+abandoned flag — on every client.
+
 **Integration tests**: create/join flow, presence heartbeat renewal, KV watcher
-delivers updates to Maps.
+delivers updates to Maps. `abandoned_test.go`: the abandonment rules with an
+injected future `now` (fresh/stale created game, active/idle started game,
+deleted-stream case, `checkAbandoned` end-to-end) and `DeleteGame`'s full
+teardown (stream + KV listing gone, game chat purged, lobby chat untouched,
+idempotent re-delete).
 
 ---
 
@@ -2000,7 +2033,13 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   (from `main.go`); `App.Run` runs on a goroutine.
 - `bridge.go` — `pumpEngine` / `pumpLobby`: drain `engine.Updates` / `lobby.Updates`, fold
   scalar state under a mutex, and call `window.Invalidate()`. No polling.
-- `login.go` / `lobby.go` / `game.go` — the three screens.
+- `login.go` / `lobby.go` / `game.go` — the three screens. The lobby's game rows
+  read `lb.AbandonedGames()`: an abandoned game shows a red `· abandoned` tag and
+  a red `dangerButton` **Delete** whose click swaps the row's action buttons for
+  an "Are you sure you want to delete this game?" confirmation on its own line
+  under the game info, so it never squeezes the info text
+  (`confirmDeleteID` on the App, `del`/`delYes`/`delNo` in `gameRowBtns`);
+  confirming dispatches `deleteGame` (`lifecycle.go`) → `lobby.DeleteGame`.
 - `board.go` — board drawing via `internal/render.CellStyle` (RGBA). `drawCell` shades
   filled cells with the 8-bit bevel (lighter top/left strips, darker bottom/right,
   a gloss pixel in the corner — `CellAppearance.Bevel` gates it so empty squares stay

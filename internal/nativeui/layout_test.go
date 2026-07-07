@@ -157,6 +157,32 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 	})
 
+	t.Run("lobby-game-row-abandoned", func(t *testing.T) {
+		// An abandoned game's row carries the red "· abandoned" tag and the
+		// Delete button; clicking Delete swaps the action buttons for the
+		// inline "Are you sure…" confirmation (confirmDeleteID set).
+		a := newTestApp()
+		g := lobby.GameListing{
+			GameID:      "abandoned-game-1234",
+			Mode:        config.ModeCooperative,
+			Status:      config.GameStatusCreated,
+			PlayerCount: 2,
+			CreatedAt:   time.Now().Add(-20 * time.Minute),
+		}
+		row := func() {
+			var ops op.Ops
+			gtx := layout.Context{
+				Ops:         &ops,
+				Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+				Constraints: layout.Exact(image.Pt(800, 60)),
+			}
+			a.gameRow(gtx, g, true)
+		}
+		row()
+		a.confirmDeleteID = g.GameID
+		row()
+	})
+
 	t.Run("game-coop-player", func(t *testing.T) {
 		a := newTestApp()
 		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)

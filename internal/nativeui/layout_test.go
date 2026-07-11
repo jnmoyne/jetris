@@ -267,7 +267,22 @@ func TestFireworksOverlay(t *testing.T) {
 		synColors[p.col] = true
 	}
 	if len(synColors) < 2 {
-		t.Fatalf("synadia particles use %d colors, want >= 2 (green square + white S)", len(synColors))
+		t.Fatalf("synadia particles use %d colors, want >= 2 (emerald square + white S)", len(synColors))
+	}
+
+	// Every show must roll at least one Synadia rocket — the choreography
+	// loops until dropped, so a show without one would never display it.
+	for i := 0; i < 25; i++ {
+		show := newFireworksShow(time.Unix(1_000_000, int64(i)))
+		n := 0
+		for _, r := range show.rockets {
+			if r.synadia {
+				n++
+			}
+		}
+		if n == 0 {
+			t.Fatal("show rolled zero Synadia rockets; want at least one per show")
+		}
 	}
 
 	start := time.Unix(1_000_000, 0)

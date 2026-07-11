@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"math"
 	"math/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -38,8 +39,10 @@ const (
 // fwWhite is the warm white of the rising rocket streaks.
 var fwWhite = colorN{R: 0xff, G: 0xf2, B: 0xd0, A: 0xff}
 
-// synadiaIconPNG is the synadia.com logo (Synadia, the company behind
-// NATS.io) — the rare one-in-ten fireworks burst.
+// synadiaIconPNG is the official Synadia "Symbol" from
+// https://www.synadia.com/about/brand (Synadia, the company behind NATS.io) —
+// the white "S" swirl on the emerald rounded square, for the rare one-in-ten
+// fireworks burst.
 //
 //go:embed synadia-icon.png
 var synadiaIconPNG []byte
@@ -87,7 +90,7 @@ func newFireworksShow(now time.Time) *fireworksShow {
 			launch: time.Duration(i)*fwLaunchGap + time.Duration(rng.Int63n(int64(200*time.Millisecond))),
 			rise:   550*time.Millisecond + time.Duration(rng.Int63n(int64(350*time.Millisecond))),
 			// One rocket in ten bursts into the synadia.com logo instead of
-			// the NATS "N".
+			// the NATS "N" (with a floor of one per show, applied below).
 			synadia: rng.Intn(10) == 0,
 			// Roughly one burst in three scatters in the logo's own colors;
 			// the rest recolor toward one traditional fireworks color.
@@ -98,6 +101,13 @@ func newFireworksShow(now time.Time) *fireworksShow {
 			show.cycle = end
 		}
 		show.rockets = append(show.rockets, r)
+	}
+	// The show loops its fixed choreography until dropped, so a roll with no
+	// Synadia rocket would mean an entire victory screen without one — with
+	// twelve rockets at one-in-ten that's a ~28% chance. Force one in that
+	// case; the average stays around one per ten bursts.
+	if !slices.ContainsFunc(show.rockets, func(r fwRocket) bool { return r.synadia }) {
+		show.rockets[rng.Intn(len(show.rockets))].synadia = true
 	}
 	return show
 }
@@ -238,7 +248,7 @@ func fwLogoPoints() []fwLogoPt {
 }
 
 // fwSynadiaPoints samples the embedded synadia-icon.png once — the white "S"
-// swirl on the green square, for the rare Synadia burst.
+// swirl on the emerald square, for the rare Synadia burst.
 func fwSynadiaPoints() []fwLogoPt {
 	fwSynOnce.Do(func() { fwSynPts = sampleLogoPoints(synadiaIconPNG, 43) })
 	return fwSynPts

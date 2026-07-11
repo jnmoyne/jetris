@@ -11,8 +11,9 @@ import (
 // StartEmbeddedServer runs a JetStream-enabled nats-server inside this
 // process, listening on every interface at the given port and storing stream
 // data under storeDir. The returned server is ready for connections; stop it
-// with Shutdown(). Backs the login screen's "Run own NATS server" option
-// (port config.EmbeddedPort, storage config.EmbeddedStoreDir).
+// with Shutdown(). Backs the login screen's "LAN mode (embedded NATS server)"
+// option (port from the picker, default config.DefaultEmbeddedPort; storage
+// config.EmbeddedStoreDir).
 func StartEmbeddedServer(storeDir string, port int) (*natsserver.Server, error) {
 	opts := &natsserver.Options{
 		Host:      "0.0.0.0",

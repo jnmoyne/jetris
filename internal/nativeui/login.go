@@ -3,6 +3,7 @@ package nativeui
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"gioui.org/layout"
@@ -42,6 +43,24 @@ func (a *App) layoutLogin(gtx C) D {
 				a.connURLSeeded = false
 			} else {
 				a.connEnum.Value = "url"
+			}
+		}
+	}
+	for {
+		ev, ok := a.connPortEd.Update(gtx)
+		if !ok {
+			break
+		}
+		switch ev.(type) {
+		case widget.SubmitEvent:
+			submitted = true
+		case widget.ChangeEvent:
+			// Editing the port implies choosing LAN mode, with the same
+			// seeded-ChangeEvent swallow as the URL field.
+			if a.connPortSeeded {
+				a.connPortSeeded = false
+			} else {
+				a.connEnum.Value = "embedded"
 			}
 		}
 	}
@@ -155,12 +174,13 @@ func (a *App) submitLogin() {
 
 // pickerConfig resolves the current CONNECT TO choice into a config: the URL
 // field when the URL radio is active (errors when empty), the embedded-server
-// mark for the "Run own NATS server" radio, otherwise the context chosen in
-// the pull-down. The base is connCfg, so --user/--password flags carry
-// through to URL connects. Runs on the UI goroutine (reads widgets).
+// mark plus the entered port for the "LAN mode (embedded NATS server)" radio,
+// otherwise the context chosen in the pull-down. The base is connCfg, so
+// --user/--password flags carry through to URL connects. Runs on the UI
+// goroutine (reads widgets).
 func (a *App) pickerConfig() (config.Config, error) {
 	cfg := a.connCfg
-	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
+	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded, cfg.EmbeddedPort = "", "", false, 0
 	switch a.connEnum.Value {
 	case "url":
 		cfg.NATSURL = strings.TrimSpace(a.connURLEd.Text())
@@ -169,6 +189,11 @@ func (a *App) pickerConfig() (config.Config, error) {
 		}
 	case "embedded":
 		cfg.RunEmbedded = true
+		port, err := a.pickerPort()
+		if err != nil {
+			return cfg, err
+		}
+		cfg.EmbeddedPort = port
 	default:
 		if a.connCtx == "" {
 			return cfg, errors.New("no NATS context selected")
@@ -176,6 +201,20 @@ func (a *App) pickerConfig() (config.Config, error) {
 		cfg.NATSContext = a.connCtx
 	}
 	return cfg, nil
+}
+
+// pickerPort parses the LAN-mode port field: empty means the default, anything
+// else must be a valid TCP port. Runs on the UI goroutine (reads the widget).
+func (a *App) pickerPort() (int, error) {
+	text := strings.TrimSpace(a.connPortEd.Text())
+	if text == "" {
+		return config.DefaultEmbeddedPort, nil
+	}
+	port, err := strconv.Atoi(text)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, errors.New("enter a valid port number (1-65535)")
+	}
+	return port, nil
 }
 
 // setLoginErr sets (or clears) the login screen's error line.
@@ -307,17 +346,46 @@ func (a *App) connSection(gtx C) D {
 		}),
 		layout.Rigid(spacer(6)),
 		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					rb := material.RadioButton(a.th, &a.connEnum, "embedded", "Run own NATS server")
-					rb.Color = colFg
-					return rb.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
-				}),
-				layout.Flexed(1, a.body(fmt.Sprintf("port %d · data in ./%s", config.EmbeddedPort, config.EmbeddedStoreDir), colMuted)),
-			)
+			rb := material.RadioButton(a.th, &a.connEnum, "embedded", "LAN mode (embedded NATS server)")
+			rb.Color = colFg
+			return rb.Layout(gtx)
+		}),
+		layout.Rigid(func(gtx C) D {
+			// Port entry plus storage hint, indented under the LAN-mode radio.
+			return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(26)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.body("Port:", colFg)),
+					layout.Rigid(func(gtx C) D {
+						return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Max.X = gtx.Dp(70)
+						gtx.Constraints.Min.X = gtx.Constraints.Max.X
+						return a.editorBox(gtx, &a.connPortEd, strconv.Itoa(config.DefaultEmbeddedPort))
+					}),
+					layout.Rigid(func(gtx C) D {
+						return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
+					}),
+					layout.Flexed(1, a.body("data in ./"+config.EmbeddedStoreDir, colMuted)),
+				)
+			})
+		}),
+		layout.Rigid(func(gtx C) D {
+			// With LAN mode chosen, show the URL other players dial so the
+			// host can share it before even hitting Play.
+			if a.connEnum.Value != "embedded" {
+				return D{}
+			}
+			port, err := a.pickerPort()
+			if err != nil {
+				port = config.DefaultEmbeddedPort
+			}
+			return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(26)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(a.body("Your server's URL is ", colMuted)),
+					layout.Rigid(a.body(fmt.Sprintf("nats://%s:%d", a.lanIP, port), colNATSGreen)),
+				)
+			})
 		}),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(a.connCheckRow),

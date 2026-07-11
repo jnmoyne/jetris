@@ -29,12 +29,13 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 	a.disconnect()
 
 	if cfg.RunEmbedded {
-		// "Run own NATS server": bring up (or reuse) the in-process server,
-		// then connect to it via the same LAN address other players dial.
-		// (Not loopback: another NATS server holding a 127.0.0.1:4222-specific
-		// bind would intercept a loopback dial even though our 0.0.0.0 bind
-		// succeeded — a real setup on NATS developer machines.)
-		addr, err := a.ensureEmbeddedServer()
+		// "LAN mode (embedded NATS server)": bring up (or reuse) the
+		// in-process server, then connect to it via the same LAN address other
+		// players dial. (Not loopback: another NATS server holding a
+		// 127.0.0.1:4222-specific bind would intercept a loopback dial even
+		// though our 0.0.0.0 bind succeeded — a real setup on NATS developer
+		// machines.)
+		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedPort)
 		if err != nil {
 			a.mu.Lock()
 			a.loginErr = err.Error()
@@ -71,7 +72,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 		if srv != nil && nc.ConnectedServerId() != srv.ID() {
 			nc.Close()
 			a.mu.Lock()
-			a.loginErr = fmt.Sprintf("another NATS server is already using port %d — connect to it via the URL option instead, or stop it", config.EmbeddedPort)
+			a.loginErr = fmt.Sprintf("another NATS server is already using port %d — connect to it via the URL option instead, or stop it", embeddedPortOrDefault(cfg.EmbeddedPort))
 			a.loggingIn = false
 			a.mu.Unlock()
 			a.invalidate()
@@ -86,20 +87,41 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 	a.doLogin(name, false)
 }
 
-// ensureEmbeddedServer starts the in-process JetStream-enabled nats-server
-// once — port config.EmbeddedPort on all interfaces, storage in
-// ./config.EmbeddedStoreDir — and records its shareable "<lan-ip>:<port>"
+// embeddedPortOrDefault maps the picker's port choice (0 = unset) to the port
+// the embedded server actually listens on.
+func embeddedPortOrDefault(port int) int {
+	if port <= 0 {
+		return config.DefaultEmbeddedPort
+	}
+	return port
+}
+
+// ensureEmbeddedServer starts the in-process JetStream-enabled nats-server on
+// the given port (0 = config.DefaultEmbeddedPort) on all interfaces, storage
+// in ./config.EmbeddedStoreDir, and records its shareable "<lan-ip>:<port>"
 // address. Reused by later login attempts; it runs until the window closes so
-// friends stay connected across the host's lobby exits. Returns that address —
-// which is also the one the app connects through (see doConnectAndLogin on
-// why not loopback).
-func (a *App) ensureEmbeddedServer() (string, error) {
+// friends stay connected across the host's lobby exits — unless the player
+// picked a DIFFERENT port on a fresh login, which restarts it there. Returns
+// that address — which is also the one the app connects through (see
+// doConnectAndLogin on why not loopback).
+func (a *App) ensureEmbeddedServer(wantPort int) (string, error) {
+	wantPort = embeddedPortOrDefault(wantPort)
 	a.mu.Lock()
 	srv := a.embSrv
 	a.mu.Unlock()
+	if srv != nil {
+		if tcp, ok := srv.Addr().(*net.TCPAddr); ok && tcp.Port != wantPort {
+			log.Printf("embedded nats-server moving from port %d to %d", tcp.Port, wantPort)
+			srv.Shutdown()
+			srv = nil
+			a.mu.Lock()
+			a.embSrv = nil
+			a.mu.Unlock()
+		}
+	}
 	if srv == nil {
 		var err error
-		srv, err = natspkg.StartEmbeddedServer(config.EmbeddedStoreDir, config.EmbeddedPort)
+		srv, err = natspkg.StartEmbeddedServer(config.EmbeddedStoreDir, wantPort)
 		if err != nil {
 			return "", err
 		}
@@ -107,7 +129,7 @@ func (a *App) ensureEmbeddedServer() (string, error) {
 		a.embSrv = srv
 		a.mu.Unlock()
 	}
-	port := config.EmbeddedPort
+	port := wantPort
 	if tcp, ok := srv.Addr().(*net.TCPAddr); ok {
 		port = tcp.Port
 	}
@@ -134,7 +156,7 @@ func (a *App) doCheckConn(cfg config.Config) {
 		if running {
 			verb = "serving"
 		} else {
-			addr = fmt.Sprintf("%s:%d", natspkg.LanIP(), config.EmbeddedPort)
+			addr = fmt.Sprintf("%s:%d", natspkg.LanIP(), embeddedPortOrDefault(cfg.EmbeddedPort))
 		}
 		a.mu.Lock()
 		a.connChecking = false

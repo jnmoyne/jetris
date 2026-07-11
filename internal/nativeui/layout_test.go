@@ -124,8 +124,9 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 	})
 
 	t.Run("login-picker-embedded", func(t *testing.T) {
-		// The "Run own NATS server" option resolves to the embedded mark, no
-		// URL or context, and its row renders.
+		// The "LAN mode (embedded NATS server)" option resolves to the
+		// embedded mark with the default port, no URL or context, and its
+		// rows (port entry + shareable-URL line) render.
 		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
 		a.th = newTestApp().th
 		a.connEnum.Value = "embedded"
@@ -136,7 +137,37 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		if !cfg.RunEmbedded || cfg.NATSURL != "" || cfg.NATSContext != "" {
 			t.Fatalf("embedded pickerConfig = %+v, want RunEmbedded only", cfg)
 		}
+		if cfg.EmbeddedPort != config.DefaultEmbeddedPort {
+			t.Fatalf("EmbeddedPort = %d, want the %d default", cfg.EmbeddedPort, config.DefaultEmbeddedPort)
+		}
 		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-embedded-port", func(t *testing.T) {
+		// A custom port carries through; garbage in the port field errors.
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
+		a.th = newTestApp().th
+		a.connEnum.Value = "embedded"
+		a.connPortEd.SetText("14222")
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.EmbeddedPort != 14222 {
+			t.Fatalf("EmbeddedPort = %d, want 14222", cfg.EmbeddedPort)
+		}
+		a.connPortEd.SetText("99999")
+		if _, err := a.pickerConfig(); err == nil {
+			t.Fatal("pickerConfig accepted out-of-range port 99999")
+		}
+		a.connPortEd.SetText("")
+		cfg, err = a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.EmbeddedPort != config.DefaultEmbeddedPort {
+			t.Fatalf("empty port field gave %d, want the %d default", cfg.EmbeddedPort, config.DefaultEmbeddedPort)
+		}
 	})
 
 	t.Run("lobby", func(t *testing.T) {

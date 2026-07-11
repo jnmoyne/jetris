@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"jetricks/internal/config"
 	"jetricks/internal/engine"
 	"jetricks/internal/lobby"
+	natspkg "jetricks/internal/nats"
 )
 
 // Layout type aliases used throughout the package.
@@ -110,11 +112,12 @@ type App struct {
 	connCheckOK  bool
 	connCheckMsg string
 
-	// Embedded server ("Run own NATS server" option; guarded by mu). The
-	// server starts on the first embedded login and runs until the window
-	// closes — quitting to the login screen leaves it up for connected
-	// friends. usingEmbedded marks the CURRENT connection as being to it,
-	// which is what gates the lobby's shareable-address line.
+	// Embedded server ("LAN mode (embedded NATS server)" option; guarded by
+	// mu). The server starts on the first embedded login and runs until the
+	// window closes — quitting to the login screen leaves it up for connected
+	// friends; picking a different port on a later login restarts it there.
+	// usingEmbedded marks the CURRENT connection as being to it, which is
+	// what gates the lobby's shareable-address line.
 	embSrv        *natsserver.Server
 	embAddr       string // shareable "<lan-ip>:<port>"
 	usingEmbedded bool
@@ -166,19 +169,22 @@ type App struct {
 	msgLog  []streamMsg
 
 	// --- UI-goroutine-only widgets ---
-	loginEd       widget.Editor
-	loginBtn      widget.Clickable
-	collisionYes  widget.Clickable
-	collisionNo   widget.Clickable
-	connEnum      widget.Enum        // connection choice: "context" for the context pull-down, "url" for the URL row
-	connCtx       string             // context chosen in the pull-down (seeded from --context or the CLI's selected context)
-	connDropOpen  bool               // whether the context pull-down list is expanded
-	connDropBtn   widget.Clickable   // the pull-down button itself
-	connOptBtns   []widget.Clickable // one per context row in the expanded pull-down
-	connURLEd     widget.Editor      // NATS URL entry (pre-set to the demo server or --server)
-	connURLSeeded bool               // swallow the ChangeEvent queued by the constructor's SetText (it isn't a user edit)
-	connList      widget.List        // scrollable pull-down option list
-	connCheckBtn  widget.Clickable   // "Check connection" (connect + ping, no side effects)
+	loginEd        widget.Editor
+	loginBtn       widget.Clickable
+	collisionYes   widget.Clickable
+	collisionNo    widget.Clickable
+	connEnum       widget.Enum        // connection choice: "context" for the context pull-down, "url" for the URL row
+	connCtx        string             // context chosen in the pull-down (seeded from --context or the CLI's selected context)
+	connDropOpen   bool               // whether the context pull-down list is expanded
+	connDropBtn    widget.Clickable   // the pull-down button itself
+	connOptBtns    []widget.Clickable // one per context row in the expanded pull-down
+	connURLEd      widget.Editor      // NATS URL entry (pre-set to the demo server or --server)
+	connURLSeeded  bool               // swallow the ChangeEvent queued by the constructor's SetText (it isn't a user edit)
+	connPortEd     widget.Editor      // LAN-mode port entry (pre-set to config.DefaultEmbeddedPort)
+	connPortSeeded bool               // same SetText-ChangeEvent swallow as connURLSeeded
+	lanIP          string             // this machine's LAN address, resolved once for the shareable-URL lines
+	connList       widget.List        // scrollable pull-down option list
+	connCheckBtn   widget.Clickable   // "Check connection" (connect + ping, no side effects)
 
 	createBtn  widget.Clickable
 	modeEnum   widget.Enum
@@ -264,6 +270,12 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	a.connURLEd.Submit = true
 	a.connURLEd.SetText(DefaultNATSURL)
 	a.connURLSeeded = true // the SetText above queues a ChangeEvent; don't let it pick the URL option
+	a.connPortEd.SingleLine = true
+	a.connPortEd.Submit = true
+	a.connPortEd.Filter = "0123456789"
+	a.connPortEd.SetText(strconv.Itoa(config.DefaultEmbeddedPort))
+	a.connPortSeeded = true // same swallow as connURLSeeded
+	a.lanIP = natspkg.LanIP()
 	a.connList.Axis = layout.Vertical
 
 	// Default choice precedence: --server, then --context, then the CLI's

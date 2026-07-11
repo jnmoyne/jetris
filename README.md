@@ -2,11 +2,15 @@
 
 ![Jetricks-screenshot-1.png](Jetricks-screenshot-1.png)
 
-**An example of a peer-to-peer distributed blackboard system built using NATS.io disguised as a real-time, multiplayer, cooperative/competitive Tetris-inspired game**
+**An example of a peer-to-peer distributed blackboard system built using NATS.io disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
 
-If you are only here because you want to play the game with others over the Internet, go ahead and download the latest release of the `jetricks` binary for your platform and just run it. You then pick which NATS.io server(s) to connect to right on the login screen: choose one of your NATS CLI contexts from the **Context** pull-down (it starts on your currently selected context), type a server URL into the **NATS URL** field, or select **Run own NATS server** to have Jetricks start a JetStream-enabled `nats-server` inside the game process itself (port 4222, storage in a local `nats-data` directory) — the lobby then shows your server's IP address and port so you can share it with the people you want to play with, who just type it into their NATS URL field. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). If you don't have a server to connect to, you can always connect to the NATS.io demo server at `demo.nats.io` with the default port number (4222) — the URL field is pre-filled with it. And start playing (or spectating)!
+Let's get the game part out-of-the-way first: Jetricks is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetricks, but now there are other players that you are playing with or against!
 
-There are 3 game modes: cooperative, competitive, and teams. In cooperative, all the players work with each other to achieve the highest score, in competitive the last player alive wins the game. 
+There are 3 game modes: cooperative, competitive, and teams. In cooperative, all the players work with each other to achieve the highest score, in competitive the last player alive wins the game.
+
+To just play the game with others over the Internet, go ahead and download the latest release of the `jetricks` binary for your platform and just run it.
+
+You can then pick which NATS.io server(s) to connect to right : choose one of your NATS CLI contexts from the **Context** pull-down (it starts on your currently selected context), type a server URL into the **NATS URL** field, or select **LAN mode (embedded NATS server)** to have Jetricks start a JetStream-enabled `nats-server` inside the game process itself (no auth, port of your choosing — 4222 by default — storage in a local `jetstream-data` directory) — the window then shows "Your server's URL is `nats://<ip>:<port>`" so you can share it with the people you want to play with, who just type it into their NATS URL field. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). If you don't have a server to connect to, you can always connect to the NATS.io demo server at `demo.nats.io` with the default port number (4222) — the URL field is pre-filled with it. And start playing (or spectating)!
 
 A note on latency: like all on-line multiplayer video games, the network latency between your machine and the NATS.io server has a noticeable effect on the latency between your player inputs and the playfield you see. Understand that by design in Jetricks there's no client-side pre-updating of what you see on your screen (which is what most networked multiplayer games do): all your keyboard inputs are published to the server and it's only when the NATS server has persisted the messages associated with your move and then sent them back as updates to your machine that the screen gets updated and shows your move. The latency that you see on your screen is not the network latency, it is the end-to-end latency of a transaction getting committed to a stream and stream consumers getting the updated data pushed to them.
 
@@ -31,12 +35,11 @@ Every player runs the same desktop binary. That binary is just a NATS client. Th
 
 ---
 
-## 1. The idea: a blackboard system
+## 1. The idea: a blackboard system over NATS.io
 
-Jetricks is a purely 'peer-to-peer' distributed application (on top of NATS.io): there is no 'game server process' at all, the game is purely executed using the players' `jetricks` processes using the NATS.io server(s) for state storage and synchronization.
-Jetricks is, deliberately, an example of a blackboard system.
+Jetricks is an example blackboard system, it is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetricks` processes using the NATS.io server(s) for state storage and synchronization.
 
-A blackboard system is a classic architecture from AI: several independent agents share a common, structured knowledge store — the *blackboard* — that they all read from and write to. No agent owns the whole problem; each watches the blackboard, contributes the changes it can, and reacts to what the others have written. The blackboard is the only thing they share, and it is simultaneously the shared *state* and the shared *communication channel*.
+A blackboard system is an artificial intelligence approach based on the blackboard architectural model: several independent agents share a common, structured knowledge store — the *blackboard* — that they all read from and write to. No agent owns the whole problem; each watches the blackboard, contributes the changes it can, and reacts to what the others have written. The blackboard is the only thing they share, and it is simultaneously the shared *state* and the shared *communication channel*.
 
 In Jetricks the blackboard is the playfield, stored as a NATS JetStream stream. The agents are the players. Each player drops their own piece onto a board that everyone shares, sees everyone else's pieces in real time, and must never overwrite another player's move.
 
@@ -107,7 +110,7 @@ Every player launches the same `jetricks` binary, which connects to NATS as an o
 - publishes its own moves as compare-and-set writes to the shared stream, and
 - consumes everyone's writes via push consumers and applies them to its local board.
 
-Because the authoritative state is *the stream*, all peers converge on the same board. No peer is in charge; the server arbitrates writes (via CAS) but computes nothing. This is what makes Jetricks genuinely **peer-to-peer** rather than client-server, even though the peers rendezvous through a shared broker.
+Because the authoritative state is *the stream*, all peers converge on the same board. No peer is in charge; the server arbitrates writes (via CAS) but computes nothing. This is what makes Jetricks genuinely peer-to-peer rather than client-server.
 
 ---
 
@@ -301,10 +304,11 @@ Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on 
 
 ### Run
 
-Jetricks never connects at startup — the login screen is where you choose the connection. Its **CONNECT TO** section offers two options:
+Jetricks never connects at startup — the login screen is where you choose the connection. Its **CONNECT TO** section offers three options:
 
 - **Context:** a pull-down of your NATS CLI contexts (the same contexts the `nats` CLI uses), preset to your currently selected context — click it to pick another.
 - **NATS URL:** an editable URL field, pre-filled with `nats://demo.nats.io:4222`; typing in it selects this option automatically.
+- **LAN mode (embedded NATS server):** Jetricks starts a JetStream-enabled `nats-server` inside the game process itself — default account, no auth, JetStream data in a local `jetstream-data` directory — and connects to it. The port is editable (4222 by default; typing in it selects this option), and the screen shows "Your server's URL is `nats://<ip>:<port>`" so you can share the address with other players, who connect to it via their NATS URL field. The server keeps running until you close the window, so quitting to the login screen doesn't kick your friends.
 
 A **Check connection** button dials the current choice and shows the server and its ping without joining anything; hitting **Play** connects and logs in. Quitting the lobby returns to this screen, so you can switch servers without restarting.
 

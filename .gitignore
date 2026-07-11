@@ -1,4 +1,5 @@
 nats-data/
+jetstream-data/
 .DS_Store
 .idea/
 /jetricks

@@ -178,7 +178,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 			}
 			return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-					layout.Rigid(a.pixel(unit.Sp(9), "YOUR SERVER  ", colMuted).Layout),
+					layout.Rigid(a.pixel(unit.Sp(9), "YOUR SERVER'S URL IS  ", colMuted).Layout),
 					layout.Rigid(a.pixel(unit.Sp(10), "nats://"+addr, colNATSGreen).Layout),
 					layout.Rigid(a.body("  — share this address so others can join you", colMuted)),
 				)

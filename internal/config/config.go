@@ -13,14 +13,16 @@ type Config struct {
 	NATSUser     string
 	NATSPassword string
 	RunEmbedded  bool // run an in-process JetStream-enabled nats-server and connect to it
+	EmbeddedPort int  // port for the embedded server (0 = DefaultEmbeddedPort)
 }
 
-// Embedded-server settings for the login screen's "Run own NATS server"
-// option: the port the in-process server listens on (all interfaces) and the
-// local directory holding its JetStream storage.
+// Embedded-server settings for the login screen's "LAN mode (embedded NATS
+// server)" option: the default port the in-process server listens on (all
+// interfaces; the player can override it in the picker) and the local
+// directory holding its JetStream storage.
 const (
-	EmbeddedPort     = 4222
-	EmbeddedStoreDir = "nats-data"
+	DefaultEmbeddedPort = 4222
+	EmbeddedStoreDir    = "jetstream-data"
 )
 
 // ValidatePlayerName checks that a player name is valid for use as a

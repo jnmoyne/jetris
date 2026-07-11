@@ -35,10 +35,18 @@ func TestPickerSnapshots(t *testing.T) {
 	a.th = newTestApp().th
 
 	for _, st := range []struct {
-		name string
-		open bool
-	}{{"closed", false}, {"open", true}} {
+		name     string
+		open     bool
+		embedded bool
+	}{{"closed", false, false}, {"open", true, false}, {"embedded", false, true}} {
 		a.connDropOpen = st.open
+		if st.embedded {
+			// LAN mode selected: the shareable "Your server's URL is" line
+			// appears under the port row.
+			a.connEnum.Value = "embedded"
+		} else {
+			a.connEnum.Value = "context"
+		}
 		var ops op.Ops
 		gtx := layout.Context{
 			Ops:         &ops,

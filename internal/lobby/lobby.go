@@ -29,6 +29,7 @@ type Lobby struct {
 	games           map[string]GameListing
 	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
+	chatLog         []ChatMessage // lobby + game chat, in stream order, capped at chatLogCap
 	status          PresenceStatus
 	currentGameID   string
 	cancelFn        context.CancelFunc
@@ -43,11 +44,16 @@ func New(
 	name string,
 ) *Lobby {
 	return &Lobby{
-		playerID:        playerID,
-		name:            name,
-		kv:              kv,
-		js:              js,
-		Updates:         make(chan LobbyUpdate, 16),
+		playerID: playerID,
+		name:     name,
+		kv:       kv,
+		js:       js,
+		// Sized for the login window during which nothing drains it yet:
+		// Start's consumers replay KV presence/games, the archive history,
+		// and the chat backlog before the UI pump attaches. All updates are
+		// re-read-the-snapshot pings, so a drop only costs a repaint — but
+		// don't make drops the common case.
+		Updates:         make(chan LobbyUpdate, 256),
 		players:         make(map[string]PlayerPresence),
 		games:           make(map[string]GameListing),
 		abandoned:       make(map[string]bool),
@@ -220,10 +226,18 @@ func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
 	l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateGames})
 }
 
+// chatLogCap bounds the chat log kept in memory (and is all a joining player
+// replays into their UI).
+const chatLogCap = 200
+
 func (l *Lobby) runChatConsumer(ctx context.Context) {
 	// No filter: the chat stream carries the lobby chat AND every game's chat,
 	// distinguished by subject. Each message is tagged with the game ID parsed
-	// from its subject ("" = lobby); the UI filters per screen.
+	// from its subject ("" = lobby); the UI filters per screen. The log lives
+	// HERE, not in the UI: Updates is lossy (emitUpdate drops when the UI
+	// isn't draining, e.g. during login), so the update is only a ping and the
+	// UI re-reads ChatLog — a dropped ping delays the repaint instead of
+	// losing the message.
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, l.js, natspkg.OrderedConsumerConfig{
 		Stream: config.LobbyChatStream,
 	})
@@ -246,9 +260,26 @@ func (l *Lobby) runChatConsumer(ctx context.Context) {
 				continue
 			}
 			cm.GameID = config.GameIDFromChatSubject(msg.Subject())
+			l.mu.Lock()
+			l.chatLog = append(l.chatLog, cm)
+			if len(l.chatLog) > chatLogCap {
+				l.chatLog = l.chatLog[len(l.chatLog)-chatLogCap:]
+			}
+			l.mu.Unlock()
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateChat, ChatMsg: &cm})
 		}
 	}
+}
+
+// ChatLog returns a snapshot of the chat messages consumed so far (lobby and
+// game chat, in stream order). This is the source of truth the UI reads on
+// every chat update; the ChatMsg carried by the update itself is informational.
+func (l *Lobby) ChatLog() []ChatMessage {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]ChatMessage, len(l.chatLog))
+	copy(out, l.chatLog)
+	return out
 }
 
 func (l *Lobby) runArchiveConsumer(ctx context.Context) {

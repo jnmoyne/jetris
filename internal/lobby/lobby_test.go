@@ -2,6 +2,7 @@ package lobby
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -95,6 +96,55 @@ func TestLobbySendChat(t *testing.T) {
 		}
 	case <-timeout:
 		t.Log("no chat update received (may have been consumed by KV watcher)")
+	}
+}
+
+// TestChatBacklogSurvivesUndrainedUpdates reproduces the two-player bug where
+// a joining player's chat panel came up empty: the stream's chat backlog is
+// replayed while nothing drains lb.Updates (during login the UI pump hasn't
+// attached yet, and emitUpdate drops on a full channel). The log lives in the
+// Lobby, not in the lossy updates, so ChatLog must return the backlog even
+// when every update ping was dropped.
+func TestChatBacklogSurvivesUndrainedUpdates(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	for i := 1; i <= 3; i++ {
+		if err := lb.SendChat(ctx, fmt.Sprintf("line %d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A second player joins the same lobby. Nothing reads lb2.Updates, and
+	// pre-filling the channel to capacity guarantees every ping is dropped.
+	kv, err := natspkg.EnsureLobbyKV(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb2 := New(js, kv, "player-2", "Bob")
+	for i := 0; i < cap(lb2.Updates); i++ {
+		lb2.Updates <- LobbyUpdate{Kind: LobbyUpdatePlayers}
+	}
+	if err := lb2.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lb2.Stop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		lobbyLines := 0
+		for _, m := range lb2.ChatLog() {
+			if m.GameID == "" {
+				lobbyLines++
+			}
+		}
+		if lobbyLines >= 3 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("joining player's ChatLog has %d lobby lines, want 3", lobbyLines)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

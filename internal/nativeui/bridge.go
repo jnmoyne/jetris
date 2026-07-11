@@ -80,15 +80,17 @@ func (a *App) pumpLobby(ctx context.Context, lb *lobby.Lobby) {
 			if u.Kind == lobby.LobbyUpdateGames {
 				games = lb.Games()
 			}
+			var chat []lobby.ChatMessage
+			if u.Kind == lobby.LobbyUpdateChat {
+				// Re-read the full log rather than appending u.ChatMsg: the
+				// Updates channel is lossy (see Lobby.emitUpdate), so this
+				// ping may stand for several messages.
+				chat = lb.ChatLog()
+			}
 			a.mu.Lock()
 			switch u.Kind {
 			case lobby.LobbyUpdateChat:
-				if u.ChatMsg != nil {
-					a.chatLog = append(a.chatLog, *u.ChatMsg)
-					if len(a.chatLog) > 200 {
-						a.chatLog = a.chatLog[len(a.chatLog)-200:]
-					}
-				}
+				a.chatLog = chat
 			case lobby.LobbyUpdateGames:
 				if a.eng != nil {
 					if g, ok := games[a.eng.GameID()]; ok {

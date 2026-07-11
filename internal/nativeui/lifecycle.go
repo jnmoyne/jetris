@@ -253,10 +253,15 @@ func (a *App) initLobby(name string) error {
 	}
 	cleanCancel()
 
+	// Seed the chat log from the lobby's snapshot rather than starting empty:
+	// the chat consumer replayed the stream's backlog while nothing was
+	// draining lb.Updates (the pump starts below), so those messages' pings
+	// may have been dropped — and without a seed the log would stay empty
+	// until the next live message.
 	a.mu.Lock()
 	a.lobby = lb
 	a.lobbyCancel = lobbyCancel
-	a.chatLog = nil
+	a.chatLog = lb.ChatLog()
 	a.mu.Unlock()
 
 	go a.pumpLobby(lobbyCtx, lb)

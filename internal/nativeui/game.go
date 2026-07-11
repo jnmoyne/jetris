@@ -301,7 +301,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 
 	if mode == engine.ModePlayer {
-		children = append(children, layout.Rigid(a.hudStatColored("RTT", formatRTT(view.rtt), rttColor(view.rtt))))
+		children = append(children, layout.Rigid(a.hudStatColored("Batch RTT", formatRTT(view.rtt), rttColor(view.rtt))))
 	}
 
 	if mode == engine.ModePlayer && !started && !view.gameOver {

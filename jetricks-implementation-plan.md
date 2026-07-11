@@ -1879,12 +1879,13 @@ type Lobby struct {
     name            string
     kv              jetstream.KeyValue
     js              jetstream.JetStream
-    Updates         chan LobbyUpdate
+    Updates         chan LobbyUpdate // 256-buffered; emitUpdate drops on full (pings only, state lives below)
     mu              sync.RWMutex
     players         map[string]PlayerPresence
     games           map[string]GameListing
     abandoned       map[string]bool
     archives        []config.ArchiveRecord
+    chatLog         []ChatMessage // capped at chatLogCap (200); snapshot via ChatLog()
     status          PresenceStatus
     currentGameID   string
     cancelFn        context.CancelFunc
@@ -1908,6 +1909,16 @@ func (l *Lobby) Games() map[string]GameListing  // same pattern
 
 `Start()` starts five goroutines: KV watcher, lobby chat consumer, archive
 consumer, heartbeat, and the abandoned-game checker.
+
+All lobby state consumed by the UI — players, games, archives, and the chat
+log — lives in the Lobby under `l.mu`; a `LobbyUpdate` is only a
+"re-read the snapshot" ping, because `emitUpdate` is a non-blocking send that
+drops when `Updates` is full (routine during login, where the consumers
+replay their backlogs before the UI pump attaches). The chat consumer appends
+each message to `chatLog` before emitting; the UI re-reads `ChatLog()` on
+each chat ping and `initLobby` seeds its copy from it when the pump attaches,
+so replayed chat survives dropped pings (`lobby_test.go`
+`TestChatBacklogSurvivesUndrainedUpdates` pins this).
 
 **KV watcher**: `kv.WatchAll(ctx)` — on each update, decode the key prefix to
 determine if it's a player or game entry, update the appropriate map under `l.mu.Lock()`,
@@ -2079,7 +2090,11 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   embedded `nats-icon.png`/`synadia-icon.png` on a 22×22 grid — with
   per-particle radial scatter velocities — so every rocket explodes into a
   small particle logo (the NATS "N"; one rocket in ten bursts into the
-  synadia.com logo instead) that pops in, holds, then splits into its small squares and
+  Synadia "Symbol" instead — the official mark from synadia.com/about/brand,
+  the white "S" swirl on the emerald rounded square — with a floor of one
+  Synadia rocket forced per show since the looping choreography would
+  otherwise never display one on a zero roll) that pops
+  in, holds, then splits into its small squares and
   flies apart in all directions, the blocks shrinking away rather than fading
   in place and — per rocket, at random — either keeping the logo colors or
   recoloring toward one traditional fireworks color from `fwBurstPalette`
@@ -2529,10 +2544,15 @@ falls back to the first known context). `connSection` (login.go) renders the
 chooser (a "Context:" radio + pull-down button `connDropButton` that expands
 `connDropList`, a scroll-capped clickable context list; a URL radio/editor
 row — the constructor's `SetText` ChangeEvent is swallowed once via
-`connURLSeeded` so it can't steal the default; a "Run own NATS server" radio
-row — `connEnum` value "embedded" — with a muted `port 4222 · data in
-./nats-data` hint; and the Check connection row); `pickerConfig` resolves the
-choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
+`connURLSeeded` so it can't steal the default; a "LAN mode (embedded NATS
+server)" radio row — `connEnum` value "embedded" — followed by an indented
+"Port:" digits-only editor `connPortEd` pre-filled with
+`config.DefaultEmbeddedPort` = 4222 (editing it auto-selects the option;
+seeded-ChangeEvent swallow via `connPortSeeded`), a muted `data in
+./jetstream-data` hint, and — while the option is selected — a `Your
+server's URL is nats://<lan-ip>:<port>` line built from `App.lanIP`
+(resolved once in `NewWithPicker`); and the Check connection row);
+`pickerConfig` resolves the choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
 connection left from a previous attempt, then runs `Bootstrap` (15 s cap) off
 the UI goroutine — failure lands on `loginErr` for retry, success stores
 `a.nc/js/kv` (App-owned; `teardown`/`DrainConn` drain it) and falls into the
@@ -2541,33 +2561,41 @@ the same combined screen to pick another server. `doCheckConn` runs
 `CheckConnection` and renders `✓ <server> · ping <rtt>` (green, `formatRTT`)
 or `✗ <error>` (red) next to the button.
 
-**Embedded server option** ("Run own NATS server"). `pickerConfig` maps the
-third radio to `cfg.RunEmbedded`; `doConnectAndLogin` then calls
-`ensureEmbeddedServer` (lifecycle.go), which starts
-`nats.StartEmbeddedServer(config.EmbeddedStoreDir, config.EmbeddedPort)` — an
-in-process JetStream-enabled `nats-server` on `0.0.0.0:4222` storing its data
-in `./nats-data` — once per app run, records the shareable `<lan-ip>:<port>`
-(`nats.LanIP`, an outbound-route probe with an interface-scan fallback) in
-`embAddr`, and rewrites the config to `nats://<lan-ip>:<port>` so the normal
-Bootstrap path connects through the same address other players dial. NOT
-loopback: a foreign nats-server holding a `127.0.0.1:4222`-specific bind
-would intercept a loopback dial even though our `0.0.0.0` bind succeeded (a
-real setup on NATS developer machines) — and as belt and braces, after
-connecting the app compares `nc.ConnectedServerId()` against the embedded
-server's `ID()` and fails the login with a clear "port already in use by
-another NATS server" error on a mismatch. `usingEmbedded` marks the CURRENT connection as
-being to the embedded server; while it is set the lobby header shows
-`YOUR SERVER nats://<ip>:<port> — share this address so others can join you`
+**Embedded server option** ("LAN mode (embedded NATS server)").
+`pickerConfig` maps the third radio to `cfg.RunEmbedded` plus the parsed
+`cfg.EmbeddedPort` (`pickerPort`, login.go: empty field →
+`config.DefaultEmbeddedPort`, otherwise a valid 1–65535 port or a login
+error); `doConnectAndLogin` then calls `ensureEmbeddedServer(cfg.EmbeddedPort)`
+(lifecycle.go), which starts
+`nats.StartEmbeddedServer(config.EmbeddedStoreDir, port)` — an in-process
+JetStream-enabled `nats-server` (default account, no auth) on
+`0.0.0.0:<port>` storing its data in `./jetstream-data` — records the
+shareable `<lan-ip>:<port>` (`nats.LanIP`, an outbound-route probe with an
+interface-scan fallback) in `embAddr`, and rewrites the config to
+`nats://<lan-ip>:<port>` so the normal Bootstrap path connects through the
+same address other players dial. A running server is reused when the
+requested port matches (`embeddedPortOrDefault` maps 0 to the default); a
+different port shuts it down and restarts it there. NOT loopback: a foreign
+nats-server holding a `127.0.0.1:<port>`-specific bind would intercept a
+loopback dial even though our `0.0.0.0` bind succeeded (a real setup on NATS
+developer machines) — and as belt and braces, after connecting the app
+compares `nc.ConnectedServerId()` against the embedded server's `ID()` and
+fails the login with a clear "port already in use by another NATS server"
+error on a mismatch. `usingEmbedded` marks the CURRENT connection as being to
+the embedded server; while it is set the lobby header shows `YOUR SERVER'S
+URL IS nats://<ip>:<port> — share this address so others can join you`
 (`embeddedAddr`, lobby.go), which is how the host invites other players (they
-connect via the NATS URL option). `disconnect` clears only the mark — the
-server itself runs until `teardown` shuts it down, so friends stay connected
-across the host's lobby exits and reconnects. `doCheckConn` with the embedded
-choice dials nothing and reports `✓ will serve/serving on nats://<addr> ·
-data in ./nats-data`. Tests: `internal/nats/embedded_test.go` (the server
-comes up JetStream-enabled on a random port, accepts a client and a stream
-create; `LanIP` yields a parseable IPv4) and `layout_test.go` subtests for
-the embedded radio's `pickerConfig` resolution and the lobby's YOUR SERVER
-line.
+connect via the NATS URL option) — the login screen previews the same URL
+while the option is selected. `disconnect` clears only the mark — the server
+itself runs until `teardown` shuts it down, so friends stay connected across
+the host's lobby exits and reconnects. `doCheckConn` with the embedded choice
+dials nothing and reports `✓ will serve/serving on nats://<addr> · data in
+./jetstream-data`. Tests: `internal/nats/embedded_test.go` (the server comes
+up JetStream-enabled on a random port, accepts a client and a stream create;
+`LanIP` yields a parseable IPv4) and `layout_test.go` subtests for the
+embedded radio's `pickerConfig` resolution (default port, custom port,
+out-of-range port error, empty-field fallback) and the lobby's YOUR SERVER'S
+URL IS line.
 
 **Tests:** `internal/nats/contexts_test.go` (XDG temp-dir lister cases:
 missing dir, filtering/sorting, selected, stale selection),

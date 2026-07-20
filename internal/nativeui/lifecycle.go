@@ -268,21 +268,27 @@ func (a *App) initLobby(name string) error {
 	return nil
 }
 
-// createGame creates a game. For teams mode, count is the number of players
-// PER TEAM; for the other modes it is the total player count.
-func (a *App) createGame(mode config.GameMode, count int) {
+// createGame creates a game and returns its ID. For teams mode, count is the
+// number of players PER TEAM; for the other modes it is the total player
+// count. maxAgents is the agent policy — how many seats idle jetricks-agent
+// players may take (0 = agents may not join). inviteOnly restricts joining to
+// invited players (the invite flow sets it and then sends the invitations).
+func (a *App) createGame(mode config.GameMode, count, maxAgents int, inviteOnly bool) string {
 	lb := a.getLobby()
 	if lb == nil {
-		return
+		return ""
 	}
 	playerCount, teamSize := count, 0
 	if mode == config.ModeTeams {
 		teamSize = count
 		playerCount = config.TeamCount * count
 	}
-	if _, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize); err != nil {
+	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, inviteOnly)
+	if err != nil {
 		log.Printf("create game: %v", err)
+		return ""
 	}
+	return gameID
 }
 
 // deleteGame removes an abandoned game and all its NATS state (game stream,
@@ -394,6 +400,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.fireworks = nil
 	a.myReady = false
 	a.flash = map[[2]int]time.Time{}
+	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.msgLog = nil
 	a.screen = screenGame
 	a.mu.Unlock()
@@ -458,6 +465,7 @@ func (a *App) returnToLobby() {
 	a.rtt = 0
 	a.gameStatus = ""
 	a.flash = map[[2]int]time.Time{}
+	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.msgLog = nil
 	if a.lobby != nil {
 		a.screen = screenLobby

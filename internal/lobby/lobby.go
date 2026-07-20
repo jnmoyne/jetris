@@ -21,6 +21,7 @@ import (
 type Lobby struct {
 	playerID        string
 	name            string
+	isAgent         bool // this peer is an agent player; stamped on presence and roster entries
 	kv              jetstream.KeyValue
 	js              jetstream.JetStream
 	Updates         chan LobbyUpdate
@@ -32,6 +33,7 @@ type Lobby struct {
 	chatLog         []ChatMessage // lobby + game chat, in stream order, capped at chatLogCap
 	status          PresenceStatus
 	currentGameID   string
+	myInvite        *Invitation // this player's pending invitation (nil = none); guarded by mu
 	cancelFn        context.CancelFunc
 	initialLoadDone chan struct{}
 }
@@ -60,6 +62,13 @@ func New(
 		status:          StatusInLobby,
 		initialLoadDone: make(chan struct{}),
 	}
+}
+
+// SetAgent marks this peer as an agent player. Call before Start: the flag is
+// stamped on the presence entry (so the lobby can show agents) and on the
+// roster entries JoinGame writes (so games can enforce their agent policy).
+func (l *Lobby) SetAgent(isAgent bool) {
+	l.isAgent = isAgent
 }
 
 // Players returns a snapshot of the current player presence map.
@@ -182,6 +191,8 @@ func (l *Lobby) handleKVUpdate(entry jetstream.KeyValueEntry) {
 		l.handlePlayerUpdate(entry)
 	} else if strings.HasPrefix(key, "games.") {
 		l.handleGameUpdate(entry)
+	} else if strings.HasPrefix(key, "invites.") {
+		l.handleInviteUpdate(entry)
 	}
 }
 
@@ -410,8 +421,20 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // CreateGame creates a new game. For teams mode, teamSize is the number of
 // players per team and playerCount must be the total (TeamCount*teamSize);
 // other modes pass teamSize 0.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize int) (string, error) {
+// CreateGame creates a game and its stream and writes the lobby listing.
+// maxAgents is the creator's agent policy: how many roster seats agent players
+// may take (0 = agents may not join); enforced atomically by JoinGame's CAS
+// loop. inviteOnly restricts joining to invited players (and the creator) —
+// see Invite/JoinGame; invited agents are exempt from the maxAgents policy,
+// the invitation being explicit permission.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents int, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
+	if maxAgents < 0 {
+		maxAgents = 0
+	}
+	if maxAgents > playerCount {
+		maxAgents = playerCount
+	}
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
@@ -442,6 +465,9 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Status:      config.GameStatusCreated,
 		PlayerCount: playerCount,
 		TeamSize:    teamSize,
+		MaxAgents:   maxAgents,
+		InviteOnly:  inviteOnly,
+		CreatorID:   l.playerID,
 		Players:     nil,
 		CreatedAt:   meta.CreatedAt,
 	}
@@ -454,6 +480,22 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 // ErrTeamFull is returned by JoinGame when the requested team already has
 // teamSize members.
 var ErrTeamFull = errors.New("team is full")
+
+// ErrAgentsNotAllowed is returned by JoinGame when an agent tries to join a game
+// whose creator did not allow agent players.
+var ErrAgentsNotAllowed = errors.New("game does not allow agent players")
+
+// ErrAgentSlotsFull is returned by JoinGame when an agent tries to join a game
+// whose agent seats (GameListing.MaxAgents) are already taken.
+var ErrAgentSlotsFull = errors.New("game's agent seats are already taken")
+
+// ErrNotInvited is returned by JoinGame for an invite-only game when the
+// joiner is neither the creator nor the holder of a pending invitation to it.
+var ErrNotInvited = errors.New("game is invite-only")
+
+// ErrGameFull is returned by JoinGame when the game's roster is already at its
+// player count. (Teams also has the finer-grained ErrTeamFull.)
+var ErrGameFull = errors.New("game is full")
 
 // JoinResult is the roster position assigned to a player by JoinGame.
 type JoinResult struct {
@@ -496,7 +538,39 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 			break
 		}
 
-		summary = PlayerSummary{PlayerID: l.playerID, Name: l.name}
+		// Invite-only games: only the creator and invited players may join.
+		// An invitation also stands in for the agent policy — the creator
+		// explicitly chose this player, agent or not.
+		invited := false
+		if g.InviteOnly && l.playerID != g.CreatorID {
+			if inv := l.inviteFor(ctx, gameID); inv == nil {
+				return JoinResult{}, ErrNotInvited
+			}
+			invited = true
+		}
+
+		// Agent policy: enforced inside the CAS loop so concurrent agent joins
+		// racing for the last agent seat are serialized by the kv.Update below —
+		// at most MaxAgents roster seats ever go to agents.
+		if l.isAgent && !invited {
+			if g.MaxAgents <= 0 {
+				return JoinResult{}, ErrAgentsNotAllowed
+			}
+			if g.AgentCount() >= g.MaxAgents {
+				return JoinResult{}, ErrAgentSlotsFull
+			}
+		}
+
+		// Overall roster cap — every mode. Without this a join could overfill
+		// a game (e.g. a 5th player into a 4-player game): the GUI hides Join
+		// on a full game and the agent pre-checks joinable(), but neither is
+		// atomic with the roster, so the authoritative guard lives here in the
+		// CAS loop. (Teams additionally caps each team below.)
+		if len(g.Players) >= g.PlayerCount {
+			return JoinResult{}, ErrGameFull
+		}
+
+		summary = PlayerSummary{PlayerID: l.playerID, Name: l.name, Agent: l.isAgent}
 		if g.Mode == config.ModeTeams {
 			if team < 0 || team >= config.TeamCount {
 				return JoinResult{}, fmt.Errorf("invalid team %d", team)
@@ -543,6 +617,11 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 
 	l.publishPresence(ctx)
 
+	// A pending invitation to THIS game is consumed by joining it.
+	if inv := l.MyInvite(); inv != nil && inv.GameID == gameID {
+		_, _ = l.RespondInvite(ctx, true)
+	}
+
 	return res, nil
 }
 
@@ -555,6 +634,68 @@ func (l *Lobby) LeaveGame(ctx context.Context, gameID string) error {
 
 	l.publishPresence(ctx)
 	return nil
+}
+
+// ErrGameStarted is returned by UnjoinGame when the game has already left the
+// created/starting states — the roster is frozen once play begins.
+var ErrGameStarted = errors.New("game has already started")
+
+// UnjoinGame removes the local player from a game that has NOT started yet
+// (a CAS loop like JoinGame, so it can never race another join into a
+// corrupted roster). If the departure makes a full "starting" roster
+// not-full again, the status reverts to created. The player's roster
+// announcement is purged from the game stream so late joiners don't discover
+// a ghost opponent. Used by resident agents that give up on a game that never
+// starts; unlike LeaveGame it frees the seat for someone else.
+func (l *Lobby) UnjoinGame(ctx context.Context, gameID string) error {
+	for {
+		entry, err := l.kv.Get(ctx, config.LobbyGameKey(gameID))
+		if err != nil {
+			return err
+		}
+		var g GameListing
+		if err := json.Unmarshal(entry.Value(), &g); err != nil {
+			return err
+		}
+		// The listing only ever reads created/starting pre-archive; the META is
+		// what StartGame transitions, so it is the authoritative started check.
+		// (Meta check and listing CAS are not atomic — an unjoin racing the
+		// exact start instant can still slip through, but the agent only unjoins
+		// after a long start-timeout, the same accepted-risk class as the
+		// documented join-fullness race.)
+		if g.Status != config.GameStatusCreated && g.Status != config.GameStatusStarting {
+			return ErrGameStarted
+		}
+		if meta, _, err := natspkg.FetchGameMeta(ctx, l.js, gameID); err == nil {
+			if meta.Status != config.GameStatusCreated && meta.Status != config.GameStatusStarting {
+				return ErrGameStarted
+			}
+		}
+		idx := -1
+		for i, p := range g.Players {
+			if p.PlayerID == l.playerID {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break // not in the roster; nothing to remove
+		}
+		g.Players = append(g.Players[:idx], g.Players[idx+1:]...)
+		if g.Status == config.GameStatusStarting && len(g.Players) < g.PlayerCount {
+			g.Status = config.GameStatusCreated
+		}
+		listingData, _ := json.Marshal(g)
+		if _, err := l.kv.Update(ctx, config.LobbyGameKey(gameID), listingData, entry.Revision()); err != nil {
+			continue // CAS conflict, retry
+		}
+		if err := natspkg.PurgeRosterEntry(ctx, l.js, gameID, l.playerID); err != nil {
+			log.Printf("unjoin: purge roster entry: %v", err)
+		}
+		break
+	}
+
+	return l.LeaveGame(ctx, gameID)
 }
 
 // ToggleReadyResult holds the state after a ToggleReady call.
@@ -654,16 +795,36 @@ func (l *Lobby) publishChat(ctx context.Context, subject, text string, spectator
 }
 
 func (l *Lobby) transitionGameStatus(ctx context.Context, gameID string, status config.GameStatus) {
-	meta, metaSeq, err := natspkg.FetchGameMeta(ctx, l.js, gameID)
-	if err != nil {
-		return
+	// CAS retry: concurrent meta writers (a join's starting transition racing
+	// the countdown's in_progress, a lock-in's pieceIdx bump) can move the
+	// sequence between our fetch and publish; without a retry the transition
+	// is silently lost and the game never starts.
+	for attempt := 0; attempt < 5; attempt++ {
+		meta, metaSeq, err := natspkg.FetchGameMeta(ctx, l.js, gameID)
+		if err != nil {
+			return
+		}
+		// Never regress a completed game. The countdown's final StartGame is a
+		// detached goroutine racing the game itself: a fast game can FINISH
+		// before this write lands, and blindly stamping in_progress over
+		// finished would resurrect the game and strand it unarchivable.
+		switch meta.Status {
+		case config.GameStatusFinished, config.GameStatusArchived, config.GameStatusCancelled:
+			return
+		}
+		if meta.Status == status {
+			return // already there (another peer won the same transition)
+		}
+		meta.Status = status
+		if status == config.GameStatusInProgress {
+			meta.StartedAt = time.Now()
+		}
+		data, _ := json.Marshal(meta)
+		if err := natspkg.PublishMeta(ctx, l.js, gameID, data, metaSeq); err == nil {
+			return
+		}
 	}
-	meta.Status = status
-	if status == config.GameStatusInProgress {
-		meta.StartedAt = time.Now()
-	}
-	data, _ := json.Marshal(meta)
-	_ = natspkg.PublishMeta(ctx, l.js, gameID, data, metaSeq)
+	log.Printf("transition game %s to %s: gave up after CAS conflicts", gameID, status)
 }
 
 // PlayerID returns the lobby player ID.

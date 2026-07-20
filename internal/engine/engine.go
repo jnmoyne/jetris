@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
@@ -41,6 +42,22 @@ type Engine struct {
 	teamSlot    int  // teams mode: section index within the team board (spawn column offset)
 	teamSize    int  // teams mode: players per team (from meta at Start)
 
+	// gameStarted flips true when this engine learns the game is in_progress
+	// (at Start, or from the meta consumer). The piece-less watchdog is gated
+	// on it: runInput's gravity ticker runs from engine start — during the
+	// pre-game countdown — and an ungated watchdog would force-spawn pieces
+	// and start the game mid-countdown.
+	gameStarted atomic.Bool
+
+	// wonGame records the engine's game-over verdict (0 = not over, 1 = won,
+	// 2 = lost) as set by transitionToSpectator; in teams an eliminated
+	// member's "lost" flips to "won" when their team prevails (last write
+	// wins). Exported via GameOutcome for the archiver: the events subject
+	// retains only its LAST message (MaxMsgsPerSubject: 1), so a post-game
+	// replay cannot reconstruct who was eliminated — the engine that lived
+	// through the game is the authoritative record.
+	wonGame atomic.Int32
+
 	// mode/score/level/totalLines/pieceIdx are read and written from several
 	// goroutines (the row/meta/events consumers, runInput, the UI, tests) with
 	// no single lock covering every path — transitionToSpectator in particular
@@ -63,7 +80,9 @@ type Engine struct {
 	level             atomic.Int64
 	teamScores        [config.TeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (both teams' players and spectators)
 	teamLines         [config.TeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
-	hadActivePiece    bool                           // only touched by the own-rows consumer goroutine
+	hadActivePiece    bool                           // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
+	spawnPending      bool                           // shared boards: spawn deferred because another player's ACTIVE piece covers the spawn cells; guarded by e.mu; retried from runInput's gravity tick (retrySpawnIfPending). Never set in competitive mode.
+	pieceLessTicks    int                            // consecutive gravity ticks spent alive with NO active piece and NO pending spawn; guarded by e.mu; at 2 the piece-less watchdog forces a spawn (see retrySpawnIfPending)
 	eliminatedPlayers map[string]bool                // players who have topped out (competitive/teams); guarded by e.mu
 	eliminatedTeam    map[string]int                 // teams: eliminated player → team; guarded by e.mu
 	teamOutcomeDone   bool                           // teams: win/loss/draw already decided; guarded by e.mu
@@ -236,10 +255,20 @@ func (e *Engine) Start() error {
 	go e.runMetaConsumer(ctx)
 	go e.runCountdownConsumer(ctx)
 
+	// Spectators watch every player's CAS-failure flashes (players see only
+	// their own, emitted locally; spectators see all, broadcast over core
+	// NATS). Players do not subscribe.
+	if e.initialMode == ModeSpectator {
+		go e.runFlashConsumer(ctx)
+	}
+
 	// 7. Start the combined input+gravity goroutine if playing. Gravity and
 	// player input share one goroutine so a player's own gravity drop and move
 	// never publish to their cell subjects concurrently and lose the per-subject
 	// CAS race (in either game mode).
+	if meta.Status == config.GameStatusInProgress {
+		e.gameStarted.Store(true)
+	}
 	if e.getMode() == ModePlayer {
 		// If game is already in progress and no active piece, spawn immediately
 		if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil && meta.Status == config.GameStatusInProgress {
@@ -692,8 +721,28 @@ func (e *Engine) emitFullBoardRerender() {
 }
 
 func (e *Engine) transitionToSpectator(won bool) {
+	if won {
+		e.wonGame.Store(1)
+	} else {
+		e.wonGame.Store(2)
+	}
 	e.setMode(ModeGameOver)
 	e.emitUpdate(EngineUpdate{Kind: UpdateGameOver, Won: won})
+}
+
+// GameOutcome reports this engine's game-over verdict: over is true once the
+// game ended for this player, and won reports the final result (in teams an
+// early elimination flips to won when the team prevails). This is the
+// authoritative post-game record — the stream's events subject keeps only its
+// last message, so eliminations cannot be reconstructed by replay.
+func (e *Engine) GameOutcome() (won, over bool) {
+	switch e.wonGame.Load() {
+	case 1:
+		return true, true
+	case 2:
+		return false, true
+	}
+	return false, false
 }
 
 // spawnPiece publishes a freshly spawned piece. locked reports whether the
@@ -721,17 +770,38 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	var canPlace bool
 	if e.sharedBoard() {
 		canPlace = game.CanPlaceCoop(p, e.playfield, e.playerIdx)
+		if !canPlace && game.CanPlace(p, e.playfield) {
+			// The spawn cells are covered ONLY by another player's ACTIVE
+			// (falling) piece — the same transient obstacle gravity waits out
+			// in attemptMoveCoop rather than locking. Topping out here would
+			// spuriously eliminate the player (in teams permanently; in coop
+			// it would end the game for everyone) just because a teammate's
+			// piece happened to cross the spawn area. Defer instead:
+			// runInput's gravity tick retries via retrySpawnIfPending until
+			// the blocker falls clear (spawn succeeds) or locks into the
+			// spawn cells (a genuine top-out on the next attempt).
+			if !e.spawnPending {
+				log.Printf("engine %s: spawn deferred (cells covered by another player's active piece)", e.playerID)
+			}
+			e.spawnPending = true
+			if !locked {
+				e.mu.Unlock()
+			}
+			return
+		}
 	} else {
 		canPlace = game.CanPlace(p, e.playfield)
 	}
 	if !canPlace {
 		// e.mu is held here in both cases (acquired above when !locked).
+		e.spawnPending = false
 		e.handleTopOut(ctx, true)
 		if !locked {
 			e.mu.Unlock()
 		}
 		return
 	}
+	e.spawnPending = false
 
 	// Here we compute the projection, diff it to cells, and publish; the
 	// publish write-through (applyPublishedCells) advances e.playfield on
@@ -761,11 +831,74 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 		// stream, keep ours where allowed, retry. This is the only
 		// CAS path in the engine that retries; player moves never do.
 		e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, locked)
+	} else {
+		// Competitive: each player writes their own subjects, so a race is
+		// extremely unlikely, but if CAS ever does reject the spawn we flash too.
+		e.publishProjectedCells(ctx, cells, flashCells, locked)
+	}
+
+	// Mark the piece as seen for the consumer's lock-in edge detector, AFTER
+	// the publish so the write-through has already stamped the active cells
+	// (setting it before would let a concurrently-processed echo observe "had
+	// a piece, none on board" and fire a spurious lock-in). Without this,
+	// spawns that don't go through handleLockIn (Start, the meta consumer's
+	// game-start spawn, a deferred-spawn retry) leave hadActivePiece false —
+	// and a player who hard-drops that piece before its spawn echo is
+	// processed misses the lock-in edge forever and sits piece-less. If the
+	// spawn publish was ultimately dropped, this optimistic set makes the
+	// next echo fire a lock-in and respawn: a skipped piece instead of a
+	// permanent stall.
+	if !locked {
+		e.mu.Lock()
+	}
+	e.hadActivePiece = true
+	if !locked {
+		e.mu.Unlock()
+	}
+}
+
+// retrySpawnIfPending re-attempts a spawn that was deferred because another
+// player's active piece covered the spawn cells (spawnPending), and doubles
+// as the piece-less WATCHDOG. Called from runInput's gravity tick — the
+// engine's single gameplay-write goroutine — so it never races the player's
+// own input publishes, and its cadence matches the physics: the blocking
+// piece only moves on gravity ticks.
+//
+// The watchdog covers the stalls the consumer's lock-in edge detector cannot:
+// that edge only fires when a message arrives on the board's consumer, so a
+// player whose spawn publish was dropped wholesale (merge-retry exhausted
+// under contention), or whose edge was missed, stays piece-less FOREVER once
+// the board goes silent (e.g. the last teammate was eliminated and nobody
+// writes the shared board anymore). Two consecutive piece-less gravity ticks
+// (≥0.8s) is far beyond the normal lock→echo→respawn window, and the
+// ActivePieceForPlayer guard under e.mu keeps the forced spawn idempotent.
+// The watchdog does not advance pieceIdx — it respawns the piece that never
+// materialized.
+func (e *Engine) retrySpawnIfPending(ctx context.Context) {
+	if !e.gameStarted.Load() {
+		return // pre-game (countdown): nothing may spawn yet
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.getMode() != ModePlayer {
 		return
 	}
-	// Competitive: each player writes their own subjects, so a race is
-	// extremely unlikely, but if CAS ever does reject the spawn we flash too.
-	e.publishProjectedCells(ctx, cells, flashCells, locked)
+	if e.playfield.ActivePieceForPlayer(e.playerIdx) != nil {
+		e.spawnPending = false // another path already spawned meanwhile
+		e.pieceLessTicks = 0
+		return
+	}
+	if e.spawnPending {
+		e.pieceLessTicks = 0
+		e.spawnPiece(ctx, true)
+		return
+	}
+	e.pieceLessTicks++
+	if e.pieceLessTicks >= 2 {
+		e.pieceLessTicks = 0
+		log.Printf("engine %s: piece-less watchdog forcing a spawn", e.playerID)
+		e.spawnPiece(ctx, true)
+	}
 }
 
 func (e *Engine) PlayerIdx() int       { return e.playerIdx }
@@ -1217,11 +1350,75 @@ func (e *Engine) emitCASFlash(flashCells [][2]int) {
 	if e.getMode() != ModePlayer || len(flashCells) == 0 {
 		return
 	}
+	// Local feedback: the player sees their OWN dropped-write flash instantly.
 	e.emitUpdate(EngineUpdate{
 		Kind:           UpdateCASFlash,
 		FlashCells:     flashCells,
 		FlashPlayerIdx: e.playerIdx,
 	})
+	// Broadcast it to spectators (who show every player's flashes). This is a
+	// CORE NATS publish — transient, not persisted in the game stream — so
+	// other PLAYERS, who don't subscribe, never see it: a player sees only
+	// their own CAS flashes, a spectator sees all.
+	e.publishFlash(flashCells)
+}
+
+// FlashMessage is the core-NATS payload broadcast on a CAS-failure flash so
+// spectators can render it on the flashing player's board.
+type FlashMessage struct {
+	PlayerIdx int      `json:"pi"`
+	Team      int      `json:"tm,omitempty"`
+	Cells     [][2]int `json:"c"`
+}
+
+// publishFlash broadcasts this player's dropped-write flash to spectators over
+// core NATS (fire-and-forget; a lost flash just isn't shown). Safe to call
+// with or without e.mu held — nc.Publish does its own synchronization.
+func (e *Engine) publishFlash(cells [][2]int) {
+	nc := e.js.Conn()
+	if nc == nil {
+		return
+	}
+	data, err := json.Marshal(FlashMessage{PlayerIdx: e.playerIdx, Team: e.teamIdx, Cells: cells})
+	if err != nil {
+		return
+	}
+	_ = nc.Publish(config.FlashSubject(e.gameID, e.playerID), data)
+}
+
+// runFlashConsumer (spectators only) subscribes to every player's flash
+// subject and re-emits each as an UpdateCASFlash so the UI can render it on
+// the sender's board. Core NATS, so the subscription is torn down on ctx
+// cancellation.
+func (e *Engine) runFlashConsumer(ctx context.Context) {
+	nc := e.js.Conn()
+	if nc == nil {
+		return
+	}
+	ch := make(chan *nats.Msg, 64)
+	sub, err := nc.ChanSubscribe(config.FlashSubjectFilter(e.gameID), ch)
+	if err != nil {
+		log.Printf("flash consumer subscribe: %v", err)
+		return
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-ch:
+			var fm FlashMessage
+			if json.Unmarshal(msg.Data, &fm) != nil {
+				continue
+			}
+			e.emitUpdate(EngineUpdate{
+				Kind:           UpdateCASFlash,
+				FlashCells:     fm.Cells,
+				FlashPlayerIdx: fm.PlayerIdx,
+				Team:           fm.Team,
+			})
+		}
+	}
 }
 
 func (e *Engine) publishPieceIdxUpdate(pieceIdx uint64) {

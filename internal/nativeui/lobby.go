@@ -2,6 +2,8 @@ package nativeui
 
 import (
 	"fmt"
+	"image"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,7 +48,28 @@ func (a *App) layoutLobby(gtx C) D {
 		} else if err != nil || count < 2 {
 			count = 2
 		}
-		go a.createGame(mode, count)
+		// Agent policy: how many seats idle jetricks-agent players may take.
+		// Unchecked = 0 = agents may not join. Clamped to the game's total
+		// player count (the count editor is per-team in teams mode).
+		maxAgents := 0
+		if a.allowAgentsCb.Value {
+			total := count
+			if mode == config.ModeTeams {
+				total = config.TeamCount * count
+			}
+			maxAgents, err = strconv.Atoi(strings.TrimSpace(a.maxAgentsEd.Text()))
+			if err != nil || maxAgents < 1 {
+				maxAgents = 1
+			}
+			if maxAgents > total {
+				maxAgents = total
+			}
+		}
+		if a.inviteOnlyCb.Value {
+			go a.openInvitePicker(mode, count)
+		} else {
+			go func() { a.createGame(mode, count, maxAgents, false) }()
+		}
 	}
 	a.handleChatSubmit(gtx)
 
@@ -97,8 +120,14 @@ func (a *App) layoutLobby(gtx C) D {
 		}
 	}
 
+	// Modal overlays: the invitee picker (after creating an invite-only game)
+	// and the incoming-invitation pop-up. Their buttons are dispatched here so
+	// a click can't fall through to the lobby underneath.
+	pickerOpen := a.handleInvitePicker(gtx)
+	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
+
 	// --- render ---
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	base := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.lobbyBanner),
 		layout.Flexed(1, func(gtx C) D {
 			return layout.Flex{}.Layout(gtx,
@@ -109,13 +138,34 @@ func (a *App) layoutLobby(gtx C) D {
 				}),
 				layout.Flexed(2, func(gtx C) D {
 					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyRight(gtx, games, abandoned, sortedArchives(lb.Archives()), lb.PlayerName())
+						return a.lobbyRight(gtx, games, abandoned, a.archivesForDisplay(lb.Archives()), lb.PlayerName())
 					})
 				}),
 			)
 		}),
 	)
+	if !pickerOpen && !inviteOpen {
+		return base
+	}
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(func(gtx C) D { return base }),
+		layout.Expanded(func(gtx C) D {
+			// Scrim: dim the lobby and swallow clicks behind the modal.
+			fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0xc0))
+			return D{Size: gtx.Constraints.Max}
+		}),
+		layout.Stacked(func(gtx C) D {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			if inviteOpen {
+				return a.incomingInviteOverlay(gtx, pendingInvite)
+			}
+			return a.invitePickerOverlay(gtx)
+		}),
+	)
 }
+
+// logInvite logs an invitation-send failure without stopping the batch.
+func logInvite(err error) { log.Printf("send invite: %v", err) }
 
 func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.ChatMessage) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -126,7 +176,7 @@ func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.Chat
 					p := players[i]
 					return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 						return layout.Flex{}.Layout(gtx,
-							layout.Flexed(1, a.body(p.Name, colFg)),
+							layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
 							layout.Rigid(a.body(statusText(p.Status), colMuted)),
 						)
 					})
@@ -196,7 +246,32 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 			})
 		}),
 		layout.Rigid(spacer(8)),
-		layout.Rigid(a.header("GAME HISTORY")),
+		layout.Rigid(func(gtx C) D {
+			// GAME HISTORY header with its sort selector and agent filter
+			// grouped right beside it.
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.header("GAME HISTORY")),
+				layout.Rigid(spacer(12)),
+				layout.Rigid(func(gtx C) D {
+					rb := material.RadioButton(a.th, &a.histSortEnum, "score", "By score")
+					rb.Color = colFg
+					return rb.Layout(gtx)
+				}),
+				layout.Rigid(spacer(6)),
+				layout.Rigid(func(gtx C) D {
+					rb := material.RadioButton(a.th, &a.histSortEnum, "date", "By date")
+					rb.Color = colFg
+					return rb.Layout(gtx)
+				}),
+				layout.Rigid(spacer(10)),
+				layout.Rigid(func(gtx C) D {
+					cb := material.CheckBox(a.th, &a.histAgentsCb, "Agent games")
+					cb.Color = colFg
+					cb.IconColor = colAccent
+					return cb.Layout(gtx)
+				}),
+			)
+		}),
 		layout.Flexed(1, func(gtx C) D {
 			return bordered(gtx, func(gtx C) D {
 				return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
@@ -221,6 +296,37 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 			})
 		}),
 	)
+}
+
+// archivesForDisplay applies the history controls: drop games with agent
+// seats when the "Agent games" box is unchecked, then order by the selected
+// key — headline score (default) or finish time, most recent first.
+func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
+	if !a.histAgentsCb.Value {
+		humanOnly := recs[:0:0]
+		for _, r := range recs {
+			if !r.HasAgents() {
+				humanOnly = append(humanOnly, r)
+			}
+		}
+		recs = humanOnly
+	}
+	if a.histSortEnum.Value == "date" {
+		return sortedArchivesByDate(recs)
+	}
+	return sortedArchives(recs)
+}
+
+// sortedArchivesByDate orders the history list by finish time, most recent
+// first (score as the tie-break).
+func sortedArchivesByDate(recs []config.ArchiveRecord) []config.ArchiveRecord {
+	sort.SliceStable(recs, func(i, j int) bool {
+		if !recs[i].FinishedAt.Equal(recs[j].FinishedAt) {
+			return recs[i].FinishedAt.After(recs[j].FinishedAt)
+		}
+		return archiveScore(recs[i]) > archiveScore(recs[j])
+	})
+	return recs
 }
 
 // sortedArchives orders the history list by headline score (highest first);
@@ -386,15 +492,82 @@ func (a *App) createRow(gtx C) D {
 			gtx.Constraints.Min.X = gtx.Dp(48)
 			return a.editorBox(gtx, &a.countEd, "2")
 		}),
+		// Agent policy: whether idle jetricks-agent players may take seats, and at
+		// most how many.
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(spacer(12)),
+				layout.Rigid(func(gtx C) D {
+					cb := material.CheckBox(a.th, &a.allowAgentsCb, "Allow agents")
+					cb.Color = colFg
+					cb.IconColor = colAccent
+					return cb.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					if !a.allowAgentsCb.Value {
+						return D{}
+					}
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(spacer(8)),
+						layout.Rigid(a.body("Max:", colMuted)),
+						layout.Rigid(spacer(4)),
+						layout.Rigid(func(gtx C) D {
+							gtx.Constraints.Max.X = gtx.Dp(40)
+							gtx.Constraints.Min.X = gtx.Dp(40)
+							return a.editorBox(gtx, &a.maxAgentsEd, "1")
+						}),
+					)
+				}),
+			)
+		}),
+		layout.Rigid(spacer(12)),
+		layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.inviteOnlyCb, "Invite only")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
 		layout.Rigid(spacer(10)),
-		layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.createBtn, "Create Game") }),
+		layout.Rigid(func(gtx C) D {
+			label := "Create Game"
+			if a.inviteOnlyCb.Value {
+				label = "Create & Invite"
+			}
+			return a.primaryButton(gtx, &a.createBtn, label)
+		}),
 	)
+}
+
+// invitedTo reports whether this player holds a pending invitation to gameID.
+func (a *App) invitedTo(gameID string) bool {
+	lb := a.getLobby()
+	if lb == nil {
+		return false
+	}
+	inv := lb.MyInvite()
+	return inv != nil && inv.GameID == gameID
+}
+
+// agentName appends the agent marker to a player's display name.
+func agentName(name string, agent bool) string {
+	if agent {
+		return name + " [agent]"
+	}
+	return name
 }
 
 func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	btns := a.gameButtons(g.GameID)
 	joinable := g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting
 	canJoin := joinable && len(g.Players) < g.PlayerCount
+	// Invite-only games are joined via the pop-up (or by the creator): don't
+	// offer a Join button to random browsers. The creator, and anyone holding
+	// a pending invitation to this game, keep theirs.
+	if g.InviteOnly {
+		if lb := a.getLobby(); lb == nil || (lb.PlayerID() != g.CreatorID && !a.invitedTo(g.GameID)) {
+			canJoin = false
+		}
+	}
 	canSpectate := g.Status == config.GameStatusInProgress ||
 		(joinable && len(g.Players) >= g.PlayerCount)
 
@@ -408,7 +581,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 				if p.Team != t {
 					continue
 				}
-				n := p.Name
+				n := agentName(p.Name, p.Agent)
 				if p.Ready {
 					n += " ✓"
 				}
@@ -418,7 +591,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		}
 	} else {
 		for _, p := range g.Players {
-			n := p.Name
+			n := agentName(p.Name, p.Agent)
 			if p.Ready {
 				n += " ✓"
 			}
@@ -426,6 +599,12 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		}
 	}
 	info := fmt.Sprintf("%s · %s · %d/%d · %s", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount, g.Status)
+	if g.InviteOnly {
+		info += " · invite only"
+	}
+	if g.MaxAgents > 0 {
+		info += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
+	}
 
 	sep := ", "
 	if teams {

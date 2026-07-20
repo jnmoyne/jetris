@@ -82,6 +82,17 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 					hasActive = pf.ActivePieceForPlayer(e.playerIdx) != nil
 				}
 				e.hadActivePiece = hasActive
+				// A deferred spawn (blocked only by another player's active
+				// piece) retries the moment the shared board CHANGES — this
+				// very message may be the blocker moving away. The gravity
+				// tick's retry remains as the backstop, but at agent speeds a
+				// blocking piece slides across the spawn cells in milliseconds
+				// and waiting a full 800ms tick per attempt starves the
+				// deferred player down to a piece every few seconds.
+				if e.spawnPending && !hasActive && e.getMode() == ModePlayer && e.gameStarted.Load() {
+					e.spawnPiece(ctx, true)
+					e.hadActivePiece = pf.ActivePieceForPlayer(e.playerIdx) != nil
+				}
 				e.mu.Unlock()
 
 				// Complete a pending RTT measurement if this is the first
@@ -285,16 +296,24 @@ func (e *Engine) runMetaConsumer(ctx context.Context) {
 			if err := json.Unmarshal(msg.Data(), &meta); err != nil {
 				continue
 			}
+			if meta.Status == config.GameStatusInProgress {
+				e.gameStarted.Store(true)
+			}
+			// Status reaches EVERY engine — spectators included. Gating this
+			// on ModePlayer left a spectator's view stuck pre-start ("GO!"
+			// never cleared: countdownVisible waits for in_progress), and the
+			// meta consumer's replay of the current meta is also what tells a
+			// mid-game spectator the game is already running.
+			e.emitUpdate(EngineUpdate{
+				Kind:       UpdateGameStatus,
+				GameStatus: string(meta.Status),
+			})
 			if meta.Status == config.GameStatusInProgress && e.getMode() == ModePlayer {
 				e.mu.Lock()
 				if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil {
 					e.spawnPiece(ctx, true) // under e.mu
 				}
 				e.mu.Unlock()
-				e.emitUpdate(EngineUpdate{
-					Kind:       UpdateGameStatus,
-					GameStatus: "in_progress",
-				})
 			}
 		}
 	}

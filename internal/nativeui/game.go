@@ -35,6 +35,7 @@ type gameView struct {
 	myReady              bool
 	players, readyPlayer []lobby.PlayerSummary
 	flash                map[[2]int]time.Time
+	specFlash            map[int]map[[2]int]time.Time // spectator: per-board (playerIdx or team) flashes
 	flashActive          bool
 	fireworks            *fireworksShow // nil unless this player/team won (competitive/teams)
 }
@@ -48,6 +49,25 @@ func (a *App) snapshotGame(now time.Time) gameView {
 			fc[k] = v
 		} else {
 			delete(a.flash, k)
+		}
+	}
+	// Spectator per-board flashes: prune expired cells (and empty boards).
+	sf := make(map[int]map[[2]int]time.Time)
+	specActive := false
+	for board, m := range a.specFlash {
+		for k, v := range m {
+			if now.Sub(v) < flashDur {
+				if sf[board] == nil {
+					sf[board] = make(map[[2]int]time.Time)
+				}
+				sf[board][k] = v
+				specActive = true
+			} else {
+				delete(m, k)
+			}
+		}
+		if len(m) == 0 {
+			delete(a.specFlash, board)
 		}
 	}
 	return gameView{
@@ -65,7 +85,8 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		players:     append([]lobby.PlayerSummary(nil), a.gamePlayers...),
 		readyPlayer: append([]lobby.PlayerSummary(nil), a.readyPlayers...),
 		flash:       fc,
-		flashActive: len(fc) > 0,
+		specFlash:   sf,
+		flashActive: len(fc) > 0 || specActive,
 		fireworks:   a.fireworks,
 	}
 }
@@ -336,7 +357,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 	playerRow := func(i int, p lobby.PlayerSummary) layout.FlexChild {
 		return layout.Rigid(func(gtx C) D {
 			elim := (gmode == config.ModeCompetitive || gmode == config.ModeTeams) && eng.IsEliminated(p.PlayerID)
-			name := p.Name
+			name := agentName(p.Name, p.Agent)
 			textCol := colFg
 			if elim {
 				name += " (out)"
@@ -391,7 +412,7 @@ func (a *App) readyArea(gtx C, view gameView) D {
 				rows = append(rows, layout.Rigid(func(gtx C) D {
 					return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Flexed(1, a.body(p.Name, colFg)),
+							layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
 							layout.Rigid(spacer(8)),
 							layout.Rigid(a.readyBadge(p.Ready)),
 						)
@@ -424,11 +445,21 @@ func (a *App) readyBadge(ready bool) layout.Widget {
 }
 
 func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
-	if mode == engine.ModeSpectator && gmode == config.ModeCompetitive {
-		return a.spectatorBoards(gtx, eng, view)
-	}
-	if mode == engine.ModeSpectator && gmode == config.ModeTeams {
-		return a.spectatorTeamBoards(gtx, eng)
+	// Spectator views are still "content" below the shared overlays: the
+	// pre-game countdown (and, in coop, the game-over box) must reach the
+	// spectator's screen too.
+	if mode == engine.ModeSpectator && (gmode == config.ModeCompetitive || gmode == config.ModeTeams) {
+		content := func(gtx C) D { return a.spectatorBoards(gtx, eng, view) }
+		if gmode == config.ModeTeams {
+			content = func(gtx C) D { return a.spectatorTeamBoards(gtx, eng, view) }
+		}
+		if countdownVisible(view, mode) {
+			return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+				layout.Expanded(content),
+				layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
+			)
+		}
+		return content(gtx)
 	}
 
 	snap := eng.Snapshot()
@@ -470,11 +501,17 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	}
 }
 
-// countdownVisible reports whether the centered pre-game countdown number should
-// be drawn over the player's board.
+// countdownVisible reports whether the centered pre-game countdown number
+// should be drawn over the board — for players AND spectators alike (only a
+// finished local player is excluded). The check is "the game has not started
+// yet", NOT "the game is not in progress": at game end the status moves PAST
+// in_progress to finished/archived, and with the last countdown value still 0
+// an is-in-progress check would resurrect a giant GO! over the final boards.
 func countdownVisible(view gameView, mode engine.Mode) bool {
-	started := view.status == string(config.GameStatusInProgress)
-	return view.countdown >= 0 && !started && !view.gameOver && mode == engine.ModePlayer
+	preStart := view.status == "" ||
+		view.status == string(config.GameStatusCreated) ||
+		view.status == string(config.GameStatusStarting)
+	return view.countdown >= 0 && preStart && !view.gameOver && mode != engine.ModeGameOver
 }
 
 // countdownOverlay draws the big centered countdown number (or "GO!") with a
@@ -497,10 +534,24 @@ func (a *App) countdownOverlay(gtx C, view gameView) D {
 func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	opps := eng.OpponentSnapshots()
 	cell := gtx.Dp(unit.Dp(16))
+
+	// Elimination states drive the per-board overlays: an eliminated player's
+	// board reads OUT, and once the game is decided (all but one out) the
+	// survivor's board reads WINNER. A simultaneous-top-out draw shows every
+	// board OUT and no winner.
+	elimCount := 0
+	for _, p := range view.players {
+		if eng.IsEliminated(p.PlayerID) {
+			elimCount++
+		}
+	}
+	decided := len(view.players) > 1 && elimCount >= len(view.players)-1
+
 	var children []layout.FlexChild
 	for i, p := range view.players {
 		i, p := i, p
 		snap, ok := opps[p.PlayerID]
+		out := eng.IsEliminated(p.PlayerID)
 		children = append(children, layout.Rigid(func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
@@ -514,13 +565,42 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						return a.boardWidget(snap, i, cell, true, nil, gtx.Now)(gtx)
+						board := a.boardWidget(snap, i, cell, true, view.specFlash[i], gtx.Now)
+						switch {
+						case out:
+							return a.boardOverlay(board, "OUT", colErr)(gtx)
+						case decided:
+							return a.boardOverlay(board, "WINNER", colGo)(gtx)
+						}
+						return board(gtx)
 					}),
 				)
 			})
 		}))
 	}
 	return layout.Flex{}.Layout(gtx, children...)
+}
+
+// boardOverlay centers a compact label chip over a board — the spectator's
+// OUT / WINNER(S) markers. Only the chip itself has a background; the board
+// stays fully visible around it (a full-board scrim over the already-dark
+// playfield made the board unreadable).
+func (a *App) boardOverlay(board layout.Widget, txt string, col colorN) layout.Widget {
+	return func(gtx C) D {
+		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+			layout.Stacked(board),
+			layout.Stacked(func(gtx C) D {
+				l := a.pixel(unit.Sp(12), txt, col)
+				inset := layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(8), Right: unit.Dp(8)}
+				macro := op.Record(gtx.Ops)
+				dims := inset.Layout(gtx, l.Layout)
+				call := macro.Stop()
+				fillRect(gtx.Ops, image.Rect(0, 0, dims.Size.X, dims.Size.Y), withAlpha(colBg, 0xd8))
+				call.Add(gtx.Ops)
+				return dims
+			}),
+		)
+	}
 }
 
 func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
@@ -553,17 +633,35 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 
 // spectatorTeamBoards renders both teams' shared boards side by side for a
 // teams-mode spectator. The spectator engine consumes team 0 as its "own"
-// board and team 1 via the opponent consumer (see Engine.Start).
-func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine) D {
+// board and team 1 via the opponent consumer (see Engine.Start). A fully
+// eliminated team's board reads OUT; once either team is out, the other reads
+// WINNERS.
+func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	cell := gtx.Dp(unit.Dp(14))
 	teamB, okB := eng.OpponentSnapshots()[engine.TeamBoardKey(1)]
+
+	members := [config.TeamCount]int{}
+	alive := [config.TeamCount]int{}
+	for _, p := range view.players {
+		if p.Team < 0 || p.Team >= config.TeamCount {
+			continue
+		}
+		members[p.Team]++
+		if !eng.IsEliminated(p.PlayerID) {
+			alive[p.Team]++
+		}
+	}
+	teamOut := func(t int) bool { return members[t] > 0 && alive[t] == 0 }
+	over := teamOut(0) || teamOut(1)
+
 	boards := []struct {
 		label string
 		snap  engine.BoardSnapshot
 		ok    bool
+		team  int
 	}{
-		{"TEAM A", eng.Snapshot(), true},
-		{"TEAM B", teamB, okB},
+		{"TEAM A", eng.Snapshot(), true, 0},
+		{"TEAM B", teamB, okB, 1},
 	}
 	var children []layout.FlexChild
 	for _, b := range boards {
@@ -577,7 +675,14 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine) D {
 						if !b.ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						return a.boardWidget(b.snap, -1, cell, true, nil, gtx.Now)(gtx)
+						board := a.boardWidget(b.snap, -1, cell, true, view.specFlash[b.team], gtx.Now)
+						switch {
+						case teamOut(b.team):
+							return a.boardOverlay(board, "OUT", colErr)(gtx)
+						case over:
+							return a.boardOverlay(board, "WINNERS", colGo)(gtx)
+						}
+						return board(gtx)
 					}),
 				)
 			})

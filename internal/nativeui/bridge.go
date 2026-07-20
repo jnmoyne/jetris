@@ -51,8 +51,26 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				}
 			case engine.UpdateCASFlash:
 				now := time.Now()
-				for _, rc := range u.FlashCells {
-					a.flash[[2]int{rc[0], rc[1]}] = now
+				if e.Mode() == engine.ModeSpectator {
+					// Spectator: a broadcast flash from some player. Key its
+					// board — the player's index (competitive) or team (teams).
+					board := u.FlashPlayerIdx
+					if e.GameMode() == config.ModeTeams {
+						board = u.Team
+					}
+					m := a.specFlash[board]
+					if m == nil {
+						m = make(map[[2]int]time.Time)
+						a.specFlash[board] = m
+					}
+					for _, rc := range u.FlashCells {
+						m[[2]int{rc[0], rc[1]}] = now
+					}
+				} else {
+					// Player: our own dropped-write flash on our own board.
+					for _, rc := range u.FlashCells {
+						a.flash[[2]int{rc[0], rc[1]}] = now
+					}
 				}
 			case engine.UpdateRTT:
 				a.rtt = u.RTT

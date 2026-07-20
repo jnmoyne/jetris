@@ -53,7 +53,7 @@ func TestLobbyCreateGame(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0)
+	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

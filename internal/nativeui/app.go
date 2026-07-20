@@ -157,7 +157,12 @@ type App struct {
 	myReady      bool
 	readyPlayers []lobby.PlayerSummary
 	flash        map[[2]int]time.Time
-	fireworks    *fireworksShow // victory fireworks show; nil until a competitive/teams win
+	// specFlash holds CAS-failure flashes for SPECTATOR boards, broadcast
+	// by players over core NATS. Keyed by board index — the flashing
+	// player's global index (competitive) or team (teams). A player's own
+	// board flash lives in `flash`, not here.
+	specFlash map[int]map[[2]int]time.Time
+	fireworks *fireworksShow // victory fireworks show; nil until a competitive/teams win
 
 	// chat log (written by pumpLobby)
 	chatLog []lobby.ChatMessage
@@ -186,20 +191,44 @@ type App struct {
 	connList       widget.List        // scrollable pull-down option list
 	connCheckBtn   widget.Clickable   // "Check connection" (connect + ping, no side effects)
 
-	createBtn  widget.Clickable
-	modeEnum   widget.Enum
-	countEd    widget.Editor
-	quitBtn    widget.Clickable
-	chatEd     widget.Editor
-	chatBtn    widget.Clickable
-	playerList widget.List
-	gameList   widget.List
-	archiveLst widget.List
-	chatList   widget.List
-	gameBtns   map[string]*gameRowBtns
+	createBtn     widget.Clickable
+	modeEnum      widget.Enum
+	countEd       widget.Editor
+	allowAgentsCb widget.Bool   // competitive create: allow idle agents to take seats
+	maxAgentsEd   widget.Editor // competitive create: how many seats agents may take
+	quitBtn       widget.Clickable
+	chatEd        widget.Editor
+	chatBtn       widget.Clickable
+	playerList    widget.List
+	gameList      widget.List
+	archiveLst    widget.List
+	// Game-history controls: sort selector ("score"/"date") and the
+	// show-games-with-agents filter (checked = shown).
+	histSortEnum widget.Enum
+	histAgentsCb widget.Bool
+	chatList     widget.List
+	gameBtns     map[string]*gameRowBtns
 	// confirmDeleteID is the abandoned game whose row currently shows the
 	// "Are you sure you want to delete this game?" confirmation ("" = none).
 	confirmDeleteID string
+
+	// Invite-only create flow. inviteOnlyCb toggles it on the create row.
+	// While invitePickerGameID is non-empty the invitee-picker overlay is
+	// open for that just-created game; invitePicker holds one row of widget
+	// state per selectable player (keyed by player ID).
+	inviteOnlyCb       widget.Bool
+	invitePickerGameID string
+	invitePicker       map[string]*inviteChoice
+	invitePickerErr    string          // capacity-validation message shown in the picker
+	invitePickerMode   config.GameMode // captured when the picker opens
+	invitePickerPC     int             // playerCount of the game being invited to
+	invitePickerTS     int             // teamSize (teams mode)
+	inviteList         widget.List
+	inviteSendBtn      widget.Clickable
+	inviteCancelBtn    widget.Clickable
+	// Incoming-invitation pop-up (reads lobby.MyInvite at draw time).
+	inviteAcceptBtn  widget.Clickable
+	inviteDeclineBtn widget.Clickable
 
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable
@@ -226,6 +255,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		screen:    screenLogin,
 		countdown: -1,
 		flash:     map[[2]int]time.Time{},
+		specFlash: map[int]map[[2]int]time.Time{},
 		gameBtns:  map[string]*gameRowBtns{},
 	}
 	a.loginEd.SingleLine = true
@@ -234,7 +264,13 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.chatEd.Submit = true
 	a.countEd.SingleLine = true
 	a.countEd.SetText("2")
+	a.maxAgentsEd.SingleLine = true
+	a.maxAgentsEd.Filter = "0123456789"
+	a.maxAgentsEd.SetText("1")
 	a.modeEnum.Value = "cooperative"
+	a.histSortEnum.Value = "score"
+	a.histAgentsCb.Value = true // agent games shown by default
+	a.inviteList.Axis = layout.Vertical
 	a.playerList.Axis = layout.Vertical
 	a.gameList.Axis = layout.Vertical
 	a.archiveLst.Axis = layout.Vertical

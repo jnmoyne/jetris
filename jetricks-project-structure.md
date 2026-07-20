@@ -30,6 +30,7 @@
 18. [Testing Strategy](#18-testing-strategy)
 19. [Design Decision Log](#19-design-decision-log)
 20. [Release Pipeline](#20-release-pipeline)
+21. [internal/agent and cmd/jetricks-agent](#21-internalagent-and-cmdjetricks-agent)
 
 ---
 
@@ -41,7 +42,9 @@ jetricks/
 │   └── workflows/
 │       └── release.yml
 ├── cmd/
-│   └── jetricks/
+│   ├── jetricks/
+│   │   └── main.go
+│   └── jetricks-agent/
 │       └── main.go
 ├── internal/
 │   ├── config/
@@ -79,6 +82,12 @@ jetricks/
 │   │   └── cleanup.go
 │   ├── archive/
 │   │   └── archive.go
+│   ├── agent/
+│   │   ├── agent.go
+│   │   ├── difficulty.go
+│   │   ├── eval.go
+│   │   ├── executor.go
+│   │   └── planner.go
 │   ├── render/
 │   │   └── colors.go
 │   ├── nativeui/
@@ -98,6 +107,7 @@ jetricks/
 │       └── nats.go
 ├── scripts/
 │   └── cleanup.sh
+├── jetricks-agent-guide.md
 ├── go.mod
 └── go.sum
 ```
@@ -120,6 +130,10 @@ cmd/jetricks
     ├── internal/archive           ← depends on: nats, engine, game, lobby, config
     ├── internal/render            ← depends on: game (cell/board appearance)
     └── internal/nativeui          ← depends on: engine, lobby, render, config (the front end)
+
+cmd/jetricks-agent
+    └── internal/agent               ← depends on: engine, lobby, game, rng, nats, config,
+                                     archive, cleanup (headless player; no UI packages)
 
 Leaf packages (no internal deps):
     internal/config
@@ -1062,7 +1076,8 @@ type Engine struct {
     score             atomic.Int64
     totalLines        atomic.Int64
     level             atomic.Int64
-    hadActivePiece    bool            // only the own-cells consumer goroutine touches it
+    hadActivePiece    bool            // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-cells consumer, spawnPiece (post-publish), and handleTeamTopOut
+    spawnPending      bool            // shared boards: spawn deferred (blocked only by another player's ACTIVE piece); guarded by e.mu; retried by retrySpawnIfPending on the gravity tick
     eliminatedPlayers map[string]bool // players who have topped out (competitive/teams); guarded by e.mu
     eliminatedTeam    map[string]int  // teams: eliminated player → team; guarded by e.mu
     teamOutcomeDone   bool            // teams: win/loss/draw already decided; guarded by e.mu
@@ -1177,7 +1192,7 @@ Between teams the competitive mechanics apply at team granularity:
 
 - **Garbage attack.** A team's line clears add unclearable adversarial rows to the OPPOSING team's shared board. The clearing engine publishes `GameEvent{Kind: EventShrink, Team: teamIdx, TargetTeam: 1-teamIdx, RowsRemoved: n, PlayerIdx: …}`; every **alive** member of the target team (`ev.TargetTeam == e.teamIdx && mode == ModePlayer`) races to apply it via `applyTeamShrink` — eliminated players and spectators never apply (their alive teammates do).
 - **`applyTeamShrink` — guarded idempotent shared-board shrink.** Several teammates receive the same event, so the application must commit exactly once. The engine adds `ev.RowsRemoved` to `expectedGarbage`, then loops (16 attempts): under `e.mu` it computes `deficit = expectedGarbage − playfield.AdversarialRowCount()`; `deficit <= 0` means the shift (ours or a teammate's) already landed — done. Otherwise it projects `ProjectShrinkShared`, diffs with `changedCells`, builds the batch, and publishes **WITH CAS** (`PublishMoveAtomically`). On `ErrCASFailure` it waits on `e.cellUpdated` (capped, per-player-offset backoff) and **recomputes from fresh state** — never a blind merge-retry, since merging a stale shift after a teammate's shift committed would double-shift the stack. Exactly one teammate's batch commits per deficit (the winning batch wrote the full board width, so CAS rejects any batch from a torn/stale board); the rest converge through the deficit guard. The application ends with a full-board rerender.
-- **No piece is lifted by a shared-board shrink.** `ProjectShrinkShared` overlays every player's active cells at their current, unshifted positions (see §`internal/game`); a piece overtaken by the risen stack is "crushed" — it locks where it is on its next blocked drop. A shrink can therefore never top a player out; top-out happens at spawn time only.
+- **No piece is lifted by a shared-board shrink.** `ProjectShrinkShared` overlays every player's active cells at their current, unshifted positions (see §`internal/game`); a piece overtaken by the risen stack is "crushed" — it locks where it is on its next blocked drop. A shrink can therefore never top a player out; top-out happens at spawn time only — and only when the spawn cells are held by LOCKED cells (a spawn covered only by a teammate's falling piece is DEFERRED and retried each gravity tick via `retrySpawnIfPending`, not a top-out).
 - **Per-player elimination, per-team game over.** A topped-out player vacates their piece and spectates while their team plays on; a team loses only when ALL its members have topped out, and every member of the other team — already-eliminated ones included — wins.
 
 Teams scoring is the coop rule per team: a clear scores `teamSize × lines`, and the clearing engine publishes `EventLineClear{Team, Score, LinesCleared}` — teammates fold **both** the score delta and the line count (as coop does too) so every teammate's level and gravity interval stay in sync with the team total. The opposing team's clears do not touch an engine's own `score`; their garbage reaches it as `EventShrink`. However **every** engine (both teams, eliminated players, spectators) also folds every `EventLineClear` into the per-team scoreboard `teamScores[ev.Team]`/`teamLines[ev.Team]` and emits `UpdateTeamStats`, so the live TEAM A / TEAM B scores (and per-team levels) render on every screen (see "Score tracking" below).
@@ -1208,6 +1223,8 @@ One subtle gate: lock-in detection in `runConsumer` only runs when `e.getMode() 
 - Emits appropriate `EngineUpdate` events for the UI on each meaningful state change.
 
 #### Input + gravity loop (`runInput`, in `move.go`)
+
+The gravity arm also calls `retrySpawnIfPending` after each tick as the deferred-spawn BACKSTOP; the primary retry is message-driven — the own-board consumer re-attempts a pending spawn on every incoming cell change (the very message that may be the blocker moving away), because at agent speeds a blocking piece crosses the spawn cells in milliseconds and a tick-only cadence starved deferred players to a piece every few seconds. Both paths re-check under e.mu and re-defer or top out (locked cells) as appropriate. The same hook doubles as the **piece-less watchdog**: an alive player with no active piece and nothing pending for two consecutive ticks gets a forced spawn — the consumer's lock-in edge detector only fires when a message arrives on the board's consumer, so a wholesale-dropped spawn publish (or missed edge) on a since-silent board (last teammate eliminated) would otherwise strand the player piece-less forever. The watchdog is gated on `gameStarted` (set when the engine learns the meta is in_progress): the gravity ticker runs from engine start, during the countdown, and an ungated watchdog would force-spawn and start the game mid-countdown. `spawnPiece` additionally sets `hadActivePiece = true` after its publish (write-through already applied) so the consumer's lock-in edge detector cannot miss a piece that is hard-dropped before its spawn echo is processed.
 
 ```go
 func (e *Engine) runInput(ctx context.Context)
@@ -1479,7 +1496,7 @@ Additionally every engine keeps a **per-team scoreboard** (`teamScores` / `teamL
 
 **Top-out transition:**
 
-When Player A's engine detects that the newly spawned piece (at the top of the playfield) cannot be placed without collision, `handleTopOut(ctx, locked)` (`locked` = caller already holds `e.mu`; `spawnPiece`'s top-out branch always does):
+When Player A's engine detects that the newly spawned piece (at the top of the playfield) cannot be placed **on locked cells** — on shared boards a spawn blocked only by another player's active piece sets `spawnPending` and is retried from `runInput`'s gravity tick instead, the same locked-vs-active distinction `attemptMoveCoop` makes — `handleTopOut(ctx, locked)` (`locked` = caller already holds `e.mu`; `spawnPiece`'s top-out branch always does):
 1. Publishes `GameEvent{Kind: EventGameOver, PlayerID: playerA, Score: e.score, Level: e.AchievedLevel(), PieceCount: e.pieceIdx}` to the events subject (`AchievedLevel` = `game.Level(totalLines)`, the level reached at the moment of top-out — recorded in the archive).
 2. Calls `e.transitionToSpectator(false)` — sets `mode = ModeGameOver` and emits `UpdateGameOver{Won: false}`. It does **not** itself stop the gravity ticker or move processor; those goroutines self-exit on their next iteration because they guard on `mode == ModePlayer`, and the consumers keep running. `handleTopOut` does not archive, delete the stream, or remove the KV entry.
 3. In **cooperative mode**, any top-out ends the game for everyone: `handleTopOut` kicks off `transitionGameToFinished` (CAS the meta to `finished`).
@@ -1494,7 +1511,11 @@ For **teams mode** the archive builds `playerTeams` from the roster snapshot (th
 
 ## 10. internal/lobby
 
-Manages all lobby-level state: player presence, game listings, global chat, and the lifecycle operations (create game, join game, leave game). Does not know about the UI layer.
+Manages all lobby-level state: player presence, game listings, global chat, invitations, and the lifecycle operations (create game, join game, leave game). Does not know about the UI layer.
+
+`JoinGame` enforces the overall roster cap (`len(Players) >= PlayerCount` → `ErrGameFull`) inside its CAS loop for EVERY mode, in addition to the teams per-team cap (`ErrTeamFull`) — the authoritative guard against overfilling a game (the GUI hides Join on a full game and the agent pre-checks `joinable`, but neither is atomic with the roster).
+
+**Invitations** (`invite.go`) let a creator restrict a game to chosen players. `CreateGame` takes an `inviteOnly` flag (stored on the listing as `InviteOnly` alongside `CreatorID`); `Invite(ctx, toPlayerID, gameID, team)` writes an `Invitation` to the invitee's KV key `config.LobbyInviteKey(playerID)` = `invites.<id>`, which every lobby's KV watcher delivers (`handleInviteUpdate` keeps only the caller's OWN key, exposed via `MyInvite`). `JoinGame` guards invite-only games inside its CAS loop: only `CreatorID` or the holder of a fresh invitation (`inviteFor`, read straight from KV to beat watcher lag) may join, and an invitation exempts the joiner from the `MaxAgents` policy (`ErrNotInvited` otherwise); a successful join consumes the invitation. `RespondInvite` deletes the key (decline, or the stock consume-on-join). Invitations expire after `config.InviteTTL` (2 min).
 
 ### Files
 
@@ -1775,6 +1796,10 @@ Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logi
 
 **`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `archive_view.go` (the `screenArchive` history viewer — redraws a finished game's saved end-of-game boards), `board.go` (board drawing), `input.go` (keyboard → engine moves), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the bottom message strip, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — the lobby/archive branding banner, and the inline `natsTag` "N"+"NATS.io" chip used on the login tagline and at the foot of the game HUD), `fonts.go` (the embedded "Press Start 2P" pixel face — `PressStart2P-Regular.ttf`, SIL OFL 1.1, license in `PressStart2P-OFL.txt` — with `uiFontCollection` and the `a.pixel` label helper), `fireworks.go` (the victory fireworks overlay for competitive/teams wins), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag.
 
+**Invite-only create flow (`invite.go`).** The create row's "Invite only" checkbox switches the button to "Create & Invite"; clicking it creates an invite-only game and opens the **invitee-picker** modal (`invitePickerOverlay`) over the lobby — one row per OTHER player currently idle in the lobby (`StatusInLobby`), an Invite checkbox for competitive/coop or a —/A/B `widget.Enum` per player for teams. The candidate list is reactive: `syncInvitePickerCandidates` runs each frame while the overlay is open and `reconcileInvitePicker` folds in players who joined the lobby and drops those who left or entered a game, preserving the selection widgets of those who remain. The picker shows live open-seat counts (captured `invitePickerPC`/`invitePickerTS`) and `pickerCapacityError` blocks Send on an over-subscribed team/game; "Send invites" calls `lobby.Invite` for each selection; "Cancel" deletes the just-created game. An invited player's client shows the incoming pop-up (`incomingInviteOverlay`, driven live by `lobby.MyInvite`) with Accept & Play (→ `joinGame`, which consumes the invitation) / Decline (`RespondInvite`). Both modals are Stacked over the lobby behind a click-swallowing scrim; game rows tag invite-only games "· invite only" and hide Join from anyone but the creator or a pending invitee. State lives on `App` (`inviteOnlyCb`, `invitePickerGameID`, `invitePicker`, the send/cancel/accept/decline clickables).
+
+**Spectator overlays and history controls.** For spectators the pre-game countdown overlay renders over the multi-board views exactly as over a player's board (`countdownVisible` admits every non-finished mode; `gameBoardArea` stacks the overlay over the spectator content, and `runMetaConsumer` emits `UpdateGameStatus` to every engine — spectators included — so the overlay clears the moment the meta reads in_progress; visibility is gated on a PRE-START status check, not is-in-progress, so the stale GO! cannot resurrect when the status moves past in_progress to finished). Spectators also render every player's **CAS-failure flash**: a player broadcasts its dropped-write flash over CORE NATS (`config.FlashSubject`, outside the game stream's capture so it is never persisted), spectator engines subscribe (`runFlashConsumer`, `initialMode == ModeSpectator`) and re-emit it as `UpdateCASFlash`, and the UI keys it per board (`specFlash`, by player index competitively / team in teams) — players still see only their own flash (local, `emitCASFlash`). In the competitive spectator view each eliminated player's board carries a centered **OUT** chip (only the chip has a background — the board stays visible) and, once the game is decided, the survivor's board reads **WINNER** (`spectatorBoards` + `boardOverlay`, driven by `eng.IsEliminated` over the roster); the teams view does the same per team board (**OUT** / **WINNERS**, `spectatorTeamBoards`). The lobby's GAME HISTORY header carries a sort selector (`histSortEnum`: "By score" — the default `sortedArchives` ranking — or "By date" — `sortedArchivesByDate`, most recent first) and an "Agent games" checkbox (`histAgentsCb`, checked by default) that filters out records with agent seats via `ArchiveRecord.HasAgents` (`archivesForDisplay`); the agent flag on each archived seat (`PlayerResult.Agent`) is stamped from the roster snapshot by `ArchiveAndCleanup`.
+
 **Look and feel — modern 8-bit, NATS-branded.** Display type (the login title, section headers, buttons, HUD stats, ready badges, the countdown, the game-over dialog, and the branding banner) renders in the pixel face (`pixelTypeface`); body text (chat, lists, editors) stays in the Go faces for readability. All chrome corners are square; panels, editors, and the context pull-down carry chunky 2 dp `colBorder` frames; buttons and the game-over dialog sit on `hardShadow`'s offset solid shadow (`board.go`). Every playfield is drawn inside a `colBorder` arcade-well frame (`drawBoard`), filled cells are shaded with the classic 8-bit bevel — lighter top/left strips, darker bottom/right, a gloss pixel — gated by `CellAppearance.Bevel`, and `scanlines` paints a subtle CRT overlay over every frame (last in `App.layout`). The palette (`app.go`) is a dark blue-black (`colBg`/`colPanel`/`colBorder`) with the **NATS brand blue** `#27aae1` as `colAccent` and the NATS logo green as `colNATSGreen`, so the branding runs through the whole chrome; the login screen flanks the "JETRICKS" pixel title with NATS logos and ends with a "peer to peer · made with NATS.io" tagline. The theme is built by `newUITheme` (shared with the layout tests, so snapshots match the live window).
 
 **Login screen connection picker.** The App is built via `NewWithPicker` and starts with nil `js`/`kv`; there is a single combined login screen — name entry plus a **CONNECT TO** section (`connSection`, `login.go`): a "Context:" radio paired with a pull-down button (`connDropButton`, an editor-style bordered box showing the chosen context `connCtx` and a ▼/▲ arrow); clicking it expands `connDropList`, a bordered scroll-capped (`~180dp`) `material.List` of the contexts from `nats.ListContexts` — the CLI's selected context labeled "(selected)", the current choice highlighted in the accent color — and picking a row (or merely touching the pull-down) also selects the context radio. Below it sits a "NATS URL" radio with an editable URL field; typing in the URL editor auto-selects its radio, but the constructor's programmatic `SetText` queues one synthetic `ChangeEvent` that is swallowed via the `connURLSeeded` flag so it cannot override the context default on the first frame. Default choice and URL text are seeded from the CLI flags (`--server` → URL option with that value; `--context` → the context option with the pull-down preset to it, appended to the list if undiscovered; else the CLI's selected context; else the URL option with `DefaultNATSURL`); whichever option starts out, `connCtx` is preset to `--context`, else the CLI's selected context, else the first known context. A **Check connection** row (`connCheckRow`) dials the current choice off the UI goroutine (`doCheckConn` → `nats.CheckConnection`), shows "Checking…" while busy, and renders `✓ <server> · ping <rtt>` (green, via `formatRTT`) or `✗ <error>` (red); the probe connection is closed immediately and provisions nothing. On Play, `submitLogin` resolves the choice (`pickerConfig`) and dispatches `doConnectAndLogin` (`lifecycle.go`): it first `disconnect()`s any connection left over from a previous attempt (e.g. a cancelled name collision), then runs `nats.Bootstrap` under a 15 s cap — errors land on the login screen for retry, success stores `a.nc/a.js/a.kv` (the App owns the connection — `teardown`/`DrainConn` drain it) and falls through into the normal `doLogin` flow. `quit()` (lobby → login) also `disconnect()`s, so the player always lands back on the full chooser and can switch servers. `App` state: `nc`, `needConn`/`connContexts`/`connSelected`/`connCfg`/`lanIP` (immutable after construction), `connChecking`/`connCheckOK`/`connCheckMsg` (mu-guarded), and the `connEnum`/`connCtx`/`connDropOpen`/`connDropBtn`/`connOptBtns`/`connURLEd`/`connPortEd`/`connList`/`connCheckBtn` widget state (all UI-goroutine only).
@@ -1969,6 +1994,11 @@ Decisions settled during design review, recorded here for future reference.
 | 18 | Teams playfield topology | Two team-scoped shared boards (`jetricks.game.<id>.team.<t>.playfield.cell.<row>.<col>`), each the cooperative scheme at team scale | Within a team, teams mode IS cooperative — the coop shared-board machinery (`CanPlaceCoop`, merge-retry, `Cell.PlayerIdx` ownership) is reused verbatim via `sharedBoard()`. The team token in the subject keeps the two boards disjoint, so cross-team writes are impossible by construction; no roster consumer is needed (the roster is fixed pre-start). |
 | 19 | Shrink on a shared team board | `ProjectShrinkShared`: NO piece is lifted — every active piece is overlaid at its current position; a piece overtaken by the risen stack is "crushed" (locks where it is); shrink never tops a player out (top-out happens at spawn time). Application is CAS-guarded and idempotent via the `expectedGarbage` − `AdversarialRowCount()` deficit | Any of several teammates may win the race to apply a shrink, and lifting would relocate other players' mid-flight pieces from a possibly-stale snapshot. Holding every piece in place keeps the transform pure and symmetric; the monotonic garbage-row count makes the racing applications converge to exactly one committed shift (a stale shift would double-shift the stack, so CAS failures recompute from fresh state rather than blind merge-retry). |
 | 20 | Teams game-over semantics | A topped-out player vacates their piece and spectates while their team plays on; a team loses when ALL members topped out; every member of the other team (eliminated included) wins. Decided once per engine (`teamOutcomeDone`) off the ordered events subject | Per-player elimination keeps the shared board live for the teammates; the ordered events stream guarantees every engine reaches the same verdict without coordination. See `jetricks-gameplays.md`. |
+| 23 | Roster overfill / stale invitations | `JoinGame` caps the overall roster (`ErrGameFull`) in its CAS loop for all modes; an agent whose invited join fails declines the invitation instead of retrying | The per-team teams cap left competitive/coop uncapped, so a race (or a mis-gated UI) could seat a 5th player in a 4-player game. An invited agent that couldn't be seated (team over-subscribed by the creator) otherwise re-accepted the same invitation in a tight loop; declining on failure breaks it. |
+| 22 | Game invitations | Written to the invitee's KV mailbox `invites.<id>` (one pending, 2-min TTL); `JoinGame` guards invite-only games inside its CAS loop (creator or invitation holder only, invitation exempts from `MaxAgents`); agents auto-accept from their scan | Reuses the lobby KV and its existing whole-bucket watcher — no new stream or subject; the invitation is both the routing (which game/team) and the authorization (the creator's explicit choice), so it cleanly overrides the open agent policy. Per-player mailbox key means each client trivially reads only its own. |
+| 21 | Shared-board spawn blocked by another player's ACTIVE piece | DEFER the spawn (`spawnPending`) and retry it from `runInput`'s gravity tick (`retrySpawnIfPending`) — top out only when the spawn cells hold LOCKED cells (`CanPlaceCoop` fails AND `CanPlace` fails) | Mirrors the locked-vs-active distinction gravity/hard-drop already make; a teammate's piece merely crossing the spawn area must not eliminate a player (in teams permanently — the "one piece per team board" bug — and in coop it would end the game for everyone). The gravity ticker is the retry heartbeat: no new goroutine, the single-write-goroutine invariant holds, and the cadence matches how fast the blocker can move. Known deferred edge: a *disconnected* player's abandoned mid-air piece blocks indefinitely — a pre-existing engine-wide gap (it equally blocks movement/locks today). |
+| 22 | Piece-less watchdog + no-regress meta transitions | `retrySpawnIfPending` force-spawns after 2 piece-less gravity ticks (gated on `gameStarted`); `lobby.transitionGameStatus` refuses to overwrite finished/archived/cancelled | The lock-in edge detector needs an incoming message to fire — a dropped spawn publish on a since-silent shared board (last teammate eliminated) stalls a player forever without the watchdog. And the countdown's final `StartGame` is a detached goroutine racing the game itself: a fast game (agents) can FINISH before that write lands, and an unguarded in_progress stamp over finished resurrects the game and strands it unarchivable. |
+| 23 | Archive verdicts (winner / winning team) | Taken from the archiving ENGINE's live record (`IsEliminated` set, new `GameOutcome()` accessor), never from replaying the events subject | The game stream is `MaxMsgsPerSubject: 1` and all events share ONE subject, so a post-game replay sees only the LAST event — elimination history cannot be reconstructed (a who-ever-sent-an-event set also mis-scores near-simultaneous final top-outs as a draw). The archiver lived through the game: in competitive it knows every elimination; in teams it is by construction on the winning side (or a draw participant), so its own verdict IS the team verdict. |
 
 ---
 
@@ -1996,3 +2026,93 @@ Gio is not cross-compilable from a single host: on Linux it uses cgo against the
 ### Versioning
 
 Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps the tag into `main.version` (default `dev` for local builds) — reported by the `--version` flag.
+
+---
+
+## 21. internal/agent and cmd/jetricks-agent
+
+The headless computer player. `internal/agent` holds the reusable player logic;
+`cmd/jetricks-agent` is its CLI shell. Neither imports any UI package — the dependency
+tree is `engine`, `lobby`, `game`, `rng`, `nats`, `config`, `archive`, `cleanup` — so
+the binary builds without cgo/Gio on every platform. The agent is deliberately a plain
+peer: it uses only the exported engine/lobby API (the six move methods and the state
+accessors), never engine internals and never direct cell publishes.
+
+### internal/agent files
+
+| File | Contents |
+|------|----------|
+| `difficulty.go` | `Difficulty` (easy/medium/hard), `ParseDifficulty`, and `Tuning` — the knob set (per-piece think pause, per-move pause, blunder rate/depth, executor timeouts). No lookahead knob: agents only use UI-visible information, and the UI has no next-piece preview. Each difficulty maps to a `Tuning`; tests override knobs directly. |
+| `eval.go` | Pure board evaluation: Dellacherie's six features (landing height, eroded cells, row transitions, column transitions, holes, cumulative wells) with the El-Tetris weights. Cells count as filled iff `Occupied && !Active`, which prices adversarial garbage in automatically. |
+| `planner.go` / `rules.go` | Pure placement search over `game.Playfield` copies. `Rules{Shared, PlayerIdx, SectionIdx}` selects the board's collision variant — private boards use `CanPlace`/`Rotate`/`HardDropDestination`; shared (coop/teams) boards use the `*Coop` variants, where other players' mid-flight pieces block. `PlanPlacements` enumerates every placement reachable with the executor's move vocabulary by simulating the exact script (SRS rotations with kicks, one-column collision-gated slides, hard drop), simulates the lock/clear (`Row.IsFull` keeps garbage rows uncompletable), scores with `eval.go`, and returns placements best-first — current piece only, per the fair-visibility contract (no seed-derived lookahead). `ChoosePlacement` applies the blunder model. |
+| `executor.go` | `Mover` — the slice of `*engine.Engine` the executor needs (six moves + `Playfield`, `PieceIdx`, `PlayerIdx`, `Mode`; the engine satisfies it, tests use a synchronous fake). `Execute` runs a sense–act loop: dispatch exactly one move toward the target, poll the committed playfield for its effect, repeat, hard drop. Errors are typed: `ErrStalled` (move never took effect), `ErrBoardChanged` (garbage landed mid-plan, detected via `AdversarialRowCount`), `ErrGameOver`. |
+| `agent.go` | `Run(ctx, Config) (Result, error)` — setup (Bootstrap → name-collision check → lobby bring-up with `SetAgent(true)`, `WaitForInitialLoad`, best-effort `cleanup.Run`), then a game loop around `playOne`. Auto-join is **resident** by default: scan → play → back to the lobby, until ctx is cancelled (`Config.Once` restores one-shot; `--join`/`--create` are always one-shot). `playOne` mirrors `nativeui/lifecycle.go` for a single game of ANY mode: joinability guard (created/starting, free seat — a free team seat in teams — free **agent seat** per the game's `MaxAgents` policy) → `JoinGame` (teams: least-populated team, one retry on a lost `ErrTeamFull` race) → engine construction with the listing's mode/team/slot and `OnGameFinished = ArchiveAndCleanup` → `ToggleReady` (running the 5..0 countdown + `StartGame` when its toggle completes the ready set) → per-piece play loop under the mode's `Rules` → per-mode outcome: competitive polls `IsEliminated`; cooperative has no winner (shared score, `OVER`); teams waits for the team verdict (authoritative Won update, with a roster-eliminations poll as the lossy-channel fallback) → `waitArchived` (archiveDone when OUR engine archives — gated by `archiveStarted`, since `ArchiveAndCleanup` flips the meta to archived before the record publish — else meta/stream) or grace/linger (competitive loser) → teardown. A joined game that never starts within `WaitTimeout` is abandoned via `lobby.UnjoinGame` (frees the seat) before the agent rescans. `Result` carries per-run `Games`/`Wins` totals alongside the last game's stats. |
+
+### Poll-not-events rule
+
+`engine.Updates` is a bounded, lossy channel (drops when full), so the agent treats it as
+a logging/wake-up hint only. Everything authoritative is polled from race-free
+accessors: game over is `Mode() != ModePlayer`, win/loss prefers the pump-captured
+`UpdateGameOver.Won` and falls back to `!IsEliminated(name)`, lock detection is
+`PieceIdx()` advancing, and mid-plan garbage is `AdversarialRowCount()` growing. The
+agent never reads the game seed: the piece sequence is deterministic, but the UI
+shows humans no next-piece preview, so seed-derived lookahead would violate the
+fair-visibility contract (agents decide only on what a human can see —
+`jetricks-agent-guide.md`).
+
+### cmd/jetricks-agent flags
+
+| Flag | Meaning |
+|------|---------|
+| `--server` / `--context` / `--user` / `--password` | Connection choice, same semantics as `cmd/jetricks` (URL wins over context) |
+| `--name` | The agent VERSION stem (default: the stock `agent.Codename`, `mk1`, bumped when the agent's play logic changes). `Run` composes the full player name `<stem>-<instance>-<difficulty>` (`composeName` in agent.go) with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole passes `config.ValidatePlayerName` |
+| `--difficulty` | `easy` \| `medium` \| `hard` (default `hard`) |
+| `--join <gameID>` | Join a specific game (still subject to that game's agent policy) |
+| `--create` + `--mode` + `--players N` + `--max-agents M` | Create a game (cooperative/competitive/teams; `--players` is per team in teams mode) and wait for opponents; `M` agent seats including this agent (0/default = all seats — an agent-hosted game is agent-friendly) |
+| *(neither)* | **Resident mode**: keep auto-joining the oldest game of any mode that allows agents, game after game, until interrupted |
+| `--once` | Auto-join mode: exit after one game instead of staying resident |
+| `--wait` | Max wait for a joined game to fill and start (default 10m; one-shot discovery too — resident discovery waits indefinitely) |
+| `--linger` | After losing, stay connected until the game finishes |
+| `--seed` | Blunder RNG seed for reproducible easy/medium play |
+| `--version` | Print version and exit |
+
+SIGINT/SIGTERM cancel the run context; the agent leaves the game, stops the lobby
+(deleting its presence), and drains the connection on the way out. Exit status 0 covers
+both winning and losing; non-zero means a setup or runtime error.
+
+### Testing
+
+`planner_test.go`/`eval_test.go` cover the pure search (placement enumeration counts,
+script replay, clear-beats-hole ordering, garbage-row invariants, blunder
+distribution). `executor_test.go` drives `Execute` against a
+synchronous fake `Mover`. `bot_integration_test.go` plays a full agent-vs-agent game on an
+embedded server (strong creator vs. rigged-bad auto-joiner, zero delays) and asserts
+exactly one winner, the archive record, and stream/KV cleanup.
+`resident_integration_test.go` exercises the resident lifecycle: two resident agents
+appear (flagged) in the lobby presence list, skip a no-agents game, fill and play two
+consecutive agent-allowed games created by a "human" lobby client, and exit cleanly on
+interrupt reporting two games each. `modes_integration_test.go` plays a full
+cooperative game (shared board, no winner, topper archives) and a 1v1 teams game
+(auto team selection, garbage between team boards, exactly one winning team) end to
+end.
+
+### Agent policy (who may join)
+
+The creator's agent policy lives on the lobby listing: `GameListing.MaxAgents` (0 = agents
+not allowed) with `AgentCount()` counting `PlayerSummary.Agent` roster seats.
+`Lobby.SetAgent(true)` marks a peer as an agent (stamped on presence and roster entries);
+`JoinGame` enforces the policy inside its CAS loop (`ErrAgentsNotAllowed`,
+`ErrAgentSlotsFull`), so concurrent agent joins can never exceed `MaxAgents`.
+`Lobby.UnjoinGame` is the pre-start inverse of `JoinGame`: a CAS loop that removes
+the caller from the roster (reverting `starting`→`created` when the roster is no
+longer full), guarded by the game META's status (the listing never reads
+`in_progress`), and purges the caller's roster announcement via
+`nats.PurgeRosterEntry` so late joiners don't discover a ghost opponent. The GUI's
+create row exposes the policy for every game mode ("Allow agents" checkbox +
+max-agents editor, `nativeui/lobby.go:createRow`), tags agent players `[agent]` throughout
+(lobby player list via `PlayerPresence.Agent`, game rows, ready roster, legend), and
+shows `agents k/N` on agent-allowed game rows. Relatedly, `cleanup.Run` applies a
+one-minute `creationGracePeriod` before treating a game as orphaned/creator-absent:
+creation is several separate writes and agent-allowed games legitimately sit at zero
+players until a resident agent's scan picks them up — without the grace, a peer (or
+agent) logging in mid-creation could cancel a brand-new game.

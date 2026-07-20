@@ -10,6 +10,7 @@ const (
 	LobbyUpdateGames
 	LobbyUpdateChat
 	LobbyUpdateArchive
+	LobbyUpdateInvite // this player's pending invitation appeared or was consumed
 )
 
 // LobbyUpdate is sent from the lobby to the UI.

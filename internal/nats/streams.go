@@ -84,6 +84,18 @@ func PurgeGameChat(ctx context.Context, js jetstream.JetStream, gameID string) e
 	return s.Purge(ctx, jetstream.WithPurgeSubject(config.GameChatSubject(gameID)))
 }
 
+// PurgeRosterEntry removes one player's roster announcement from a game
+// stream. Used when a player un-joins a game that never started: without the
+// purge, engines replaying the roster subjects would keep discovering the
+// departed player and render a ghost opponent board.
+func PurgeRosterEntry(ctx context.Context, js jetstream.JetStream, gameID, playerID string) error {
+	s, err := js.Stream(ctx, config.GameStream(gameID))
+	if err != nil {
+		return err
+	}
+	return s.Purge(ctx, jetstream.WithPurgeSubject(config.RosterSubject(gameID, playerID)))
+}
+
 // ListGameStreams returns names of all streams matching the JETRICKS_GAME_ prefix.
 func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, error) {
 	sl := js.StreamNames(ctx, jetstream.WithStreamListSubject("jetricks.game.>"))

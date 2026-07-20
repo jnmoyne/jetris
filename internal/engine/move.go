@@ -42,6 +42,11 @@ func (e *Engine) runInput(ctx context.Context) {
 			// races our own moves.
 			_ = e.attemptMove(ctx, MoveDown, true)
 
+			// A spawn deferred because another player's active piece covered
+			// the spawn cells is retried here, on the same single-write
+			// goroutine and at the same cadence the blocker falls at.
+			e.retrySpawnIfPending(ctx)
+
 			if e.sharedBoard() {
 				if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {
 					level = newLevel

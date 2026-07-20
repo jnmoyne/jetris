@@ -214,6 +214,79 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		row()
 	})
 
+	t.Run("lobby-game-row-with-agents", func(t *testing.T) {
+		// A competitive row with an agent policy shows the "agents k/N" info and
+		// tags agent players; the create row with the Allow-agents checkbox on
+		// renders the max-agents editor.
+		a := newTestApp()
+		g := lobby.GameListing{
+			GameID:      "agent-game-1234",
+			Mode:        config.ModeCompetitive,
+			Status:      config.GameStatusCreated,
+			PlayerCount: 3,
+			MaxAgents:   2,
+			Players: []lobby.PlayerSummary{
+				{PlayerID: "alice", Name: "alice", Ready: true},
+				{PlayerID: "hal", Name: "hal", Agent: true},
+			},
+			CreatedAt: time.Now(),
+		}
+		render := func(w func(C) D) {
+			var ops op.Ops
+			gtx := layout.Context{
+				Ops:         &ops,
+				Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+				Constraints: layout.Exact(image.Pt(800, 60)),
+			}
+			w(gtx)
+		}
+		render(func(gtx C) D { return a.gameRow(gtx, g, false) })
+		a.modeEnum.Value = "competitive"
+		a.allowAgentsCb.Value = true
+		render(a.createRow)
+	})
+
+	t.Run("invite-overlays", func(t *testing.T) {
+		render := func(w func(C) D) {
+			var ops op.Ops
+			gtx := layout.Context{
+				Ops:         &ops,
+				Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+				Constraints: layout.Exact(image.Pt(1200, 820)),
+			}
+			w(gtx)
+		}
+		// Competitive picker: plain include toggles + capacity line.
+		a := newTestApp()
+		a.invitePickerGameID = "g-comp"
+		a.invitePickerMode = config.ModeCompetitive
+		a.invitePickerPC = 3
+		a.invitePicker = map[string]*inviteChoice{
+			"alice": {playerID: "alice", name: "alice"},
+			"hal":   {playerID: "hal", name: "hal", agent: true},
+		}
+		a.invitePicker["alice"].sel.Value = true
+		render(a.invitePickerOverlay)
+
+		// Teams picker: three-way team selectors + per-team capacity, with an
+		// over-subscription error shown.
+		a.invitePickerMode = config.ModeTeams
+		a.invitePickerPC, a.invitePickerTS = 4, 2
+		a.invitePicker["alice"].team.Value = "0"
+		a.invitePickerErr = pickerCapacityError(a.invitePicker, 4, 2, true)
+		render(a.invitePickerOverlay)
+
+		// Incoming pop-up, one per mode.
+		for _, inv := range []lobby.Invitation{
+			{FromName: "carol", Mode: config.ModeCompetitive},
+			{FromName: "carol", Mode: config.ModeCooperative},
+			{FromName: "carol", Mode: config.ModeTeams, Team: 1},
+		} {
+			inv := inv
+			render(func(gtx C) D { return a.incomingInviteOverlay(gtx, &inv) })
+		}
+	})
+
 	t.Run("game-coop-player", func(t *testing.T) {
 		a := newTestApp()
 		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)

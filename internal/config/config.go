@@ -103,7 +103,8 @@ type PlayerResult struct {
 	Level      int    `json:"level,omitempty"` // level achieved at game end (from the player's line total)
 	PieceCount uint64 `json:"piece_count"`
 	Winner     bool   `json:"winner,omitempty"`
-	Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
+	Team       int    `json:"team,omitempty"`  // teams mode: 0 = A, 1 = B
+	Agent      bool   `json:"agent,omitempty"` // seat was played by an agent (from the roster at archive time)
 }
 
 // ArchiveRecord is published to the archive stream when a game finishes.
@@ -121,6 +122,18 @@ type ArchiveRecord struct {
 	TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team (indexed by team)
 	TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team (indexed by team)
 	Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s) for the lobby's history view
+}
+
+// HasAgents reports whether any seat in the archived game was played by an
+// agent (the lobby's history filter; records from before the agent flag simply
+// read as all-human).
+func (r ArchiveRecord) HasAgents() bool {
+	for _, p := range r.Players {
+		if p.Agent {
+			return true
+		}
+	}
+	return false
 }
 
 // BoardPicture is a saved snapshot of one board as it stood when the game
@@ -284,6 +297,20 @@ func CountdownSubject(gameID string) string {
 	return "jetricks.game." + gameID + ".countdown"
 }
 
+// FlashSubject and FlashSubjectFilter are CORE NATS subjects (deliberately
+// OUTSIDE the "jetricks.game.<id>.>" filter the game stream captures) used to
+// broadcast a player's transient CAS-failure flash to spectators. A flash is
+// ephemeral UI feedback — it must NOT be persisted in the stream or replayed
+// on join — so it travels as fire-and-forget core pub/sub, not JetStream.
+func FlashSubject(gameID, playerID string) string {
+	return "jetricks.flash." + gameID + "." + playerID
+}
+
+// FlashSubjectFilter matches every player's flash subject for a game.
+func FlashSubjectFilter(gameID string) string {
+	return "jetricks.flash." + gameID + ".*"
+}
+
 // Lobby chat and per-game chat share the SAME stream (LobbyChatStream) and are
 // distinguished purely by subject: lobby messages on LobbyChatSubject, a
 // game's messages on GameChatSubject(gameID). Game chat cannot live on the
@@ -314,3 +341,15 @@ func LobbyPlayerKey(playerID string) string {
 func LobbyGameKey(gameID string) string {
 	return "games." + gameID
 }
+
+// LobbyInviteKey is the KV key holding a player's pending game invitation
+// (one at a time; a newer invite overwrites an older one). Every lobby's KV
+// watcher sees it, so the invitee's client surfaces it the moment it is
+// written.
+func LobbyInviteKey(playerID string) string {
+	return "invites." + playerID
+}
+
+// InviteTTL is how long a pending invitation stays valid; older invites are
+// ignored (the invitee may have been away from the lobby screen).
+const InviteTTL = 2 * time.Minute

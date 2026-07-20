@@ -58,7 +58,7 @@ func TestTeamsJoinAssignsSlotsAndRejectsFullTeam(t *testing.T) {
 	ctx := context.Background()
 
 	// 2v2 teams game: PlayerCount is the total, TeamSize per team.
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 4, 2)
+	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 4, 2, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestTeamsConcurrentJoinsRespectCapacity(t *testing.T) {
 
 	// 1v1: a single slot per team — concurrent joins on team 0 must produce
 	// exactly one member (the CAS loop serializes the capacity check).
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 2, 1)
+	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 2, 1, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

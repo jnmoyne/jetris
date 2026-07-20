@@ -70,6 +70,8 @@ Each player tracks their own `pieceIdx` independently.
 - Player N spawns at column `N * 10 + 3` (center of their 10-column section)
 - Anchor row 2 for **all** piece types, so every piece's lowest cell sits at row 3 (just inside the headroom) and they all become visible after the same number of gravity ticks. (Spawning the I one row higher made it appear a tick later than the rest, so a player hard-dropping each piece on sight would drop the I before seeing it.)
 
+**Spawn blocked (shared boards):** the same distinction gravity makes applies at spawn time. If the spawn cells are held by **locked cells**, the player tops out. If they are covered **only by another player's active (falling) piece** — a transient obstacle that will itself fall away — the spawn does **not** top out: it is deferred and retried as soon as the shared board changes (every incoming cell message may be the blocker moving away — at agent speeds a piece crosses the spawn cells in milliseconds), with the gravity tick as the backstop, until it succeeds or the cells become locked (a genuine top-out). Detection mirrors movement: `CanPlaceCoop` fails but `CanPlace` (which ignores active cells) succeeds. Without this rule, a teammate's piece merely crossing the spawn area would spuriously eliminate the player (and in cooperative end the game for everyone). The engine also runs a piece-less **watchdog** on the same gravity tick: an alive player with no piece and no deferred spawn for two consecutive ticks gets a forced (re)spawn, healing a spawn whose publish was lost on a board that has since gone silent. Neither the deferral retry nor the watchdog runs before the game starts.
+
 ### Movement
 
 Pieces can move anywhere on the full-width board. Collision detection (`CanPlaceCoop`) checks:
@@ -158,7 +160,7 @@ Level = `totalLinesCleared / 10`, capped at 19. Level affects gravity speed (see
 
 ### Game Over
 
-When **any** player tops out (newly spawned piece cannot be placed), the game ends for **all** players:
+When **any** player tops out (newly spawned piece cannot be placed **on locked cells** — a spawn covered only by another player's falling piece waits instead, see Piece Spawning), the game ends for **all** players:
 1. The topped-out player publishes `EventGameOver`
 2. All other players' event consumers receive it and immediately transition to game over
 3. All players see the "GAME OVER" overlay simultaneously
@@ -271,13 +273,13 @@ In addition to the own-team score, **every** engine — both teams' players, eli
 When a team clears N lines, N permanent adversarial rows are added at the bottom of the **opposing team's** shared board and that board's locked stack shifts up — the competitive shrink, applied to a shared board. Two deliberate differences from the competitive shrink, both consequences of the board being shared:
 
 - **Application is race-managed, not single-writer.** Every alive member of the receiving team gets the shrink event and races to apply the identical transform. The application is guarded by an idempotency check (cumulative expected garbage vs. the count of bottom adversarial rows actually on the board — monotonic, since garbage is permanent and bottom-anchored) and published **with** per-subject CAS; on CAS failure the projection is thrown away and **recomputed from fresh state** (never blind-retried, which could double-shift the stack). Exactly one member's shift commits; the rest observe the deficit reach zero and stop.
-- **No piece rides up.** Falling pieces (all of them, the applier's own included) hold their on-screen position while the stack rises around them. A piece overtaken by the risen stack sits in the holes its overlay preserved and simply **locks where it is on its next blocked drop** ("crushed") — it is never carried upward, and a shrink alone never tops a player out. Top-out on a full team board happens at spawn time instead. (Lifting pieces on a multi-writer board would mean relocating *other* players' mid-flight pieces from a possibly-stale snapshot; holding every piece in place keeps the transform pure and symmetric across whichever teammate wins the application race.)
+- **No piece rides up.** Falling pieces (all of them, the applier's own included) hold their on-screen position while the stack rises around them. A piece overtaken by the risen stack sits in the holes its overlay preserved and simply **locks where it is on its next blocked drop** ("crushed") — it is never carried upward, and a shrink alone never tops a player out. Top-out on a full team board happens at spawn time instead (spawn cells held by locked/garbage cells; a teammate's passing piece only delays the spawn). (Lifting pieces on a multi-writer board would mean relocating *other* players' mid-flight pieces from a possibly-stale snapshot; holding every piece in place keeps the transform pure and symmetric across whichever teammate wins the application race.)
 
 A known cosmetic artifact (same class as the documented coop merge-skip): the winning shift batch preserves teammates' active cells in place, so a shifted locked cell that would land under a teammate's piece is skipped; when that piece later moves away, the cell reads empty. Holes in the risen stack, never board corruption — per-cell sequence authority converges every replica. A garbage row therefore stays a garbage row as long as it holds at least one adversarial cell (crushed pieces can fill, and vacated overlays can hollow, some of its cells).
 
 ### Elimination & Game Over
 
-**A player out is not a team out.** When a player tops out (their next spawn cannot be placed), they vacate any of their active cells from the team board, publish their elimination, and become a spectator of their own team's board — but their teammates play on. The UI shows "YOU'RE OUT — your team plays on" until the game resolves.
+**A player out is not a team out.** When a player tops out (their next spawn cannot be placed on locked cells — a spawn blocked only by a teammate's falling piece is deferred, not fatal), they vacate any of their active cells from the team board, publish their elimination, and become a spectator of their own team's board — but their teammates play on. The UI shows "YOU'RE OUT — your team plays on" until the game resolves.
 
 A team **loses when ALL its members have topped out**. At that point every member of the other team — alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Losers see "YOUR TEAM LOST". In both cases (and on the interim "you're out" box) the overlay shows both teams' scores and levels with the player's own team first — `TEAM A 42 (lvl 3) · TEAM B 17 (lvl 1)` — above the "Back to Lobby" button. All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines. Every member of the winning team — including already-eliminated members, whose engines re-emit the win — gets the same victory fireworks show as a competitive winner (rockets bursting into small NATS "N" logos that then blow apart) on their own screen.
 
@@ -314,8 +316,8 @@ created → starting → [countdown] → in_progress → finished → archived
 
 | From | To | Trigger |
 |------|----|---------|
-| — | created | Player clicks "Create Game" |
-| created | starting | All player slots filled (roster full; in teams mode, both teams full) |
+| — | created | Player clicks "Create Game" (open) or "Create & Invite" (invite-only) |
+| created | starting | All player slots filled (roster full; in teams mode, both teams full). A join into an already-full game is refused |
 | starting | [countdown] | All players click READY |
 | [countdown] | in_progress | 5-second countdown completes |
 | in_progress | finished | Game over (top-out) |
@@ -333,6 +335,57 @@ Some games go nowhere: the creator never joins, the players never click READY, o
 The check rebuilds the flag set from scratch each pass, so a game where activity resumes (e.g. a player reconnects) is un-flagged again.
 
 An abandoned game's lobby row is marked `· abandoned` in red and grows a red **Delete** button next to Join/Spectate. Clicking it replaces the row's action buttons with a confirmation on its own line under the game info (so the question never squeezes the info text) — **"Are you sure you want to delete this game?"** with **Yes, delete** / **Cancel** — so a stray click can't destroy the game. Confirming tears down everything the game left behind: the per-game stream, the game's chat messages in the shared chat stream, and the lobby KV listing (whose deletion removes the game from every player's list).
+
+### Creating a Game: Open vs. Invite-Only
+
+A game is created **open** (anyone in the lobby may join it) or **invite-only**. The
+create row's **"Invite only"** checkbox chooses; when checked the button reads
+**"Create & Invite"**.
+
+- **Open games** work as always: they list in the lobby with Join/Spectate buttons,
+  and (for the applicable modes) an agent policy — the **"Allow agents"** checkbox and
+  max-agents count — controls whether idle agents may take seats.
+- **Invite-only games** are joined by invitation only. Creating one opens an
+  **invitee picker** over the lobby, listing every OTHER player **currently idle in
+  the lobby** (players already in a game can't be invited — you can only invite people
+  free to play). The list is **live**: while the picker is open, players who join the
+  lobby appear in it and players who leave (quit, or join a game) drop out, with your
+  existing selections preserved; deselecting a player (or setting them back to **—**
+  in teams) un-invites them. For competitive/cooperative games each row is a simple **Invite**
+  checkbox; for **teams** games each row is a three-way selector (**— / A / B**) so you
+  invite each player to a specific team. The picker shows the open seats live
+  (total, or **Team A: k/size · Team B: k/size** for teams) and refuses to send a
+  selection that over-fills the game or a team — so you can't invite more players
+  than the game holds. **Send invites** delivers them; **Cancel** abandons the
+  just-created game. The invited game's lobby row is tagged **· invite
+  only** and shows no Join button to uninvited browsers (the creator, and anyone
+  holding a pending invitation, still see theirs).
+
+### Invitations
+
+An invitation is a small record the inviter writes to the invitee's lobby mailbox
+(one pending invitation per player; a newer one replaces an older, and they expire
+after two minutes). Because every lobby watches the same store, the invitee sees it
+immediately:
+
+- **A human invitee** gets a **pop-up** — *"<inviter> invited you to a
+  competitive/co-op/teams game"* (teams names the team) — with **Accept & Play** and
+  **Decline**. Accepting joins the game (and, in teams, the team the inviter chose);
+  declining dismisses it. Joining the game consumes the invitation.
+- **An agent invitee accepts automatically**: a resident agent treats a pending
+  invitation as the strongest join signal and joins the invited game (and team) at
+  once. Inviting an agent is how you bring a *specific* agent into an invite-only
+  game. If the join can't be honored (the invited team was already filled by other
+  invitees, or the game filled without it), the agent **declines** the invitation and
+  goes back to the lobby rather than retrying it — a stale invitation never wedges an
+  agent.
+- **The invitation is also permission**: an invited player joins even a game whose
+  agent policy would otherwise exclude them (an invited agent bypasses the max-agents
+  limit — the creator explicitly chose them). Uninvited players and agents who try to
+  join an invite-only game are refused.
+
+Third-party agents accept invitations by watching their own lobby mailbox — see
+`jetricks-agent-guide.md`.
 
 ### Ready Flow
 
@@ -365,7 +418,9 @@ Published to `JETRICKS_ARCHIVE` stream when a game finishes:
 }
 ```
 
-Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`). Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
+Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`) and an `agent` flag (from the roster at archive time) marking seats that were played by agents. Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
+
+**History controls:** the lobby's GAME HISTORY header carries a sort selector — **By score** (headline score, the default) or **By date** (most recently finished first) — and an **"Agent games"** checkbox (checked by default); unchecking it hides every game that had at least one agent seat. Records from before the agent flag existed read as all-human.
 
 Each history line starts with the game's start date and time in the viewer's local timezone (e.g. `2026-07-06 14:03 PDT`) and how long the game lasted (`finished_at - started_at`, rounded to the second); records missing these timestamps omit the prefix. The history list is ordered by each game's headline score, highest first — the co-op total, the best team total for teams, or the best player score for competitive. When two games have the same score, the one with the **shorter game time** ranks higher; any remaining tie shows the most recently finished game first.
 
@@ -422,6 +477,9 @@ Any player in the lobby can spectate an in-progress game:
 - **Player legend:** Shows each player's name with their assigned color swatch
 - **Colored outlines:** Each player's active piece has a distinct colored outline (not white)
 - Spectators see the same real-time playfield updates as players
+- **Countdown:** the pre-game 5..0/GO! countdown is drawn over the spectator's boards exactly as over a player's board (a spectator who joins before the game starts sees the same start moment everyone else does)
+- **Eliminations:** an eliminated player's board (competitive) — or a fully eliminated team's board (teams) — carries a centered **OUT** chip in the spectator's multi-board view; the board itself stays fully visible under it
+- **Winner:** once the game is decided, the surviving player's board reads **WINNER** (competitive) and the surviving team's board **WINNERS** (teams); a simultaneous-top-out draw shows every board OUT with no winner
 - The HUD keeps a "Back to Lobby" button, so a spectator can leave the game and return to the lobby at any time
 
 ---
@@ -440,7 +498,7 @@ Reconciliation with the consumer echo is automatic and is the single rule in `Pl
 
 ### Player-initiated moves (left, right, down, rotate, hard drop)
 
-CAS failure = **move is dropped, no retry, in either game mode**. The player must press the input again. The engine signals the failure with a **rainbow flash on the outline of the player's own piece** — cells of the active piece cycle through the seven spectrum colors over ~600 ms with a matching glow, then revert. The flash is local-only: it is emitted directly to the local engine's UI Updates channel and is **not published to NATS**, so the other players see nothing.
+CAS failure = **move is dropped, no retry, in either game mode**. The player must press the input again. The engine signals the failure with a **rainbow flash on the outline of the player's own piece** — cells of the active piece cycle through the seven spectrum colors over ~600 ms with a matching glow, then revert. The flash shows on the flashing player's own board, and — so a watcher sees the same contention feedback the players do — is also broadcast to **spectators**: the player publishes a transient **core NATS** message (fire-and-forget, on `jetricks.flash.<gameID>.<playerID>`, deliberately NOT on the game stream so it is never persisted or replayed) that spectators subscribe to and render on that player's board. Other **players** do not subscribe, so a player still sees only their **own** CAS flashes; only spectators see everyone's.
 
 This is intentional in cooperative mode where two players share one playfield: CAS rejections are routine and a silent server-side retry would mask conflicts from the player and make their input timing feel non-deterministic. Loud, immediate, local-only feedback gives the player full agency over how to recover.
 
@@ -556,3 +614,134 @@ game.
 The lobby screen carries a banner across its top — the nats.io "N" logo flanking
 "Jetricks: peer to peer and made with NATS.io" — above the player/chat and
 games/history columns.
+
+---
+
+## 11. Agent Player (`jetricks-agent`)
+
+Jetricks ships a headless computer player, `jetricks-agent`, that plays **all three
+modes** — cooperative, competitive, and teams. It is deliberately an ordinary peer —
+the same `lobby` join handshake, the same `engine` (all six moves: left, right, down,
+rotate CW/CCW, hard drop), the same consumers and CAS discipline — with a planner
+where the GUI has a keyboard. Nothing in the blackboard needed to change to admit a
+software agent: the agent demonstrates that a NATS-coordinated peer-to-peer game is
+equally playable by humans and programs.
+
+### How it plays
+
+- **Perception:** the agent plans only against **committed** state (`engine.Playfield()`),
+  never against predictions — the same no-client-side-prediction rule every player
+  lives under.
+- **Planning:** for each piece it enumerates every placement reachable with its move
+  vocabulary (SRS rotations in place, one-column slides, hard drop), simulates the lock
+  and line clear on a board copy, and scores the result with Pierre Dellacherie's
+  six-feature heuristic (landing height, eroded cells, row/column transitions, holes,
+  cumulative wells). It plans one piece at a time: the piece sequence is deterministic
+  from the game seed (§4), but the UI shows humans no next-piece preview, so reading
+  the seed to look ahead would violate the fair-visibility contract.
+- **Execution:** moves are issued one at a time — observe the piece, dispatch the one
+  move that advances it toward the target, wait for the effect to appear on the
+  committed board, repeat, hard drop. A move that never takes effect (collision
+  rejection, or a CAS loss against incoming garbage) or garbage rows arriving mid-plan
+  trigger a re-plan from live state; after three re-plans on one piece the agent just
+  hard-drops rather than stall the game.
+- **Garbage awareness:** adversarial shrink rows are priced in naturally — they count
+  as locked stack for every feature and the clear simulation refuses to complete them,
+  exactly like the engine's `Row.IsFull`.
+- **Shared boards (cooperative, teams):** planning switches to the same collision
+  variant the engine uses — another player's mid-flight piece is a temporary obstacle
+  (`CanPlaceCoop`/`RotateCoop`/`HardDropDestinationCoop`). The agent plans over the
+  whole wide board; teammates fighting for the same cells resolve through the normal
+  CAS discipline — a dropped move stalls, the agent re-plans from the converged board.
+
+### Fair visibility: agents see only what humans see
+
+An agent may base decisions ONLY on information a human player can see in the UI:
+the committed boards (its own and the opponents'/teams'), the roster and
+eliminations, scores/levels, the countdown, and its own falling piece. It may NOT
+read the game seed to predict upcoming pieces (the UI shows no next-piece preview),
+nor any stream state the UI does not render. This is the visibility contract every
+agent implementation must honor — see `jetricks-agent-guide.md`.
+
+### Per-mode outcomes
+
+- **Cooperative:** the agent plays for the shared score; when anyone tops out the game
+  ends for everyone and the agent reports `OVER` with the shared score (there is no
+  winner). If the agent itself is the topper, its engine finishes the game and it
+  archives before leaving, like any GUI topper.
+- **Competitive:** last standing wins; the agent reports WON/LOST as before.
+- **Teams:** the agent picks the team with the most free seats when auto-joining (and
+  retries the other team if it loses that race). Its own top-out is not the outcome —
+  the team plays on — so an eliminated agent stays connected until the verdict: the
+  engine's authoritative game-over update, backed by polling the roster's
+  eliminations (one team fully dead) in case the lossy update channel dropped it. A
+  winning-team agent archives the game (every winner's engine fires the archive hook;
+  the transition is CAS-protected so duplicates are safe).
+
+### Difficulty levels
+
+| Knob | Easy | Medium | Hard |
+|------|------|--------|------|
+| Think pause per piece | 1500 ms | 600 ms | 100 ms |
+| Pause between moves | 300 ms | 150 ms | 30 ms |
+| Blunder rate (P of not playing the best move) | 30% | 10% | 0 |
+| Blunder depth (picks among ranks 2..N+1) | 4 | 2 | — |
+
+Hard plays the best placement it finds, as fast as the NATS round-trips allow. Easy and
+medium think slower, pace their moves, and sometimes deliberately play a lower-ranked
+placement, so they are beatable and fun.
+
+### Agent policy: who decides whether agents may join
+
+Every game (any mode) carries its creator's **agent policy**: `MaxAgents`, the number of
+roster seats agent players may take (0 = agents may not join). In the GUI's create row the
+policy is an **"Allow agents" checkbox** (off by default — games are human-only unless
+opted in) plus a **Max** count, shown for every game mode. `lobby.JoinGame`
+enforces the policy **atomically inside its CAS loop**: an agent joining a no-agents game
+gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats are held by agents further agent
+joins get `ErrAgentSlotsFull` — so several idle agents racing for the last agent seat can
+never over-fill it. Agents are first-class but visible: an agent's player name has
+**three parts** — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-hard`**. The
+version stem names the agent's CODE generation (the stock agent's `Codename`,
+currently `mk1`, bumped whenever its play logic changes; third-party agents use
+their own stem via `--name`/`Config.Name`); the instance id is 4 random hex chars
+minted fresh for every connection, so several copies of one agent version can play
+at once and each connection is distinguishable; the difficulty labels its strength.
+The name doubles as the NATS player ID, which appears in subject tokens AND in the
+presence KV key, whose charset is stricter (`[-/_=.a-zA-Z0-9]`), and the whole must
+fit the 32-character cap — so opponents, spectators and the archive all see exactly
+which agent, which copy, and how strong. Their presence entries and roster seats
+are additionally flagged, and the UI tags them `[agent]` in the lobby player list, game
+listings, ready roster and in-game legend; game rows show `agents k/N` when a game
+allows them.
+
+### Lobby behavior: agents are residents
+
+With no `--join`/`--create`, an agent is a **lobby resident**: it idles in the lobby,
+auto-joins the oldest game of any mode that allows agents and has a free seat (in teams,
+a free seat on some team) and a free agent seat,
+plays it to the end, returns to the lobby, and repeats until interrupted (`--once`
+restores play-one-game-and-exit). A "agent that is not currently playing" is simply one
+sitting in the lobby scanning — a playing agent can't join anything else. If a joined
+game never starts (nobody shows up or readies), the agent **un-joins** after its wait
+timeout — `lobby.UnjoinGame` removes it from the roster (reverting a full `starting`
+game to `created`) and purges its roster announcement so it never lingers as a ghost
+seat — then goes back to scanning.
+
+In every seat it takes, the agent carries the same lifecycle responsibilities as a GUI
+player:
+
+- It joins via `lobby.JoinGame` (guarding first that the game is not yet
+  running, has a free seat, and allows agents), toggles READY, and — if its toggle is
+  the one that completes the ready set — **it runs the 5..0 countdown and transitions
+  the game to in_progress**, exactly like the GUI client in that seat.
+- If it wins, its engine drives the finished transition, so **it archives the game**
+  (`ArchiveAndCleanup`) before moving on, like any winning player.
+- On losing it moves on after a short grace (or lingers until the game finishes with
+  `--linger`).
+
+One-shot game selection remains CLI-driven: `--join <gameID>` for a specific game
+(still subject to that game's agent policy), or `--create --mode
+cooperative|competitive|teams --players N [--max-agents M]` to host one (`--players`
+is per team in teams mode, like the GUI's count) — agent-hosted games allow agents in
+all seats by default, since the host itself takes one.

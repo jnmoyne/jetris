@@ -298,6 +298,7 @@ All three are the same blackboard pattern with different subject schemes and col
 
 ```sh
 go build -o jetricks ./cmd/jetricks
+go build -o jetricks-agent ./cmd/jetricks-agent   # optional: the headless computer player
 ```
 
 Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`.
@@ -325,7 +326,38 @@ The CLI flags don't connect directly either — they only preset the picker:
 ./jetricks --server nats://localhost:4222 --user alice --password secret
 ```
 
-To play multiplayer, **run more instances pointed at the same NATS server** — each instance is one peer. Create a game in the lobby, have the others join it, ready up, and play.
+To play multiplayer, **run more instances pointed at the same NATS server** — each instance is one peer. Create a game in the lobby, have the others join it, ready up, and play. A game can be **open** (anyone in the lobby joins it) or **invite-only** — check "Invite only" when creating, then pick who to invite (including specific agents, and per-team in teams mode); invited players get a pop-up to accept or decline, and agents accept automatically.
+
+### Playing with (and against) agents
+
+`jetricks-agent` is a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team — using the same engine as the GUI, driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby, joins games that allow agents as they appear, plays, and returns to the lobby for the next one:
+
+```sh
+# A resident agent: joins agent-allowed competitive games as they appear, forever
+./jetricks-agent --server nats://localhost:4222 --name HAL --difficulty medium
+```
+
+Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.
+
+**You decide per game whether agents may join.** The GUI's competitive create row has an **"Allow agents" checkbox and a max-agents count** (off by default — human-only unless you opt in). Check it, set how many seats agents may take, create the game, and idle agents fill in up to that max; the game row shows `agents 1/2`-style occupancy and agent players are tagged `[agent]` everywhere. The max is enforced atomically, so a crowd of agents can never grab more seats than you allowed.
+
+```sh
+# Exit after a single game instead of staying resident
+./jetricks-agent --server nats://localhost:4222 --once
+
+# Or have an agent host the game (agent-hosted games allow agents in all seats by default)
+./jetricks-agent --server nats://localhost:4222 --create --players 2
+
+# Host a cooperative game and play alongside an agent teammate, or a 2v2 teams game
+./jetricks-agent --server nats://localhost:4222 --create --mode cooperative --players 2 --max-agents 1
+./jetricks-agent --server nats://localhost:4222 --create --mode teams --players 2
+```
+
+In cooperative games agents play for the shared score and treat your falling piece as an obstacle to work around; in teams they take a seat on the emptier team and attack the other board like any teammate would.
+
+`--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score — never the RNG seed or upcoming pieces. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create a agents-only game to spectate an agent-vs-agent match. See `jetricks-agent -h` for the full flag list and [`jetricks-gameplays.md`](jetricks-gameplays.md) §11 for how it plays.
+
+**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. [`jetricks-agent-guide.md`](jetricks-agent-guide.md) is the reference for writing an agent (in Go by reusing `internal/agent`, or in any language straight against the wire protocol) that plays fairly with humans and other agents.
 
 ### Clean up
 
@@ -348,6 +380,7 @@ In a game, toggle "Show NATS messages" to open a panel that prints, in real time
 
 ```
 cmd/jetricks/          entry point: connect to NATS, ensure lobby streams/KV, launch UI
+cmd/jetricks-agent/      headless computer player for competitive mode (CLI, no UI)
 internal/
   nats/                the JetStream layer — streams, KV, CAS publish, atomic batches,
                        ordered consumers, multi-subject direct get  ← start here
@@ -359,15 +392,18 @@ internal/
   rng/                 seedable 7-bag piece randomizer (deterministic across peers)
   archive/             record a finished game, seal/delete its stream
   cleanup/             startup reconciliation of orphaned/abandoned game streams
+  agent/                 the computer player: placement planner (Dellacherie
+                       heuristic), sense–act move executor, lobby orchestration
   nativeui/            native Gio desktop UI (board, lobby, live NATS-message panel)
 ```
 
-For the full design, see the three companion documents:
+For the full design, see the companion documents:
 
 - [`jetricks-gameplays.md`](jetricks-gameplays.md) — authoritative gameplay rules
 - [`jetricks-project-structure.md`](jetricks-project-structure.md) — architecture and package design
 - [`jetricks-implementation-plan.md`](jetricks-implementation-plan.md) — implementation plan
+- [`jetricks-agent-guide.md`](jetricks-agent-guide.md) — how to build your own jetricks-playing agent
 
 ---
 
-*Jetricks is a demonstration that the blackboard pattern — shared state, optimistic concurrency control, and real-time push, over one substrate — is a first-class thing you can build directly on NATS JetStream. The players happen to be human and the task happens to be multi-player Tetris; swap in software agents and a coordination task, and the architecture is unchanged.*
+*Jetricks is a demonstration that the blackboard pattern — shared state, optimistic concurrency control, and real-time push, over one substrate — is a first-class thing you can build directly on NATS JetStream. The players happen to be human and the task happens to be multi-player Tetris; swap in software agents and a coordination task, and the architecture is unchanged. `jetricks-agent` is that swap made literal: a software agent that joins the same games through the same blackboard, with not one line of the protocol changed to accommodate it.*

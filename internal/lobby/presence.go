@@ -28,6 +28,7 @@ type PlayerPresence struct {
 	Name     string         `json:"name"`
 	Status   PresenceStatus `json:"status"`
 	GameID   string         `json:"game_id,omitempty"`
+	Agent    bool           `json:"agent,omitempty"` // this peer is an agent player (jetricks-agent)
 	LastSeen time.Time      `json:"last_seen"`
 }
 
@@ -122,6 +123,7 @@ func (l *Lobby) publishPresence(ctx context.Context) {
 		Name:     l.name,
 		Status:   l.status,
 		GameID:   l.currentGameID,
+		Agent:    l.isAgent,
 		LastSeen: time.Now(),
 	}
 	l.mu.RUnlock()

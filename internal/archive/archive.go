@@ -29,23 +29,27 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// Only the first caller succeeds; others see a CAS failure and skip.
 	meta, metaSeq, err := natspkg.FetchGameMeta(ctx, js, eng.GameID())
 	if err != nil {
-		return // stream might already be deleted
+		log.Printf("archive %s: skipping, meta unavailable (stream already deleted?): %v", eng.GameID(), err)
+		return
 	}
 	if meta.Status != config.GameStatusFinished {
-		return // already archived by another instance
+		log.Printf("archive %s: skipping, meta status is %q (already archived by another instance?)", eng.GameID(), meta.Status)
+		return
 	}
 	meta.Status = config.GameStatusArchived
 	archiveData, _ := json.Marshal(meta)
 	if err := natspkg.PublishMeta(ctx, js, eng.GameID(), archiveData, metaSeq); err != nil {
-		return // CAS failed — another instance won the race
+		log.Printf("archive %s: another instance won the archive race: %v", eng.GameID(), err)
+		return
 	}
 
-	// Collect all players' results from EventGameOver events on the game stream.
-	// eventSenders tracks who published their own EventGameOver — i.e., who
-	// topped out. In competitive mode, the winner is the player who did NOT
-	// top out. On a draw (all topped out), there is no winner.
+	// Collect players' results. The stream's events subject keeps only its
+	// LAST message (the whole game stream is MaxMsgsPerSubject: 1), so the
+	// replay below recovers at most the final EventGameOver — score/level
+	// details for earlier eliminations are gone. Verdicts therefore never
+	// come from the replay: the archiving ENGINE lived through the game and
+	// its elimination set / GameOutcome are the authoritative record.
 	playerResults := make(map[string]config.PlayerResult)
-	eventSenders := make(map[string]bool)
 	// playerTeams maps playerID → team (teams mode). The roster listing is the
 	// authoritative source; EventGameOver's Team field is the fallback for
 	// players missing from the snapshot.
@@ -80,7 +84,6 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 				}
 				var ev engine.GameEvent
 				if json.Unmarshal(msg.Data(), &ev) == nil && ev.Kind == engine.EventGameOver {
-					eventSenders[ev.PlayerID] = true
 					if _, exists := playerTeams[ev.PlayerID]; !exists {
 						playerTeams[ev.PlayerID] = ev.Team
 					}
@@ -108,42 +111,42 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		evtCancel()
 	}
 	// Also add players from the game listing who might not have topped out
-	// (and take their team assignment as authoritative in teams mode)
+	// (and take their team assignment — and agent flag — as authoritative)
+	agentSeats := make(map[string]bool, len(gamePlayers))
 	for _, p := range gamePlayers {
 		playerTeams[p.PlayerID] = p.Team
+		agentSeats[p.PlayerID] = p.Agent
 		if _, exists := playerResults[p.PlayerID]; !exists {
 			playerResults[p.PlayerID] = config.PlayerResult{PlayerID: p.PlayerID}
 		}
 	}
-	// Determine winners in competitive: any player who did NOT send an
-	// EventGameOver survived to the end and wins. On a simultaneous top-out
-	// draw, every player sent an event, so there is no winner.
+	for id, pr := range playerResults {
+		pr.Agent = agentSeats[id]
+		playerResults[id] = pr
+	}
+	// Determine winners in competitive from the archiving engine's live
+	// elimination record (it processed every EventGameOver as it happened):
+	// any player it never saw eliminated survived to the end and wins. On a
+	// simultaneous top-out draw everyone is eliminated — no winner.
 	if meta.Mode == config.ModeCompetitive {
 		for id, pr := range playerResults {
-			if !eventSenders[id] {
+			if !eng.IsEliminated(id) {
 				pr.Winner = true
 				playerResults[id] = pr
 			}
 		}
 	}
-	// Determine the winning team in teams mode: a team loses when EVERY member
-	// sent an EventGameOver. Every member of the other team wins — including
-	// its already-eliminated players (a team win is shared). If both teams are
-	// fully out (defensive; shouldn't happen with an ordered event stream),
-	// there is no winner.
+	// Determine the winning team in teams mode from the archiving engine's
+	// own verdict. Near-simultaneous final top-outs put BOTH teams' last
+	// events on the stream, so no set-of-eliminated computation can pick the
+	// winner — but the engines all decided it from the ordered event stream
+	// (first fully-dead team loses), and only engines on the winning side
+	// (or draw participants) run this archive. A won verdict names the
+	// archiver's team; a lost verdict here means a draw — no winning team.
 	winningTeam := -1
 	if meta.Mode == config.ModeTeams {
-		teamDead := [config.TeamCount]bool{true, true}
-		for id, t := range playerTeams {
-			if t >= 0 && t < config.TeamCount && !eventSenders[id] {
-				teamDead[t] = false
-			}
-		}
-		switch {
-		case teamDead[0] && !teamDead[1]:
-			winningTeam = 1
-		case teamDead[1] && !teamDead[0]:
-			winningTeam = 0
+		if won, over := eng.GameOutcome(); over && won {
+			winningTeam = eng.TeamIdx()
 		}
 		for id, pr := range playerResults {
 			pr.Team = playerTeams[id]

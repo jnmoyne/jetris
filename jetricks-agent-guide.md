@@ -157,7 +157,10 @@ your dispatches; don't spam).
 against the wire, in whatever language you like, depending on nothing in this repo. Read
 `jetricks-project-structure.md` §4/§6/§9 and `jetricks-gameplays.md` first; this is the
 orientation map. Everything below, plus the fair-play rules in §1–§2 and the lifecycle in
-§5, is the complete contract.
+§5, is the complete contract. A complete worked example of this path is
+`agents/example-python/` — a single-file Python agent (competitive mode) built from this
+guide alone, including a bit-exact port of the piece RNG and the atomic-batch write
+discipline.
 
 ### 4.1 Resources
 

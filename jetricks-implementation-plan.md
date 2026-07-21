@@ -2715,7 +2715,11 @@ independent programs that play by speaking the game's NATS protocol; the only co
 the wire protocol + fair-play rules in `jetricks-agent-guide.md` (no plugin interface, no
 shared SDK). Contributed agents — any language — live self-contained under `agents/<name>/`
 (see `agents/README.md`). `mk1` is privileged only in that, living in the repo, it reuses
-the game's Go engine instead of re-implementing the protocol.
+the game's Go engine instead of re-implementing the protocol. `agents/example-python/`
+is the worked proof of that model: a from-scratch Python agent built from the guide alone
+that plays full competitive games against `mk1` over the wire (verified both ways —
+winning and archiving, and losing to garbage from the Go engine) with zero Go-side
+changes required.
 
 ### 12.1 Difficulty (`difficulty.go`)
 

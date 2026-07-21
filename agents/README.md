@@ -51,6 +51,14 @@ speaks the protocol and follows the rules.
    and run it, and confirming it follows `jetricks-agent-guide.md`.
 3. Open a pull request.
 
+## The worked example: `example-py`
+
+[`example-python/`](example-python/) is a complete minimal agent written in Python that
+depends on nothing in this repository — a single file implementing the wire protocol
+(lobby KV CAS, atomic cell batches, its own engine, events, archive) straight against
+NATS. It is the proof of the "any language, only NATS" contract and a good starting
+point to copy: see its [README](example-python/README.md).
+
 ## The reference agent: `mk1`
 
 The repository ships one agent, **`mk1`** (`cmd/jetricks-agent`, source in

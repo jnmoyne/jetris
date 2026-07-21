@@ -634,7 +634,9 @@ down, rotate CW/CCW, hard drop), the same consumers and CAS discipline — with 
 where the GUI has a keyboard. Nothing in the blackboard needed to change to admit a
 software agent: the agent demonstrates that a NATS-coordinated peer-to-peer game is
 equally playable by humans and programs. `mk1` reuses the game's own engine code because it
-lives in the repo; a third-party agent implements the same behavior over the wire.
+lives in the repo; a third-party agent implements the same behavior over the wire —
+`agents/example-python/` is a worked example: a minimal Python agent (competitive mode)
+that implements the whole protocol, engine included, with no repo dependency.
 
 ### How it plays
 

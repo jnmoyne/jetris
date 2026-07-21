@@ -2038,7 +2038,14 @@ The single, language-neutral contract is the wire protocol plus the fair-play ru
 agent can be written in any language depending on nothing in this repo. Contributed agents
 live in `agents/<name>/`, each self-contained (own language/build/deps, its own README);
 `agents/README.md` is the submission guide. The game neither knows nor cares how any agent
-is built.
+is built. The first entry is `agents/example-python/` — a minimal single-file Python agent
+(`example-py`, competitive mode) that implements the entire protocol from the guide with no
+repo dependency: lobby KV CAS join/ready/countdown, a bit-exact port of the piece RNG
+(Go `math/rand/v2` PCG + 7-bag), its own engine (spawn/gravity/lock/clears/garbage/top-out),
+atomic CAS cell batches with write-through, shrink/game-over events, CAS-failure flashes,
+and the finish→archive→cleanup sequence when it wins (its ArchiveRecord is byte-compatible
+with the Go structs). `agent.py --selftest` runs offline conformance checks (RNG parity
+fixtures generated from `internal/rng`).
 
 **The reference agent `mk1`.** The repository ships one Go agent — `mk1`, source in
 `internal/agent`, binary `cmd/jetricks-agent`. It is a *privileged* example: because it

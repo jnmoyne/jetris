@@ -2,7 +2,7 @@
 
 ![Jetricks-screenshot-1.png](Jetricks-screenshot-1.png)
 
-**An example of a peer-to-peer distributed blackboard system built using NATS.io disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
+**An example of a peer-to-peer distributed blackboard system built for humans (or agents) using NATS.io and disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
 
 Let's get the game part out-of-the-way first: Jetricks is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetricks, but now there are other players that you are playing with or against!
 
@@ -12,11 +12,13 @@ To just play the game with others over the Internet, go ahead and download the l
 
 You can then pick which NATS.io server(s) to connect to right : choose one of your NATS CLI contexts from the **Context** pull-down (it starts on your currently selected context), type a server URL into the **NATS URL** field, or select **LAN mode (embedded NATS server)** to have Jetricks start a JetStream-enabled `nats-server` inside the game process itself (no auth, port of your choosing — 4222 by default — storage in a local `jetstream-data` directory) — the window then shows "Your server's URL is `nats://<ip>:<port>`" so you can share it with the people you want to play with, who just type it into their NATS URL field. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). If you don't have a server to connect to, you can always connect to the NATS.io demo server at `demo.nats.io` with the default port number (4222) — the URL field is pre-filled with it. And start playing (or spectating)!
 
-A note on latency: like all on-line multiplayer video games, the network latency between your machine and the NATS.io server has a noticeable effect on the latency between your player inputs and the playfield you see. Understand that by design in Jetricks there's no client-side pre-updating of what you see on your screen (which is what most networked multiplayer games do): all your keyboard inputs are published to the server and it's only when the NATS server has persisted the messages associated with your move and then sent them back as updates to your machine that the screen gets updated and shows your move. The latency that you see on your screen is not the network latency, it is the end-to-end latency of a transaction getting committed to a stream and stream consumers getting the updated data pushed to them.
+A note on latency: like all on-line multiplayer video games, the network latency between your machine and the NATS.io server has a noticeable effect on the latency between your player inputs and the playfield you see. Understand that by design in Jetricks there's no client-side pre-updating of what you see on your screen (which is what most Internet multiplayer games do): all your keyboard inputs are published to the server and it's only when the NATS server has persisted the messages associated with your move and then sent them back as updates to your machine that the screen gets updated and shows your move. This by design. The latency that you see on your screen is not just the network latency, it is the end-to-end latency of a transaction getting committed to a stream and stream consumers getting the updated data pushed to them.
 
-If you are interested in understanding how Jetricks is implemented and why it's interesting, then please read on.
+now, if you are interested in understanding how Jetricks is implemented and why it's interesting, then please read on.
 
 Every player runs the same desktop binary. That binary is just a NATS client. There is no authoritative server process computing the game: all of the game logic (collision, rotation, gravity, line clears, scoring, the whole lifecycle) runs *inside each player's client*, and the players coordinate purely by reading and writing a shared stream that lives on a NATS server. The NATS server stores and routes messages — it knows nothing about the game.
+
+Since it is a real blackboard system, you are also encouraged to create your own agents (literally, bots) that can play the game against (or with) human players or other agents (there is a default agent included), and even contribute them to this repository. Your agents however need to follow the rules and conventions stated in the Jetricks agent guide. Can your agent(s) top the scoreboard against other agents, or against teams of humans? There is a surprisingly large number of interesting challenges to Jetricks gameplay, especially when you go beyond competitive mode.
 
 ---
 
@@ -357,7 +359,7 @@ In cooperative games agents play for the shared score and treat your falling pie
 
 `--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score — never the RNG seed or upcoming pieces. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create a agents-only game to spectate an agent-vs-agent match. See `jetricks-agent -h` for the full flag list and [`jetricks-gameplays.md`](jetricks-gameplays.md) §11 for how it plays.
 
-**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. [`jetricks-agent-guide.md`](jetricks-agent-guide.md) is the reference for writing an agent (in Go by reusing `internal/agent`, or in any language straight against the wire protocol) that plays fairly with humans and other agents.
+**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. There is no framework to plug into: an agent is any program that speaks the game's NATS protocol and follows the fair-play rules, in **any language**. [`jetricks-agent-guide.md`](jetricks-agent-guide.md) is the complete wire contract, and [`agents/README.md`](agents/README.md) is where you submit your own. The shipped `jetricks-agent` (`mk1`) is the Go reference implementation you can play against.
 
 ### Clean up
 

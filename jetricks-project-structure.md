@@ -1515,7 +1515,7 @@ Manages all lobby-level state: player presence, game listings, global chat, invi
 
 `JoinGame` enforces the overall roster cap (`len(Players) >= PlayerCount` → `ErrGameFull`) inside its CAS loop for EVERY mode, in addition to the teams per-team cap (`ErrTeamFull`) — the authoritative guard against overfilling a game (the GUI hides Join on a full game and the agent pre-checks `joinable`, but neither is atomic with the roster).
 
-**Invitations** (`invite.go`) let a creator restrict a game to chosen players. `CreateGame` takes an `inviteOnly` flag (stored on the listing as `InviteOnly` alongside `CreatorID`); `Invite(ctx, toPlayerID, gameID, team)` writes an `Invitation` to the invitee's KV key `config.LobbyInviteKey(playerID)` = `invites.<id>`, which every lobby's KV watcher delivers (`handleInviteUpdate` keeps only the caller's OWN key, exposed via `MyInvite`). `JoinGame` guards invite-only games inside its CAS loop: only `CreatorID` or the holder of a fresh invitation (`inviteFor`, read straight from KV to beat watcher lag) may join, and an invitation exempts the joiner from the `MaxAgents` policy (`ErrNotInvited` otherwise); a successful join consumes the invitation. `RespondInvite` deletes the key (decline, or the stock consume-on-join). Invitations expire after `config.InviteTTL` (2 min).
+**Invitations** (`invite.go`) let a creator restrict a game to chosen players. `CreateGame` takes an `inviteOnly` flag (stored on the listing as `InviteOnly` alongside `CreatorID`); `Invite(ctx, toPlayerID, gameID, team)` writes an `Invitation` to the invitee's KV key `config.LobbyInviteKey(playerID)` = `invites.<id>`, which every lobby's KV watcher delivers (`handleInviteUpdate` keeps only the caller's OWN key, exposed via `MyInvite`). `JoinGame` guards invite-only games inside its CAS loop: only `CreatorID` or the holder of a fresh invitation (`inviteFor`, read straight from KV to beat watcher lag) may join, and an invitation exempts the joiner from the `MaxAgents` policy (`ErrNotInvited` otherwise); a successful join consumes the invitation. `RespondInvite` deletes the key (decline, or the normal consume-on-join). Invitations expire after `config.InviteTTL` (2 min).
 
 ### Files
 
@@ -2029,14 +2029,25 @@ Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps t
 
 ---
 
-## 21. internal/agent and cmd/jetricks-agent
+## 21. Agents: the `mk1` reference and the `agents/` home
 
-The headless computer player. `internal/agent` holds the reusable player logic;
-`cmd/jetricks-agent` is its CLI shell. Neither imports any UI package — the dependency
-tree is `engine`, `lobby`, `game`, `rng`, `nats`, `config`, `archive`, `cleanup` — so
-the binary builds without cgo/Gio on every platform. The agent is deliberately a plain
-peer: it uses only the exported engine/lobby API (the six move methods and the state
-accessors), never engine internals and never direct cell publishes.
+**The agent model.** An agent is a standalone program that plays Jetricks by speaking the
+game's NATS/JetStream protocol — there is no plugin interface or shared SDK to implement.
+The single, language-neutral contract is the wire protocol plus the fair-play rules in
+`jetricks-agent-guide.md` (with the game rules in `jetricks-gameplays.md`); a conformant
+agent can be written in any language depending on nothing in this repo. Contributed agents
+live in `agents/<name>/`, each self-contained (own language/build/deps, its own README);
+`agents/README.md` is the submission guide. The game neither knows nor cares how any agent
+is built.
+
+**The reference agent `mk1`.** The repository ships one Go agent — `mk1`, source in
+`internal/agent`, binary `cmd/jetricks-agent`. It is a *privileged* example: because it
+lives in the repo it reuses the game's own Go engine (`engine`, `lobby`, `game`, `rng`,
+`nats`, `config`, `archive`, `cleanup`) instead of re-implementing the protocol, so it
+builds without cgo/Gio on every platform and its player name reads `mk1-<instance>-<difficulty>`.
+It uses only the exported engine/lobby API (the six move methods and the state accessors),
+never engine internals or direct cell publishes — the same discipline a wire-level agent
+follows. Everything below describes that reference implementation.
 
 ### internal/agent files
 
@@ -2065,7 +2076,7 @@ fair-visibility contract (agents decide only on what a human can see —
 | Flag | Meaning |
 |------|---------|
 | `--server` / `--context` / `--user` / `--password` | Connection choice, same semantics as `cmd/jetricks` (URL wins over context) |
-| `--name` | The agent VERSION stem (default: the stock `agent.Codename`, `mk1`, bumped when the agent's play logic changes). `Run` composes the full player name `<stem>-<instance>-<difficulty>` (`composeName` in agent.go) with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole passes `config.ValidatePlayerName` |
+| `--name` | The agent VERSION stem (default: `mk1`, the reference agent's `agent.Codename`, bumped when the agent's play logic changes). `Run` composes the full player name `<stem>-<instance>-<difficulty>` (`composeName` in agent.go) with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole passes `config.ValidatePlayerName` |
 | `--difficulty` | `easy` \| `medium` \| `hard` (default `hard`) |
 | `--join <gameID>` | Join a specific game (still subject to that game's agent policy) |
 | `--create` + `--mode` + `--players N` + `--max-agents M` | Create a game (cooperative/competitive/teams; `--players` is per team in teams mode) and wait for opponents; `M` agent seats including this agent (0/default = all seats — an agent-hosted game is agent-friendly) |

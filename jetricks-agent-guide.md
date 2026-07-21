@@ -12,6 +12,16 @@ same cell subjects under the same CAS discipline, and carries the same lifecycle
 responsibilities. Nothing in the protocol distinguishes silicon from carbon except
 one honesty flag. Remember that there are 3 game modes (cooperative, competitive and teams) in Jetricks.
 
+**The one and only interface is the game itself — the NATS server, the JetStream
+blackboard, and the fair-play rules below.** There is no framework to plug into and no
+interface to implement: your agent is a standalone program, in **any language**, that
+connects to NATS and plays by these rules. This guide plus `jetricks-gameplays.md` are
+the complete contract — read them and you can build a conformant agent depending on
+nothing in this repository. The repo ships one Go agent, **`mk1`**, purely as a
+reference/opponent; §3 explains how it (uniquely, because it lives in the repo) reuses
+the game's own engine code, while §4 is the real contract every other agent implements.
+To contribute an agent, see [`agents/README.md`](agents/README.md).
+
 Companion documents (all at the repo root):
 
 | Document | What it holds |
@@ -19,7 +29,8 @@ Companion documents (all at the repo root):
 | `jetricks-gameplays.md` | The authoritative game rules (modes, spawning, gravity, clears, garbage, lifecycle) |
 | `jetricks-project-structure.md` | The full package/architecture reference, subject schemes, payload structs |
 | `jetricks-implementation-plan.md` | Implementation details, CAS behavior tables, design decisions |
-| This guide | The agent-specific contract and the two integration paths |
+| This guide | The authoritative wire contract + fair-play rules every agent implements |
+| `agents/README.md` | How to contribute your own agent to the repo |
 
 ---
 
@@ -44,8 +55,8 @@ An agent may NOT use:
 
 - **`GameMeta.Seed` or the piece RNG.** The piece sequence is deterministic and any
   client can compute every future piece — but the UI shows a human **no next-piece
-  preview**, so an agent must plan one piece at a time. (This is why the stock
-  agent has no lookahead.)
+  preview**, so an agent must plan one piece at a time. (This is why `mk1`
+  has no lookahead.)
 - Stream internals the UI does not render: raw sequence numbers as game
   information, other players' in-flight publish timing, headers, or anything else
   observable only at the protocol layer.
@@ -76,7 +87,7 @@ Agents are first-class but visible:
   (younger than `config.InviteTTL`, two minutes) as its strongest join signal:
   join the named game (and, in teams, the named team), which is allowed even when
   `max_agents` is 0 — **the invitation IS the permission**. Delete your mailbox key
-  when you join or decline (`lobby.RespondInvite` does this; the stock agent joins,
+  when you join or decline (`lobby.RespondInvite` does this; `mk1` joins,
   which also consumes it). **If the join fails** (the invited team was full, the game
   filled first — `ErrTeamFull`/`ErrGameFull`), decline the invitation rather than
   retrying it, or you'll re-accept the same unsatisfiable invite forever. The Go
@@ -85,20 +96,27 @@ Agents are first-class but visible:
   name has three parts, e.g. `mk1-3f7a-hard`:
   - **version** — a stem naming your agent's CODE generation; bump it whenever
     your play logic changes, so rosters and game history record which version
-    played (the stock agent's is its `Codename`, currently `mk1`).
-  - **instance** — a short unique id (the stock agent mints 4 random hex chars)
+    played (`mk1` uses its `Codename`).
+  - **instance** — a short unique id (`mk1` mints 4 random hex chars)
     generated fresh for every connection, so several copies of the same agent
     version can play at once and each connection is distinguishable.
-  - **difficulty** — your strength label (`easy`/`medium`/`hard` for the stock
+  - **difficulty** — your strength label (`easy`/`medium`/`hard` for `mk1`'s
     tunings, or your own).
   The name doubles as the NATS player ID and the presence KV key, so every
   component must use only `[-/_=.a-zA-Z0-9]` (no spaces, no parentheses) and
   the whole must fit 32 characters (`config.ValidatePlayerName`).
 
-## 3. Path A (recommended): reuse the Go packages
+## 3. The reference agent `mk1` (in-repo Go only)
 
-The repository's own agent is a reusable library. The entire lifecycle — connect,
-lobby, policy-aware join, ready/countdown, play, archive, teardown — is one call:
+The repository's own agent, `mk1` (`cmd/jetricks-agent`, source in `internal/agent`),
+is a **privileged example, not a framework**. Because it lives inside the repo it can
+reuse the game's own Go engine packages (`internal/engine`, `internal/lobby`, …) instead
+of re-implementing the protocol — a convenience no third-party agent gets. Your agent —
+in any language — implements the wire protocol in §4 instead. This section is here only
+so you can read how the reference does it and run it as an opponent.
+
+For an **in-repo Go** agent, the entire lifecycle — connect, lobby, policy-aware join,
+ready/countdown, play, archive, teardown — is one call:
 
 ```go
 import (
@@ -133,11 +151,13 @@ retried**, when they lose a CAS race (re-observe and re-plan — `agent.Execute`
 already does), and the engine's input buffer is 8 deep with silent overflow (pace
 your dispatches; don't spam).
 
-## 4. Path B: any language, straight to the wire
+## 4. The contract: play the protocol (any language)
 
-A non-Go agent re-implements the client. Read
-`jetricks-project-structure.md` §4/§6/§9 and `jetricks-gameplays.md` first; this is
-the orientation map.
+**This is what every agent except the in-repo reference does** — implement the client
+against the wire, in whatever language you like, depending on nothing in this repo. Read
+`jetricks-project-structure.md` §4/§6/§9 and `jetricks-gameplays.md` first; this is the
+orientation map. Everything below, plus the fair-play rules in §1–§2 and the lifecycle in
+§5, is the complete contract.
 
 ### 4.1 Resources
 
@@ -197,7 +217,8 @@ and the real-time push fabric.
   active-cell count reaching zero on the consumer), clear lines, publish events,
   apply incoming garbage, spawn its next piece (including the deferred-spawn rule
   when another player's falling piece covers your spawn cells), and detect
-  top-out. This is the bulk of the work — weigh it against Path A.
+  top-out. This is the bulk of the work; `jetricks-gameplays.md` is the spec for
+  all of it, and the `mk1` reference (§3) is a working implementation to compare against.
 - **Broadcast CAS-failure flashes.** When one of your writes loses its per-subject
   CAS and you drop the move, publish a **core NATS** message (NOT JetStream — this
   is transient UI feedback that must never be persisted or replayed) to
@@ -244,10 +265,10 @@ eliminations and outcomes without a coordinator.
 
 - **Local server**: `nats-server -js`, or the GUI's LAN mode (it prints the URL to
   share).
-- **Against the stock agent**: run `jetricks-agent` residents at any difficulty
-  and create agent-allowed games; or `jetricks-agent --create --mode teams
-  --players 2` to host. The stock agent is the reference implementation of
-  everything in this guide.
+- **Against the reference agent**: run `mk1` residents at any difficulty and create
+  agent-allowed games — `go run ./cmd/jetricks-agent --server nats://localhost:4222
+  --difficulty medium` — or `... --create --mode teams --players 2` to host. `mk1`
+  implements everything in this guide, so it is a conformant sparring partner.
 - **Against humans**: run the GUI, create a game with "Allow agents" checked and a
   max-agents count; your agent auto-joins (if it's a resident) or `--join`s.
 - **In Go**: `internal/testutil.StartServer` gives an embedded JetStream server;
@@ -259,10 +280,10 @@ eliminations and outcomes without a coordinator.
 - [ ] `agent: true` on presence and roster entries
 - [ ] `max_agents` honored inside the join CAS
 - [ ] `invite_only` games joined only when invited (watch `invites.<name>`)
-- [ ] Name is `<name>-<strength>`, KV-key-safe, ≤32 chars
+- [ ] Name is `<agent-name>-<instance>-<difficulty>`, KV-key-safe, ≤32 chars
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried
 - [ ] CAS-failure flashes broadcast on `jetricks.flash.<id>.<name>` (core NATS)
-- [ ] Gravity, lock-in, clears, garbage, spawn rules implemented (or Path A reused)
+- [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish
 - [ ] Presence deleted and seats freed on the way out

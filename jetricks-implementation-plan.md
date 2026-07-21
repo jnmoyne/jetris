@@ -2703,13 +2703,19 @@ cross-game filtering).
 
 ---
 
-## Phase 12 — Headless Agent
+## Phase 12 — Headless Agent (the `mk1` reference)
 
-A headless computer player for competitive mode: `internal/agent` (reusable logic) +
-`cmd/jetricks-agent` (CLI). The agent is an ordinary peer built entirely on the exported
-engine/lobby API — no engine internals, no direct cell publishes, no UI imports. See
-`jetricks-gameplays.md` §11 for player-facing behavior and
-`jetricks-project-structure.md` §21 for the package reference.
+A headless computer player, `mk1`: `internal/agent` (logic) + `cmd/jetricks-agent` (CLI).
+The agent is an ordinary peer built entirely on the exported engine/lobby API — no engine
+internals, no direct cell publishes, no UI imports. See `jetricks-gameplays.md` §11 for
+player-facing behavior and `jetricks-project-structure.md` §21 for the package reference.
+
+**Multi-agent model.** `mk1` is the *reference* agent, not a framework. Agents are
+independent programs that play by speaking the game's NATS protocol; the only contract is
+the wire protocol + fair-play rules in `jetricks-agent-guide.md` (no plugin interface, no
+shared SDK). Contributed agents — any language — live self-contained under `agents/<name>/`
+(see `agents/README.md`). `mk1` is privileged only in that, living in the repo, it reuses
+the game's Go engine instead of re-implementing the protocol.
 
 ### 12.1 Difficulty (`difficulty.go`)
 
@@ -2780,7 +2786,7 @@ completion is `PieceIdx() > startIdx`.
 ### 12.5 CLI (`cmd/jetricks-agent/main.go`)
 
 Flags `--server/--context/--user/--password` (as in `cmd/jetricks`), `--name`
-(the agent VERSION stem; default the stock `Codename`, `mk1`), `--difficulty`
+(the agent VERSION stem; default `mk1`, the reference `Codename`), `--difficulty`
 (default hard), `--join`, `--create`,
 `--mode` (cooperative/competitive/teams, with `--create`), `--players`, `--wait`,
 `--linger`, `--seed`, `--version`. `Run` composes the full player

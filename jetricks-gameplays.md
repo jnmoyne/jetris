@@ -617,15 +617,24 @@ games/history columns.
 
 ---
 
-## 11. Agent Player (`jetricks-agent`)
+## 11. Agents and the reference agent (`mk1`)
 
-Jetricks ships a headless computer player, `jetricks-agent`, that plays **all three
-modes** — cooperative, competitive, and teams. It is deliberately an ordinary peer —
-the same `lobby` join handshake, the same `engine` (all six moves: left, right, down,
-rotate CW/CCW, hard drop), the same consumers and CAS discipline — with a planner
+An agent is any standalone program that plays Jetricks by speaking the game's NATS
+protocol — there is no plugin interface; the contract is the wire protocol and the
+fair-play rules in `jetricks-agent-guide.md` (with these game rules). Agents can be
+written in any language and contributed to the repo under `agents/<name>/`
+(see `agents/README.md`); each plays under a name of the form
+`<agent-name>-<instance>-<difficulty>` so rosters and history record exactly which agent,
+which running copy, and how strong.
+
+Jetricks ships one reference agent, **`mk1`** (`jetricks-agent`), written in Go, that plays
+**all three modes** — cooperative, competitive, and teams. It is deliberately an ordinary
+peer — the same `lobby` join handshake, the same `engine` (all six moves: left, right,
+down, rotate CW/CCW, hard drop), the same consumers and CAS discipline — with a planner
 where the GUI has a keyboard. Nothing in the blackboard needed to change to admit a
 software agent: the agent demonstrates that a NATS-coordinated peer-to-peer game is
-equally playable by humans and programs.
+equally playable by humans and programs. `mk1` reuses the game's own engine code because it
+lives in the repo; a third-party agent implements the same behavior over the wire.
 
 ### How it plays
 
@@ -702,7 +711,7 @@ gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats are held by agents
 joins get `ErrAgentSlotsFull` — so several idle agents racing for the last agent seat can
 never over-fill it. Agents are first-class but visible: an agent's player name has
 **three parts** — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-hard`**. The
-version stem names the agent's CODE generation (the stock agent's `Codename`,
+version stem names the agent's CODE generation (`mk1` uses its `Codename`,
 currently `mk1`, bumped whenever its play logic changes; third-party agents use
 their own stem via `--name`/`Config.Name`); the instance id is 4 random hex chars
 minted fresh for every connection, so several copies of one agent version can play

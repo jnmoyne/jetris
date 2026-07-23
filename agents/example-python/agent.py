@@ -7,9 +7,9 @@ from ../../jetricks-gameplays.md) directly against NATS/JetStream, as a worked
 example that the "any language, only NATS" contract is real.
 
 Scope (deliberately minimal):
-  - Plays COMPETITIVE mode only. It auto-joins open competitive games that
-    allow agents, and accepts invitations to competitive games (declining
-    invitations to modes it cannot play).
+  - Plays COMPETITIVE mode only. It accepts invitations to competitive games
+    (declining invitations to modes it cannot play); with --auto-join it also
+    joins open competitive games that allow agents.
   - Strategy is a naive one-ply greedy: enumerate reachable placements
     (plain in-place rotations + sideways translations + hard drop), score
     each resulting board (lines, holes, height, bumpiness), take the best.
@@ -27,7 +27,8 @@ Everything it carries as a peer, per the guide:
   clean teardown.
 
 Usage:
-  python agent.py --server nats://localhost:4222            # resident: keeps joining games
+  python agent.py --server nats://localhost:4222            # resident: waits for invitations
+  python agent.py --auto-join                               # also join open agent-allowed games
   python agent.py --server nats://... --join <gameID>       # join one specific game
   python agent.py --once                                    # play a single game, then exit
   python agent.py --selftest                                # offline conformance checks
@@ -253,16 +254,17 @@ class GameOver(Exception):
 
 
 class Agent:
-    def __init__(self, server, stem, join_id, once):
+    def __init__(self, server, stem, join_id, once, auto_join):
         self.server = server
         self.name = f"{stem}-{secrets.token_hex(2)}-{DIFFICULTY}"
         if len(self.name) > 32:
             sys.exit(f"agent name {self.name!r} exceeds 32 characters")
         self.join_id = join_id
         self.once = once
+        self.auto_join = auto_join
         self.nc = self.js = self.kv = None
         self.listings = {}      # gameID -> listing dict (from the KV watcher)
-        self.my_invite = None   # invitation dict or None
+        self.invites = {}       # gameID -> invitation dict (one KV key per game)
         self.presence_status = 0
         self.current_game = ""
         self.stopping = False
@@ -315,25 +317,51 @@ class Agent:
                         self.listings[gid] = json.loads(entry.value)
                     except Exception:
                         pass
-            elif key == f"invites.{self.name}":
-                self.my_invite = None if deleted else json.loads(entry.value)
+            elif key.startswith(f"invites.{self.name}."):
+                gid = key[len(f"invites.{self.name}."):]
+                if deleted:
+                    self.invites.pop(gid, None)
+                else:
+                    try:
+                        self.invites[gid] = json.loads(entry.value)
+                    except Exception:
+                        pass
 
-    def fresh_invite(self):
-        inv = self.my_invite
-        if not inv:
-            return None
+    def fresh_invites(self):
+        """Pending (fresh, not declined) invitations, oldest first. A player
+        may hold one invitation per game, each under its own KV key."""
+        out = []
+        for gid, inv in self.invites.items():
+            if inv.get("declined"):
+                continue
+            try:
+                age = datetime.now(timezone.utc) - parse_rfc3339(inv["created_at"])
+                if age.total_seconds() > INVITE_TTL:
+                    continue
+            except Exception:
+                continue
+            out.append((inv.get("created_at", ""), gid, inv))
+        return [(gid, inv) for _, gid, inv in sorted(out)]
+
+    async def consume_invite(self, game_id):
+        """Accepting (joining) or dropping a stale invitation deletes its key —
+        the deletion is what tells the inviter it was handled."""
+        self.invites.pop(game_id, None)
         try:
-            age = datetime.now(timezone.utc) - parse_rfc3339(inv["created_at"])
-            if age.total_seconds() > INVITE_TTL:
-                return None
+            await self.kv.delete(f"invites.{self.name}.{game_id}")
         except Exception:
-            return None
-        return inv
+            pass
 
-    async def consume_invite(self):
-        self.my_invite = None
+    async def decline_invite(self, game_id):
+        """Declining REWRITES the key with declined=true (instead of deleting
+        it) so the inviter sees the refusal until they dismiss it."""
+        inv = self.invites.pop(game_id, None)
+        if not inv:
+            return
+        inv["declined"] = True
         try:
-            await self.kv.delete(f"invites.{self.name}")
+            await self.kv.put(f"invites.{self.name}.{game_id}",
+                              json.dumps(inv).encode())
         except Exception:
             pass
 
@@ -353,16 +381,22 @@ class Agent:
             gid, self.join_id = self.join_id, None  # once
             return gid, False
         while not self.stopping:
-            inv = self.fresh_invite()
-            if inv:
-                if inv.get("mode") == MODE_COMPETITIVE and inv["game_id"] in self.listings:
-                    return inv["game_id"], True
-                log(f"declining invitation from {inv.get('from_name')} (can't play that game)")
-                await self.consume_invite()
+            handled = False
+            for gid, inv in self.fresh_invites():
+                if inv.get("mode") == MODE_COMPETITIVE and gid in self.listings:
+                    return gid, True
+                if gid not in self.listings:  # game gone: drop the stale invite
+                    await self.consume_invite(gid)
+                else:
+                    log(f"declining invitation from {inv.get('from_name')} (can't play that game)")
+                    await self.decline_invite(gid)
+                handled = True
+            if handled:
                 continue
-            for gid, g in sorted(self.listings.items()):
-                if self.joinable(g):
-                    return gid, False
+            if self.auto_join:
+                for gid, g in sorted(self.listings.items()):
+                    if self.joinable(g):
+                        return gid, False
             await asyncio.sleep(1.0)
         return None, False
 
@@ -408,7 +442,7 @@ class Agent:
             self.presence_status, self.current_game = 1, game_id
             await self.publish_presence()
             if invited:
-                await self.consume_invite()
+                await self.consume_invite(game_id)
             return len(players) - 1
 
     async def toggle_ready(self, game_id):
@@ -554,7 +588,7 @@ class Agent:
                 idx = await self.join_game(game_id, invited)
                 if idx is None:
                     if invited:  # unsatisfiable invitation: decline, don't loop
-                        await self.consume_invite()
+                        await self.decline_invite(game_id)
                     await asyncio.sleep(1.0)
                     continue
                 log(f"joined game {game_id} as player {idx}")
@@ -1049,13 +1083,15 @@ async def main():
                     help="agent codename (version stem of the player name)")
     ap.add_argument("--join", default=None, metavar="GAMEID",
                     help="join this specific game instead of scanning the lobby")
+    ap.add_argument("--auto-join", action="store_true",
+                    help="also join open agent-allowed games (default: invited games only)")
     ap.add_argument("--once", action="store_true", help="play one game, then exit")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         return
-    agent = Agent(args.server, args.name, args.join, args.once)
+    agent = Agent(args.server, args.name, args.join, args.once, args.auto_join)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: setattr(agent, "stopping", True))

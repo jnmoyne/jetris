@@ -40,6 +40,7 @@ func TestInviteAgents(t *testing.T) {
 				Name:        name,
 				Difficulty:  DifficultyHard,
 				Tuning:      tun,
+				AutoJoin:    true, // scanning residents must still skip the invite-only game
 				WaitTimeout: time.Minute,
 				Seed:        seed,
 				Logf:        t.Logf,

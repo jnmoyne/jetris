@@ -59,6 +59,7 @@ func TestResidentAgents(t *testing.T) {
 				Name:        name,
 				Difficulty:  DifficultyHard,
 				Tuning:      tun,
+				AutoJoin:    true,
 				WaitTimeout: time.Minute,
 				Seed:        seed,
 				Logf:        t.Logf,

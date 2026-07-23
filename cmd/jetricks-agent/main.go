@@ -4,10 +4,12 @@
 // creates) a game through the lobby, and plays it with the same engine the
 // GUI uses — just without a window.
 //
-// With no --join or --create the agent is a lobby RESIDENT: it waits for games
-// whose creator allowed agents (each game carries a max-agents policy), joins,
-// plays, returns to the lobby, and repeats until interrupted. Pass --once to
-// exit after a single game instead.
+// With no --join or --create the agent is a lobby RESIDENT: it waits in the
+// lobby, plays a game, returns to the lobby, and repeats until interrupted.
+// By default a resident only joins games it is INVITED to (invitations are
+// accepted immediately); pass --auto-join to also have it actively join any
+// open game whose creator allowed agents (each game carries a max-agents
+// policy). Pass --once to exit after a single game instead.
 package main
 
 import (
@@ -64,7 +66,8 @@ func parseFlags() (agent.Config, error) {
 	flag.StringVar(&modeStr, "mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	flag.IntVar(&cfg.Players, "players", 2, "player count when creating a game (with --create; teams: players per team)")
 	flag.IntVar(&cfg.MaxAgents, "max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
-	flag.BoolVar(&cfg.Once, "once", false, "auto-join mode: exit after one game instead of staying in the lobby")
+	flag.BoolVar(&cfg.AutoJoin, "auto-join", false, "actively join any open game that allows agents (default: only join games this agent is invited to)")
+	flag.BoolVar(&cfg.Once, "once", false, "exit after one game instead of staying in the lobby")
 	flag.DurationVar(&cfg.WaitTimeout, "wait", 10*time.Minute, "max wait for a joined game to fill and start")
 	flag.BoolVar(&cfg.LingerAfterLoss, "linger", false, "after losing, stay connected until the game finishes")
 	flag.Uint64Var(&cfg.Seed, "seed", 0, "random seed for difficulty blunders (0 = time-based)")

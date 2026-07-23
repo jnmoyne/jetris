@@ -208,24 +208,42 @@ type App struct {
 	histAgentsCb widget.Bool
 	chatList     widget.List
 	gameBtns     map[string]*gameRowBtns
+	// uninviteBtns are the per-invitation Uninvite/Dismiss buttons on the
+	// creator's invite-only game rows, keyed "<gameID>|<inviteeID>".
+	uninviteBtns map[string]*widget.Clickable
 	// confirmDeleteID is the abandoned game whose row currently shows the
 	// "Are you sure you want to delete this game?" confirmation ("" = none).
 	confirmDeleteID string
+	// confirmLeave is true while the game screen asks "Are you sure you want
+	// to leave?" (leaving an in-progress game needs confirmation; the seat is
+	// kept and the lobby offers Rejoin).
+	confirmLeave bool
+	leaveYesBtn  widget.Clickable
+	leaveNoBtn   widget.Clickable
 
 	// Invite-only create flow. inviteOnlyCb toggles it on the create row.
 	// While invitePickerGameID is non-empty the invitee-picker overlay is
 	// open for that just-created game; invitePicker holds one row of widget
-	// state per selectable player (keyed by player ID).
+	// state per selectable player (keyed by player ID). Selecting a player
+	// sends their invitation IMMEDIATELY (deselecting retracts it) — there is
+	// no send button. The creator appears as a pinned first row, pre-selected:
+	// selecting yourself means playing (a seat is taken right away — creating
+	// an invitation game implies accepting your own invitation), deselecting
+	// frees the seat and you'll spectate instead once the game fills.
 	inviteOnlyCb       widget.Bool
 	invitePickerGameID string
 	invitePicker       map[string]*inviteChoice
-	invitePickerErr    string          // capacity-validation message shown in the picker
+	invitePickerErr    string          // capacity-guard message shown in the picker
 	invitePickerMode   config.GameMode // captured when the picker opens
 	invitePickerPC     int             // playerCount of the game being invited to
 	invitePickerTS     int             // teamSize (teams mode)
+	inviteSelfSel      widget.Bool     // the pinned "You" row (non-teams): checked = playing
+	inviteSelfTeam     widget.Enum     // the pinned "You" row (teams): "", "0" or "1"
+	inviteSelfLastSel  bool            // last self intent applied (non-teams)
+	inviteSelfLastTeam string          // last self intent applied (teams)
 	inviteList         widget.List
-	inviteSendBtn      widget.Clickable
-	inviteCancelBtn    widget.Clickable
+	inviteCloseBtn     widget.Clickable // keep the game (and its invites), just close the overlay
+	inviteCancelBtn    widget.Clickable // abandon: retract the invites and delete the game
 	// Incoming-invitation pop-up (reads lobby.MyInvite at draw time).
 	inviteAcceptBtn  widget.Clickable
 	inviteDeclineBtn widget.Clickable
@@ -250,13 +268,14 @@ type App struct {
 // New builds the App. The window is created later, in Run, on the UI goroutine.
 func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a := &App{
-		js:        js,
-		kv:        kv,
-		screen:    screenLogin,
-		countdown: -1,
-		flash:     map[[2]int]time.Time{},
-		specFlash: map[int]map[[2]int]time.Time{},
-		gameBtns:  map[string]*gameRowBtns{},
+		js:           js,
+		kv:           kv,
+		screen:       screenLogin,
+		countdown:    -1,
+		flash:        map[[2]int]time.Time{},
+		specFlash:    map[int]map[[2]int]time.Time{},
+		gameBtns:     map[string]*gameRowBtns{},
+		uninviteBtns: map[string]*widget.Clickable{},
 	}
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true

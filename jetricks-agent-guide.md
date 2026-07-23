@@ -81,17 +81,40 @@ Agents are first-class but visible:
 - **Accept invitations.** A game may be `invite_only` (`GameListing.InviteOnly`,
   creator in `CreatorID`); such games are joined ONLY by the creator or by an
   invited player — never by scanning the games list. An invitation is a JSON record
-  written to your KV mailbox `invites.<yourPlayerID>` (an `Invitation`: `game_id`,
-  `from_id`, `from_name`, `mode`, `team`, `created_at`); you already watch the whole
-  KV bucket, so it arrives live. A well-behaved agent treats a fresh invitation
-  (younger than `config.InviteTTL`, two minutes) as its strongest join signal:
-  join the named game (and, in teams, the named team), which is allowed even when
-  `max_agents` is 0 — **the invitation IS the permission**. Delete your mailbox key
-  when you join or decline (`lobby.RespondInvite` does this; `mk1` joins,
-  which also consumes it). **If the join fails** (the invited team was full, the game
-  filled first — `ErrTeamFull`/`ErrGameFull`), decline the invitation rather than
-  retrying it, or you'll re-accept the same unsatisfiable invite forever. The Go
-  `agent` package does all of this automatically.
+  written to your per-game KV mailbox key `invites.<yourPlayerID>.<gameID>` (an
+  `Invitation`: `game_id`, `invitee_id`, `from_id`, `from_name`, `mode`, `team`,
+  `declined`, `created_at`); a player may hold invitations to SEVERAL games at
+  once, one key each, and you already watch the whole KV bucket, so they arrive
+  live. A well-behaved agent treats a fresh invitation (younger than
+  `config.InviteTTL`, two minutes, and not marked `declined`) as its strongest
+  join signal: join the named game (and, in teams, the named team), which is
+  allowed even when `max_agents` is 0 — **the invitation IS the permission**.
+  The key's lifecycle is the answer the inviter watches for:
+  - **accept** = join the game and DELETE the key (`lobby.JoinGame` consumes it);
+  - **decline** = REWRITE the key with `"declined": true` (`lobby.DeclineInvite`)
+    so the inviter sees the refusal — do NOT delete it;
+  - a **stale** invitation whose game no longer exists is simply deleted
+    (`lobby.DismissInvite`);
+  - the INVITER may delete the key at any time (retraction / dismissing a
+    decline — `lobby.Uninvite`): a pending invitation can vanish, so re-check
+    before acting on one.
+  **If the join fails** (the invited team was full, the game filled first —
+  `ErrTeamFull`/`ErrGameFull`), decline the invitation rather than retrying it,
+  or you'll re-accept the same unsatisfiable invite forever. The Go `agent`
+  package does all of this automatically.
+- **Wait to be invited by default.** The reference resident agent
+  (`jetricks-agent`) only joins games it is invited to unless started with
+  `--auto-join`, which restores active scanning for open agent-allowed games.
+  Third-party resident agents should offer the same choice (the Python example's
+  `--auto-join` mirrors it) so a lobby full of idle agents stays quiet until
+  someone asks them to play.
+- **Listen for lobby events (optional but recommended).** Every lobby action is
+  also announced as a transient CORE NATS message (no stream captures them) on
+  `jetricks.lobby.event.<kind>` with kinds `game.created`, `game.joined`,
+  `game.left`, `invite.sent`, `invite.retracted`, `invite.declined` — payload
+  `{kind, game_id, player_id, target_id?, team?, time}`. State still lives in
+  the KV; the events are low-latency pings that let you react (e.g. to a fresh
+  invitation or a seat opening up) without polling.
 - **Structured names: `<version>-<instance>-<difficulty>`.** An agent's player
   name has three parts, e.g. `mk1-3f7a-hard`:
   - **version** — a stem naming your agent's CODE generation; bump it whenever
@@ -166,10 +189,11 @@ discipline.
 
 | Resource | Kind | Purpose |
 |----------|------|---------|
-| `JETRICKS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>`) |
+| `JETRICKS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game) |
 | `JETRICKS_LOBBY_CHAT` | stream | lobby chat (`jetricks.lobby.chat`) + per-game chat (`….game.<gameID>`) |
 | `JETRICKS_ARCHIVE` | stream | finished-game records (`jetricks.archive`) |
 | `JETRICKS_GAME_<gameID>` | stream | the blackboard: `jetricks.game.<gameID>.>`, memory storage, **MaxMsgsPerSubject: 1**, atomic publish + direct get enabled |
+| `jetricks.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
 
 The last property is the heart of the design: the stream keeps only the latest
 message per subject, so **the last message on each cell subject IS that cell's
@@ -272,8 +296,10 @@ eliminations and outcomes without a coordinator.
   agent-allowed games — `go run ./cmd/jetricks-agent --server nats://localhost:4222
   --difficulty medium` — or `... --create --mode teams --players 2` to host. `mk1`
   implements everything in this guide, so it is a conformant sparring partner.
-- **Against humans**: run the GUI, create a game with "Allow agents" checked and a
-  max-agents count; your agent auto-joins (if it's a resident) or `--join`s.
+- **Against humans**: run the GUI and either create an invite-only game and invite
+  the agent by name (it accepts immediately), or create a game with "Allow agents"
+  checked and a max-agents count for an `--auto-join` resident to find, or `--join`
+  it in directly.
 - **In Go**: `internal/testutil.StartServer` gives an embedded JetStream server;
   `internal/agent`'s integration tests show full agent-vs-agent games in ~15s.
 
@@ -282,7 +308,7 @@ eliminations and outcomes without a coordinator.
 - [ ] Decisions use only UI-visible information (no seed, no next-piece lookahead)
 - [ ] `agent: true` on presence and roster entries
 - [ ] `max_agents` honored inside the join CAS
-- [ ] `invite_only` games joined only when invited (watch `invites.<name>`)
+- [ ] `invite_only` games joined only when invited (watch `invites.<name>.*`; accept = join + delete key, decline = rewrite with `declined: true`)
 - [ ] Name is `<agent-name>-<instance>-<difficulty>`, KV-key-safe, ≤32 chars
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried
 - [ ] CAS-failure flashes broadcast on `jetricks.flash.<id>.<name>` (core NATS)

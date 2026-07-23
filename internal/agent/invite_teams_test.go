@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"jetricks/internal/config"
+	"jetricks/internal/lobby"
 	natspkg "jetricks/internal/nats"
 	"jetricks/internal/testutil"
 )
@@ -167,16 +169,22 @@ func TestInviteTeamsOversubscribedDeclines(t *testing.T) {
 		}
 	}
 
-	// Within a few seconds every invitation must be consumed (each agent
-	// either joined or declined), and team 0 holds at most its 2 seats — no
-	// endless retry loop.
+	// Within a few seconds every invitation must be answered (each agent
+	// either joined — key deleted — or declined — key marked Declined), and
+	// team 0 holds at most its 2 seats — no endless retry loop.
 	deadline = time.Now().Add(20 * time.Second)
 	for {
 		pending := 0
 		for _, id := range ids {
-			if _, err := kv.Get(ctx, config.LobbyInviteKey(id)); err == nil {
-				pending++
+			entry, err := kv.Get(ctx, config.LobbyInviteKey(id, gameID))
+			if err != nil {
+				continue // deleted: accepted (consumed by the join)
 			}
+			var inv lobby.Invitation
+			if json.Unmarshal(entry.Value(), &inv) == nil && inv.Declined {
+				continue // answered: declined (kept for the inviter to see)
+			}
+			pending++
 		}
 		g := human.Games()[gameID]
 		if pending == 0 {

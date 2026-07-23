@@ -22,7 +22,7 @@ func TestReconcileInvitePicker(t *testing.T) {
 		"alice": inLobby("alice", false),
 		"nova":  inLobby("nova", true),
 	}
-	reconcileInvitePicker(picker, live, "me")
+	reconcileInvitePicker(picker, live, "me", nil)
 	if len(picker) != 2 || picker["alice"] == nil || picker["nova"] == nil || picker["me"] != nil {
 		t.Fatalf("after first reconcile: %v", keys(picker))
 	}
@@ -30,12 +30,18 @@ func TestReconcileInvitePicker(t *testing.T) {
 		t.Error("nova should be flagged as an agent")
 	}
 
-	// Select alice, then a new player joins and alice enters a game.
+	// Select alice, then a new player joins and alice enters a game. With
+	// alice in the keep set (she's involved with THIS game — invited or
+	// seated) she stays listed; without it she is dropped.
 	picker["alice"].sel.Value = true
 	aliceChoice := picker["alice"]
 	live["bob"] = inLobby("bob", false)
 	live["alice"] = lobby.PlayerPresence{PlayerID: "alice", Name: "alice", Status: lobby.StatusInGame}
-	reconcileInvitePicker(picker, live, "me")
+	reconcileInvitePicker(picker, live, "me", map[string]bool{"alice": true})
+	if picker["alice"] != aliceChoice {
+		t.Error("alice is involved with this game (keep) — must stay, widgets preserved")
+	}
+	reconcileInvitePicker(picker, live, "me", nil)
 
 	if picker["alice"] != nil {
 		t.Error("alice entered a game — should be dropped from the picker")
@@ -51,7 +57,7 @@ func TestReconcileInvitePicker(t *testing.T) {
 	picker["nova"].sel.Value = true
 	novaChoice := picker["nova"]
 	delete(live, "nova")
-	reconcileInvitePicker(picker, live, "me")
+	reconcileInvitePicker(picker, live, "me", nil)
 	if picker["nova"] != nil {
 		t.Error("nova left the lobby — should be dropped")
 	}
@@ -60,7 +66,7 @@ func TestReconcileInvitePicker(t *testing.T) {
 	// A staying player keeps its exact widget (selection preserved).
 	picker["bob"].sel.Value = true
 	bobChoice := picker["bob"]
-	reconcileInvitePicker(picker, live, "me")
+	reconcileInvitePicker(picker, live, "me", nil)
 	if picker["bob"] != bobChoice || !picker["bob"].sel.Value {
 		t.Error("bob stayed — its selection widget must be preserved")
 	}

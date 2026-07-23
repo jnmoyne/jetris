@@ -346,36 +346,64 @@ create row's **"Invite only"** checkbox chooses; when checked the button reads
   and (for the applicable modes) an agent policy — the **"Allow agents"** checkbox and
   max-agents count — controls whether idle agents may take seats.
 - **Invite-only games** are joined by invitation only. Creating one opens an
-  **invitee picker** over the lobby, listing every OTHER player **currently idle in
-  the lobby** (players already in a game can't be invited — you can only invite people
-  free to play). The list is **live**: while the picker is open, players who join the
-  lobby appear in it and players who leave (quit, or join a game) drop out, with your
-  existing selections preserved; deselecting a player (or setting them back to **—**
-  in teams) un-invites them. For competitive/cooperative games each row is a simple **Invite**
-  checkbox; for **teams** games each row is a three-way selector (**— / A / B**) so you
-  invite each player to a specific team. The picker shows the open seats live
-  (total, or **Team A: k/size · Team B: k/size** for teams) and refuses to send a
-  selection that over-fills the game or a team — so you can't invite more players
-  than the game holds. **Send invites** delivers them; **Cancel** abandons the
-  just-created game. The invited game's lobby row is tagged **· invite
-  only** and shows no Join button to uninvited browsers (the creator, and anyone
-  holding a pending invitation, still see theirs).
+  **invitee picker** over the lobby. There is no send button: **selecting a player
+  sends their invitation at that moment**, and deselecting a still-pending player
+  (or setting them back to **—** in teams) retracts it (their pop-up disappears).
+  The picker's first row is **you**: the creator is listed **pre-selected** —
+  creating an invitation game implies accepting your own invitation, so a seat is
+  taken immediately (team A by default in teams mode, switchable) and the row reads
+  **joined ✓**. Deselect yourself to host a game you won't play in. Below you the
+  picker lists every OTHER player **currently idle in the lobby** (players already
+  in a game can't be invited — you can only invite people free to play). The list
+  is **live**: players who enter the lobby appear, players who leave drop out
+  (except those involved with THIS game — roster members and invitees stay listed),
+  and each row shows its invitation's state as it changes: **✉ invited — waiting…**,
+  **joined ✓** / **joined · ready ✓** (the row's control disappears — the seat
+  answers for them), or **✕ declined** (re-selecting re-invites). For
+  competitive/cooperative games each row is a simple **Invite** checkbox; for
+  **teams** games each row is a three-way selector (**— / A / B**) so you invite
+  each player to a specific team (changing the team re-invites them to the new
+  one). The picker shows the seats spoken for live — roster **plus pending
+  invitations** (total, or **Team A: k/size · Team B: k/size** for teams) — and
+  refuses a selection that would over-fill the game or a team. **Close** puts the
+  picker away without touching anything (the game keeps filling; its lobby row
+  carries the same live status); **Cancel game** retracts every outstanding
+  invitation and deletes the just-created game. **When the last seat fills, the
+  picker hands the creator over automatically**: to the game screen (ready
+  selection) if they kept their own seat, or to **spectating** the game if they
+  deselected themselves. The invited game's lobby row is tagged **· invite only**
+  and shows no Join button to uninvited browsers (the creator, and anyone holding
+  a pending invitation, still see theirs); for the creator the row also lists each
+  outstanding invitation's state — **✉ invited — waiting…** with an **Uninvite**
+  button (retract while unanswered), or **✕ declined** with a **Dismiss** button —
+  and marks roster members **(joined)** / **(joined · ready ✓)**.
 
 ### Invitations
 
-An invitation is a small record the inviter writes to the invitee's lobby mailbox
-(one pending invitation per player; a newer one replaces an older, and they expire
-after two minutes). Because every lobby watches the same store, the invitee sees it
-immediately:
+An invitation is a small record the inviter writes to the invitee's per-game lobby
+mailbox key (`invites.<invitee>.<gameID>`). **A player may hold invitations to
+several games at once** — one per game — and each expires after two minutes.
+Because every lobby watches the same store, both sides see every change
+immediately; the key's lifecycle is the invitation's state machine: written =
+pending, deleted by the invitee = accepted (joining consumes it), rewritten with
+`declined: true` = declined (kept so the inviter sees the refusal until they
+dismiss it), deleted by the inviter = retracted.
 
 - **A human invitee** gets a **pop-up** — *"<inviter> invited you to a
-  competitive/co-op/teams game"* (teams names the team) — with **Accept & Play** and
-  **Decline**. Accepting joins the game (and, in teams, the team the inviter chose);
-  declining dismisses it. Joining the game consumes the invitation.
+  competitive/co-op/teams game"* (teams names the team) — showing **who has
+  already joined** (the game's current roster, with team and ready marks, or "No
+  one has joined yet"), with **Accept & Play** and **Decline**. Accepting joins
+  the game (and, in teams, the team the inviter chose); declining marks the
+  invitation declined for the inviter to see. With several pending invitations
+  the pop-up shows the oldest first and the next one surfaces once it's answered.
+  If the inviter retracts a pending invitation, the pop-up simply disappears.
 - **An agent invitee accepts automatically**: a resident agent treats a pending
   invitation as the strongest join signal and joins the invited game (and team) at
   once. Inviting an agent is how you bring a *specific* agent into an invite-only
-  game. If the join can't be honored (the invited team was already filled by other
+  game — and it is the DEFAULT way agents get into games at all: a resident
+  `jetricks-agent` only joins games it is invited to unless started with
+  `--auto-join`, which restores active scanning for open agent-allowed games. If
+  the join can't be honored (the invited team was already filled by other
   invitees, or the game filled without it), the agent **declines** the invitation and
   goes back to the lobby rather than retrying it — a stale invitation never wedges an
   agent.
@@ -384,8 +412,47 @@ immediately:
   limit — the creator explicitly chose them). Uninvited players and agents who try to
   join an invite-only game are refused.
 
-Third-party agents accept invitations by watching their own lobby mailbox — see
-`jetricks-agent-guide.md`.
+Third-party agents accept invitations by watching their own lobby mailbox keys —
+see `jetricks-agent-guide.md`.
+
+### Lobby Events
+
+Alongside the KV state, every lobby action is announced as a **transient core
+NATS message** (deliberately captured by no stream — these are real-time signals,
+not state) on `jetricks.lobby.event.<kind>`:
+
+| Kind | Published when |
+|------|----------------|
+| `game.created` | a game is created |
+| `game.joined` | a player takes a roster seat |
+| `game.left` | a roster seat is freed (un-join) |
+| `invite.sent` | an invitation is written |
+| `invite.retracted` | the inviter retracts/dismisses an invitation |
+| `invite.declined` | the invitee declines |
+
+The payload is `{kind, game_id, player_id, target_id?, team?, time}`. Every lobby
+subscribes and turns foreign events into immediate refresh pings, so player
+availability, rosters, and invitation state update in real time (the KV watcher
+remains the source of truth; presence heartbeats alone would lag by seconds).
+
+### Leaving and Rejoining a Game
+
+"Back to Lobby" does not give up your seat while the game is alive:
+
+- **Before the game starts**, going back to the lobby **clears your READY mark**
+  (you can't be counted ready while away) but keeps your roster seat. The lobby
+  row shows the game's status as **joined** (green) with a **Rejoin** button in
+  place of Join — clicking it puts you back on the game screen, same seat and
+  team.
+- **Once the game is in progress**, "Back to Lobby" first asks **"Are you sure
+  you want to leave?"** (Yes, leave / No, keep playing) — the game keeps going
+  without you. The lobby row then shows **playing** (green) and the same
+  **Rejoin** button returns you to your live board (the game stream replays the
+  current state).
+- Presence-wise you stay marked **In Game** while you hold a live seat (so you
+  can't be invited elsewhere); the seat is only released when the game ends, or
+  when you free it explicitly (deselecting yourself in the invite picker, or an
+  agent un-joining a game that never starts).
 
 ### Ready Flow
 
@@ -612,7 +679,7 @@ game.
 ### Lobby branding
 
 The lobby screen carries a banner across its top — the nats.io "N" logo flanking
-"Jetricks: peer to peer and made with NATS.io" — above the player/chat and
+"Jetricks: peer to peer blackboard system made with NATS.io" — above the player/chat and
 games/history columns.
 
 ---
@@ -728,16 +795,18 @@ allows them.
 
 ### Lobby behavior: agents are residents
 
-With no `--join`/`--create`, an agent is a **lobby resident**: it idles in the lobby,
-auto-joins the oldest game of any mode that allows agents and has a free seat (in teams,
-a free seat on some team) and a free agent seat,
-plays it to the end, returns to the lobby, and repeats until interrupted (`--once`
-restores play-one-game-and-exit). A "agent that is not currently playing" is simply one
-sitting in the lobby scanning — a playing agent can't join anything else. If a joined
-game never starts (nobody shows up or readies), the agent **un-joins** after its wait
+With no `--join`/`--create`, an agent is a **lobby resident**: it idles in the lobby
+**waiting to be invited** — invitations are accepted immediately — plays the game to
+the end, returns to the lobby, and repeats until interrupted (`--once` restores
+play-one-game-and-exit). Passing **`--auto-join`** widens the resident's appetite: it
+then also actively joins the oldest open game of any mode that allows agents and has a
+free seat (in teams, a free seat on some team) and a free agent seat. An "agent that is
+not currently playing" is simply one sitting in the lobby waiting (or, with
+`--auto-join`, scanning) — a playing agent can't join anything else. If a joined game
+never starts (nobody shows up or readies), the agent **un-joins** after its wait
 timeout — `lobby.UnjoinGame` removes it from the roster (reverting a full `starting`
 game to `created`) and purges its roster announcement so it never lingers as a ghost
-seat — then goes back to scanning.
+seat — then goes back to waiting.
 
 In every seat it takes, the agent carries the same lifecycle responsibilities as a GUI
 player:

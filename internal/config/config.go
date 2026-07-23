@@ -342,14 +342,42 @@ func LobbyGameKey(gameID string) string {
 	return "games." + gameID
 }
 
-// LobbyInviteKey is the KV key holding a player's pending game invitation
-// (one at a time; a newer invite overwrites an older one). Every lobby's KV
-// watcher sees it, so the invitee's client surfaces it the moment it is
-// written.
-func LobbyInviteKey(playerID string) string {
-	return "invites." + playerID
+// LobbyInviteKey is the KV key holding one player's invitation to one game.
+// A player may hold invitations to several games at once — one key per game.
+// Every lobby's KV watcher sees the whole invites.* space, so the invitee's
+// client surfaces an invitation the moment it is written AND the inviter can
+// watch its state: the key is deleted when the invitee joins (accepted) or the
+// inviter retracts it, and rewritten with Declined set when the invitee
+// declines (kept so the inviter sees the refusal until they dismiss it).
+// Player IDs cannot contain '.' (ValidatePlayerName) and game IDs are UUIDs,
+// so the two tokens parse back out unambiguously.
+func LobbyInviteKey(inviteeID, gameID string) string {
+	return LobbyInvitePrefix(inviteeID) + gameID
+}
+
+// LobbyInvitePrefix is the KV key prefix under which all of one player's
+// pending invitations live ("invites.<playerID>.").
+func LobbyInvitePrefix(inviteeID string) string {
+	return "invites." + inviteeID + "."
 }
 
 // InviteTTL is how long a pending invitation stays valid; older invites are
 // ignored (the invitee may have been away from the lobby screen).
 const InviteTTL = 2 * time.Minute
+
+// Lobby events are transient core NATS notifications (deliberately NOT
+// captured by any stream — real-time signals, not state) published so every
+// lobby, human or agent, hears about lobby activity the instant it happens:
+// a game created, a player joining or leaving a game's roster, an invitation
+// sent, retracted, or declined. State still lives in the KV (listings,
+// presence, invites); the events are the low-latency "look now" pings that
+// keep player lists and invite pop-ups current between KV watcher deliveries.
+
+// LobbyEventSubject is the subject one kind of lobby event is published to,
+// e.g. "jetricks.lobby.event.game.joined".
+func LobbyEventSubject(kind string) string {
+	return "jetricks.lobby.event." + kind
+}
+
+// LobbyEventsFilter matches every lobby event subject (core NATS subscription).
+const LobbyEventsFilter = "jetricks.lobby.event.>"

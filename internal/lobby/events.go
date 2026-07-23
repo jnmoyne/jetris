@@ -10,13 +10,35 @@ const (
 	LobbyUpdateGames
 	LobbyUpdateChat
 	LobbyUpdateArchive
-	LobbyUpdateInvite // this player's pending invitation appeared or was consumed
+	LobbyUpdateInvite // an invitation (to this player, or sent by anyone) changed state
 )
 
 // LobbyUpdate is sent from the lobby to the UI.
 type LobbyUpdate struct {
 	Kind    LobbyUpdateKind
 	ChatMsg *ChatMessage
+}
+
+// Lobby event kinds, published as transient core NATS messages on
+// config.LobbyEventSubject(kind) whenever lobby state changes (see the
+// commentary in config for the state-vs-signal split).
+const (
+	EventGameCreated     = "game.created"
+	EventGameJoined      = "game.joined"
+	EventGameLeft        = "game.left" // a roster seat was freed (unjoin), not a mere screen change
+	EventInviteSent      = "invite.sent"
+	EventInviteRetracted = "invite.retracted"
+	EventInviteDeclined  = "invite.declined"
+)
+
+// LobbyEvent is the payload of every lobby event message.
+type LobbyEvent struct {
+	Kind     string    `json:"kind"`
+	GameID   string    `json:"game_id,omitempty"`
+	PlayerID string    `json:"player_id"`           // the acting player (creator, joiner, inviter, decliner)
+	TargetID string    `json:"target_id,omitempty"` // invite events: the invitee
+	Team     int       `json:"team,omitempty"`      // teams-mode invites: the team offered
+	Time     time.Time `json:"time"`
 }
 
 // ChatMessage represents a chat message in the lobby or a game.

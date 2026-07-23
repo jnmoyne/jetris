@@ -120,7 +120,22 @@ func (a *App) layoutGame(gtx C) D {
 		go a.toggleReady()
 	}
 	if a.backBtn.Clicked(gtx) {
-		go a.returnToLobby()
+		// Walking out of a running game deserves an "are you sure?" — the seat
+		// is kept and the lobby offers Rejoin, but the board plays on without
+		// you. Any other state (pre-start, game over, spectating) leaves
+		// directly; leaving pre-start also clears the ready mark.
+		if mode == engine.ModePlayer && started && !view.gameOver {
+			a.confirmLeave = true
+		} else {
+			go a.leaveCurrentGame()
+		}
+	}
+	if a.leaveYesBtn.Clicked(gtx) {
+		a.confirmLeave = false
+		go a.leaveCurrentGame()
+	}
+	if a.leaveNoBtn.Clicked(gtx) {
+		a.confirmLeave = false
 	}
 	a.handleGameChatSubmit(gtx, eng, canType)
 	if view.flashActive {
@@ -172,15 +187,63 @@ func (a *App) layoutGame(gtx C) D {
 		children = append(children, layout.Rigid(a.natsMsgPanel))
 	}
 	root := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
+	base := root
 	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
 		// Victory fireworks paint over the whole game screen; pure paint ops,
 		// so clicks and typing still reach the widgets underneath.
-		return layout.Stack{}.Layout(gtx,
-			layout.Stacked(root),
-			layout.Expanded(func(gtx C) D { return fireworksOverlay(gtx, view.fireworks) }),
-		)
+		base = func(gtx C) D {
+			return layout.Stack{}.Layout(gtx,
+				layout.Stacked(root),
+				layout.Expanded(func(gtx C) D { return fireworksOverlay(gtx, view.fireworks) }),
+			)
+		}
 	}
-	return root(gtx)
+	if !a.confirmLeave {
+		return base(gtx)
+	}
+	// Leave confirmation modal: scrim the game and swallow clicks behind it.
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(base),
+		layout.Expanded(func(gtx C) D {
+			fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0xc0))
+			return D{Size: gtx.Constraints.Max}
+		}),
+		layout.Stacked(func(gtx C) D {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return a.confirmLeaveOverlay(gtx)
+		}),
+	)
+}
+
+// confirmLeaveOverlay is the modal asking whether to leave an in-progress
+// game. Leaving keeps the seat: the lobby lists the game as "playing" with a
+// Rejoin button.
+func (a *App) confirmLeaveOverlay(gtx C) D {
+	return layout.Center.Layout(gtx, func(gtx C) D {
+		gtx.Constraints.Max.X = gtx.Dp(420)
+		return hardShadow(gtx, func(gtx C) D {
+			return widget.Border{Color: colErr, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+				return background(gtx, colBg, func(gtx C) D {
+					return layout.UniformInset(unit.Dp(22)).Layout(gtx, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(a.pixel(unit.Sp(13), "LEAVE GAME?", colErr).Layout),
+							layout.Rigid(spacer(10)),
+							layout.Rigid(a.body("Are you sure you want to leave? The game keeps going —", colFg)),
+							layout.Rigid(a.body("you can rejoin it from the lobby.", colFg)),
+							layout.Rigid(spacer(16)),
+							layout.Rigid(func(gtx C) D {
+								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.leaveYesBtn, "Yes, leave") }),
+									layout.Rigid(spacer(10)),
+									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.leaveNoBtn, "No, keep playing") }),
+								)
+							}),
+						)
+					})
+				})
+			})
+		})
+	})
 }
 
 // handleGameChatSubmit dispatches the game screen's chat input. canType gates

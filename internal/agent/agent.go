@@ -31,12 +31,16 @@ type Config struct {
 	Tuning     *Tuning // optional full override of the difficulty's tuning (tests)
 
 	// Exactly one game-selection behavior applies: JoinGameID if set, else
-	// Create if true, else auto-join. Auto-join is RESIDENT by default: the
-	// agent stays in the lobby and keeps joining agent-allowed games — any mode —
-	// until ctx is cancelled. Once restores play-one-game-and-exit.
-	// JoinGameID and Create are always one-shot.
+	// Create if true, else the resident default — the agent stays in the lobby
+	// until ctx is cancelled, joining games as they become available. WHICH
+	// games depends on AutoJoin: by default only games this agent is INVITED
+	// to; with AutoJoin it also actively scans for (and joins) any open
+	// agent-allowed game, any mode. Invitations are always accepted right away
+	// either way. Once restores play-one-game-and-exit. JoinGameID and Create
+	// are always one-shot.
 	JoinGameID string
 	Create     bool
+	AutoJoin   bool            // actively join any open agent-allowed game (default: invited games only)
 	Mode       config.GameMode // game mode when creating; NOTE the zero value is config.ModeCooperative (the enum's zero) — set it explicitly (the CLI's --mode default is competitive)
 	Players    int             // player count when creating (default 2; teams: players PER TEAM, like the GUI)
 	MaxAgents  int             // agent policy when creating: agent seats incl. this agent (0 = all seats; an agent-hosted game is agent-friendly)
@@ -121,9 +125,10 @@ func composeName(stem string, d Difficulty) (string, error) {
 }
 
 // Run connects to NATS, enters the lobby as an agent player, and plays
-// competitive games until done: one game for --join/--create/--once, or —
-// the auto-join default — resident in the lobby, joining agent-allowed games
-// as they appear until ctx is cancelled. The per-game flow deliberately
+// games until done: one game for --join/--create/--once, or — the resident
+// default — staying in the lobby until ctx is cancelled, joining games it is
+// invited to (plus, with AutoJoin, any open agent-allowed game). The
+// per-game flow deliberately
 // mirrors the GUI's lifecycle (nativeui/lifecycle.go): same bootstrap, same
 // join wiring, same ready→countdown election, same archive-on-finish
 // responsibility.
@@ -214,7 +219,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		// invitation forever — e.g. the creator over-subscribed our team, or
 		// the game filled without us. A successful join already consumed it.
 		if inv != nil && err != nil {
-			_, _ = lb.RespondInvite(context.Background(), false)
+			_ = lb.DeclineInvite(context.Background(), inv.GameID)
 		}
 		switch {
 		case err == nil:
@@ -596,8 +601,13 @@ func selectGame(ctx context.Context, lb *lobby.Lobby, cfg Config, waitTimeout ti
 		return gameID, nil, nil
 	}
 
-	// Auto-join: poll the lobby for the first agent-joinable game of any mode.
-	logf("waiting for a joinable game that allows agents...")
+	// Resident (and --once) selection: invitations always; open-game scanning
+	// only with AutoJoin.
+	if cfg.AutoJoin {
+		logf("waiting for an invitation or a joinable game that allows agents...")
+	} else {
+		logf("waiting for an invitation... (pass --auto-join to also join open agent-allowed games)")
+	}
 	var deadline time.Time
 	if !resident {
 		deadline = time.Now().Add(waitTimeout)
@@ -607,38 +617,41 @@ func selectGame(ctx context.Context, lb *lobby.Lobby, cfg Config, waitTimeout ti
 			return "", nil, ctx.Err()
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return "", nil, fmt.Errorf("no joinable competitive game appeared within %s", waitTimeout)
+			return "", nil, fmt.Errorf("no joinable game appeared within %s", waitTimeout)
 		}
 		// An invitation is the strongest join signal — agents accept
 		// automatically (the human who sent it explicitly chose this agent).
-		if inv := lb.MyInvite(); inv != nil {
+		for _, inv := range lb.MyInvites() {
 			if _, ok := lb.Games()[inv.GameID]; ok {
+				inv := inv
 				logf("accepting %s's invitation to %s game %s", inv.FromName, inv.Mode, inv.GameID)
-				return inv.GameID, inv, nil
+				return inv.GameID, &inv, nil
 			}
-			// The invited game is gone; consume the stale invitation.
-			_, _ = lb.RespondInvite(ctx, false)
+			// The invited game is gone; drop the stale invitation.
+			_ = lb.DismissInvite(ctx, inv.GameID)
 		}
-		abandoned := lb.AbandonedGames()
-		games := lb.Games()
-		ids := make([]string, 0, len(games))
-		for id := range games {
-			ids = append(ids, id)
-		}
-		// Oldest first, and deterministic across scans.
-		sort.Slice(ids, func(i, j int) bool {
-			gi, gj := games[ids[i]], games[ids[j]]
-			if !gi.CreatedAt.Equal(gj.CreatedAt) {
-				return gi.CreatedAt.Before(gj.CreatedAt)
+		if cfg.AutoJoin {
+			abandoned := lb.AbandonedGames()
+			games := lb.Games()
+			ids := make([]string, 0, len(games))
+			for id := range games {
+				ids = append(ids, id)
 			}
-			return ids[i] < ids[j]
-		})
-		for _, id := range ids {
-			if abandoned[id] {
-				continue
-			}
-			if joinable(games[id]) == nil {
-				return id, nil, nil
+			// Oldest first, and deterministic across scans.
+			sort.Slice(ids, func(i, j int) bool {
+				gi, gj := games[ids[i]], games[ids[j]]
+				if !gi.CreatedAt.Equal(gj.CreatedAt) {
+					return gi.CreatedAt.Before(gj.CreatedAt)
+				}
+				return ids[i] < ids[j]
+			})
+			for _, id := range ids {
+				if abandoned[id] {
+					continue
+				}
+				if joinable(games[id]) == nil {
+					return id, nil, nil
+				}
 			}
 		}
 		sleepCtx(ctx, lobbyScanInterval)

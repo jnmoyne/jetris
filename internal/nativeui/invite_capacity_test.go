@@ -1,30 +1,71 @@
 package nativeui
 
-import "testing"
+import (
+	"testing"
 
-func TestPickerCapacityError(t *testing.T) {
-	mk := func() map[string]*inviteChoice {
-		return map[string]*inviteChoice{"a": {playerID: "a"}, "b": {playerID: "b"}, "c": {playerID: "c"}}
+	"jetricks/internal/lobby"
+)
+
+// The picker's capacity guard counts seats spoken for — roster members plus
+// pending (not declined) invitations — so selections beyond the free seats
+// are refused at click time.
+func TestInviteSeatUsage(t *testing.T) {
+	// Competitive: 1 joined + 2 pending + 1 declined = 3 seats spoken for.
+	g := lobby.GameListing{
+		PlayerCount: 4,
+		Players:     []lobby.PlayerSummary{{PlayerID: "host"}},
+	}
+	invites := []lobby.Invitation{
+		{InviteeID: "a"},
+		{InviteeID: "b"},
+		{InviteeID: "c", Declined: true}, // declined seats are free again
+	}
+	if n := inviteSeatUsage(g, invites, false); n[0] != 3 {
+		t.Errorf("competitive usage = %d, want 3 (1 joined + 2 pending)", n[0])
 	}
 
-	// Competitive: over the seat count is an error; at/under is fine.
-	p := mk()
-	p["a"].sel.Value, p["b"].sel.Value, p["c"].sel.Value = true, true, true
-	if pickerCapacityError(p, 3, 0, false) != "" {
-		t.Error("3 selected into 3 seats should be fine")
+	// Teams: usage is per team; the declined B invite frees that seat.
+	g = lobby.GameListing{
+		PlayerCount: 4,
+		TeamSize:    2,
+		Players: []lobby.PlayerSummary{
+			{PlayerID: "host", Team: 0},
+			{PlayerID: "ann", Team: 1},
+		},
 	}
-	if pickerCapacityError(p, 2, 0, false) == "" {
-		t.Error("3 selected into 2 seats should error")
+	invites = []lobby.Invitation{
+		{InviteeID: "a", Team: 0},
+		{InviteeID: "b", Team: 1, Declined: true},
 	}
+	n := inviteSeatUsage(g, invites, true)
+	if n[0] != 2 || n[1] != 1 {
+		t.Errorf("teams usage = %v, want [2 1]", n)
+	}
+}
 
-	// Teams: per-team cap. Three on team A of a 2v2 → error; balanced → fine.
-	p = mk()
-	p["a"].team.Value, p["b"].team.Value, p["c"].team.Value = "0", "0", "0"
-	if pickerCapacityError(p, 4, 2, true) == "" {
-		t.Error("3 on team A (size 2) should error")
+// pickerRowStatus derives each row's live state: roster beats invitation, and
+// the invitation's Declined flag distinguishes waiting from refused.
+func TestPickerRowStatus(t *testing.T) {
+	g := lobby.GameListing{
+		Players: []lobby.PlayerSummary{
+			{PlayerID: "joined"},
+			{PlayerID: "ready", Ready: true},
+		},
 	}
-	p["c"].team.Value = "1"
-	if pickerCapacityError(p, 4, 2, true) != "" {
-		t.Error("2A/1B within a 2v2 should be fine")
+	invites := []lobby.Invitation{
+		{InviteeID: "pending"},
+		{InviteeID: "declined", Declined: true},
+	}
+	want := map[string]inviteRowStatus{
+		"joined":   rowJoined,
+		"ready":    rowReady,
+		"pending":  rowPending,
+		"declined": rowDeclined,
+		"nobody":   rowNone,
+	}
+	for id, st := range want {
+		if got := pickerRowStatus(g, invites, id); got != st {
+			t.Errorf("pickerRowStatus(%s) = %v, want %v", id, got, st)
+		}
 	}
 }

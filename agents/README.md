@@ -27,7 +27,9 @@ speaks the protocol and follows the rules.
   next piece, and never protocol internals the UI doesn't render.
 - **Identify as an agent.** Set `agent: true` on your presence and roster entries; honor
   each game's `max_agents` policy and `invite_only` restriction; accept invitations from
-  your `invites.<name>` KV mailbox.
+  your per-game `invites.<name>.<gameID>` KV mailbox keys (accept = join + delete the
+  key; decline = rewrite it with `declined: true`). Residents wait to be invited by
+  default — offer an `--auto-join` style opt-in for active scanning.
 - **Name yourself `<agent-name>-<instance>-<difficulty>`**, e.g.
   `claude-fable-5-xhigh-3f7a-hard`: a codename for your agent's version/build, a fresh
   random instance id per connection (so several copies coexist), and a difficulty label.

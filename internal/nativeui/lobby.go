@@ -544,8 +544,7 @@ func (a *App) invitedTo(gameID string) bool {
 	if lb == nil {
 		return false
 	}
-	inv := lb.MyInvite()
-	return inv != nil && inv.GameID == gameID
+	return lb.InviteTo(gameID) != nil
 }
 
 // agentName appends the agent marker to a player's display name.
@@ -558,20 +557,43 @@ func agentName(name string, agent bool) string {
 
 func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	btns := a.gameButtons(g.GameID)
+	lb := a.getLobby()
+	me := ""
+	if lb != nil {
+		me = lb.PlayerID()
+	}
+	joined := rosterHas(g, me)
 	joinable := g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting
 	canJoin := joinable && len(g.Players) < g.PlayerCount
 	// Invite-only games are joined via the pop-up (or by the creator): don't
 	// offer a Join button to random browsers. The creator, and anyone holding
 	// a pending invitation to this game, keep theirs.
 	if g.InviteOnly {
-		if lb := a.getLobby(); lb == nil || (lb.PlayerID() != g.CreatorID && !a.invitedTo(g.GameID)) {
+		if lb == nil || (me != g.CreatorID && !a.invitedTo(g.GameID)) {
 			canJoin = false
 		}
 	}
-	canSpectate := g.Status == config.GameStatusInProgress ||
-		(joinable && len(g.Players) >= g.PlayerCount)
+	// A player who went "Back to Lobby" while holding a seat rejoins through
+	// the same row — even into a full or already-running game.
+	rejoin := joined && gameAlive(g.Status)
+	canSpectate := !rejoin && (g.Status == config.GameStatusInProgress ||
+		(joinable && len(g.Players) >= g.PlayerCount))
 
 	teams := g.Mode == config.ModeTeams
+	// In an invite-only game every roster member was let in by name, so spell
+	// their state out for the inviter: joined, and ready or not.
+	nameOf := func(p lobby.PlayerSummary) string {
+		n := agentName(p.Name, p.Agent)
+		switch {
+		case g.InviteOnly && p.Ready:
+			n += " (joined · ready ✓)"
+		case g.InviteOnly:
+			n += " (joined)"
+		case p.Ready:
+			n += " ✓"
+		}
+		return n
+	}
 	var names []string
 	if teams {
 		// Group the roster by team: "A: alice, bob · B: carol"
@@ -581,29 +603,40 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 				if p.Team != t {
 					continue
 				}
-				n := agentName(p.Name, p.Agent)
-				if p.Ready {
-					n += " ✓"
-				}
-				team = append(team, n)
+				team = append(team, nameOf(p))
 			}
 			names = append(names, fmt.Sprintf("%s: %s", teamName(t), strings.Join(team, ", ")))
 		}
 	} else {
 		for _, p := range g.Players {
-			n := agentName(p.Name, p.Agent)
-			if p.Ready {
-				n += " ✓"
-			}
-			names = append(names, n)
+			names = append(names, nameOf(p))
 		}
 	}
-	info := fmt.Sprintf("%s · %s · %d/%d · %s", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount, g.Status)
+	// The status token reads from this player's point of view: a game you hold
+	// a seat in shows as "joined" (waiting to start) or "playing" (started).
+	statusTxt, statusCol := " · "+string(g.Status), colFg
+	if joined {
+		statusCol = colNATSGreen
+		if g.Status == config.GameStatusInProgress {
+			statusTxt = " · playing"
+		} else if joinable {
+			statusTxt = " · joined"
+		}
+	}
+	info := fmt.Sprintf("%s · %s · %d/%d", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount)
+	var extra string
 	if g.InviteOnly {
-		info += " · invite only"
+		extra += " · invite only"
 	}
 	if g.MaxAgents > 0 {
-		info += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
+		extra += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
+	}
+
+	// The creator of an invite-only game sees each outstanding invitation's
+	// state under the roster line, with a retract/dismiss action per invitee.
+	var invites []lobby.Invitation
+	if g.InviteOnly && lb != nil && me == g.CreatorID {
+		invites = lb.SentInvites(g.GameID)
 	}
 
 	sep := ", "
@@ -616,6 +649,13 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{}.Layout(gtx,
 					layout.Rigid(a.body(info, colFg)),
+					layout.Rigid(a.body(statusTxt, statusCol)),
+					layout.Rigid(func(gtx C) D {
+						if extra == "" {
+							return D{}
+						}
+						return a.body(extra, colFg)(gtx)
+					}),
 					layout.Rigid(func(gtx C) D {
 						if !abandoned {
 							return D{}
@@ -625,6 +665,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 				)
 			}),
 			layout.Rigid(a.body(strings.Join(names, sep), colMuted)),
+			layout.Rigid(func(gtx C) D { return a.inviteStatusRows(gtx, g, invites) }),
 		)
 	}
 	return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
@@ -652,6 +693,11 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
+						if rejoin {
+							// Back into the seat we already hold (any mode —
+							// the roster remembers our team).
+							return a.primaryButton(gtx, &btns.join, "Rejoin")
+						}
 						if !canJoin {
 							return D{}
 						}
@@ -688,6 +734,71 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 				)
 			}),
 		)
+	})
+}
+
+// inviteStatusRows renders the creator's per-invitation state lines on an
+// invite-only game row: who is still invited (pending — retractable while
+// unanswered) and who declined (dismissable). Accepted invitations don't
+// appear here — accepting deletes the invitation and puts the player on the
+// roster line above, marked "(joined)"/"(joined · ready ✓)".
+func (a *App) inviteStatusRows(gtx C, g lobby.GameListing, invites []lobby.Invitation) D {
+	if len(invites) == 0 {
+		return D{}
+	}
+	teams := g.Mode == config.ModeTeams
+	var rows []layout.FlexChild
+	for _, inv := range invites {
+		inv := inv
+		btn := a.uninviteButton(g.GameID, inv.InviteeID)
+		if btn.Clicked(gtx) {
+			go a.uninvite(g.GameID, inv.InviteeID)
+		}
+		label, col, action := "", colGold, "Uninvite"
+		if inv.Declined {
+			label = fmt.Sprintf("✕ %s declined the invitation", inv.InviteeID)
+			col, action = colErr, "Dismiss"
+		} else {
+			label = fmt.Sprintf("✉ %s invited — waiting…", inv.InviteeID)
+			if teams {
+				label = fmt.Sprintf("✉ %s invited to team %s — waiting…", inv.InviteeID, teamName(inv.Team))
+			}
+		}
+		rows = append(rows, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.body(label, col)),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(func(gtx C) D { return a.smallActionButton(gtx, btn, action, col) }),
+				)
+			})
+		}))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
+}
+
+// uninviteButton returns the (lazily created) Uninvite/Dismiss button for one
+// invitation, keyed by game and invitee.
+func (a *App) uninviteButton(gameID, inviteeID string) *widget.Clickable {
+	k := gameID + "|" + inviteeID
+	b, ok := a.uninviteBtns[k]
+	if !ok {
+		b = &widget.Clickable{}
+		a.uninviteBtns[k] = b
+	}
+	return b
+}
+
+// smallActionButton is the compact bordered list-row action (like
+// viewBoardButton) in an arbitrary accent color.
+func (a *App) smallActionButton(gtx C, btn *widget.Clickable, label string, col colorN) D {
+	return widget.Border{Color: col, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+		b := pixelize(material.Button(a.th, btn, label))
+		b.Background = colPanel
+		b.Color = col
+		b.TextSize = unit.Sp(9)
+		b.Inset = layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(10), Right: unit.Dp(10)}
+		return b.Layout(gtx)
 	})
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
@@ -33,7 +34,8 @@ type Lobby struct {
 	chatLog         []ChatMessage // lobby + game chat, in stream order, capped at chatLogCap
 	status          PresenceStatus
 	currentGameID   string
-	myInvite        *Invitation // this player's pending invitation (nil = none); guarded by mu
+	invites         map[string]Invitation // every live invitation in the KV, keyed "<invitee>.<gameID>"; guarded by mu
+	eventSub        *nats.Subscription    // core NATS lobby-event subscription (see runEventListener)
 	cancelFn        context.CancelFunc
 	initialLoadDone chan struct{}
 }
@@ -59,6 +61,7 @@ func New(
 		players:         make(map[string]PlayerPresence),
 		games:           make(map[string]GameListing),
 		abandoned:       make(map[string]bool),
+		invites:         make(map[string]Invitation),
 		status:          StatusInLobby,
 		initialLoadDone: make(chan struct{}),
 	}
@@ -134,7 +137,67 @@ func (l *Lobby) Start(ctx context.Context) error {
 	// Start abandoned-game checker
 	go l.runAbandonedChecker(ctx)
 
+	// Listen for the transient core NATS lobby events other peers publish
+	// (game created / joined / left, invite sent / retracted / declined) and
+	// turn them into immediate UI refresh pings. State still comes from the KV;
+	// the events just close the latency gap (e.g. presence heartbeats).
+	l.startEventListener()
+
 	return nil
+}
+
+// startEventListener subscribes to the lobby event subjects over core NATS.
+// Failure is non-fatal: everything still works off the KV watcher, just with
+// more latency on some transitions.
+func (l *Lobby) startEventListener() {
+	conn := l.js.Conn()
+	if conn == nil {
+		return
+	}
+	sub, err := conn.Subscribe(config.LobbyEventsFilter, func(msg *nats.Msg) {
+		var ev LobbyEvent
+		if err := json.Unmarshal(msg.Data, &ev); err != nil {
+			return
+		}
+		if ev.PlayerID == l.playerID {
+			return // our own action; our local state already moved
+		}
+		switch ev.Kind {
+		case EventGameCreated, EventGameJoined, EventGameLeft:
+			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateGames})
+			// Joining/leaving a game changes a player's availability too.
+			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdatePlayers})
+		case EventInviteSent, EventInviteRetracted, EventInviteDeclined:
+			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateInvite})
+		}
+	})
+	if err != nil {
+		log.Printf("lobby event listener: %v", err)
+		return
+	}
+	l.eventSub = sub
+}
+
+// publishEvent fire-and-forgets one lobby event over core NATS. targetID and
+// team ride along for invite events ("" / 0 otherwise).
+func (l *Lobby) publishEvent(kind, gameID, targetID string, team int) {
+	conn := l.js.Conn()
+	if conn == nil {
+		return
+	}
+	ev := LobbyEvent{
+		Kind:     kind,
+		GameID:   gameID,
+		PlayerID: l.playerID,
+		TargetID: targetID,
+		Team:     team,
+		Time:     time.Now(),
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	_ = conn.Publish(config.LobbyEventSubject(kind), data)
 }
 
 // WaitForInitialLoad blocks until the KV watcher has delivered all existing entries.
@@ -149,6 +212,10 @@ func (l *Lobby) WaitForInitialLoad(ctx context.Context) error {
 
 // Stop cancels all goroutines.
 func (l *Lobby) Stop() {
+	if l.eventSub != nil {
+		_ = l.eventSub.Unsubscribe()
+		l.eventSub = nil
+	}
 	if l.cancelFn != nil {
 		l.cancelFn()
 	}
@@ -474,6 +541,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	listingData, _ := json.Marshal(listing)
 	_, _ = l.kv.Put(ctx, config.LobbyGameKey(gameID), listingData)
 
+	l.publishEvent(EventGameCreated, gameID, "", 0)
 	return gameID, nil
 }
 
@@ -606,6 +674,8 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 			// Also update meta
 			go l.transitionGameStatus(context.Background(), gameID, config.GameStatusStarting)
 		}
+
+		l.publishEvent(EventGameJoined, gameID, "", 0)
 		break
 	}
 
@@ -618,9 +688,7 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 	l.publishPresence(ctx)
 
 	// A pending invitation to THIS game is consumed by joining it.
-	if inv := l.MyInvite(); inv != nil && inv.GameID == gameID {
-		_, _ = l.RespondInvite(ctx, true)
-	}
+	l.consumeInvite(ctx, gameID)
 
 	return res, nil
 }
@@ -692,6 +760,7 @@ func (l *Lobby) UnjoinGame(ctx context.Context, gameID string) error {
 		if err := natspkg.PurgeRosterEntry(ctx, l.js, gameID, l.playerID); err != nil {
 			log.Printf("unjoin: purge roster entry: %v", err)
 		}
+		l.publishEvent(EventGameLeft, gameID, "", 0)
 		break
 	}
 
@@ -758,6 +827,42 @@ func (l *Lobby) ToggleReady(ctx context.Context, gameID string) (ToggleReadyResu
 			Players:  playersCopy,
 			MyReady:  myReady,
 		}, nil
+	}
+}
+
+// SetReady sets the local player's ready state to exactly the given value
+// (same CAS loop as ToggleReady, but idempotent — used when leaving the game
+// screen for the lobby, which must CLEAR ready, not flip it). No-op once the
+// game is in progress or when we are not on the roster.
+func (l *Lobby) SetReady(ctx context.Context, gameID string, ready bool) error {
+	for {
+		entry, err := l.kv.Get(ctx, config.LobbyGameKey(gameID))
+		if err != nil {
+			return err
+		}
+		var g GameListing
+		if err := json.Unmarshal(entry.Value(), &g); err != nil {
+			return err
+		}
+		if g.Status == config.GameStatusInProgress {
+			return nil
+		}
+		changed := false
+		for i := range g.Players {
+			if g.Players[i].PlayerID == l.playerID && g.Players[i].Ready != ready {
+				g.Players[i].Ready = ready
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			return nil
+		}
+		listingData, _ := json.Marshal(g)
+		if _, err := l.kv.Update(ctx, config.LobbyGameKey(gameID), listingData, entry.Revision()); err != nil {
+			continue // CAS conflict, retry
+		}
+		return nil
 	}
 }
 

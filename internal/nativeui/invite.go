@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 
 	"gioui.org/layout"
@@ -14,21 +15,91 @@ import (
 	"jetricks/internal/lobby"
 )
 
-// inviteChoice is one selectable player in the invitee picker. For competitive
-// and cooperative games `sel` is a plain include toggle; for teams `team`
-// picks which team to invite them to ("" = not invited, "0" = A, "1" = B).
+// inviteChoice is one selectable player in the invitee picker. Selection IS
+// the action: the moment a player is selected their invitation is sent, and
+// deselecting retracts it. For competitive and cooperative games `sel` is the
+// toggle; for teams `team` picks which team to invite them to ("" = not
+// invited, "0" = A, "1" = B). lastSel/lastTeam remember the intent already
+// applied so the per-frame handler only acts on actual changes (and can put a
+// widget back when a selection is refused by the capacity guard or undone by
+// a decline).
 type inviteChoice struct {
 	playerID string
 	name     string
 	agent    bool
 	sel      widget.Bool
 	team     widget.Enum
+	lastSel  bool
+	lastTeam string
+}
+
+// inviteRowStatus is the live state of one picker row, derived from the
+// game's roster and the invitations sent (pickerRowStatus).
+type inviteRowStatus int
+
+const (
+	rowNone     inviteRowStatus = iota // not invited (selectable)
+	rowPending                         // invited, no answer yet (deselect = retract)
+	rowDeclined                        // declined; selecting again re-invites
+	rowJoined                          // accepted: on the roster
+	rowReady                           // on the roster AND ready
+)
+
+// pickerRowStatus derives a player's row state from the listing and the
+// game's live invitations.
+func pickerRowStatus(g lobby.GameListing, invites []lobby.Invitation, playerID string) inviteRowStatus {
+	for _, p := range g.Players {
+		if p.PlayerID == playerID {
+			if p.Ready {
+				return rowReady
+			}
+			return rowJoined
+		}
+	}
+	for _, inv := range invites {
+		if inv.InviteeID == playerID {
+			if inv.Declined {
+				return rowDeclined
+			}
+			return rowPending
+		}
+	}
+	return rowNone
+}
+
+// inviteSeatUsage counts the seats already spoken for — roster members plus
+// pending (not declined) invitations — per team in teams mode, in [0]
+// otherwise. The capacity guard refuses selections beyond the free seats.
+func inviteSeatUsage(g lobby.GameListing, invites []lobby.Invitation, teams bool) (n [config.TeamCount]int) {
+	for _, p := range g.Players {
+		if teams {
+			if p.Team >= 0 && p.Team < config.TeamCount {
+				n[p.Team]++
+			}
+		} else {
+			n[0]++
+		}
+	}
+	for _, inv := range invites {
+		if inv.Declined {
+			continue
+		}
+		if teams {
+			if inv.Team >= 0 && inv.Team < config.TeamCount {
+				n[inv.Team]++
+			}
+		} else {
+			n[0]++
+		}
+	}
+	return n
 }
 
 // openInvitePicker creates the invite-only game and opens the invitee picker
-// over the lobby. The picker is populated with every OTHER player currently
-// idle in the lobby (players already in a game cannot be invited). Runs off
-// the UI goroutine (create does a NATS round trip).
+// over the lobby. The creator starts SELECTED: creating an invitation game
+// implies accepting your own invitation, so a seat is taken immediately (team
+// A in teams mode); deselect yourself to host without playing. Runs off the
+// UI goroutine (create and the self-join do NATS round trips).
 func (a *App) openInvitePicker(mode config.GameMode, count int) {
 	gameID := a.createGame(mode, count, 0, true) // invite-only: agent policy is per-invite
 	if gameID == "" {
@@ -46,7 +117,13 @@ func (a *App) openInvitePicker(mode config.GameMode, count int) {
 		playerCount = config.TeamCount * count
 	}
 	picker := make(map[string]*inviteChoice)
-	reconcileInvitePicker(picker, lb.Players(), lb.PlayerID())
+	reconcileInvitePicker(picker, lb.Players(), lb.PlayerID(), nil)
+
+	// Take our own seat right away (self pre-selected as invited+accepted).
+	if _, err := lb.JoinGame(context.Background(), gameID, 0); err != nil {
+		log.Printf("join own invite game: %v", err)
+	}
+
 	a.mu.Lock()
 	a.invitePickerGameID = gameID
 	a.invitePicker = picker
@@ -54,17 +131,24 @@ func (a *App) openInvitePicker(mode config.GameMode, count int) {
 	a.invitePickerPC = playerCount
 	a.invitePickerTS = teamSize
 	a.invitePickerErr = ""
+	a.inviteSelfSel.Value = true
+	a.inviteSelfLastSel = true
+	a.inviteSelfTeam.Value = "0"
+	a.inviteSelfLastTeam = "0"
 	a.mu.Unlock()
 	a.invalidate()
 }
 
 // reconcileInvitePicker updates the candidate map in place against the live
 // lobby presence: it adds every newly-eligible player (in the lobby, not in a
-// game, not yourself), drops anyone who left or joined a game, and PRESERVES
-// the selection widgets of players who remain. Pure so it can be tested.
-func reconcileInvitePicker(picker map[string]*inviteChoice, live map[string]lobby.PlayerPresence, self string) {
+// game, not yourself), drops anyone who left or joined some OTHER game, and
+// PRESERVES the selection widgets of players who remain. keep holds player
+// IDs involved with THIS game (roster members and invitees) — they stay
+// listed while their presence says "in game", so the creator watches their
+// invitation play out. Pure so it can be tested.
+func reconcileInvitePicker(picker map[string]*inviteChoice, live map[string]lobby.PlayerPresence, self string, keep map[string]bool) {
 	for id, p := range live {
-		if id == self || p.Status != lobby.StatusInLobby {
+		if id == self || (p.Status != lobby.StatusInLobby && !keep[id]) {
 			continue
 		}
 		if _, ok := picker[id]; !ok {
@@ -72,6 +156,9 @@ func reconcileInvitePicker(picker map[string]*inviteChoice, live map[string]lobb
 		}
 	}
 	for id := range picker {
+		if keep[id] {
+			continue
+		}
 		if p, ok := live[id]; !ok || p.Status != lobby.StatusInLobby {
 			delete(picker, id)
 		}
@@ -80,104 +167,231 @@ func reconcileInvitePicker(picker map[string]*inviteChoice, live map[string]lobb
 
 // syncInvitePickerCandidates keeps the open picker's list reactive: called
 // each frame while the overlay is up, it folds in players who joined the lobby
-// and removes those who left or entered a game.
-func (a *App) syncInvitePickerCandidates() {
+// and removes those who left or entered another game.
+func (a *App) syncInvitePickerCandidates(g lobby.GameListing, invites []lobby.Invitation) {
 	lb := a.getLobby()
 	if lb == nil {
 		return
 	}
+	keep := make(map[string]bool, len(g.Players)+len(invites))
+	for _, p := range g.Players {
+		keep[p.PlayerID] = true
+	}
+	for _, inv := range invites {
+		keep[inv.InviteeID] = true
+	}
 	self, live := lb.PlayerID(), lb.Players()
 	a.mu.Lock()
 	if a.invitePicker != nil {
-		reconcileInvitePicker(a.invitePicker, live, self)
+		reconcileInvitePicker(a.invitePicker, live, self, keep)
 	}
 	a.mu.Unlock()
 }
 
-// handleInvitePicker dispatches the picker's Send/Cancel buttons. Returns true
-// while the overlay is open (so the caller can suppress background clicks).
+// handleInvitePicker drives the picker each frame: it applies selection
+// changes (send/retract invitations, take/free the creator's own seat),
+// dispatches Close/Cancel, and — once the game has filled — closes the
+// overlay and moves the creator to the game (playing if they kept their own
+// seat, spectating otherwise). Returns true while the overlay is open (so the
+// caller can suppress background clicks).
 func (a *App) handleInvitePicker(gtx C) bool {
 	a.mu.Lock()
 	gameID := a.invitePickerGameID
+	mode, pc, ts := a.invitePickerMode, a.invitePickerPC, a.invitePickerTS
 	a.mu.Unlock()
 	if gameID == "" {
 		return false
 	}
-	a.syncInvitePickerCandidates() // reactive: add joiners, drop leavers
+	lb := a.getLobby()
+	if lb == nil {
+		a.closeInvitePicker()
+		return false
+	}
+	me := lb.PlayerID()
+	teams := mode == config.ModeTeams
+	g, haveListing := lb.Games()[gameID]
+	invites := lb.SentInvites(gameID)
 
-	a.mu.Lock()
-	picker := a.invitePicker
-	a.mu.Unlock()
+	// Enough players joined → the game is starting without further inviting:
+	// move the creator to their seat (ready screen) or to the spectator view.
+	if haveListing && g.PlayerCount > 0 && len(g.Players) >= g.PlayerCount {
+		playing := rosterHas(g, me)
+		team := 0
+		for _, p := range g.Players {
+			if p.PlayerID == me {
+				team = p.Team
+			}
+		}
+		a.closeInvitePicker()
+		if playing {
+			go a.joinGame(gameID, team)
+		} else {
+			go a.spectateGame(gameID)
+		}
+		return false
+	}
+
+	a.syncInvitePickerCandidates(g, invites) // reactive: add joiners, drop leavers
 
 	if a.inviteCancelBtn.Clicked(gtx) {
-		// Abandon the game nobody was invited to yet.
-		go a.deleteGame(gameID)
+		// Abandon the game: retract every outstanding invitation (their
+		// pop-ups disappear with the keys), then delete the game itself.
+		go a.cancelInviteGame(gameID, invites)
 		a.closeInvitePicker()
 		return true
 	}
-	if a.inviteSendBtn.Clicked(gtx) {
-		a.mu.Lock()
-		mode, pc, ts := a.invitePickerMode, a.invitePickerPC, a.invitePickerTS
-		a.mu.Unlock()
-		teams := mode == config.ModeTeams
-		if msg := pickerCapacityError(picker, pc, ts, teams); msg != "" {
-			a.mu.Lock()
-			a.invitePickerErr = msg
-			a.mu.Unlock()
-			return true // keep the overlay open so the creator can fix the selection
-		}
-		type target struct {
-			id   string
-			team int
-		}
-		var targets []target
-		for id, c := range picker {
-			if teams {
-				switch c.team.Value {
-				case "0":
-					targets = append(targets, target{id, 0})
-				case "1":
-					targets = append(targets, target{id, 1})
-				}
-			} else if c.sel.Value {
-				targets = append(targets, target{id, 0})
-			}
-		}
-		go func() {
-			lb := a.getLobby()
-			if lb == nil {
-				return
-			}
-			for _, t := range targets {
-				if err := lb.Invite(context.Background(), t.id, gameID, t.team); err != nil {
-					logInvite(err)
-				}
-			}
-		}()
+	if a.inviteCloseBtn.Clicked(gtx) {
+		// Keep the game and its invitations; the lobby row carries the same
+		// live status and the seat (if taken) stays reserved.
 		a.closeInvitePicker()
 		return true
+	}
+
+	usage := inviteSeatUsage(g, invites, teams)
+	seatFree := func(team int) bool {
+		if !haveListing {
+			return true // listing not seen yet; JoinGame/accept still enforces
+		}
+		if teams {
+			return usage[team] < ts
+		}
+		return usage[0] < pc
+	}
+	setErr := func(msg string) {
+		a.mu.Lock()
+		a.invitePickerErr = msg
+		a.mu.Unlock()
+	}
+
+	// The creator's own seat (the pinned "You" row).
+	if teams {
+		if v := a.inviteSelfTeam.Value; v != a.inviteSelfLastTeam {
+			if v != "" && !seatFree(int(v[0]-'0')) {
+				a.inviteSelfTeam.Value = a.inviteSelfLastTeam // refused: seat spoken for
+				setErr(fmt.Sprintf("Team %s is full (joined + invited).", teamName(int(v[0]-'0'))))
+			} else {
+				a.inviteSelfLastTeam = v
+				setErr("")
+				go a.selfSeat(gameID, v)
+			}
+		}
+	} else {
+		if v := a.inviteSelfSel.Value; v != a.inviteSelfLastSel {
+			if v && !seatFree(0) {
+				a.inviteSelfSel.Value = false
+				setErr("All seats are taken (joined + invited).")
+			} else {
+				a.inviteSelfLastSel = v
+				setErr("")
+				sel := ""
+				if v {
+					sel = "0"
+				}
+				go a.selfSeat(gameID, sel)
+			}
+		}
+	}
+
+	// Everyone else: selection changes send/retract invitations immediately.
+	a.mu.Lock()
+	picker := a.invitePicker
+	a.mu.Unlock()
+	for id, c := range picker {
+		st := pickerRowStatus(g, invites, id)
+		switch st {
+		case rowJoined, rowReady:
+			// The seat answers for them now; neutralize the widget so that if
+			// they later un-join they reappear unselected (re-invitable).
+			c.sel.Value, c.lastSel = false, false
+			c.team.Value, c.lastTeam = "", ""
+			continue
+		case rowDeclined:
+			// A decline undoes the selection from THEIR side: uncheck the row
+			// (it renders the declined marker); selecting again re-invites.
+			if c.lastSel || c.lastTeam != "" {
+				c.sel.Value, c.lastSel = false, false
+				c.team.Value, c.lastTeam = "", ""
+			}
+		}
+		if teams {
+			v := c.team.Value
+			if v == c.lastTeam {
+				continue
+			}
+			if v == "" {
+				c.lastTeam = ""
+				go a.retractInvite(gameID, id)
+				continue
+			}
+			t := int(v[0] - '0')
+			if !seatFree(t) {
+				c.team.Value = c.lastTeam
+				setErr(fmt.Sprintf("Team %s is full (joined + invited).", teamName(t)))
+				continue
+			}
+			c.lastTeam = v
+			setErr("")
+			go a.sendInvite(gameID, id, t) // a team change re-invites to the new team
+		} else {
+			v := c.sel.Value
+			if v == c.lastSel {
+				continue
+			}
+			if !v {
+				c.lastSel = false
+				go a.retractInvite(gameID, id)
+				continue
+			}
+			if !seatFree(0) {
+				c.sel.Value = false
+				setErr("All seats are taken (joined + invited).")
+				continue
+			}
+			c.lastSel = true
+			setErr("")
+			go a.sendInvite(gameID, id, 0)
+		}
 	}
 	return true
 }
 
-// pickerCapacityError validates the current selection against the game's open
-// seats, returning "" when it fits or a message to show otherwise. Under-
-// filling is allowed (the creator may invite more later or take a seat); over-
-// filling is not (excess invitees would be turned away at the door).
-func pickerCapacityError(picker map[string]*inviteChoice, playerCount, teamSize int, teams bool) string {
-	n := pickerCounts(picker, teams)
-	if teams {
-		for t := 0; t < config.TeamCount; t++ {
-			if n[t] > teamSize {
-				return fmt.Sprintf("Team %s has %d seats — you selected %d.", teamName(t), teamSize, n[t])
+// sendInvite / retractInvite dispatch one invitation action off the UI
+// goroutine (also used when a selection changes team: Invite overwrites).
+func (a *App) sendInvite(gameID, playerID string, team int) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	if err := lb.Invite(context.Background(), playerID, gameID, team); err != nil {
+		logInvite(err)
+	}
+	a.invalidate()
+}
+
+func (a *App) retractInvite(gameID, playerID string) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	if err := lb.Uninvite(context.Background(), playerID, gameID); err != nil {
+		logInvite(err)
+	}
+	a.invalidate()
+}
+
+// cancelInviteGame abandons a just-created invitation game: every outstanding
+// invitation is retracted (deleting the keys closes the invitees' pop-ups),
+// then the game and its stream/listing are deleted.
+func (a *App) cancelInviteGame(gameID string, invites []lobby.Invitation) {
+	lb := a.getLobby()
+	if lb != nil {
+		for _, inv := range invites {
+			if err := lb.Uninvite(context.Background(), inv.InviteeID, gameID); err != nil {
+				logInvite(err)
 			}
 		}
-		return ""
 	}
-	if n[0] > playerCount {
-		return fmt.Sprintf("This game has %d seats — you selected %d.", playerCount, n[0])
-	}
-	return ""
+	a.deleteGame(gameID)
 }
 
 func (a *App) closeInvitePicker() {
@@ -186,43 +400,34 @@ func (a *App) closeInvitePicker() {
 	a.invitePicker = nil
 	a.invitePickerErr = ""
 	a.invitePickerPC, a.invitePickerTS = 0, 0
+	a.inviteSelfSel.Value, a.inviteSelfLastSel = false, false
+	a.inviteSelfTeam.Value, a.inviteSelfLastTeam = "", ""
 	a.mu.Unlock()
 	a.invalidate()
 }
 
-// pickerCounts tallies the current picker selections. For teams it returns the
-// per-team counts; for other modes the count sits in n[0].
-func pickerCounts(picker map[string]*inviteChoice, teams bool) (n [config.TeamCount]int) {
-	for _, c := range picker {
-		if teams {
-			switch c.team.Value {
-			case "0":
-				n[0]++
-			case "1":
-				n[1]++
-			}
-		} else if c.sel.Value {
-			n[0]++
-		}
-	}
-	return n
-}
-
-// invitePickerOverlay renders the modal invitee picker. gameID/picker are read
-// by handleInvitePicker; this only draws.
+// invitePickerOverlay renders the modal invitee picker. All actions are
+// dispatched by handleInvitePicker; this only draws.
 func (a *App) invitePickerOverlay(gtx C) D {
 	a.mu.Lock()
 	gameID := a.invitePickerGameID
 	picker := a.invitePicker
+	mode, pc, ts := a.invitePickerMode, a.invitePickerPC, a.invitePickerTS
+	pickErr := a.invitePickerErr
 	a.mu.Unlock()
 	if gameID == "" {
 		return D{}
 	}
-	a.mu.Lock()
-	mode, pc, ts := a.invitePickerMode, a.invitePickerPC, a.invitePickerTS
-	pickErr := a.invitePickerErr
-	a.mu.Unlock()
 	teams := mode == config.ModeTeams
+
+	var g lobby.GameListing
+	var invites []lobby.Invitation
+	selfName := ""
+	if lb := a.getLobby(); lb != nil {
+		g = lb.Games()[gameID]
+		invites = lb.SentInvites(gameID)
+		selfName = lb.PlayerName()
+	}
 
 	ids := make([]string, 0, len(picker))
 	for id := range picker {
@@ -234,14 +439,14 @@ func (a *App) invitePickerOverlay(gtx C) D {
 	if teams {
 		title = "INVITE PLAYERS TO TEAMS"
 	}
-	n := pickerCounts(picker, teams)
-	capLine := fmt.Sprintf("%d of %d seats selected.", n[0], pc)
+	usage := inviteSeatUsage(g, invites, teams)
+	capLine := fmt.Sprintf("%d of %d seats taken (joined or invited).", usage[0], pc)
 	if teams {
-		capLine = fmt.Sprintf("Team A: %d/%d · Team B: %d/%d selected.", n[0], ts, n[1], ts)
+		capLine = fmt.Sprintf("Team A: %d/%d · Team B: %d/%d taken (joined or invited).", usage[0], ts, usage[1], ts)
 	}
 
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(460)
+		gtx.Constraints.Max.X = gtx.Dp(500)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {
@@ -249,7 +454,7 @@ func (a *App) invitePickerOverlay(gtx C) D {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 							layout.Rigid(a.pixel(unit.Sp(13), title, colFg).Layout),
 							layout.Rigid(spacer(4)),
-							layout.Rigid(a.body("Only players currently in the lobby can be invited.", colMuted)),
+							layout.Rigid(a.body("Selecting a player invites them on the spot; deselecting retracts. Deselect yourself to host without playing.", colMuted)),
 							layout.Rigid(spacer(2)),
 							layout.Rigid(a.body(capLine, colAccent)),
 							layout.Rigid(func(gtx C) D {
@@ -259,22 +464,26 @@ func (a *App) invitePickerOverlay(gtx C) D {
 								return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, a.body(pickErr, colErr))
 							}),
 							layout.Rigid(spacer(10)),
+							layout.Rigid(func(gtx C) D { return a.inviteSelfRow(gtx, g, selfName, teams) }),
+							layout.Rigid(spacer(4)),
 							layout.Rigid(func(gtx C) D {
 								if len(ids) == 0 {
 									return a.body("No other players are in the lobby right now.", colMuted)(gtx)
 								}
 								gtx.Constraints.Max.Y = gtx.Dp(240)
 								return material.List(a.th, &a.inviteList).Layout(gtx, len(ids), func(gtx C, i int) D {
-									return a.inviteRow(gtx, picker[ids[i]], teams)
+									c := picker[ids[i]]
+									return a.inviteRow(gtx, c, pickerRowStatus(g, invites, c.playerID), teams)
 								})
 							}),
 							layout.Rigid(spacer(14)),
 							layout.Rigid(func(gtx C) D {
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+									layout.Rigid(a.body("The game starts on its own once every seat is filled and ready.", colMuted)),
 									layout.Flexed(1, func(gtx C) D { return D{} }),
-									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.inviteCancelBtn, "Cancel") }),
+									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.inviteCancelBtn, "Cancel game") }),
 									layout.Rigid(spacer(8)),
-									layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.inviteSendBtn, "Send invites") }),
+									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.inviteCloseBtn, "Close") }),
 								)
 							}),
 						)
@@ -285,11 +494,86 @@ func (a *App) invitePickerOverlay(gtx C) D {
 	})
 }
 
-func (a *App) inviteRow(gtx C, c *inviteChoice, teams bool) D {
+// inviteSelfRow is the pinned first row of the picker: the creator's own
+// participation. Selected (the default) means a seat is taken and you play;
+// deselected means you host and will spectate once the game fills.
+func (a *App) inviteSelfRow(gtx C, g lobby.GameListing, selfName string, teams bool) D {
+	joined := false
+	ready := false
+	if lb := a.getLobby(); lb != nil {
+		for _, p := range g.Players {
+			if p.PlayerID == lb.PlayerID() {
+				joined, ready = true, p.Ready
+			}
+		}
+	}
+	status, statusCol := "spectating when the game starts", colMuted
+	switch {
+	case ready:
+		status, statusCol = "joined · ready ✓", colNATSGreen
+	case joined:
+		status, statusCol = "joined ✓", colNATSGreen
+	}
 	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, a.body(agentName(c.name, c.agent), colFg)),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(a.body("You ("+selfName+")", colFg)),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(a.body(status, statusCol)),
+				)
+			}),
 			layout.Rigid(func(gtx C) D {
+				if !teams {
+					cb := material.CheckBox(a.th, &a.inviteSelfSel, "Play")
+					cb.Color = colFg
+					cb.IconColor = colAccent
+					return cb.Layout(gtx)
+				}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "", "—")),
+					layout.Rigid(spacer(6)),
+					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "0", "A")),
+					layout.Rigid(spacer(6)),
+					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "1", "B")),
+				)
+			}),
+		)
+	})
+}
+
+// inviteRow renders one candidate row: name, live invitation status, and the
+// selection control (hidden once the player has joined — the roster line
+// answers for them).
+func (a *App) inviteRow(gtx C, c *inviteChoice, st inviteRowStatus, teams bool) D {
+	status, statusCol := "", colMuted
+	switch st {
+	case rowPending:
+		status, statusCol = "✉ invited — waiting…", colGold
+	case rowDeclined:
+		status, statusCol = "✕ declined", colErr
+	case rowJoined:
+		status, statusCol = "joined ✓", colNATSGreen
+	case rowReady:
+		status, statusCol = "joined · ready ✓", colNATSGreen
+	}
+	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(a.body(agentName(c.name, c.agent), colFg)),
+					layout.Rigid(func(gtx C) D {
+						if status == "" {
+							return D{}
+						}
+						return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.body(status, statusCol))
+					}),
+				)
+			}),
+			layout.Rigid(func(gtx C) D {
+				if st == rowJoined || st == rowReady {
+					return D{} // seated: nothing to select or retract
+				}
 				if !teams {
 					cb := material.CheckBox(a.th, &c.sel, "Invite")
 					cb.Color = colFg
@@ -317,20 +601,57 @@ func (a *App) teamRadio(enum *widget.Enum, value, label string) layout.Widget {
 	}
 }
 
-// incomingInviteOverlay renders the pop-up shown to an invited player. Reads
-// the pending invitation live; the Accept/Decline buttons are dispatched in
-// handleIncomingInvite.
+// incomingInviteOverlay renders the pop-up shown to an invited player: who
+// invited them to what, plus the game's current roster so they can see who
+// they would be playing with. Reads the pending invitation live; the
+// Accept/Decline buttons are dispatched in handleIncomingInvite.
 func (a *App) incomingInviteOverlay(gtx C, inv *lobby.Invitation) D {
+	// Current roster of the inviting game ("who's already in").
+	var rosterLines []string
+	seats := ""
+	if lb := a.getLobby(); lb != nil {
+		if g, ok := lb.Games()[inv.GameID]; ok {
+			seats = fmt.Sprintf("%d/%d seats filled", len(g.Players), g.PlayerCount)
+			for _, p := range g.Players {
+				line := "• " + agentName(p.Name, p.Agent)
+				if g.Mode == config.ModeTeams {
+					line += " — team " + teamName(p.Team)
+				}
+				if p.Ready {
+					line += " (ready ✓)"
+				}
+				rosterLines = append(rosterLines, line)
+			}
+		}
+	}
+
 	return layout.Center.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Max.X = gtx.Dp(420)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colNATSGreen, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {
 					return layout.UniformInset(unit.Dp(22)).Layout(gtx, func(gtx C) D {
-						return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+						children := []layout.FlexChild{
 							layout.Rigid(a.pixel(unit.Sp(13), "YOU'RE INVITED", colNATSGreen).Layout),
 							layout.Rigid(spacer(12)),
 							layout.Rigid(a.body(inviteMessage(inv), colFg)),
+						}
+						if seats != "" {
+							children = append(children,
+								layout.Rigid(spacer(10)),
+								layout.Rigid(a.body(seats, colAccent)))
+							if len(rosterLines) == 0 {
+								children = append(children,
+									layout.Rigid(spacer(4)),
+									layout.Rigid(a.body("No one has joined yet.", colMuted)))
+							}
+							for _, line := range rosterLines {
+								children = append(children,
+									layout.Rigid(spacer(4)),
+									layout.Rigid(a.body(line, colMuted)))
+							}
+						}
+						children = append(children,
 							layout.Rigid(spacer(18)),
 							layout.Rigid(func(gtx C) D {
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -338,8 +659,8 @@ func (a *App) incomingInviteOverlay(gtx C, inv *lobby.Invitation) D {
 									layout.Rigid(spacer(10)),
 									layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.inviteAcceptBtn, "Accept & Play") }),
 								)
-							}),
-						)
+							}))
+						return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx, children...)
 					})
 				})
 			})
@@ -359,26 +680,38 @@ func inviteMessage(inv *lobby.Invitation) string {
 	}
 }
 
-// handleIncomingInvite dispatches the pop-up's Accept/Decline. Returns true
-// while a pending invitation exists (so the caller draws the overlay and
-// suppresses background clicks).
+// handleIncomingInvite dispatches the pop-up's Accept/Decline. A player may
+// hold invitations to several games at once; the pop-up shows the OLDEST
+// pending one, and answering (or the inviter retracting it) surfaces the
+// next. Returns true while a pending invitation exists (so the caller draws
+// the overlay and suppresses background clicks).
 func (a *App) handleIncomingInvite(gtx C) (*lobby.Invitation, bool) {
 	lb := a.getLobby()
 	if lb == nil {
 		return nil, false
 	}
-	inv := lb.MyInvite()
-	if inv == nil {
+	invs := lb.MyInvites()
+	if len(invs) == 0 {
 		return nil, false
 	}
+	inv := invs[0]
 	if a.inviteAcceptBtn.Clicked(gtx) {
 		gameID, team := inv.GameID, inv.Team
 		go a.joinGame(gameID, team) // joining consumes the invitation
 		return nil, false
 	}
 	if a.inviteDeclineBtn.Clicked(gtx) {
-		go func() { _, _ = lb.RespondInvite(context.Background(), false) }()
+		gameID := inv.GameID
+		go func() {
+			// The declined marker stays in the KV so the inviter sees it; if
+			// the game vanished meanwhile just drop the stale invitation.
+			if _, ok := lb.Games()[gameID]; ok {
+				_ = lb.DeclineInvite(context.Background(), gameID)
+			} else {
+				_ = lb.DismissInvite(context.Background(), gameID)
+			}
+		}()
 		return nil, false
 	}
-	return inv, true
+	return &inv, true
 }

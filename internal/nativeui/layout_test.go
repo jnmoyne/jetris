@@ -273,7 +273,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.invitePickerMode = config.ModeTeams
 		a.invitePickerPC, a.invitePickerTS = 4, 2
 		a.invitePicker["alice"].team.Value = "0"
-		a.invitePickerErr = pickerCapacityError(a.invitePicker, 4, 2, true)
+		a.invitePickerErr = "Team A is full (joined + invited)."
 		render(a.invitePickerOverlay)
 
 		// Incoming pop-up, one per mode.

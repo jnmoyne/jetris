@@ -56,6 +56,7 @@ func TestAgentVsAgent(t *testing.T) {
 			Name:        "agent-weak",
 			Difficulty:  DifficultyEasy,
 			Tuning:      &weak,
+			AutoJoin:    true,
 			Once:        true, // auto-join a single game, then exit
 			WaitTimeout: time.Minute,
 			Seed:        2,

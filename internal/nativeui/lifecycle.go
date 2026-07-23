@@ -305,6 +305,55 @@ func (a *App) deleteGame(gameID string) {
 	a.invalidate()
 }
 
+// selfSeat applies the invite picker's "You" row: sel is "" (host without
+// playing — free the seat) or a team digit ("0"/"1"; non-teams games always
+// pass "0"). Moving between teams frees the old seat first. Only roster
+// membership changes here — the engine and game screen come later, when the
+// picker sees the game fill and hands the creator over via joinGame.
+func (a *App) selfSeat(gameID, sel string) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	ctx := context.Background()
+	if sel == "" {
+		if err := lb.UnjoinGame(ctx, gameID); err != nil {
+			log.Printf("free own seat: %v", err)
+		}
+		a.invalidate()
+		return
+	}
+	team := int(sel[0] - '0')
+	if g, ok := lb.Games()[gameID]; ok {
+		for _, p := range g.Players {
+			if p.PlayerID == lb.PlayerID() && p.Team != team {
+				if err := lb.UnjoinGame(ctx, gameID); err != nil {
+					log.Printf("move own seat: %v", err)
+					a.invalidate()
+					return
+				}
+			}
+		}
+	}
+	if _, err := lb.JoinGame(ctx, gameID, team); err != nil {
+		log.Printf("take own seat: %v", err)
+	}
+	a.invalidate()
+}
+
+// uninvite retracts a pending invitation (the invitee's pop-up disappears) or
+// dismisses a declined one. Dispatched from the creator's invite-status rows.
+func (a *App) uninvite(gameID, inviteeID string) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	if err := lb.Uninvite(context.Background(), inviteeID, gameID); err != nil {
+		log.Printf("uninvite %s: %v", inviteeID, err)
+	}
+	a.invalidate()
+}
+
 // joinGame mirrors ui.Server.handleJoinGame: join to get our player index, build
 // and start the engine, wire archive-on-finish, and switch to the game screen.
 // team selects which team to join in teams mode (ignored otherwise).
@@ -398,7 +447,18 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.gameOver = false
 	a.won = false
 	a.fireworks = nil
+	a.confirmLeave = false
+	// Rejoin: our ready mark may still be set from an earlier visit to this
+	// game (leaveCurrentGame clears it, but stay roster-accurate regardless).
 	a.myReady = false
+	if a.lobby != nil {
+		for _, p := range players {
+			if p.PlayerID == a.lobby.PlayerID() {
+				a.myReady = p.Ready
+				break
+			}
+		}
+	}
 	a.flash = map[[2]int]time.Time{}
 	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.msgLog = nil
@@ -446,6 +506,54 @@ func (a *App) runCountdown(gameID string) {
 	}
 }
 
+// gameAlive reports whether a listing's status still describes a game that can
+// be (re)joined — anything before finished/archived/cancelled.
+func gameAlive(s config.GameStatus) bool {
+	switch s {
+	case config.GameStatusCreated, config.GameStatusStarting, config.GameStatusInProgress:
+		return true
+	}
+	return false
+}
+
+// rosterHas reports whether the player holds a seat in the listing's roster.
+func rosterHas(g lobby.GameListing, playerID string) bool {
+	for _, p := range g.Players {
+		if p.PlayerID == playerID {
+			return true
+		}
+	}
+	return false
+}
+
+// leaveCurrentGame is the "Back to Lobby" action for a seated player: clear
+// our ready mark (leaving the game screen revokes readiness), release presence
+// if the game is over or gone, then return to the lobby screen. The roster
+// seat is KEPT while the game is alive — the lobby row shows it as
+// joined/playing and its Rejoin button comes back in.
+func (a *App) leaveCurrentGame() {
+	lb := a.getLobby()
+	eng := a.getEngine()
+	if lb != nil && eng != nil && eng.Mode() != engine.ModeSpectator {
+		gameID := eng.GameID()
+		a.mu.Lock()
+		wasReady := a.myReady
+		a.mu.Unlock()
+		if wasReady {
+			if err := lb.SetReady(context.Background(), gameID, false); err != nil {
+				log.Printf("clear ready on leave: %v", err)
+			}
+		}
+		// Presence: while we still hold a seat in a live game we stay marked
+		// in-game (and thus un-invitable); once the game is done or gone we are
+		// back to a plain lobby player.
+		if g, ok := lb.Games()[gameID]; !ok || !gameAlive(g.Status) || !rosterHas(g, lb.PlayerID()) {
+			_ = lb.LeaveGame(context.Background(), gameID)
+		}
+	}
+	a.returnToLobby()
+}
+
 // returnToLobby stops the active engine and returns to the lobby screen. Safe to
 // call more than once.
 func (a *App) returnToLobby() {
@@ -457,6 +565,7 @@ func (a *App) returnToLobby() {
 	a.gameOver = false
 	a.won = false
 	a.fireworks = nil
+	a.confirmLeave = false
 	a.countdown = -1
 	a.score = 0
 	a.level = 0

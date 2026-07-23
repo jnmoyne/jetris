@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Deletes all NATS streams and KV buckets created by Jetricks.
 # Uses the nats CLI with the currently selected context (or pass --context <name>).
+#
+# Coverage notes:
+#   - Invitations (invites.<player>.<gameID>) live in the JETRICKS_LOBBY KV
+#     bucket deleted below — no separate resource.
+#   - Lobby events (jetricks.lobby.event.>) are transient core NATS messages
+#     captured by no stream — nothing to clean up.
 
 set -euo pipefail
 

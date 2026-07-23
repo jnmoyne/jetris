@@ -2,11 +2,11 @@
 
 ![Jetricks-screenshot-1.png](Jetricks-screenshot-1.png)
 
-**An example of a peer-to-peer distributed blackboard system built for humans (or agents) using NATS.io and disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
+**An example of a peer-to-peer distributed blackboard system built using 'nothing but [NATS](https://nats.io) for humans or agents to cooperate or compete towards a common goal and disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
 
 Let's get the game part out-of-the-way first: Jetricks is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetricks, but now there are other players that you are playing with or against!
 
-There are 3 game modes: cooperative, competitive, and teams. In cooperative, all the players work with each other to achieve the highest score, in competitive the last player alive wins the game.
+There are 3 game modes: cooperative, competitive, and teams. In cooperative, all the players work with each other to achieve the highest score, in competitive the last player alive wins the game, with teams as the name implies it's a competition between the teams.
 
 To just play the game with others over the Internet, go ahead and download the latest release of the `jetricks` binary for your platform and just run it.
 
@@ -39,7 +39,7 @@ Since it is a real blackboard system, you are also encouraged to create your own
 
 ## 1. The idea: a blackboard system over NATS.io
 
-Jetricks is an example blackboard system, it is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetricks` processes using the NATS.io server(s) for state storage and synchronization.
+Each game in Jetricks is a kind of [blackboard system](https://en.wikipedia.org/wiki/Blackboard_system): agents players (which can be human) work together towards a common goal on a shared Stream that contains the state of the playfield. Players or teams of players can be evaluated in the competitive and teams play modes. It is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetricks` processes or by agents and purely using the NATS servers for state storage and synchronization.
 
 A blackboard system is an artificial intelligence approach based on the blackboard architectural model: several independent agents share a common, structured knowledge store — the *blackboard* — that they all read from and write to. No agent owns the whole problem; each watches the blackboard, contributes the changes it can, and reacts to what the others have written. The blackboard is the only thing they share, and it is simultaneously the shared *state* and the shared *communication channel*.
 
@@ -66,9 +66,9 @@ The three needs above are each individually well served by various messaging/str
 - Plain pub/sub lacks persistence - later joining spectator can't reconstruct the board
 - Key/Value stores don't have real-time push to many (or it's a bolted-on channel, not the keyspace itself), and many do not have or have limited per-key CAS.
 - Log Streaming systems do not have fine-grained addressing or CAS.
-- RDBMS have very limited push ability if any, not distribued and (compared to NATS.io) not 'real-time' and higher latency.
+- RDBMS have very limited push ability if any, are not distributed and (comparatively) high latency and not 'real-time'.
 
-NATS JetStream is the only single system, reached over one connection that checks all the boxes.
+NATS with JetStream storage enabled is the only single system, that checks all the boxes.
 
 A single JetStream stream is *at the same time*:
 - the event log (every change, in order),
@@ -77,7 +77,7 @@ A single JetStream stream is *at the same time*:
 
 And the write path itself carries optimistic concurrency control (per-subject CAS) and atomicity (all-or-nothing batches) - and crucially the two can be combined. The subject hierarchy gives you a separate addressable slot for *every cell of the board* with no "topic explosion" cost, plus wildcard subscriptions so each peer streams exactly the slice of the blackboard it cares about.
 
-That combination is why Jetricks needs no database, no separate cache, no separate message bus, and **no game server** — and why it would be genuinely awkward to build on anything else.
+That combination is why Jetricks needs no database, no separate KV, no separate message bus, and no game server.
 
 ---
 
@@ -86,7 +86,7 @@ That combination is why Jetricks needs no database, no separate cache, no separa
 ```
         ┌────────────┐      ┌────────────┐      ┌────────────┐
         │  Player A  │      │  Player B  │      │ Spectator  │
-        │  jetricks  │      │  jetricks  │      │  jetricks  │
+        │   Human    │      │   Agent    │      │   Human    │
         │   (peer)   │      │   (peer)   │      │   (peer)   │
         │            │      │            │      │            │
         │ game logic │      │ game logic │      │ game logic │
@@ -106,11 +106,11 @@ That combination is why Jetricks needs no database, no separate cache, no separa
                   └──────────────────────────────────────┘
 ```
 
-Every player launches the same `jetricks` binary, which connects to NATS as an ordinary client. To start a multiplayer game you just run more instances pointed at the same NATS server. There is no "host." Each peer:
+Every human player launches the same `jetricks` binary, which connects to NATS as an ordinary client. Agent players connect the same way. All players must obviously be connected to the same NATS server/cluster/super-cluster (and JetStream must be enabled on at least one server) in order to play together. There is no "host." Each peer:
 
 - runs the complete game simulation locally,
-- publishes its own moves as compare-and-set writes to the shared stream, and
-- consumes everyone's writes via push consumers and applies them to its local board.
+- publishes its own moves as batches of compare-and-set writes to the shared stream, and
+- consumes everyone's writes via Stream Consumers and applies them to its local board.
 
 Because the authoritative state is *the stream*, all peers converge on the same board. No peer is in charge; the server arbitrates writes (via CAS) but computes nothing. This is what makes Jetricks genuinely peer-to-peer rather than client-server.
 
@@ -134,13 +134,20 @@ Stream:  JETRICKS_GAME_<id>          (subjects: jetricks.game.<id>.>)
   jetricks.game.<id>.events                      →     append-only: line clears, top-outs
   jetricks.game.<id>.roster.<playerID>           →     { name, team, slot }
   jetricks.game.<id>.countdown                   →     { seconds: 3 }
-  jetricks.game.<id>.chat                        →     append-only: in-game chat
 ```
+
+Chat is the one thing that does NOT live here: the game stream keeps only the
+latest message per subject, which would truncate a conversation to its last
+line. All chat — the lobby's and every game's — lives in the shared
+`JETRICKS_LOBBY_CHAT` stream instead, distinguished purely by subject: lobby
+messages on `jetricks.lobby.chat`, a game's messages on
+`jetricks.lobby.chat.game.<gameID>` (seen only by that game's players and
+spectators, and purged when the game is archived or deleted).
 
 Two things to notice:
 
 1. The cell subjects are key/value-shaped, so "read the board" means "read the last message of each cell subject". A cell that was never written has no message and is simply empty.
-2. The append-only subjects (`events`, `chat`) are log-shaped — every message matters and order matters. The *same stream* serves both styles, because a stream is a log and "current value per subject" is just a view over it.
+2. The `events` subject is flow-shaped rather than state-shaped: line clears and top-outs matter to the peers *watching live*, and the stream fans each one out the instant it is published. Retention is a different question — with one message kept per subject only the latest event remains for replay, which is exactly the trade chat can't accept: a conversation needs its full history for late joiners, which is why chat lives in the separate chat stream.
 
 The three game modes use three cell-subject schemes, but the principle is identical:
 
@@ -174,19 +181,19 @@ Why it's necessary: One logical move changes several cells at once — the piece
 
 ### 5.4 Ordered push consumers + subject filters (real-time delivery to everyone)
 
-What: Each peer runs several *ordered consumers*, each with a subject filter: its own board cells, each opponent's board, the team board, plus `meta`, `events`, `countdown`, `roster`, and lobby `chat`. Messages are pushed in strict stream-sequence order.
+What: Each peer runs several *ordered consumers*, each with a subject filter: its own board cells, each opponent's board, the team board, plus `meta`, `events`, `countdown`, and `roster` on the game stream — and one more on the shared chat stream (lobby + per-game chat, filtered by subject). Messages are pushed in strict stream-sequence order.
 
 Why it's necessary: This is the "push" half of the blackboard — the instant any peer writes a cell, the change is delivered to every peer that subscribed to that slice, with no polling. Ordered consumers guarantee in-order delivery and transparently recover/recreate themselves on hiccups, so each peer can treat its consumer as a clean, gap-free stream of "here's what changed." Subject filters mean a peer subscribes to *exactly* the part of the blackboard it needs (e.g. one opponent's board, or just `meta`) rather than the whole stream.
 
 ### 5.5 KV store for the lobby (presence, game listings, and KV-level CAS)
 
-What: The lobby uses a JetStream *KV bucket* (`JETRICKS_LOBBY`). Player presence lives under `players.<id>` (refreshed by a heartbeat, pruned when stale); game listings under `games.<id>`. The lobby `WatchAll`s the bucket for real-time updates, and uses KV compare-and-set (`Update(key, value, revision)`) for join and ready-toggle so concurrent joins can't lose updates or two players claim the same team slot.
+What: The lobby uses a JetStream *KV bucket* (`JETRICKS_LOBBY`). Player presence lives under `players.<id>` (refreshed by a heartbeat, pruned when stale); game listings under `games.<id>`; game invitations under `invites.<player>.<gameID>` (written = pending, deleted = accepted/retracted, rewritten `declined: true` = declined — the key's lifecycle is the invitation's state machine, visible to both sides through the same watch). The lobby `WatchAll`s the bucket for real-time updates, and uses KV compare-and-set (`Update(key, value, revision)`) for join and ready-toggle so concurrent joins can't lose updates or two players claim the same team slot.
 
 Why it's necessary: Lobby state is itself a small shared blackboard: who's online, what games exist, who's ready. KV gives last-value-per-key with a watch (the same push model) and revision-based CAS — and it's the *same* JetStream engine over the *same* connection, so presence, listings, and coordination need no extra infrastructure. A KV bucket is literally a stream with last-value-per-subject and a revision = CAS, which is exactly the blackboard pattern again, one level up.
 
 ### 5.6 One stream, many subjects: the whole game in a single stream
 
-What: Cells, `meta`, `events`, `roster.*`, `countdown`, and `chat` all live in the one per-game stream, separated by subject and selected by per-consumer filters.
+What: Cells, `meta`, `events`, `roster.*`, and `countdown` all live in the one per-game stream, separated by subject and selected by per-consumer filters. (Chat is the deliberate exception — full-history retention, so it lives in the shared `JETRICKS_LOBBY_CHAT` stream under `jetricks.lobby.chat[.game.<gameID>]`.)
 
 Why it's necessary: The blackboard is *one* object with several regions. Keeping them in one stream means a single ordered history for the whole game — so, for example, every peer sees elimination `events` in the *same order* and independently reaches the *same* verdict about who won, with no coordinator. Different concerns are just different subject subspaces of the same board.
 
@@ -328,20 +335,23 @@ The CLI flags don't connect directly either — they only preset the picker:
 ./jetricks --server nats://localhost:4222 --user alice --password secret
 ```
 
-To play multiplayer, **run more instances pointed at the same NATS server** — each instance is one peer. Create a game in the lobby, have the others join it, ready up, and play. A game can be **open** (anyone in the lobby joins it) or **invite-only** — check "Invite only" when creating, then pick who to invite (including specific agents, and per-team in teams mode); invited players get a pop-up to accept or decline, and agents accept automatically.
+To play multiplayer, **run more instances pointed at the same NATS server** — each instance is one peer. Create a game in the lobby, have the others join it, ready up, and play. A game can be **open** (anyone in the lobby joins it) or **invite-only** — check "Invite only" when creating, then select who to invite (including specific agents, and per-team in teams mode); each selection sends its invitation on the spot, and deselecting retracts it. You start selected yourself — creating an invitation game counts as accepting your own invitation, so a seat is taken immediately; deselect yourself to host a game you'll spectate instead. Invited players get a pop-up (showing who has already joined) to accept or decline — agents accept automatically — and the creator watches each invitation live: waiting, joined, ready, or declined. Once every seat is filled the creator is carried straight to the game (playing, or spectating if they opted out). Leaving a game with "Back to Lobby" keeps your seat: the lobby lists it as **joined** (or **playing** once started, after an are-you-sure prompt) with a **Rejoin** button.
 
 ### Playing with (and against) agents
 
-`jetricks-agent` is a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team — using the same engine as the GUI, driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby, joins games that allow agents as they appear, plays, and returns to the lobby for the next one:
+`jetricks-agent` is a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team — using the same engine as the GUI, driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
 
 ```sh
-# A resident agent: joins agent-allowed competitive games as they appear, forever
+# A resident agent: waits in the lobby to be invited, forever
 ./jetricks-agent --server nats://localhost:4222 --name HAL --difficulty medium
+
+# Also join any open agent-allowed game as it appears (the pre-invitations behavior)
+./jetricks-agent --server nats://localhost:4222 --auto-join
 ```
 
 Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.
 
-**You decide per game whether agents may join.** The GUI's competitive create row has an **"Allow agents" checkbox and a max-agents count** (off by default — human-only unless you opt in). Check it, set how many seats agents may take, create the game, and idle agents fill in up to that max; the game row shows `agents 1/2`-style occupancy and agent players are tagged `[agent]` everywhere. The max is enforced atomically, so a crowd of agents can never grab more seats than you allowed.
+**You decide per game whether agents may join.** The GUI's competitive create row has an **"Allow agents" checkbox and a max-agents count** (off by default — human-only unless you opt in). Check it, set how many seats agents may take, create the game, and idle `--auto-join` agents fill in up to that max (invited agents join regardless — the invitation is the permission); the game row shows `agents 1/2`-style occupancy and agent players are tagged `[agent]` everywhere. The max is enforced atomically, so a crowd of agents can never grab more seats than you allowed.
 
 ```sh
 # Exit after a single game instead of staying resident

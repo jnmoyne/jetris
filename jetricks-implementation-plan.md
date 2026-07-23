@@ -103,6 +103,8 @@ const (
     LobbyChatMaxAge        = 7 * 24 * time.Hour
     ArchiveStream          = "JETRICKS_ARCHIVE"
     ArchiveSubject         = "jetricks.archive"
+    LobbyEventsFilter      = "jetricks.lobby.event.>" // core NATS lobby events (no stream); LobbyEventSubject(kind)
+    InviteTTL              = 2 * time.Minute          // invitations at invites.<invitee>.<gameID> (LobbyInviteKey)
 
     PresenceHeartbeat      = 5 * time.Second
 
@@ -2151,7 +2153,7 @@ redraws the playfield exactly as it stood when that game ended — the single wi
 for cooperative, one board per player (labeled by ID in player color) for competitive,
 and both team boards for teams. A "Back to Lobby" `secondaryButton` returns. A centered
 branding banner spans the top of both the lobby and the archive screen: the nats.io "N"
-logo flanking "JETRICKS: peer to peer and made with NATS.io" in the pixel face (the
+logo flanking "JETRICKS: peer to peer blackboard system made with NATS.io" in the pixel face (the
 "NATS.io" text in the NATS-blue accent).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
@@ -2644,31 +2646,108 @@ preselects and appends an undiscovered context).
 Invite-only games and player invitations, layered on the existing lobby KV.
 
 - **Data:** `GameListing.InviteOnly`/`CreatorID`; `CreateGame(..., inviteOnly bool)`.
-  `Invitation{GameID, FromID, FromName, Mode, Team, CreatedAt}` at KV key
-  `config.LobbyInviteKey(id)` = `invites.<id>` (`config.InviteTTL` = 2 min).
+  `Invitation{GameID, InviteeID, FromID, FromName, Mode, Team, Declined, CreatedAt}`
+  at the PER-GAME KV key `config.LobbyInviteKey(invitee, gameID)` =
+  `invites.<invitee>.<gameID>` (`config.LobbyInvitePrefix`; `config.InviteTTL` =
+  2 min) — a player may hold invitations to several games at once, one key each.
+- **State machine = the key's lifecycle:** written → pending; deleted by the
+  invitee → accepted (`JoinGame` consumes it via `consumeInvite`); rewritten with
+  `Declined: true` (`DeclineInvite`) → declined, KEPT so the inviter sees the
+  refusal until dismissing it; deleted by the inviter (`Uninvite`) → retracted
+  (also dismisses a declined marker); `DismissInvite` drops a stale invitation
+  whose game is gone.
 - **Lobby (`invite.go`):** `Invite(ctx, toPlayerID, gameID, team)` writes the
-  mailbox key; the KV watcher's new `invites.` branch (`handleInviteUpdate`) keeps
-  the caller's own pending invite, surfaced by `MyInvite` and pinged via
-  `LobbyUpdateInvite`. `JoinGame` guards invite-only games inside its CAS loop —
-  creator or fresh-invitation holder only (`inviteFor` reads KV directly to beat
-  watcher lag), the invitation exempting the joiner from `MaxAgents`; `ErrNotInvited`
-  otherwise. Join consumes the invitation; `RespondInvite` deletes the key on decline.
-- **Agent:** the auto-join scan checks `MyInvite` first and accepts automatically
-  (using the invited team in teams mode); `joinable` skips invite-only games so the
-  open scan never touches them. If acting on an invitation fails to seat the agent
-  (`ErrTeamFull`/`ErrGameFull`), it declines the invitation rather than re-accepting
-  the same unsatisfiable one.
+  mailbox key; the KV watcher's `invites.` branch (`handleInviteUpdate`) tracks
+  EVERY invitation in the bucket (inviters watch the ones they sent), surfaced by
+  `MyInvites` (own pending, oldest first), `InviteTo(gameID)`, and
+  `SentInvites(gameID)` (pending + declined, for the creator's status view), all
+  pinged via `LobbyUpdateInvite`. `JoinGame` guards invite-only games inside its
+  CAS loop — creator or fresh-invitation holder only (`inviteFor` reads KV
+  directly to beat watcher lag), the invitation exempting the joiner from
+  `MaxAgents`; `ErrNotInvited` otherwise. Join consumes the invitation.
+- **Agent:** invitations are the resident's DEFAULT (and, without
+  `Config.AutoJoin`/`--auto-join`, only) join signal — accepted automatically,
+  using the invited team in teams mode; the open-game scan runs only with
+  `AutoJoin`, and `joinable` skips invite-only games so it never touches them.
+  A stale invitation (game gone) is dropped via `DismissInvite`; if acting on an
+  invitation fails to seat the agent (`ErrTeamFull`/`ErrGameFull`) it responds
+  with `DeclineInvite` rather than re-accepting the same unsatisfiable one.
 - **Fullness:** `JoinGame` caps the overall roster (`ErrGameFull`) in its CAS loop for
   every mode — the authoritative guard against overfilling (a 5th into a 4-player
-  game); the invite picker also blocks an over-subscribed selection before sending.
-- **UI (`invite.go`):** "Invite only" create toggle → invitee-picker modal (idle
-  lobby players; Invite checkbox, or —/A/B per player for teams) → `lobby.Invite`
-  per selection. Incoming-invitation pop-up (Accept & Play / Decline) driven by
-  `MyInvite`. Game rows tag invite-only and gate Join to creator/invitee.
-- **Tests:** `lobby/invite_test.go` (accept/decline, creator/uninvited/invited-agent
-  paths, TTL, consume-on-join), `agent/invite_integration_test.go` (two invited
-  residents play an agents-closed invite-only game; a third, uninvited, stays out),
-  `nativeui` layout subtest rendering both overlays.
+  game); the invite picker's capacity guard additionally refuses selections beyond
+  the free seats at click time (`inviteSeatUsage`: roster + pending invitations,
+  per team for teams).
+- **UI (`nativeui/invite.go`):** "Invite only" create toggle → invitee-picker
+  modal. NO send button — selection IS the action: `handleInvitePicker` diffs each
+  row's widget against its last-applied intent every frame and immediately sends
+  (`lobby.Invite`; a teams change re-invites to the new team) or retracts
+  (`lobby.Uninvite`). The pinned first row is the CREATOR, pre-selected — creating
+  an invitation game implies accepting your own invitation, so `openInvitePicker`
+  takes a seat at once (deselecting frees it via `selfSeat`/`UnjoinGame`; teams
+  moves re-seat). Rows show live status (`pickerRowStatus`): "✉ invited —
+  waiting…", "✕ declined" (re-select to re-invite), "joined ✓"/"joined · ready ✓"
+  (control hidden); the candidate list stays reactive with a `keep` set so roster
+  members and invitees remain listed after their presence goes in-game. When the
+  roster fills, the picker closes itself and hands the creator over — `joinGame`
+  (ready screen) if they kept their seat, `spectateGame` if not. "Close" hides the
+  overlay non-destructively; "Cancel game" retracts all invitations
+  (`cancelInviteGame`) and deletes the game. The incoming pop-up (driven by
+  `MyInvites`, oldest first, next surfacing once answered) lists the game's
+  current roster and offers Accept & Play / Decline. Lobby game rows tag
+  invite-only games, gate Join to creator/invitee, mark roster names
+  "(joined)"/"(joined · ready ✓)", and give the creator per-invitation status
+  lines (`inviteStatusRows`) with Uninvite/Dismiss buttons.
+- **Tests:** `lobby/invite_test.go` (accept/decline-with-marker, retract,
+  multi-invite ordering, creator/uninvited/invited-agent paths, TTL,
+  consume-on-join), `agent/invite_integration_test.go` (two invited residents play
+  an agents-closed invite-only game; a third, uninvited `--auto-join` resident
+  stays out), `agent/invite_teams_test.go` (teams invites fill without the
+  creator; over-subscribed invitees decline), `nativeui` unit tests
+  (`inviteSeatUsage`, `pickerRowStatus`, reconcile-with-keep) and layout subtests
+  rendering both overlays.
+
+---
+
+## Phase 14 — Lobby Events, Rejoin, and the Agent Invite-Default
+
+Real-time lobby signals over core NATS, seat-preserving leave/rejoin, and the
+resident agent's wait-to-be-invited default.
+
+- **Lobby events (core NATS — no stream):** every lobby action also publishes a
+  transient `LobbyEvent{Kind, GameID, PlayerID, TargetID, Team, Time}` on
+  `config.LobbyEventSubject(kind)` = `jetricks.lobby.event.<kind>`
+  (`config.LobbyEventsFilter` = `jetricks.lobby.event.>`): `game.created`
+  (`CreateGame`), `game.joined` (a roster seat taken), `game.left` (a seat freed —
+  `UnjoinGame`), `invite.sent` / `invite.retracted` / `invite.declined`.
+  `Lobby.Start` subscribes via `startEventListener` (`js.Conn()`; failure is
+  non-fatal — the KV watcher remains the source of truth) and folds FOREIGN
+  events into immediate `LobbyUpdate` pings (games+players / invite), closing the
+  presence-heartbeat latency gap for "who is invitable right now"; `Stop`
+  unsubscribes. Captured by no stream on purpose: signals, not state — nothing to
+  replay or clean up (`scripts/cleanup.sh` documents this).
+- **SetReady:** `lobby.SetReady(ctx, gameID, ready)` — `ToggleReady`'s idempotent
+  sibling (same CAS loop, exact value, no-op once in progress) so leaving the
+  game screen can CLEAR readiness without racing a toggle.
+- **Leave & rejoin (UI):** "Back to Lobby" keeps the roster seat while the game
+  is alive. Pre-start it clears the READY mark (`leaveCurrentGame` →
+  `SetReady(false)`); in progress it first asks "Are you sure you want to
+  leave?" (`App.confirmLeave`, `confirmLeaveOverlay`, Yes-leave/No-stay);
+  presence returns to In Lobby only when the game is finished/gone or no seat is
+  held (`gameAlive`/`rosterHas`). The lobby row renders the held game from the
+  player's view — status token **joined** / **playing** in green — with a single
+  **Rejoin** button (the already-seated `JoinGame` branch returns the same
+  seat/team; the stream replays the live board). `startGameScreen` seeds
+  `myReady` from the roster so the READY button is accurate on rejoin.
+- **Agent default:** `Config.AutoJoin` / `--auto-join` (default OFF): a resident
+  waits for invitations and only scans for open agent-allowed games when the
+  flag is set. `--once` composes with either behavior. The Python example agent
+  mirrors the flag; `jetricks-agent-guide.md` documents the mailbox scheme, the
+  decline-by-rewrite protocol, the lobby event subjects, and the invite-default
+  expectation for third-party residents.
+- **Tests:** `lobby/rejoin_test.go` — `TestSetReady` (exact + idempotent, visible
+  to peers), `TestRejoinKeepsSeat` (leave keeps the seat; rejoin returns the
+  same position without growing the roster), `TestLobbyEventsPublished` (a raw
+  core-NATS subscriber sees all six kinds with correct payloads).
 
 ## Phase 11 — Per-Game Chat
 

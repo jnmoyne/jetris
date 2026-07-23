@@ -283,7 +283,11 @@ eliminations and outcomes without a coordinator.
    the cooperative topper CAS-transitions the meta to `finished` — and then
    **archives**: transition `finished → archived` (CAS; one winner), publish the
    `ArchiveRecord`, delete the game stream and the KV listing. If that's you,
-   don't disconnect until it's done.
+   don't disconnect until it's done. The record's optional `chat` field preserves
+   the game's conversation (the archive purges the game's messages from the chat
+   stream, so copy them into the record FIRST — last 200 lines; the GUI's
+   archived-game viewer replays them). Best-effort: a record without `chat`
+   simply shows no conversation.
 6. **Walk away cleanly**: if a game you joined never starts, remove yourself from
    the roster (CAS, pre-start only) and purge your roster announcement so you
    don't linger as a ghost seat.

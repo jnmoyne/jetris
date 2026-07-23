@@ -183,6 +183,7 @@ type ArchiveRecord struct {
     TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team
     TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team
     Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s)
+    Chat        []ChatLine     `json:"chat,omitempty"`        // the game's chat history (last ArchiveChatCap = 200 lines), copied from the archiver's chat log before PurgeGameChat
 }
 
 // BoardPicture is the saved end-of-game state of one board (latest cell message
@@ -2773,12 +2774,20 @@ stream (MaxMsgsPerSubject: 1 keeps only the latest message).
   chat (`sendGameChat`). The lobby screen's chat panel filters to
   `GameID == ""`.
 - **archive:** archiving a game purges its chat subject from the shared chat
-  stream.
+  stream — but first copies the conversation into the `ArchiveRecord`
+  (`Chat []config.ChatLine`, last `ArchiveChatCap` = 200 lines, via
+  `gameChatHistory` reading the archiver's `lobby.ChatLog()`): after the purge
+  the record is the conversation's only home.
+- **archive viewer:** the archived-game screen replays the preserved chat in a
+  **GAME CHAT** panel beside the boards (`archiveChatPanel`/`archiveChatLine`:
+  local wall-clock time, "(spec)" markers; older chat-less records render
+  boards only).
 
 **Tests:** `TestGameChatScoping` (lobby: game vs lobby message tagging off the
 subject, spectator flag round-trip), `TestGameIDFromChatSubject` (config),
 `TestChatLine` + a `game-with-chat` render subtest (nativeui: formatting,
-cross-game filtering).
+cross-game filtering), `TestArchiveChatLine`/`TestArchiveViewRendersChat`
+(nativeui: preserved-chat formatting and the viewer with/without chat).
 
 ---
 

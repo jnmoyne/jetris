@@ -1,6 +1,8 @@
 package nativeui
 
 import (
+	"fmt"
+
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
@@ -53,9 +55,23 @@ func (a *App) layoutArchive(gtx C) D {
 			layout.Rigid(a.body(archiveLine(*rec), colMuted)),
 			layout.Rigid(spacer(18)),
 			layout.Flexed(1, func(gtx C) D {
-				return layout.Center.Layout(gtx, func(gtx C) D {
-					return a.archiveBoards(gtx, rec.Boards)
-				})
+				boards := func(gtx C) D {
+					return layout.Center.Layout(gtx, func(gtx C) D {
+						return a.archiveBoards(gtx, rec.Boards)
+					})
+				}
+				if len(rec.Chat) == 0 {
+					return boards(gtx)
+				}
+				// Boards center-stage, the preserved conversation beside them.
+				return layout.Flex{}.Layout(gtx,
+					layout.Flexed(1, boards),
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Max.X = gtx.Dp(320)
+						gtx.Constraints.Min.X = gtx.Dp(320)
+						return a.archiveChatPanel(gtx, rec.Chat)
+					}),
+				)
 			}),
 			layout.Rigid(spacer(14)),
 			layout.Rigid(func(gtx C) D {
@@ -104,6 +120,36 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 		}))
 	}
 	return layout.Flex{Alignment: layout.Start}.Layout(gtx, children...)
+}
+
+// archiveChatPanel renders the record's preserved chat history — the game's
+// conversation as it stood when the game was archived (the live chat was
+// purged from the chat stream at archive time; the record is its only home).
+func (a *App) archiveChatPanel(gtx C, chat []config.ChatLine) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.header("GAME CHAT")),
+		layout.Flexed(1, func(gtx C) D {
+			return bordered(gtx, func(gtx C) D {
+				return material.List(a.th, &a.archiveChatList).Layout(gtx, len(chat), func(gtx C, i int) D {
+					return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx,
+						a.body(archiveChatLine(chat[i]), colFg))
+				})
+			})
+		}),
+	)
+}
+
+// archiveChatLine formats one preserved message: local wall-clock time, the
+// sender (spectators marked like the live panel), and the text.
+func archiveChatLine(m config.ChatLine) string {
+	name := m.Name
+	if m.Spectator {
+		name += " (spec)"
+	}
+	if m.Timestamp.IsZero() {
+		return fmt.Sprintf("%s: %s", name, m.Text)
+	}
+	return fmt.Sprintf("%s %s: %s", m.Timestamp.Local().Format("15:04"), name, m.Text)
 }
 
 // boardSnapshotFromPicture rebuilds a renderable BoardSnapshot from a stored

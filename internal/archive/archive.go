@@ -169,6 +169,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		Players:     results,
 		TeamSize:    meta.TeamSize,
 		WinningTeam: winningTeam,
+		Chat:        gameChatHistory(lb, eng.GameID()),
 	}
 	if meta.Mode == config.ModeCooperative {
 		record.TotalScore = eng.Score()
@@ -205,6 +206,34 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	if lb != nil {
 		_ = lb.LeaveGame(ctx, eng.GameID())
 	}
+}
+
+// gameChatHistory copies the game's chat out of the archiver's lobby chat log
+// (the lobby's chat consumer replayed the whole shared stream, so the log
+// holds the full conversation up to its cap) into ArchiveRecord form. It must
+// run before PurgeGameChat below — after the purge the record is the only
+// place the conversation survives. Best-effort: nil lobby (or no chat) simply
+// archives without it.
+func gameChatHistory(lb *lobby.Lobby, gameID string) []config.ChatLine {
+	if lb == nil {
+		return nil
+	}
+	var out []config.ChatLine
+	for _, m := range lb.ChatLog() {
+		if m.GameID != gameID {
+			continue
+		}
+		out = append(out, config.ChatLine{
+			Name:      m.Name,
+			Text:      m.Text,
+			Timestamp: m.Timestamp,
+			Spectator: m.Spectator,
+		})
+	}
+	if len(out) > config.ArchiveChatCap {
+		out = out[len(out)-config.ArchiveChatCap:]
+	}
+	return out
 }
 
 // buildBoardPictures captures the final visible state of every board in the

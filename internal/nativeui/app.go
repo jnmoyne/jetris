@@ -260,9 +260,10 @@ type App struct {
 	gameChatList widget.List
 
 	// archive (history) viewer
-	archiveSel     *config.ArchiveRecord // the finished game whose boards are being shown
-	archiveBtns    []widget.Clickable    // one per history row (indexed by list position)
-	archiveBackBtn widget.Clickable      // "Back to Lobby" from the archive viewer
+	archiveSel      *config.ArchiveRecord // the finished game whose boards are being shown
+	archiveBtns     []widget.Clickable    // one per history row (indexed by list position)
+	archiveBackBtn  widget.Clickable      // "Back to Lobby" from the archive viewer
+	archiveChatList widget.List           // the record's preserved chat history
 }
 
 // New builds the App. The window is created later, in Run, on the UI goroutine.
@@ -293,6 +294,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.playerList.Axis = layout.Vertical
 	a.gameList.Axis = layout.Vertical
 	a.archiveLst.Axis = layout.Vertical
+	a.archiveChatList.Axis = layout.Vertical
+	a.archiveChatList.ScrollToEnd = true
 	a.chatList.Axis = layout.Vertical
 	a.msgList.Axis = layout.Vertical
 	a.msgList.ScrollToEnd = true

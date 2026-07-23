@@ -481,7 +481,8 @@ Published to `JETRICKS_ARCHIVE` stream when a game finishes:
   "finished_at": "2026-03-21T10:05:30Z",
   "total_score": 42,
   "final_level": 2,
-  "boards": [ /* end-of-game playfield snapshot(s) — see below */ ]
+  "boards": [ /* end-of-game playfield snapshot(s) — see below */ ],
+  "chat": [ /* the game's chat history, preserved before the purge — see below */ ]
 }
 ```
 
@@ -494,6 +495,8 @@ Each history line starts with the game's start date and time in the viewer's loc
 Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or not a team game), a `team` field on each player result, and the final per-team totals `team_scores` and `team_levels` (indexed by team, taken from the archiving engine's converged per-team scoreboard) — these are what the history list shows for a teams game (`A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave`). Every member of the winning team has `winner: true`, eliminated members included — a team win is shared.
 
 **End-of-game playfield snapshot.** The record also carries `boards`: a snapshot of every board exactly as it stood when the game ended, captured by the winning/finishing client from the game stream (latest message per cell) just before that stream is deleted. There is one board for cooperative, one per player for competitive, and one per team for teams mode — so the snapshot is complete for every mode. Each board stores its width, visible height, and the non-empty cells (the raw cell messages). In the lobby, each game in **GAME HISTORY** has a **"View board"** button that opens a viewer redrawing these boards — the picture of the playfield at the moment that game ended.
+
+**Preserved chat history.** The record also carries `chat`: the game's conversation (each line's sender, text, timestamp, and spectator mark, capped at the most recent 200 lines), copied out of the archiver's chat log just **before** the game's messages are purged from the shared chat stream — after the purge the record is the only place the conversation survives. The archived-game viewer shows it in a **GAME CHAT** panel beside the boards (spectator lines marked "(spec)", times in the viewer's local clock); records from before this field simply show no chat.
 
 ---
 
@@ -508,7 +511,7 @@ On the game screen (player or spectator) a chat strip is displayed at the bottom
 - **Once the game is in progress**, only spectators (and eliminated players) can type — a playing player's keyboard drives the piece, so their input line is replaced by a "read-only while playing" hint.
 - A message starting with `@lobby` is sent to the lobby chat (everyone sees it); anything else goes to the game's chat.
 
-Lobby chat history is retained for 7 days; a game's chat messages are purged from the stream when the game is archived. A player joining the lobby replays the retained history (up to the last 200 messages), so everyone in the lobby sees the same chat log regardless of when they logged in.
+Lobby chat history is retained for 7 days; a game's chat messages are purged from the stream when the game is archived — but not lost: the archiver copies the conversation into the game's `ArchiveRecord` first, so the archived-game viewer can replay it (see §Archive Record). A player joining the lobby replays the retained history (up to the last 200 messages), so everyone in the lobby sees the same chat log regardless of when they logged in.
 
 ---
 

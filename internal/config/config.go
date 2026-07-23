@@ -122,7 +122,25 @@ type ArchiveRecord struct {
 	TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team (indexed by team)
 	TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team (indexed by team)
 	Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s) for the lobby's history view
+	Chat        []ChatLine     `json:"chat,omitempty"`        // the game's chat history (last ArchiveChatCap lines), captured before the chat purge
 }
+
+// ChatLine is one chat message preserved in an ArchiveRecord. The game's chat
+// is purged from the shared chat stream when the game is archived, so the
+// archiver copies the conversation into the record first — it is the only
+// place the history survives for the lobby's archived-game viewer. (Records
+// from before this field simply have no chat.)
+type ChatLine struct {
+	Name      string    `json:"name"`
+	Text      string    `json:"text"`
+	Timestamp time.Time `json:"ts,omitempty"`
+	Spectator bool      `json:"spectator,omitempty"`
+}
+
+// ArchiveChatCap bounds the chat lines embedded in one ArchiveRecord (the
+// most recent lines win; matches the in-memory lobby chat cap so nothing a
+// client still holds is ever dropped).
+const ArchiveChatCap = 200
 
 // HasAgents reports whether any seat in the archived game was played by an
 // agent (the lobby's history filter; records from before the agent flag simply

@@ -18,7 +18,7 @@ now, if you are interested in understanding how Jetricks is implemented and why 
 
 Every player runs the same desktop binary. That binary is just a NATS client. There is no authoritative server process computing the game: all of the game logic (collision, rotation, gravity, line clears, scoring, the whole lifecycle) runs *inside each player's client*, and the players coordinate purely by reading and writing a shared stream that lives on a NATS server. The NATS server stores and routes messages — it knows nothing about the game.
 
-Since it is a real blackboard system, you are also encouraged to create your own agents (literally, bots) that can play the game against (or with) human players or other agents (there is a default agent included), and even contribute them to this repository. Your agents however need to follow the rules and conventions stated in the Jetricks agent guide. Can your agent(s) top the scoreboard against other agents, or against teams of humans? There is a surprisingly large number of interesting challenges to Jetricks gameplay, especially when you go beyond competitive mode.
+Since it is a real blackboard system, you are also encouraged to create your own agents (literally, bots) that can play the game against (or with) human players or other agents (there is a default agent included), and even contribute them to this repository. Your agents however need to follow the rules and conventions stated in the Jetricks agent guide. Included are simple example agents. While 'playing Tetris well' is something relatively easy for software to do, 'playing Tetris well cooperatively' is much more challenging. Can your agent(s) top the scoreboard against other agents? What about against teams of humans? There is a surprisingly large number of interesting challenges to Jetricks gameplays.
 
 ---
 
@@ -139,10 +139,11 @@ Stream:  JETRICKS_GAME_<id>          (subjects: jetricks.game.<id>.>)
 Chat is the one thing that does NOT live here: the game stream keeps only the
 latest message per subject, which would truncate a conversation to its last
 line. All chat — the lobby's and every game's — lives in the shared
-`JETRICKS_LOBBY_CHAT` stream instead, distinguished purely by subject: lobby
-messages on `jetricks.lobby.chat`, a game's messages on
-`jetricks.lobby.chat.game.<gameID>` (seen only by that game's players and
-spectators, and purged when the game is archived or deleted).
+`JETRICKS_CHAT` stream instead, distinguished purely by the game-ID token of
+the subject: a game's messages on `jetricks.chat.<gameID>` (seen only by that
+game's players and spectators, and purged when the game is archived or
+deleted), lobby messages under the reserved game ID `lobby`
+(`jetricks.chat.lobby`).
 
 Two things to notice:
 
@@ -193,7 +194,7 @@ Why it's necessary: Lobby state is itself a small shared blackboard: who's onlin
 
 ### 5.6 One stream, many subjects: the whole game in a single stream
 
-What: Cells, `meta`, `events`, `roster.*`, and `countdown` all live in the one per-game stream, separated by subject and selected by per-consumer filters. (Chat is the deliberate exception — full-history retention, so it lives in the shared `JETRICKS_LOBBY_CHAT` stream under `jetricks.lobby.chat[.game.<gameID>]`.)
+What: Cells, `meta`, `events`, `roster.*`, and `countdown` all live in the one per-game stream, separated by subject and selected by per-consumer filters. (Chat is the deliberate exception — full-history retention, so it lives in the shared `JETRICKS_CHAT` stream under `jetricks.chat.<gameID>`, with the reserved game ID `lobby` for the lobby chat.)
 
 Why it's necessary: The blackboard is *one* object with several regions. Keeping them in one stream means a single ordered history for the whole game — so, for example, every peer sees elimination `events` in the *same order* and independently reaches the *same* verdict about who won, with no coordinator. Different concerns are just different subject subspaces of the same board.
 
@@ -373,7 +374,7 @@ In cooperative games agents play for the shared score and treat your falling pie
 
 ### Clean up
 
-A finished game tidies up after itself, but to wipe *all* Jetricks streams and KV buckets from a server:
+A finished game tidies up after itself, but to wipe *all* Jetricks streams and KV buckets from a server (i.e. game history and chat):
 
 ```sh
 ./scripts/cleanup.sh                 # uses the selected NATS context
@@ -418,4 +419,4 @@ For the full design, see the companion documents:
 
 ---
 
-*Jetricks is a demonstration that the blackboard pattern — shared state, optimistic concurrency control, and real-time push, over one substrate — is a first-class thing you can build directly on NATS JetStream. The players happen to be human and the task happens to be multi-player Tetris; swap in software agents and a coordination task, and the architecture is unchanged. `jetricks-agent` is that swap made literal: a software agent that joins the same games through the same blackboard, with not one line of the protocol changed to accommodate it.*
+* Jetricks is a demonstration that the blackboard pattern — shared state, concurrency control, and real-time push, over one substrate — is a first-class thing you can build directly on NATS.io. The players happen to be human as well as agents and the task happens to be multi-player Tetris *

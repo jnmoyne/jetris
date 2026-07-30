@@ -265,6 +265,12 @@ type App struct {
 	archiveBtns     []widget.Clickable    // one per history row (indexed by list position)
 	archiveBackBtn  widget.Clickable      // "Back to Lobby" from the archive viewer
 	archiveChatList widget.List           // the record's preserved chat history
+
+	// Horizontal board strips that scroll when the boards together exceed the
+	// window width (spectator multi-board views and the archive final playfield).
+	specBoardsList     widget.List
+	specTeamBoardsList widget.List
+	archiveBoardsList  widget.List
 }
 
 // New builds the App. The window is created later, in Run, on the UI goroutine.
@@ -304,6 +310,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.gameChatEd.Submit = true
 	a.gameChatList.Axis = layout.Vertical
 	a.gameChatList.ScrollToEnd = true
+	a.specBoardsList.Axis = layout.Horizontal
+	a.specTeamBoardsList.Axis = layout.Horizontal
+	a.archiveBoardsList.Axis = layout.Horizontal
 	return a
 }
 

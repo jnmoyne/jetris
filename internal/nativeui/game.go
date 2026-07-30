@@ -639,12 +639,12 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	}
 	decided := len(view.players) > 1 && elimCount >= len(view.players)-1
 
-	var children []layout.FlexChild
+	var items []layout.Widget
 	for i, p := range view.players {
 		i, p := i, p
 		snap, ok := opps[p.PlayerID]
 		out := eng.IsEliminated(p.PlayerID)
-		children = append(children, layout.Rigid(func(gtx C) D {
+		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
@@ -668,9 +668,9 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 					}),
 				)
 			})
-		}))
+		})
 	}
-	return layout.Flex{}.Layout(gtx, children...)
+	return a.scrollableBoards(gtx, &a.specBoardsList, items)
 }
 
 // boardOverlay centers a compact label chip over a board — the spectator's
@@ -693,6 +693,37 @@ func (a *App) boardOverlay(board layout.Widget, txt string, col colorN) layout.W
 			}),
 		)
 	}
+}
+
+// scrollableBoards lays a horizontal strip of board widgets. While the strip
+// fits the available width it stays centered (the common case); once the boards
+// together are wider than the window it becomes a horizontally scrollable list
+// with a scrollbar, so an overflowing board can be scrolled to instead of
+// spilling past the edge or overlapping its neighbour. Each item carries its
+// own trailing gap.
+func (a *App) scrollableBoards(gtx C, list *widget.List, items []layout.Widget) D {
+	kids := make([]layout.FlexChild, len(items))
+	for i, it := range items {
+		kids[i] = layout.Rigid(it)
+	}
+	// Board widths are fixed by their cell size (independent of the constraints),
+	// so laying the strip out unbounded on the main axis tells us its natural
+	// width — and thus whether it overflows the window.
+	m := gtx
+	m.Constraints.Min = image.Point{}
+	m.Constraints.Max.X = 1 << 20
+	rec := op.Record(gtx.Ops)
+	strip := layout.Flex{}.Layout(m, kids...)
+	rec.Stop() // measure only — discard the recorded ops
+
+	if strip.Size.X <= gtx.Constraints.Max.X {
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			return layout.Flex{}.Layout(gtx, kids...)
+		})
+	}
+	return material.List(a.th, list).Layout(gtx, len(items), func(gtx C, i int) D {
+		return items[i](gtx)
+	})
 }
 
 func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
@@ -755,10 +786,10 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 		{"TEAM A", eng.Snapshot(), true, 0},
 		{"TEAM B", teamB, okB, 1},
 	}
-	var children []layout.FlexChild
+	var items []layout.Widget
 	for _, b := range boards {
 		b := b
-		children = append(children, layout.Rigid(func(gtx C) D {
+		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(a.body(b.label, colMuted)),
@@ -778,9 +809,9 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 					}),
 				)
 			})
-		}))
+		})
 	}
-	return layout.Flex{}.Layout(gtx, children...)
+	return a.scrollableBoards(gtx, &a.specTeamBoardsList, items)
 }
 
 // teamsOutcome reports whether a teams game has been decided — one team fully

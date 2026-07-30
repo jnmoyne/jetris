@@ -103,11 +103,11 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 	}
 	cell := gtx.Dp(unit.Dp(float32(cellDp)))
 
-	var children []layout.FlexChild
+	var items []layout.Widget
 	for _, p := range boards {
 		p := p
 		snap := boardSnapshotFromPicture(p)
-		children = append(children, layout.Rigid(func(gtx C) D {
+		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
@@ -125,9 +125,9 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 					layout.Rigid(a.boardWidget(snap, p.Idx, cell, true, nil, gtx.Now)),
 				)
 			})
-		}))
+		})
 	}
-	return layout.Flex{Alignment: layout.Start}.Layout(gtx, children...)
+	return a.scrollableBoards(gtx, &a.archiveBoardsList, items)
 }
 
 // archiveRoster is the player legend shown to the left of the final playfield:

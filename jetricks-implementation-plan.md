@@ -2163,7 +2163,11 @@ the `screenArchive` viewer (`archive_view.go`), which rebuilds the saved
 `ArchiveRecord.Boards` into `engine.BoardSnapshot`s (`boardSnapshotFromPicture`) and
 redraws the playfield exactly as it stood when that game ended — the single wide board
 for cooperative, one board per player (labeled by ID in player color) for competitive,
-and both team boards for teams. To the LEFT of the boards a player roster
+and both team boards for teams. The multi-board strip is laid by `scrollableBoards`
+(shared with the spectator views): it stays centered while the boards fit, and
+becomes a horizontally scrollable `material.List` (with a scrollbar) once they
+are together wider than the window, so an overflowing board can be scrolled to
+instead of spilling off the edge. To the LEFT of the boards a player roster
 (`archiveRoster`) lists everyone in their board color with the winner(s)
 highlighted — a trophy and a gold name: competitive names are colored by the
 same sorted-by-PlayerID index the boards use (survivors flagged winners), teams
@@ -2489,7 +2493,9 @@ one per team (`TeamCellSubject`) — so the snapshot is complete for every mode.
   headers (swatch colors stay GLOBAL roster colors); HUD shows
   "Teams · TEAM A/B"; the opponent sidebar is the opposing team's shared
   board labelled "OPPOSING TEAM"; spectators get `spectatorTeamBoards` —
-  both teams' boards side by side (centered in the board area), plus
+  both teams' boards side by side (centered in the board area, or
+  horizontally scrollable via `scrollableBoards` when together wider than
+  the window), plus
   `spectatorTeamResultBox` beside the boards once the game is decided
   (winning team or draw via `teamsOutcome`, both teams' final scores, Back
   to Lobby). The `gameOverBox` shows an interim

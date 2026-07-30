@@ -280,25 +280,30 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 		}),
 		layout.Flexed(1, func(gtx C) D {
 			return bordered(gtx, func(gtx C) D {
-				return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
-					for len(a.archiveBtns) <= i {
-						a.archiveBtns = append(a.archiveBtns, widget.Clickable{})
-					}
-					btn := &a.archiveBtns[i]
-					if btn.Clicked(gtx) {
-						a.openArchive(archives[i])
-					}
-					rec := archives[i]
-					return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Flexed(1, a.body(archiveLine(rec), colMuted)),
-							layout.Rigid(hSpacer(8)),
-							layout.Rigid(func(gtx C) D {
-								return a.viewBoardButton(gtx, btn)
-							}),
-						)
-					})
-				})
+				if len(archives) == 0 {
+					return layout.Inset{Top: unit.Dp(6), Left: unit.Dp(4)}.Layout(gtx,
+						a.body("No finished games yet.", colMuted))
+				}
+				// An arcade high-score table: a pixel-font column header over a
+				// scrolling list of games, each row a fixed SCORE / TIME / MODE
+				// column trio (the score largest, in gold) and a flexed
+				// winner-first PLAYERS column, ruled off from the next game.
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(a.archiveHistoryHeader),
+					layout.Rigid(func(gtx C) D { return hrule(gtx, colAccent, 1) }),
+					layout.Flexed(1, func(gtx C) D {
+						return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
+							for len(a.archiveBtns) <= i {
+								a.archiveBtns = append(a.archiveBtns, widget.Clickable{})
+							}
+							btn := &a.archiveBtns[i]
+							if btn.Clicked(gtx) {
+								a.openArchive(archives[i])
+							}
+							return a.archiveHistoryRow(gtx, archives[i], btn)
+						})
+					}),
+				)
 			})
 		}),
 	)
@@ -403,6 +408,262 @@ func archiveWhen(r config.ArchiveRecord) string {
 		s += " · " + d.Round(time.Second).String()
 	}
 	return s
+}
+
+// Column widths (dp) for the arcade-style GAME HISTORY table. SCORE is
+// right-aligned (numbers line up), the rest left-aligned; PLAYERS takes the
+// remaining width and wraps.
+const (
+	histScoreW = 92
+	histTimeW  = 96
+	histModeW  = 124
+)
+
+// fixedCol lays wdg inside a fixed-width (dp) column, aligned by dir.
+func fixedCol(gtx C, w int, dir layout.Direction, wdg layout.Widget) D {
+	cw := gtx.Dp(unit.Dp(w))
+	gtx.Constraints.Min.X = cw
+	gtx.Constraints.Max.X = cw
+	return dir.Layout(gtx, wdg)
+}
+
+// hrule draws a full-width horizontal rule h dp tall in color c — the visual
+// delimiter between history rows (and the header underline).
+func hrule(gtx C, c colorN, h int) D {
+	height := gtx.Dp(unit.Dp(h))
+	w := gtx.Constraints.Max.X
+	fillRect(gtx.Ops, image.Rect(0, 0, w, height), c)
+	return D{Size: image.Pt(w, height)}
+}
+
+// archiveHistoryHeader is the pixel-font column-label row above the history
+// list, aligned to the same column widths as archiveHistoryRow.
+func (a *App) archiveHistoryHeader(gtx C) D {
+	col := func(txt string, w int, dir layout.Direction) layout.FlexChild {
+		return layout.Rigid(func(gtx C) D {
+			return fixedCol(gtx, w, dir, a.pixel(unit.Sp(8), txt, colAccent).Layout)
+		})
+	}
+	return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(5), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			col("SCORE", histScoreW, layout.E),
+			layout.Rigid(hSpacer(10)),
+			col("TIME", histTimeW, layout.W),
+			layout.Rigid(hSpacer(10)),
+			col("MODE", histModeW, layout.W),
+			layout.Rigid(hSpacer(10)),
+			layout.Flexed(1, a.pixel(unit.Sp(8), "PLAYERS", colAccent).Layout),
+		)
+	})
+}
+
+// archiveHistoryRow renders one finished game as a table row: the headline
+// SCORE (largest, gold), the game TIME (duration over date), the MODE, and a
+// flexed winner-first PLAYERS column, closed by a rule separating it from the
+// next game.
+func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn *widget.Clickable) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec)) }),
+					layout.Rigid(hSpacer(10)),
+					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histTimeW, layout.W, a.archiveTimeCell(rec)) }),
+					layout.Rigid(hSpacer(10)),
+					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histModeW, layout.W, a.archiveModeCell(rec)) }),
+					layout.Rigid(hSpacer(10)),
+					layout.Flexed(1, a.archivePlayersCell(rec)),
+					layout.Rigid(hSpacer(8)),
+					layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
+				)
+			})
+		}),
+		layout.Rigid(func(gtx C) D { return hrule(gtx, colBorder, 1) }),
+	)
+}
+
+// archiveScoreCell is the headline SCORE (gold pixel numerals) over a small
+// achieved-level line — the game's most important figure, so the largest.
+func (a *App) archiveScoreCell(r config.ArchiveRecord) layout.Widget {
+	return func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(13), strconv.Itoa(archiveScore(r)), colGold).Layout),
+			layout.Rigid(a.caption(fmt.Sprintf("LVL %d", archiveHeadlineLevel(r)), colMuted)),
+		)
+	}
+}
+
+// archiveTimeCell is the game TIME: the duration (prominent, accent) over the
+// start date (muted).
+func (a *App) archiveTimeCell(r config.ArchiveRecord) layout.Widget {
+	return func(gtx C) D {
+		dur := "—"
+		if d := archiveDuration(r); d > 0 {
+			dur = d.Round(time.Second).String()
+		}
+		var children []layout.FlexChild
+		children = append(children, layout.Rigid(a.body(dur, colAccent)))
+		if !r.StartedAt.IsZero() {
+			children = append(children, layout.Rigid(a.caption(r.StartedAt.Local().Format("01-02 15:04"), colMuted)))
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	}
+}
+
+// archiveModeCell names the MODE (pixel accent) over the player count / team
+// shape (muted).
+func (a *App) archiveModeCell(r config.ArchiveRecord) layout.Widget {
+	return func(gtx C) D {
+		name, sub := "COOPERATIVE", fmt.Sprintf("%d PLAYERS", len(r.Players))
+		switch r.Mode {
+		case config.ModeCompetitive:
+			name = "COMPETITIVE"
+		case config.ModeTeams:
+			name, sub = "TEAMS", fmt.Sprintf("%dv%d", r.TeamSize, r.TeamSize)
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(8), name, colAccent).Layout),
+			layout.Rigid(a.caption(sub, colMuted)),
+		)
+	}
+}
+
+// archivePlayersCell is the flexed PLAYERS column: the winner(s) on the first
+// line (gold, trophy), everyone else below (muted) — see archiveRosterLines.
+func (a *App) archivePlayersCell(r config.ArchiveRecord) layout.Widget {
+	return func(gtx C) D {
+		lines := archiveRosterLines(r)
+		children := make([]layout.FlexChild, 0, len(lines))
+		for _, ln := range lines {
+			children = append(children, layout.Rigid(a.body(ln.text, ln.col)))
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	}
+}
+
+// caption is a small muted-scale label (dates, sub-counts) in the given color.
+func (a *App) caption(txt string, c colorN) layout.Widget {
+	return func(gtx C) D {
+		l := material.Caption(a.th, txt)
+		l.Color = c
+		return l.Layout(gtx)
+	}
+}
+
+// rosterLine is one colored line of a history row's PLAYERS column.
+type rosterLine struct {
+	text string
+	col  colorN
+}
+
+// archiveHeadlineLevel is the level that goes with archiveScore: the shared
+// final level (co-op), the winning team's level (teams; the best if a draw),
+// or the top-scoring player's level (competitive).
+func archiveHeadlineLevel(r config.ArchiveRecord) int {
+	switch r.Mode {
+	case config.ModeCooperative:
+		return r.FinalLevel
+	case config.ModeTeams:
+		if r.WinningTeam >= 0 && r.WinningTeam < len(r.TeamLevels) {
+			return r.TeamLevels[r.WinningTeam]
+		}
+		best := 0
+		for _, l := range r.TeamLevels {
+			if l > best {
+				best = l
+			}
+		}
+		return best
+	}
+	best, found := config.PlayerResult{}, false
+	for _, p := range r.Players {
+		if !found || p.Score > best.Score {
+			best, found = p, true
+		}
+	}
+	return best.Level
+}
+
+// archiveRosterLines builds the PLAYERS column's colored lines for a record,
+// winner(s) first and highlighted in gold: competitive lists players by
+// winner-then-score with each score/level, teams one line per team (winner
+// first, its members and totals), cooperative just the shared roster.
+func archiveRosterLines(r config.ArchiveRecord) []rosterLine {
+	switch r.Mode {
+	case config.ModeTeams:
+		return teamRosterLines(r)
+	case config.ModeCooperative:
+		return coopRosterLines(r)
+	default:
+		return competitiveRosterLines(r)
+	}
+}
+
+func competitiveRosterLines(r config.ArchiveRecord) []rosterLine {
+	players := append([]config.PlayerResult(nil), r.Players...)
+	sort.SliceStable(players, func(i, j int) bool {
+		if players[i].Winner != players[j].Winner {
+			return players[i].Winner // winners first
+		}
+		return players[i].Score > players[j].Score
+	})
+	var winners, rest []string
+	for _, p := range players {
+		s := fmt.Sprintf("%s %d (lvl %d)", agentName(p.PlayerID, p.Agent), p.Score, p.Level)
+		if p.Winner {
+			winners = append(winners, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	var out []rosterLine
+	if len(winners) > 0 {
+		out = append(out, rosterLine{"🏆 " + strings.Join(winners, " · "), colGold})
+	}
+	if len(rest) > 0 {
+		out = append(out, rosterLine{strings.Join(rest, " · "), colMuted})
+	}
+	return out
+}
+
+func teamRosterLines(r config.ArchiveRecord) []rosterLine {
+	order := []int{0, 1}
+	if r.WinningTeam == 1 {
+		order = []int{1, 0} // winning team first
+	}
+	out := make([]rosterLine, 0, len(order))
+	for _, t := range order {
+		var members []string
+		for _, p := range r.Players {
+			if p.Team == t {
+				members = append(members, agentName(p.PlayerID, p.Agent))
+			}
+		}
+		sort.Strings(members)
+		stats := ""
+		if t < len(r.TeamScores) {
+			stats = fmt.Sprintf(" %d", r.TeamScores[t])
+			if t < len(r.TeamLevels) {
+				stats += fmt.Sprintf(" (lvl %d)", r.TeamLevels[t])
+			}
+		}
+		label := fmt.Sprintf("TEAM %s%s — %s", teamName(t), stats, strings.Join(members, ", "))
+		col := colMuted
+		if r.WinningTeam == t {
+			label, col = "🏆 "+label, colGold
+		}
+		out = append(out, rosterLine{label, col})
+	}
+	return out
+}
+
+func coopRosterLines(r config.ArchiveRecord) []rosterLine {
+	members := make([]string, 0, len(r.Players))
+	for _, p := range r.Players {
+		members = append(members, agentName(p.PlayerID, p.Agent))
+	}
+	sort.Strings(members)
+	return []rosterLine{{strings.Join(members, ", "), colFg}}
 }
 
 // archiveLine summarizes a finished game for the history list.

@@ -2142,10 +2142,17 @@ games), chat (lobby-scoped lines plus a message editor — per-game messages are
 filtered out here), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
 archived games with mode, players, and scores — fetched from the
-`JETRICKS_ARCHIVE` stream on lobby load. Each history line is prefixed with the
-game's start date/time in the viewer's local timezone (`2006-01-02 15:04 MST`)
-and its duration (`FinishedAt - StartedAt`, rounded to the second) via
-`archiveWhen`; records missing timestamps omit the prefix. The list is ordered
+`JETRICKS_ARCHIVE` stream on lobby load. It is drawn as an **arcade high-score
+table**: a pixel-font column header (`archiveHistoryHeader` — **SCORE · TIME ·
+MODE · PLAYERS**, aligned to shared `histScoreW`/`histTimeW`/`histModeW` widths
+via `fixedCol`) over one `archiveHistoryRow` per game, each closed by an `hrule`
+so a wrapping PLAYERS column stays visually separate from the next game. Per
+row: `archiveScoreCell` (the headline `archiveScore` in gold pixel numerals —
+the largest figure — over `archiveHeadlineLevel`), `archiveTimeCell`
+(`archiveDuration` over the start date, `01-02 15:04`), `archiveModeCell` (mode
+name over player count / `NvN`), and the flexed `archivePlayersCell`
+(`archiveRosterLines`: the winner(s) first on a gold trophy line, everyone else
+muted below). The list is ordered
 by `sortedArchives`: headline score first (highest on top — `archiveScore`:
 co-op total, best team total for teams, best player score for competitive),
 then, between games with the same score, the one with the **shorter duration**

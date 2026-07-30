@@ -398,7 +398,7 @@ func newUITheme() *material.Theme {
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 	a.win = new(app.Window)
-	a.win.Option(app.Title("Jetricks"), app.Size(unit.Dp(1200), unit.Dp(820)))
+	a.win.Option(app.Title("Jetricks"), app.Size(unit.Dp(1280), unit.Dp(820)))
 
 	a.th = newUITheme()
 

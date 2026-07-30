@@ -68,7 +68,7 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*nats.Conn, jetstream.Je
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if err := EnsureLobbyChatStream(ctx, js); err != nil {
+	if err := EnsureChatStream(ctx, js); err != nil {
 		nc.Close()
 		return nil, nil, nil, fmt.Errorf("ensure lobby chat stream: %w", err)
 	}

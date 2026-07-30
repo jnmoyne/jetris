@@ -272,7 +272,7 @@ func (a *App) loginCollisionContent(gtx C) D {
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{}.Layout(gtx,
 				layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.collisionYes, "Yes, join") }),
-				layout.Rigid(spacer(10)),
+				layout.Rigid(hSpacer(10)),
 				layout.Rigid(func(gtx C) D {
 					return a.secondaryButton(gtx, &a.collisionNo, "Cancel")
 				}),
@@ -494,5 +494,13 @@ func (a *App) editorBox(gtx C, ed *widget.Editor, hint string) D {
 func spacer(n int) layout.Widget {
 	return func(gtx C) D {
 		return layout.Spacer{Height: unit.Dp(n)}.Layout(gtx)
+	}
+}
+
+// hSpacer returns a rigid horizontal spacer widget of n dp (spacer is
+// height-only and adds NO width inside a horizontal flex).
+func hSpacer(n int) layout.Widget {
+	return func(gtx C) D {
+		return layout.Spacer{Width: unit.Dp(n)}.Layout(gtx)
 	}
 }

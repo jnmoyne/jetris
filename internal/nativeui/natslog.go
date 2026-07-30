@@ -22,7 +22,8 @@ type streamMsg struct {
 // msgLogCap bounds the in-memory message log; the panel shows the tail.
 const msgLogCap = 200
 
-// msgPanelHeight is the height of the bottom message strip.
+// msgPanelHeight is the minimum height of the bottom message strip; the strip
+// grows with the window (see natsMsgPanel).
 const msgPanelHeight = 170
 
 // JSON syntax colors for the panel payloads (keys NATS blue, strings NATS
@@ -58,7 +59,9 @@ func (a *App) natsMsgPanel(gtx C) D {
 	msgs := append([]streamMsg(nil), a.msgLog...)
 	a.mu.Unlock()
 
-	h := gtx.Dp(unit.Dp(msgPanelHeight))
+	// Height-reactive: at least msgPanelHeight dp, growing with the window
+	// (20% of the available height) so a taller window shows more messages.
+	h := max(gtx.Dp(unit.Dp(msgPanelHeight)), gtx.Constraints.Max.Y*20/100)
 	gtx.Constraints.Min.Y = h
 	gtx.Constraints.Max.Y = h
 	return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(10)}.Layout(gtx, func(gtx C) D {

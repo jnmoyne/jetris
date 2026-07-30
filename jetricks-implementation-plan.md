@@ -98,9 +98,10 @@ const (
     VisibleRowStart        = 4    // base visible row start (cooperative; competitive adjusts per game)
     StandardWidth          = 10
     LobbyKVBucket          = "JETRICKS_LOBBY"
-    LobbyChatStream        = "JETRICKS_LOBBY_CHAT"
-    LobbyChatSubject       = "jetricks.lobby.chat"
-    LobbyChatMaxAge        = 7 * 24 * time.Hour
+    ChatStream             = "JETRICKS_CHAT"
+    LobbyChatGameID        = "lobby"                // reserved chat "game ID" for the lobby chat
+    LobbyChatSubject       = "jetricks.chat.lobby"  // = GameChatSubject(LobbyChatGameID)
+    ChatMaxAge             = 7 * 24 * time.Hour
     ArchiveStream          = "JETRICKS_ARCHIVE"
     ArchiveSubject         = "jetricks.archive"
     LobbyEventsFilter      = "jetricks.lobby.event.>" // core NATS lobby events (no stream); LobbyEventSubject(kind)
@@ -255,9 +256,10 @@ func CountdownSubject(gameID string) string
 // → "jetricks.game." + gameID + ".countdown"
 
 func GameChatSubject(gameID string) string
-// → "jetricks.lobby.chat.game." + gameID (on the CHAT stream, not the game
-//   stream — game streams keep only the latest message per subject). Lobby and
-//   game chat share one stream, distinguished purely by subject; the consumer
+// → "jetricks.chat." + gameID (on the CHAT stream, not the game stream —
+//   game streams keep only the latest message per subject). Lobby and game
+//   chat share one stream, distinguished purely by the game-ID subject token
+//   (the lobby uses the reserved ID LobbyChatGameID, "lobby"); the consumer
 //   derives the scope via GameIDFromChatSubject(subject) ("" = lobby).
 
 func LobbyPlayerKey(playerID string) string
@@ -724,13 +726,13 @@ jetstream.StreamConfig{
 Use `js.CreateOrUpdateStream(ctx, cfg)` — idempotent if stream already exists with
 compatible config.
 
-`EnsureLobbyChatStream` (carries the lobby chat AND every game's chat,
-distinguished by subject):
+`EnsureChatStream` (carries the lobby chat AND every game's chat,
+distinguished by the game-ID subject token):
 ```go
 jetstream.StreamConfig{
-    Name:     config.LobbyChatStream,
-    Subjects: []string{config.LobbyChatSubject, config.GameChatSubjectFilter},
-    MaxAge:   config.LobbyChatMaxAge,
+    Name:     config.ChatStream,
+    Subjects: []string{config.ChatSubjectFilter},
+    MaxAge:   config.ChatMaxAge,
     Storage:  jetstream.FileStorage,
 }
 ```
@@ -988,7 +990,7 @@ var (
 
 **Integration tests** (`internal/nats/nats_test.go`):
 - `EnsureGameStream` creates a stream that accepts atomic batch publishes.
-- `EnsureLobbyChatStream` creates a stream with correct MaxAge.
+- `EnsureChatStream` creates a stream with correct MaxAge.
 - `EnsureLobbyKV` creates a bucket; a `Put` value is readable back via `Get`.
 - `PublishMeta` succeeds on first publish, returns `ErrCASFailure` on a stale
   expectation.
@@ -2158,8 +2160,9 @@ logo flanking "JETRICKS: peer to peer blackboard system made with NATS.io" in th
 "NATS.io" text in the NATS-blue accent).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
-messages" checkbox. While checked, a 170 dp monospace strip across the bottom of the
-window lists the tail of the messages delivered by the engine's game-stream consumers
+messages" checkbox. While checked, a monospace strip across the bottom of the window
+(at least 170 dp, growing with the window height — like the in-game chat list, which
+grows from its 96 dp minimum) lists the tail of the messages delivered by the engine's game-stream consumers
 (cells, events, meta, countdown, roster — tapped via `engine.tapMsg` → `OnStreamMsg`):
 per line, the message's JetStream stream timestamp (`msg.Metadata().Timestamp`,
 formatted `15:04:05.000`), the subject (accent color), and the raw JSON payload
@@ -2185,7 +2188,7 @@ The palette is a dark blue-black (`colBg` #0d0d16, `colPanel` #16161a-ish) with 
 NATS brand blue (#27aae1) as the accent. The board's cell color math
 (`internal/render` blends over #111111) is unchanged.
 
-**Button styles.** Primary actions (Play, Join, Ready, Create Game, Send) render via
+**Button styles.** Primary actions (Play, Join, Ready, Create, Send) render via
 `primaryButton`: the filled-accent `material.Button` restyled by `pixelize` (square
 corners, pixel face) over a hard shadow. Non-primary actions — the lobby "Spectate"
 and "Quit" buttons, the in-game "Back to Lobby" button, and the login collision-dialog
@@ -2471,7 +2474,10 @@ one per team (`TeamCellSubject`) — so the snapshot is complete for every mode.
   headers (swatch colors stay GLOBAL roster colors); HUD shows
   "Teams · TEAM A/B"; the opponent sidebar is the opposing team's shared
   board labelled "OPPOSING TEAM"; spectators get `spectatorTeamBoards` —
-  both teams' boards side by side. The `gameOverBox` shows an interim
+  both teams' boards side by side (centered in the board area), plus
+  `spectatorTeamResultBox` beside the boards once the game is decided
+  (winning team or draw via `teamsOutcome`, both teams' final scores, Back
+  to Lobby). The `gameOverBox` shows an interim
   "YOU'RE OUT / Your team plays on" while the game is still in progress
   (driven by `UpdatePlayerEliminated` + the engine's interim `Won=false`
   spectator transition), then "YOUR TEAM WON!" / "YOUR TEAM LOST" once the
@@ -2752,11 +2758,12 @@ resident agent's wait-to-be-invited default.
 
 ## Phase 11 — Per-Game Chat
 
-Lobby chat and per-game chat share the `JETRICKS_LOBBY_CHAT` stream,
-distinguished purely by subject: lobby on `jetricks.lobby.chat`, a game's
-messages on `jetricks.lobby.chat.game.<gameID>` (`config.GameChatSubject`; the
-stream config adds `GameChatSubjectFilter`). Game chat cannot live on the game
-stream (MaxMsgsPerSubject: 1 keeps only the latest message).
+Lobby chat and per-game chat share the `JETRICKS_CHAT` stream, distinguished
+purely by the game-ID token of the subject: a game's messages on
+`jetricks.chat.<gameID>` (`config.GameChatSubject`), the lobby's under the
+reserved game ID `lobby` (`jetricks.chat.lobby`; the stream config is the one
+filter `ChatSubjectFilter`). Game chat cannot live on the game stream
+(MaxMsgsPerSubject: 1 keeps only the latest message).
 
 - **lobby:** `ChatMessage.GameID` (`json:"-"`, derived from the delivery
   subject via `config.GameIDFromChatSubject` — "" = lobby); `runChatConsumer`

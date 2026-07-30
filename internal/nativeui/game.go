@@ -234,7 +234,7 @@ func (a *App) confirmLeaveOverlay(gtx C) D {
 							layout.Rigid(func(gtx C) D {
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.leaveYesBtn, "Yes, leave") }),
-									layout.Rigid(spacer(10)),
+									layout.Rigid(hSpacer(10)),
 									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.leaveNoBtn, "No, keep playing") }),
 								)
 							}),
@@ -293,8 +293,11 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, canType bool) D {
 			layout.Rigid(a.header("CHAT")),
 			layout.Rigid(func(gtx C) D {
 				return bordered(gtx, func(gtx C) D {
-					if max := gtx.Dp(96); gtx.Constraints.Max.Y > max {
-						gtx.Constraints.Max.Y = max
+					// Height-reactive: at least 96 dp of chat, growing with the
+					// window (12% of the available height) so a taller window
+					// shows more of the conversation.
+					if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
+						gtx.Constraints.Max.Y = maxH
 					}
 					return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
 						txt, col := chatLine(msgs[i])
@@ -429,7 +432,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 			return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return swatch(gtx, render.PlayerColorRGBA(i), 12) }),
-					layout.Rigid(spacer(6)),
+					layout.Rigid(hSpacer(6)),
 					layout.Rigid(a.body(name, textCol)),
 				)
 			})
@@ -476,7 +479,7 @@ func (a *App) readyArea(gtx C, view gameView) D {
 					return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 							layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
-							layout.Rigid(spacer(8)),
+							layout.Rigid(hSpacer(8)),
 							layout.Rigid(a.readyBadge(p.Ready)),
 						)
 					})
@@ -512,9 +515,29 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// pre-game countdown (and, in coop, the game-over box) must reach the
 	// spectator's screen too.
 	if mode == engine.ModeSpectator && (gmode == config.ModeCompetitive || gmode == config.ModeTeams) {
-		content := func(gtx C) D { return a.spectatorBoards(gtx, eng, view) }
+		inner := func(gtx C) D { return a.spectatorBoards(gtx, eng, view) }
 		if gmode == config.ModeTeams {
-			content = func(gtx C) D { return a.spectatorTeamBoards(gtx, eng, view) }
+			inner = func(gtx C) D { return a.spectatorTeamBoards(gtx, eng, view) }
+		}
+		// The boards must stay centered with or without the countdown Stack:
+		// the direct call receives tight constraints from the enclosing Flexed
+		// slot, which would otherwise pin the boards' Flex to the top-left the
+		// moment the countdown overlay goes away.
+		content := func(gtx C) D { return layout.Center.Layout(gtx, inner) }
+		if gmode == config.ModeTeams {
+			if decided, winner := teamsOutcome(eng, view.players); decided {
+				// Announce the verdict to the spectator in a result box beside
+				// the boards (never over them — the final playfields stay
+				// fully visible).
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, content),
+					layout.Rigid(func(gtx C) D {
+						return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+							return a.spectatorTeamResultBox(gtx, view, winner)
+						})
+					}),
+				)
+			}
 		}
 		if countdownVisible(view, mode) {
 			return layout.Stack{Alignment: layout.Center}.Layout(gtx,
@@ -550,9 +573,15 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	}
 	switch {
 	case view.gameOver:
-		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
-			layout.Expanded(board),
-			layout.Stacked(func(gtx C) D { return a.gameOverBox(gtx, gmode, view, eng.TeamIdx()) }),
+		// The game-over box sits BESIDE the board, not stacked over it: the
+		// final playfield must stay fully visible.
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, board),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+					return a.gameOverBox(gtx, gmode, view, eng.TeamIdx())
+				})
+			}),
 		)
 	case countdownVisible(view, mode):
 		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
@@ -754,9 +783,77 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	return layout.Flex{}.Layout(gtx, children...)
 }
 
-// gameOverBox is the centered overlay shown once the local player is out (or
-// the game is over): title, win/loss message, the final score, and the Back to
-// Lobby button. myTeam is the local player's team index (teams mode only).
+// teamsOutcome reports whether a teams game has been decided — one team fully
+// eliminated — and which team won (-1 for a simultaneous-top-out draw), from
+// the roster and the engine's elimination records. This is how a pure
+// spectator learns the verdict: spectator engines never receive the players'
+// UpdateGameOver (they were never in the game), so the outcome is derived
+// from the same elimination events that drive the OUT/WINNERS board chips.
+func teamsOutcome(eng *engine.Engine, players []lobby.PlayerSummary) (decided bool, winner int) {
+	members := [config.TeamCount]int{}
+	alive := [config.TeamCount]int{}
+	for _, p := range players {
+		if p.Team < 0 || p.Team >= config.TeamCount {
+			continue
+		}
+		members[p.Team]++
+		if !eng.IsEliminated(p.PlayerID) {
+			alive[p.Team]++
+		}
+	}
+	out := func(t int) bool { return members[t] > 0 && alive[t] == 0 }
+	switch {
+	case out(0) && out(1):
+		return true, -1
+	case out(0):
+		return true, 1
+	case out(1):
+		return true, 0
+	}
+	return false, 0
+}
+
+// spectatorTeamResultBox announces a decided teams game to a spectator: the
+// winning team, both teams' final scores, and the Back to Lobby button. Like
+// the player's gameOverBox it sits beside the boards, never over them.
+func (a *App) spectatorTeamResultBox(gtx C, view gameView, winner int) D {
+	msg, c := "DRAW", colMuted
+	if winner >= 0 && winner < config.TeamCount {
+		msg, c = "TEAM "+teamName(winner)+" WINS!", colAccent
+	}
+	score := fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
+		teamName(0), view.teamScores[0], view.teamLevels[0],
+		teamName(1), view.teamScores[1], view.teamLevels[1])
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+			return background(gtx, colBg, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(a.pixel(unit.Sp(18), "GAME OVER", colFg).Layout),
+						layout.Rigid(spacer(10)),
+						layout.Rigid(a.pixel(unit.Sp(12), msg, c).Layout),
+						layout.Rigid(spacer(8)),
+						layout.Rigid(func(gtx C) D {
+							l := material.Body1(a.th, score)
+							l.Color = colGold
+							return l.Layout(gtx)
+						}),
+						layout.Rigid(spacer(14)),
+						layout.Rigid(func(gtx C) D {
+							return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
+						}),
+					)
+				})
+			})
+		})
+	})
+}
+
+// gameOverBox is the panel shown beside the board once the local player is out
+// (or the game is over): title, win/loss message, the final score, and the
+// Back to Lobby button. It is laid out next to the playfield — never over it,
+// so the final board stays fully visible. myTeam is the local player's team
+// index (teams mode only).
 func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam int) D {
 	won := view.won
 	// Teams: a player can be out while their team plays on — show an interim

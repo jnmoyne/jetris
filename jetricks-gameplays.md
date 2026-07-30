@@ -316,7 +316,7 @@ created → starting → [countdown] → in_progress → finished → archived
 
 | From | To | Trigger |
 |------|----|---------|
-| — | created | Player clicks "Create Game" (open) or "Create & Invite" (invite-only) |
+| — | created | Player clicks "Create" (open, or invite-only when the checkbox is set) |
 | created | starting | All player slots filled (roster full; in teams mode, both teams full). A join into an already-full game is refused |
 | starting | [countdown] | All players click READY |
 | [countdown] | in_progress | 5-second countdown completes |
@@ -339,8 +339,8 @@ An abandoned game's lobby row is marked `· abandoned` in red and grows a red **
 ### Creating a Game: Open vs. Invite-Only
 
 A game is created **open** (anyone in the lobby may join it) or **invite-only**. The
-create row's **"Invite only"** checkbox chooses; when checked the button reads
-**"Create & Invite"**.
+create row's **"Invite only"** checkbox chooses; the **"Create"** button reads the
+same either way.
 
 - **Open games** work as always: they list in the lobby with Join/Spectate buttons,
   and (for the applicable modes) an agent policy — the **"Allow agents"** checkbox and
@@ -502,7 +502,7 @@ Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or
 
 ## 6b. Chat
 
-There are two chat scopes, sharing one NATS stream and distinguished purely by subject naming: the **lobby chat** (`jetricks.lobby.chat`, shown on the lobby screen) and a **per-game chat** (`jetricks.lobby.chat.game.<gameID>`), seen only by that game's players and spectators.
+There are two chat scopes, sharing one NATS stream (`JETRICKS_CHAT`) and distinguished purely by the game-ID token of the subject (`jetricks.chat.<gameID>`): the **lobby chat** (the reserved game ID `lobby`, i.e. `jetricks.chat.lobby`, shown on the lobby screen) and a **per-game chat** (`jetricks.chat.<gameID>`), seen only by that game's players and spectators.
 
 On the game screen (player or spectator) a chat strip is displayed at the bottom:
 
@@ -549,7 +549,7 @@ Any player in the lobby can spectate an in-progress game:
 - Spectators see the same real-time playfield updates as players
 - **Countdown:** the pre-game 5..0/GO! countdown is drawn over the spectator's boards exactly as over a player's board (a spectator who joins before the game starts sees the same start moment everyone else does)
 - **Eliminations:** an eliminated player's board (competitive) — or a fully eliminated team's board (teams) — carries a centered **OUT** chip in the spectator's multi-board view; the board itself stays fully visible under it
-- **Winner:** once the game is decided, the surviving player's board reads **WINNER** (competitive) and the surviving team's board **WINNERS** (teams); a simultaneous-top-out draw shows every board OUT with no winner
+- **Winner:** once the game is decided, the surviving player's board reads **WINNER** (competitive) and the surviving team's board **WINNERS** (teams); a simultaneous-top-out draw shows every board OUT with no winner. In teams a spectator additionally gets an explicit **GAME OVER** result box beside the boards (never covering them) naming the winning team with both teams' final scores and a Back to Lobby button
 - The HUD keeps a "Back to Lobby" button, so a spectator can leave the game and return to the lobby at any time
 
 ---

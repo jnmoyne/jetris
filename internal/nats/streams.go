@@ -32,14 +32,14 @@ func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 	return err
 }
 
-// EnsureLobbyChatStream creates the chat stream. It carries BOTH the lobby
-// chat and every game's chat, distinguished purely by subject (lobby messages
-// on LobbyChatSubject, per-game messages on GameChatSubject).
-func EnsureLobbyChatStream(ctx context.Context, js jetstream.JetStream) error {
+// EnsureChatStream creates the chat stream. It carries BOTH the lobby chat
+// and every game's chat, distinguished purely by the game-ID subject token
+// (the lobby uses the reserved ID "lobby", games their own ID).
+func EnsureChatStream(ctx context.Context, js jetstream.JetStream) error {
 	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     config.LobbyChatStream,
-		Subjects: []string{config.LobbyChatSubject, config.GameChatSubjectFilter},
-		MaxAge:   config.LobbyChatMaxAge,
+		Name:     config.ChatStream,
+		Subjects: []string{config.ChatSubjectFilter},
+		MaxAge:   config.ChatMaxAge,
 		Storage:  jetstream.FileStorage,
 	})
 	return err
@@ -77,7 +77,7 @@ func DeleteGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 // PurgeGameChat removes one game's chat messages from the shared chat stream
 // (they live there under a per-game subject, not on the game stream).
 func PurgeGameChat(ctx context.Context, js jetstream.JetStream, gameID string) error {
-	s, err := js.Stream(ctx, config.LobbyChatStream)
+	s, err := js.Stream(ctx, config.ChatStream)
 	if err != nil {
 		return err
 	}

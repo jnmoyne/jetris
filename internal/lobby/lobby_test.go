@@ -29,7 +29,7 @@ func setupLobby(t *testing.T) (*Lobby, jetstream.JetStream) {
 	}
 
 	ctx := context.Background()
-	if err := natspkg.EnsureLobbyChatStream(ctx, js); err != nil {
+	if err := natspkg.EnsureChatStream(ctx, js); err != nil {
 		t.Fatal(err)
 	}
 	kv, err := natspkg.EnsureLobbyKV(ctx, js)

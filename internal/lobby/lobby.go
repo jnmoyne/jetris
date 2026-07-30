@@ -317,7 +317,7 @@ func (l *Lobby) runChatConsumer(ctx context.Context) {
 	// UI re-reads ChatLog — a dropped ping delays the repaint instead of
 	// losing the message.
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, l.js, natspkg.OrderedConsumerConfig{
-		Stream: config.LobbyChatStream,
+		Stream: config.ChatStream,
 	})
 	if err != nil {
 		log.Printf("chat consumer error: %v", err)

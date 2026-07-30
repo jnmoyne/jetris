@@ -471,18 +471,26 @@ func (a *App) invitePickerOverlay(gtx C) D {
 									return a.body("No other players are in the lobby right now.", colMuted)(gtx)
 								}
 								gtx.Constraints.Max.Y = gtx.Dp(240)
-								return material.List(a.th, &a.inviteList).Layout(gtx, len(ids), func(gtx C, i int) D {
+								// Overlay the scrollbar instead of reserving a lane for
+								// it (Occupy): list rows then span the full width, so
+								// their Invite checkboxes right-align with the pinned
+								// self row's Play checkbox above.
+								l := material.List(a.th, &a.inviteList)
+								l.AnchorStrategy = material.Overlay
+								return l.Layout(gtx, len(ids), func(gtx C, i int) D {
 									c := picker[ids[i]]
 									return a.inviteRow(gtx, c, pickerRowStatus(g, invites, c.playerID), teams)
 								})
 							}),
 							layout.Rigid(spacer(14)),
 							layout.Rigid(func(gtx C) D {
+								// The hint is the Flexed child so it wraps if space is
+								// tight; the buttons stay at their natural width.
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Rigid(a.body("The game starts on its own once every seat is filled and ready.", colMuted)),
-									layout.Flexed(1, func(gtx C) D { return D{} }),
+									layout.Flexed(1, a.body("The game starts on its own once every seat is filled and ready.", colMuted)),
+									layout.Rigid(hSpacer(8)),
 									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.inviteCancelBtn, "Cancel game") }),
-									layout.Rigid(spacer(8)),
+									layout.Rigid(hSpacer(8)),
 									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.inviteCloseBtn, "Close") }),
 								)
 							}),
@@ -519,7 +527,7 @@ func (a *App) inviteSelfRow(gtx C, g lobby.GameListing, selfName string, teams b
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
 					layout.Rigid(a.body("You ("+selfName+")", colFg)),
-					layout.Rigid(spacer(8)),
+					layout.Rigid(hSpacer(8)),
 					layout.Rigid(a.body(status, statusCol)),
 				)
 			}),
@@ -532,9 +540,9 @@ func (a *App) inviteSelfRow(gtx C, g lobby.GameListing, selfName string, teams b
 				}
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "", "—")),
-					layout.Rigid(spacer(6)),
+					layout.Rigid(hSpacer(6)),
 					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "0", "A")),
-					layout.Rigid(spacer(6)),
+					layout.Rigid(hSpacer(6)),
 					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "1", "B")),
 				)
 			}),
@@ -583,9 +591,9 @@ func (a *App) inviteRow(gtx C, c *inviteChoice, st inviteRowStatus, teams bool) 
 				// Teams: a three-way — not invited / team A / team B.
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(a.teamRadio(&c.team, "", "—")),
-					layout.Rigid(spacer(6)),
+					layout.Rigid(hSpacer(6)),
 					layout.Rigid(a.teamRadio(&c.team, "0", "A")),
-					layout.Rigid(spacer(6)),
+					layout.Rigid(hSpacer(6)),
 					layout.Rigid(a.teamRadio(&c.team, "1", "B")),
 				)
 			}),
@@ -656,7 +664,7 @@ func (a *App) incomingInviteOverlay(gtx C, inv *lobby.Invitation) D {
 							layout.Rigid(func(gtx C) D {
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.inviteDeclineBtn, "Decline") }),
-									layout.Rigid(spacer(10)),
+									layout.Rigid(hSpacer(10)),
 									layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.inviteAcceptBtn, "Accept & Play") }),
 								)
 							}))

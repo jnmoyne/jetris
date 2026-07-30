@@ -70,10 +70,10 @@ func (a *App) lobbyBanner(gtx C) D {
 		return layout.Center.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
-				layout.Rigid(spacer(10)),
+				layout.Rigid(hSpacer(10)),
 				layout.Rigid(a.pixel(unit.Sp(12), " JETRICKS: peer to peer blackboard system made with ", colFg).Layout),
 				layout.Rigid(a.pixel(unit.Sp(12), "NATS.io ", colAccent).Layout),
-				layout.Rigid(spacer(10)),
+				layout.Rigid(hSpacer(10)),
 				layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
 			)
 		})

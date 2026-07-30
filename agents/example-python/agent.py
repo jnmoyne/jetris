@@ -57,7 +57,7 @@ DIFFICULTY = "easy"  # one fixed strength; the label is part of the name
 LOBBY_BUCKET = "JETRICKS_LOBBY"
 ARCHIVE_STREAM = "JETRICKS_ARCHIVE"
 ARCHIVE_SUBJECT = "jetricks.archive"
-CHAT_STREAM = "JETRICKS_LOBBY_CHAT"
+CHAT_STREAM = "JETRICKS_CHAT"
 WIDTH = 10                    # competitive boards are always 10 wide
 HEADROOM = 4                  # rows 0..3 are the hidden spawn headroom
 GRAVITY_SECONDS = 0.8         # competitive gravity is fixed at level 0 (800 ms)
@@ -895,7 +895,7 @@ class Game:
             pass
         try:
             await self.a.js.purge_stream(CHAT_STREAM,
-                                         subject=f"jetricks.lobby.chat.game.{self.id}")
+                                         subject=f"jetricks.chat.{self.id}")
         except Exception:
             pass
         log(f"archived game {self.id}")

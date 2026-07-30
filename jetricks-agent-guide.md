@@ -190,7 +190,7 @@ discipline.
 | Resource | Kind | Purpose |
 |----------|------|---------|
 | `JETRICKS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game) |
-| `JETRICKS_LOBBY_CHAT` | stream | lobby chat (`jetricks.lobby.chat`) + per-game chat (`….game.<gameID>`) |
+| `JETRICKS_CHAT` | stream | all chat on `jetricks.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby` |
 | `JETRICKS_ARCHIVE` | stream | finished-game records (`jetricks.archive`) |
 | `JETRICKS_GAME_<gameID>` | stream | the blackboard: `jetricks.game.<gameID>.>`, memory storage, **MaxMsgsPerSubject: 1**, atomic publish + direct get enabled |
 | `jetricks.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |

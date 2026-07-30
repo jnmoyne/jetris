@@ -200,7 +200,7 @@ func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.Chat
 				layout.Flexed(1, func(gtx C) D {
 					return a.editorBox(gtx, &a.chatEd, "Message…")
 				}),
-				layout.Rigid(spacer(6)),
+				layout.Rigid(hSpacer(6)),
 				layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.chatBtn, "Send") }),
 			)
 		}),
@@ -251,19 +251,19 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 			// grouped right beside it.
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(a.header("GAME HISTORY")),
-				layout.Rigid(spacer(12)),
+				layout.Rigid(hSpacer(12)),
 				layout.Rigid(func(gtx C) D {
 					rb := material.RadioButton(a.th, &a.histSortEnum, "score", "By score")
 					rb.Color = colFg
 					return rb.Layout(gtx)
 				}),
-				layout.Rigid(spacer(6)),
+				layout.Rigid(hSpacer(6)),
 				layout.Rigid(func(gtx C) D {
 					rb := material.RadioButton(a.th, &a.histSortEnum, "date", "By date")
 					rb.Color = colFg
 					return rb.Layout(gtx)
 				}),
-				layout.Rigid(spacer(10)),
+				layout.Rigid(hSpacer(10)),
 				layout.Rigid(func(gtx C) D {
 					cb := material.CheckBox(a.th, &a.histAgentsCb, "Agent games")
 					cb.Color = colFg
@@ -286,7 +286,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 					return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 							layout.Flexed(1, a.body(archiveLine(rec), colMuted)),
-							layout.Rigid(spacer(8)),
+							layout.Rigid(hSpacer(8)),
 							layout.Rigid(func(gtx C) D {
 								return a.viewBoardButton(gtx, btn)
 							}),
@@ -466,76 +466,85 @@ func (a *App) createRow(gtx C) D {
 	if a.modeEnum.Value == "teams" {
 		countLabel = "Per team:"
 	}
+	// The Create button is a top-level Rigid (measured before the Flexed
+	// options), so no combination of options can squish it — when width runs
+	// short, the options row gives, never the button.
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Flexed(1, a.createOptions(countLabel)),
+		layout.Rigid(hSpacer(10)),
 		layout.Rigid(func(gtx C) D {
-			rb := material.RadioButton(a.th, &a.modeEnum, "cooperative", "Co-op")
-			rb.Color = colFg
-			return rb.Layout(gtx)
-		}),
-		layout.Rigid(spacer(6)),
-		layout.Rigid(func(gtx C) D {
-			rb := material.RadioButton(a.th, &a.modeEnum, "competitive", "Competitive")
-			rb.Color = colFg
-			return rb.Layout(gtx)
-		}),
-		layout.Rigid(spacer(6)),
-		layout.Rigid(func(gtx C) D {
-			rb := material.RadioButton(a.th, &a.modeEnum, "teams", "Teams")
-			rb.Color = colFg
-			return rb.Layout(gtx)
-		}),
-		layout.Rigid(spacer(12)),
-		layout.Rigid(a.body(countLabel, colMuted)),
-		layout.Rigid(spacer(4)),
-		layout.Rigid(func(gtx C) D {
-			gtx.Constraints.Max.X = gtx.Dp(48)
-			gtx.Constraints.Min.X = gtx.Dp(48)
-			return a.editorBox(gtx, &a.countEd, "2")
-		}),
-		// Agent policy: whether idle jetricks-agent players may take seats, and at
-		// most how many.
-		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(spacer(12)),
-				layout.Rigid(func(gtx C) D {
-					cb := material.CheckBox(a.th, &a.allowAgentsCb, "Allow agents")
-					cb.Color = colFg
-					cb.IconColor = colAccent
-					return cb.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					if !a.allowAgentsCb.Value {
-						return D{}
-					}
-					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(spacer(8)),
-						layout.Rigid(a.body("Max:", colMuted)),
-						layout.Rigid(spacer(4)),
-						layout.Rigid(func(gtx C) D {
-							gtx.Constraints.Max.X = gtx.Dp(40)
-							gtx.Constraints.Min.X = gtx.Dp(40)
-							return a.editorBox(gtx, &a.maxAgentsEd, "1")
-						}),
-					)
-				}),
-			)
-		}),
-		layout.Rigid(spacer(12)),
-		layout.Rigid(func(gtx C) D {
-			cb := material.CheckBox(a.th, &a.inviteOnlyCb, "Invite only")
-			cb.Color = colFg
-			cb.IconColor = colAccent
-			return cb.Layout(gtx)
-		}),
-		layout.Rigid(spacer(10)),
-		layout.Rigid(func(gtx C) D {
-			label := "Create Game"
-			if a.inviteOnlyCb.Value {
-				label = "Create & Invite"
-			}
-			return a.primaryButton(gtx, &a.createBtn, label)
+			return a.primaryButton(gtx, &a.createBtn, "Create")
 		}),
 	)
+}
+
+// createOptions is the game-creation option cluster to the left of the Create
+// button: mode radios, seat count, agent policy, and the invite-only toggle.
+func (a *App) createOptions(countLabel string) layout.Widget {
+	return func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				rb := material.RadioButton(a.th, &a.modeEnum, "cooperative", "Co-op")
+				rb.Color = colFg
+				return rb.Layout(gtx)
+			}),
+			layout.Rigid(hSpacer(6)),
+			layout.Rigid(func(gtx C) D {
+				rb := material.RadioButton(a.th, &a.modeEnum, "competitive", "Competitive")
+				rb.Color = colFg
+				return rb.Layout(gtx)
+			}),
+			layout.Rigid(hSpacer(6)),
+			layout.Rigid(func(gtx C) D {
+				rb := material.RadioButton(a.th, &a.modeEnum, "teams", "Teams")
+				rb.Color = colFg
+				return rb.Layout(gtx)
+			}),
+			layout.Rigid(hSpacer(12)),
+			layout.Rigid(a.body(countLabel, colMuted)),
+			layout.Rigid(hSpacer(4)),
+			layout.Rigid(func(gtx C) D {
+				gtx.Constraints.Max.X = gtx.Dp(48)
+				gtx.Constraints.Min.X = gtx.Dp(48)
+				return a.editorBox(gtx, &a.countEd, "2")
+			}),
+			// Agent policy: whether idle jetricks-agent players may take seats, and at
+			// most how many.
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(hSpacer(12)),
+					layout.Rigid(func(gtx C) D {
+						cb := material.CheckBox(a.th, &a.allowAgentsCb, "Allow agents")
+						cb.Color = colFg
+						cb.IconColor = colAccent
+						return cb.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						if !a.allowAgentsCb.Value {
+							return D{}
+						}
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(hSpacer(8)),
+							layout.Rigid(a.body("Max:", colMuted)),
+							layout.Rigid(hSpacer(4)),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Max.X = gtx.Dp(40)
+								gtx.Constraints.Min.X = gtx.Dp(40)
+								return a.editorBox(gtx, &a.maxAgentsEd, "1")
+							}),
+						)
+					}),
+				)
+			}),
+			layout.Rigid(hSpacer(12)),
+			layout.Rigid(func(gtx C) D {
+				cb := material.CheckBox(a.th, &a.inviteOnlyCb, "Invite only")
+				cb.Color = colFg
+				cb.IconColor = colAccent
+				return cb.Layout(gtx)
+			}),
+		)
+	}
 }
 
 // invitedTo reports whether this player holds a pending invitation to gameID.
@@ -707,7 +716,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 								layout.Rigid(func(gtx C) D {
 									return a.teamJoinButton(gtx, &btns.joinA, g, 0)
 								}),
-								layout.Rigid(spacer(6)),
+								layout.Rigid(hSpacer(6)),
 								layout.Rigid(func(gtx C) D {
 									return a.teamJoinButton(gtx, &btns.joinB, g, 1)
 								}),
@@ -768,7 +777,7 @@ func (a *App) inviteStatusRows(gtx C, g lobby.GameListing, invites []lobby.Invit
 			return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(a.body(label, col)),
-					layout.Rigid(spacer(8)),
+					layout.Rigid(hSpacer(8)),
 					layout.Rigid(func(gtx C) D { return a.smallActionButton(gtx, btn, action, col) }),
 				)
 			})

@@ -33,7 +33,7 @@ func setupLobbies(t *testing.T, n int) []*Lobby {
 			t.Fatal(err)
 		}
 		if i == 0 {
-			if err := natspkg.EnsureLobbyChatStream(ctx, js); err != nil {
+			if err := natspkg.EnsureChatStream(ctx, js); err != nil {
 				t.Fatal(err)
 			}
 		}

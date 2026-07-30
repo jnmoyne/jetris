@@ -20,7 +20,7 @@ func TestBootstrapURL(t *testing.T) {
 	t.Cleanup(nc.Close)
 
 	// The three provisioned resources must exist and be usable.
-	if _, err := js.Stream(ctx, config.LobbyChatStream); err != nil {
+	if _, err := js.Stream(ctx, config.ChatStream); err != nil {
 		t.Fatalf("lobby chat stream missing: %v", err)
 	}
 	if _, err := js.Stream(ctx, config.ArchiveStream); err != nil {

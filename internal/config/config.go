@@ -184,11 +184,12 @@ const (
 	StandardWidth   = 10
 
 	LobbyKVBucket     = "JETRICKS_LOBBY"
-	LobbyChatStream   = "JETRICKS_LOBBY_CHAT"
-	LobbyChatSubject  = "jetricks.lobby.chat"
+	ChatStream        = "JETRICKS_CHAT"
+	LobbyChatGameID   = "lobby" // reserved chat "game ID" for the lobby chat (real game IDs are UUIDs, so no collision)
+	LobbyChatSubject  = chatSubjectPrefix + LobbyChatGameID
 	ArchiveStream     = "JETRICKS_ARCHIVE"
 	ArchiveSubject    = "jetricks.archive"
-	LobbyChatMaxAge   = 7 * 24 * time.Hour
+	ChatMaxAge        = 7 * 24 * time.Hour
 	PresenceHeartbeat = 5 * time.Second
 )
 
@@ -329,25 +330,31 @@ func FlashSubjectFilter(gameID string) string {
 	return "jetricks.flash." + gameID + ".*"
 }
 
-// Lobby chat and per-game chat share the SAME stream (LobbyChatStream) and are
-// distinguished purely by subject: lobby messages on LobbyChatSubject, a
-// game's messages on GameChatSubject(gameID). Game chat cannot live on the
-// game stream because game streams keep only the latest message per subject.
+// Lobby chat and per-game chat share the SAME stream (ChatStream) and are
+// distinguished purely by the game-ID token of the subject
+// ("jetricks.chat.<gameID>"): the lobby chat uses the reserved game ID
+// LobbyChatGameID ("lobby"), a game's messages use its own ID. Game chat
+// cannot live on the game stream because game streams keep only the latest
+// message per subject.
+
+const chatSubjectPrefix = "jetricks.chat."
 
 // GameChatSubject is the subject one game's chat messages are published to.
 func GameChatSubject(gameID string) string {
-	return LobbyChatSubject + ".game." + gameID
+	return chatSubjectPrefix + gameID
 }
 
-// GameChatSubjectFilter matches every game's chat subject (stream config).
-const GameChatSubjectFilter = LobbyChatSubject + ".game.*"
+// ChatSubjectFilter matches every chat subject, lobby and per-game alike
+// (stream config).
+const ChatSubjectFilter = chatSubjectPrefix + "*"
 
 // GameIDFromChatSubject extracts the game ID from a chat-stream subject; it
 // returns "" for the lobby chat subject.
 func GameIDFromChatSubject(subject string) string {
-	const prefix = LobbyChatSubject + ".game."
-	if len(subject) > len(prefix) && subject[:len(prefix)] == prefix {
-		return subject[len(prefix):]
+	if len(subject) > len(chatSubjectPrefix) && subject[:len(chatSubjectPrefix)] == chatSubjectPrefix {
+		if id := subject[len(chatSubjectPrefix):]; id != LobbyChatGameID {
+			return id
+		}
 	}
 	return ""
 }

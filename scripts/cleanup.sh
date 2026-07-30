@@ -23,8 +23,10 @@ nats stream ls $NATS_ARGS -j 2>/dev/null \
       nats stream rm "$stream" $NATS_ARGS -f
     done
 
-echo "Deleting lobby chat stream..."
-nats stream rm JETRICKS_LOBBY_CHAT $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRICKS_LOBBY_CHAT" || echo "  JETRICKS_LOBBY_CHAT not found (ok)"
+echo "Deleting chat stream..."
+nats stream rm JETRICKS_CHAT $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRICKS_CHAT" || echo "  JETRICKS_CHAT not found (ok)"
+# Legacy name from before the rename to JETRICKS_CHAT.
+nats stream rm JETRICKS_LOBBY_CHAT $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRICKS_LOBBY_CHAT (legacy)" || true
 
 echo "Deleting lobby KV bucket..."
 nats kv rm JETRICKS_LOBBY $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRICKS_LOBBY" || echo "  JETRICKS_LOBBY not found (ok)"

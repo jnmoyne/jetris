@@ -97,7 +97,7 @@ func TestDeleteGame(t *testing.T) {
 	if _, err := lb.kv.Get(ctx, config.LobbyGameKey(gameID)); !errors.Is(err, jetstream.ErrKeyNotFound) {
 		t.Errorf("KV listing still exists (err=%v)", err)
 	}
-	chat, err := js.Stream(ctx, config.LobbyChatStream)
+	chat, err := js.Stream(ctx, config.ChatStream)
 	if err != nil {
 		t.Fatal(err)
 	}

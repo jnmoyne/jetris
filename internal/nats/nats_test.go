@@ -51,19 +51,19 @@ func TestEnsureGameStream(t *testing.T) {
 	}
 }
 
-func TestEnsureLobbyChatStream(t *testing.T) {
+func TestEnsureChatStream(t *testing.T) {
 	js := setupJS(t)
 	ctx := context.Background()
-	if err := EnsureLobbyChatStream(ctx, js); err != nil {
+	if err := EnsureChatStream(ctx, js); err != nil {
 		t.Fatal(err)
 	}
-	s, err := js.Stream(ctx, config.LobbyChatStream)
+	s, err := js.Stream(ctx, config.ChatStream)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info := s.CachedInfo()
-	if info.Config.MaxAge != config.LobbyChatMaxAge {
-		t.Errorf("MaxAge = %v, want %v", info.Config.MaxAge, config.LobbyChatMaxAge)
+	if info.Config.MaxAge != config.ChatMaxAge {
+		t.Errorf("MaxAge = %v, want %v", info.Config.MaxAge, config.ChatMaxAge)
 	}
 }
 
@@ -312,7 +312,7 @@ func TestListGameStreams(t *testing.T) {
 	EnsureGameStream(ctx, js, "game-a")
 	EnsureGameStream(ctx, js, "game-b")
 	// Also create the lobby chat stream (should not appear)
-	EnsureLobbyChatStream(ctx, js)
+	EnsureChatStream(ctx, js)
 
 	names, err := ListGameStreams(ctx, js)
 	if err != nil {

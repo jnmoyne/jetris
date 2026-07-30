@@ -26,7 +26,8 @@ func TestSubjectBuilders(t *testing.T) {
 		{"RosterSubject", RosterSubject(gameID, playerID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.roster.a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
 		{"EventsSubject", EventsSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.events"},
 		{"CountdownSubject", CountdownSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.countdown"},
-		{"GameChatSubject", GameChatSubject(gameID), "jetricks.lobby.chat.game.550e8400-e29b-41d4-a716-446655440000"},
+		{"GameChatSubject", GameChatSubject(gameID), "jetricks.chat.550e8400-e29b-41d4-a716-446655440000"},
+		{"LobbyChatSubject", LobbyChatSubject, "jetricks.chat.lobby"},
 		{"LobbyPlayerKey", LobbyPlayerKey(playerID), "players.a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
 		{"LobbyGameKey", LobbyGameKey(gameID), "games.550e8400-e29b-41d4-a716-446655440000"},
 	}
@@ -77,7 +78,7 @@ func TestGameIDFromChatSubject(t *testing.T) {
 	if got := GameIDFromChatSubject(GameChatSubject("g-42")); got != "g-42" {
 		t.Errorf("game subject: got %q, want g-42", got)
 	}
-	if got := GameIDFromChatSubject("jetricks.lobby.chat.game."); got != "" {
+	if got := GameIDFromChatSubject("jetricks.chat."); got != "" {
 		t.Errorf("empty game token: got %q, want empty", got)
 	}
 }

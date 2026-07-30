@@ -2154,7 +2154,13 @@ the `screenArchive` viewer (`archive_view.go`), which rebuilds the saved
 `ArchiveRecord.Boards` into `engine.BoardSnapshot`s (`boardSnapshotFromPicture`) and
 redraws the playfield exactly as it stood when that game ended — the single wide board
 for cooperative, one board per player (labeled by ID in player color) for competitive,
-and both team boards for teams. A "Back to Lobby" `secondaryButton` returns. A centered
+and both team boards for teams. To the LEFT of the boards a player roster
+(`archiveRoster`) lists everyone in their board color with the winner(s)
+highlighted — a trophy and a gold name: competitive names are colored by the
+same sorted-by-PlayerID index the boards use (survivors flagged winners), teams
+are grouped under color-matched TEAM A / TEAM B headers (the winning team's
+header and members in gold), and cooperative players list plainly (one shared
+board — no per-player color, no winner). A "Back to Lobby" `secondaryButton` returns. A centered
 branding banner spans the top of both the lobby and the archive screen: the nats.io "N"
 logo flanking "JETRICKS: peer to peer blackboard system made with NATS.io" in the pixel face (the
 "NATS.io" text in the NATS-blue accent).

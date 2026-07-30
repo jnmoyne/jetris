@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"fmt"
+	"sort"
 
 	"gioui.org/layout"
 	"gioui.org/unit"
@@ -60,18 +61,25 @@ func (a *App) layoutArchive(gtx C) D {
 						return a.archiveBoards(gtx, rec.Boards)
 					})
 				}
-				if len(rec.Chat) == 0 {
-					return boards(gtx)
-				}
-				// Boards center-stage, the preserved conversation beside them.
-				return layout.Flex{}.Layout(gtx,
-					layout.Flexed(1, boards),
+				// The player roster sits to the LEFT of the boards (names in
+				// their board colors, winners highlighted); the preserved chat,
+				// when there is any, to the right — boards center-stage.
+				children := []layout.FlexChild{
 					layout.Rigid(func(gtx C) D {
+						return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+							return a.archiveRoster(gtx, *rec)
+						})
+					}),
+					layout.Flexed(1, boards),
+				}
+				if len(rec.Chat) > 0 {
+					children = append(children, layout.Rigid(func(gtx C) D {
 						gtx.Constraints.Max.X = gtx.Dp(320)
 						gtx.Constraints.Min.X = gtx.Dp(320)
 						return a.archiveChatPanel(gtx, rec.Chat)
-					}),
-				)
+					}))
+				}
+				return layout.Flex{}.Layout(gtx, children...)
 			}),
 			layout.Rigid(spacer(14)),
 			layout.Rigid(func(gtx C) D {
@@ -120,6 +128,107 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 		}))
 	}
 	return layout.Flex{Alignment: layout.Start}.Layout(gtx, children...)
+}
+
+// archiveRoster is the player legend shown to the left of the final playfield:
+// each player's name in its board color, winners marked with a trophy and
+// their name in gold. Competitive players are colored by the same
+// sorted-by-PlayerID index the boards use (see archive.buildBoardPictures);
+// teams players are grouped under their color-matched TEAM A / TEAM B header,
+// the winning team's header in gold; cooperative players share one board, so
+// they list plainly (no per-player color, no winner) under a PLAYERS header.
+func (a *App) archiveRoster(gtx C, rec config.ArchiveRecord) D {
+	gtx.Constraints.Min.X = gtx.Dp(190)
+	gtx.Constraints.Max.X = gtx.Dp(190)
+	var children []layout.FlexChild
+	switch rec.Mode {
+	case config.ModeTeams:
+		children = a.rosterTeams(rec)
+	case config.ModeCooperative:
+		children = a.rosterCoop(rec)
+	default:
+		children = a.rosterCompetitive(rec)
+	}
+	return bordered(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	})
+}
+
+// archivePlayerRow is one legend line: a color swatch, the player's name (agent
+// marker included), and — for a winner — a leading trophy and a gold name.
+func (a *App) archivePlayerRow(name string, col colorN, winner bool) layout.FlexChild {
+	return layout.Rigid(func(gtx C) D {
+		textCol := colFg
+		if winner {
+			textCol = colGold
+			name = "🏆 " + name
+		}
+		return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, func(gtx C) D { return swatch(gtx, col, 12) })
+				}),
+				layout.Rigid(hSpacer(8)),
+				layout.Flexed(1, a.body(name, textCol)),
+			)
+		})
+	})
+}
+
+// rosterCompetitive lists every player under a single PLAYERS header, colored
+// by the board index (sorted PlayerID order), survivors flagged as winners.
+func (a *App) rosterCompetitive(rec config.ArchiveRecord) []layout.FlexChild {
+	players := append([]config.PlayerResult(nil), rec.Players...)
+	sort.Slice(players, func(i, j int) bool { return players[i].PlayerID < players[j].PlayerID })
+	children := []layout.FlexChild{layout.Rigid(a.header("PLAYERS"))}
+	for i, p := range players {
+		children = append(children, a.archivePlayerRow(agentName(p.PlayerID, p.Agent), render.PlayerColorRGBA(i), p.Winner))
+	}
+	return children
+}
+
+// rosterCoop lists the cooperative players plainly — one shared board means no
+// per-player color and no winner.
+func (a *App) rosterCoop(rec config.ArchiveRecord) []layout.FlexChild {
+	players := append([]config.PlayerResult(nil), rec.Players...)
+	sort.Slice(players, func(i, j int) bool { return players[i].PlayerID < players[j].PlayerID })
+	children := []layout.FlexChild{layout.Rigid(a.header("PLAYERS"))}
+	for _, p := range players {
+		children = append(children, a.archivePlayerRow(agentName(p.PlayerID, p.Agent), colMuted, false))
+	}
+	return children
+}
+
+// rosterTeams groups players under their color-matched TEAM A / TEAM B header;
+// the winning team's header and members are highlighted in gold.
+func (a *App) rosterTeams(rec config.ArchiveRecord) []layout.FlexChild {
+	var children []layout.FlexChild
+	for t := 0; t < config.TeamCount; t++ {
+		t := t
+		teamCol := render.PlayerColorRGBA(t)
+		won := rec.WinningTeam == t
+		hdrCol := teamCol
+		if won {
+			hdrCol = colGold
+		}
+		if t > 0 {
+			children = append(children, layout.Rigid(spacer(10)))
+		}
+		children = append(children, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, a.pixel(unit.Sp(9), "TEAM "+teamName(t), hdrCol).Layout)
+		}))
+		var members []config.PlayerResult
+		for _, p := range rec.Players {
+			if p.Team == t {
+				members = append(members, p)
+			}
+		}
+		sort.Slice(members, func(i, j int) bool { return members[i].PlayerID < members[j].PlayerID })
+		for _, p := range members {
+			children = append(children, a.archivePlayerRow(agentName(p.PlayerID, p.Agent), teamCol, won))
+		}
+	}
+	return children
 }
 
 // archiveChatPanel renders the record's preserved chat history — the game's

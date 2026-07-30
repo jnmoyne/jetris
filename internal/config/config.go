@@ -190,7 +190,7 @@ const (
 	ArchiveStream     = "JETRICKS_ARCHIVE"
 	ArchiveSubject    = "jetricks.archive"
 	ChatMaxAge        = 7 * 24 * time.Hour
-	PresenceHeartbeat = 5 * time.Second
+	PresenceHeartbeat = 30 * time.Second
 )
 
 // Abandoned-game detection: every client re-checks the lobby's games on a

@@ -606,6 +606,11 @@ func (a *App) quit() {
 	a.mu.Unlock()
 
 	if lb != nil {
+		// Delete our presence NOW (connection still up) so other clients get an
+		// immediate KV delete event, rather than waiting for the presence TTL.
+		leaveCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		lb.Leave(leaveCtx)
+		cancel()
 		lb.Stop()
 	}
 	if lobbyCancel != nil {
@@ -670,6 +675,10 @@ func (a *App) teardown() {
 		eng.Stop()
 	}
 	if lb != nil {
+		// Remove our presence before draining so watchers see us leave at once.
+		leaveCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		lb.Leave(leaveCtx)
+		cancel()
 		lb.Stop()
 	}
 	if lobbyCancel != nil {

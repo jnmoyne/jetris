@@ -237,7 +237,8 @@ const (
     ArchiveStream          = "JETRICKS_ARCHIVE"
     ArchiveSubject         = "jetricks.archive"
     ChatMaxAge             = 7 * 24 * time.Hour
-    PresenceHeartbeat      = 5 * time.Second
+    PresenceHeartbeat      = 30 * time.Second
+    PresenceTTL            = 5 * time.Minute  // per-key TTL on presence entries (KV LimitMarkerTTL)
 )
 
 // Abandoned-game detection (see lobby.runAbandonedChecker): every client
@@ -484,7 +485,7 @@ Validation is implemented in `config.ValidatePlayerName(name) error`.
 ### Flow
 
 1. App starts → login screen is shown (no lobby exists yet)
-2. Player enters a name → the name shape is validated (`config.ValidatePlayerName`) and then the lobby KV is checked (`lobby.IsNameInUse`) for an active player presence entry with the same name (case-insensitive, whitespace-trimmed). Stale presence entries — `LastSeen` older than 3× `config.PresenceHeartbeat` — are ignored so unclean shutdowns don't permanently block the name.
+2. Player enters a name → the name shape is validated (`config.ValidatePlayerName`) and then the lobby KV is checked (`lobby.IsNameInUse`) for a player presence entry with the same name (case-insensitive, whitespace-trimmed). A present key means an active player; stale entries self-expire via the presence TTL (below), so there is no `LastSeen` check — an unclean shutdown's entry frees the name once its TTL lapses.
 3. If the name collides with an active player, a confirmation prompt ("a user with this name is already in the lobby — join anyway?") with **Yes, join** / **Cancel** is shown. **Yes, join** forces login, skipping the collision check. (The UI sets an internal force flag and retries the login.)
 4. On success, the lobby is created and the app moves to the lobby screen.
 
@@ -595,9 +596,13 @@ func PurgeGameChat(ctx context.Context, js jetstream.JetStream, gameID string) e
 ```go
 // EnsureLobbyKV creates or retrieves the lobby KV bucket.
 func EnsureLobbyKV(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error)
+
+// PutLobbyPresence writes a presence value with a per-message TTL
+// (config.PresenceTTL) — a plain KV put that self-expires.
+func PutLobbyPresence(ctx context.Context, js jetstream.JetStream, key string, data []byte) error
 ```
 
-The KV bucket is created with only `Bucket` and `Storage: FileStorage` — no bucket-level TTL and no `DeleteMarkerTTL` (game listings must persist indefinitely). Presence staleness is handled in application code instead: each player refreshes its presence entry on the heartbeat, and the presence watcher prunes entries whose `LastSeen` timestamp is older than 3× the heartbeat interval (`pruneStalePresence`).
+The bucket has **no bucket-wide TTL** (game/invite keys must persist) but **per-key TTL is enabled** via `LimitMarkerTTL: config.PresenceTTL`. Presence liveness is now the KV layer's job, not application code: each heartbeat writes the presence key with a fresh `PresenceTTL` (via `PutLobbyPresence`, which publishes straight to the key's `$KV.<bucket>.<key>` subject with `jetstream.WithMsgTTL` — the KV client's `Put`/`Update` drop the TTL header). If a client stops beating, the server deletes the key ~5 min later and emits a delete marker every watcher observes, so a dead client vanishes from the lobby with no `LastSeen` bookkeeping and no `pruneStalePresence`. Game/invite keys, written with plain `Put`, carry no TTL and live on. (Enabling per-key TTL sets `AllowMsgTTL`/`SubjectDeleteMarkerTTL` on the `KV_JETRICKS_LOBBY` stream.)
 
 #### `consumer.go`
 
@@ -1642,18 +1647,21 @@ The maps are unexported and accessed only through `Players()` and `Games()`, ens
 #### `presence.go`
 
 ```go
-// runHeartbeat publishes a presence update to the lobby KV bucket every
-// PresenceHeartbeat interval and, each tick, calls pruneStalePresence. On
-// context cancellation it deletes the local player's presence key and returns.
+// runHeartbeat writes a presence update to the lobby KV bucket every
+// PresenceHeartbeat interval via PutLobbyPresence (each write carries a fresh
+// PresenceTTL). On context cancellation it best-effort-deletes the local
+// player's presence key and returns. There is no pruneStalePresence — stale
+// entries are removed by the KV per-key TTL.
 func (l *Lobby) runHeartbeat(ctx context.Context)
 
-// pruneStalePresence drops players whose LastSeen is older than 3× the heartbeat
-// interval (the local player is never pruned). This is how stale entries expire,
-// in place of any KV TTL.
-func (l *Lobby) pruneStalePresence()
+// Leave deletes this player's presence key immediately so other clients' KV
+// watchers get a delete event right away (instead of waiting for the TTL).
+// Called synchronously from the UI's quit/teardown while the connection is up.
+func (l *Lobby) Leave(ctx context.Context)
 
-// IsNameInUse reports whether an active (non-stale) presence entry already uses
-// the given name (case-insensitive, whitespace-trimmed).
+// IsNameInUse reports whether a presence entry already uses the given name
+// (case-insensitive, whitespace-trimmed). A present key = an active player;
+// stale entries self-expire via the TTL, so there is no LastSeen check.
 func IsNameInUse(ctx context.Context, kv jetstream.KeyValue, name string) (bool, error)
 
 type PlayerPresence struct {
@@ -1661,7 +1669,7 @@ type PlayerPresence struct {
     Name     string         `json:"name"`
     Status   PresenceStatus `json:"status"`
     GameID   string         `json:"game_id,omitempty"` // non-empty if in a game or spectating
-    LastSeen time.Time      `json:"last_seen"`         // heartbeat timestamp; staleness check
+    LastSeen time.Time      `json:"last_seen"`         // heartbeat timestamp (informational; liveness is the KV TTL)
 }
 
 type PresenceStatus int

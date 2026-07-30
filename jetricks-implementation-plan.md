@@ -107,7 +107,8 @@ const (
     LobbyEventsFilter      = "jetricks.lobby.event.>" // core NATS lobby events (no stream); LobbyEventSubject(kind)
     InviteTTL              = 2 * time.Minute          // invitations at invites.<invitee>.<gameID> (LobbyInviteKey)
 
-    PresenceHeartbeat      = 5 * time.Second
+    PresenceHeartbeat      = 30 * time.Second
+    PresenceTTL            = 5 * time.Minute          // per-key TTL on presence entries (KV LimitMarkerTTL); a client that stops beating self-expires
 
     // Abandoned-game detection (lobby.runAbandonedChecker)
     AbandonedCheckInterval    = 1 * time.Minute   // how often each client re-checks
@@ -303,10 +304,10 @@ overly long names are rejected.
 
 Login (`nativeui.App.doLogin`) calls `lobby.IsNameInUse(ctx, kv, name) (bool, error)`
 after the shape validation. The function lists `players.*` keys in the lobby KV bucket
-and returns true if any active presence entry has a matching `Name`
-(case-insensitive, whitespace-trimmed). Stale entries — `LastSeen` older than
-3× `config.PresenceHeartbeat` — are skipped so a previous unclean shutdown
-doesn't permanently block re-entry under the same name. An empty bucket
+and returns true if any presence entry has a matching `Name`
+(case-insensitive, whitespace-trimmed). A present key IS an active player —
+stale entries self-expire via the presence TTL (below), so mere existence is the
+liveness test and there is no `LastSeen` comparison. An empty bucket
 (`jetstream.ErrNoKeysFound`) is treated as "no one in the lobby".
 
 If `IsNameInUse` returns true (and the login was not forced), the login screen
@@ -759,19 +760,33 @@ and filter by prefix.
 
 ```go
 func EnsureLobbyKV(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-    // No bucket-level TTL — game listings must persist indefinitely. Player
-    // presence entries are kept fresh by heartbeats; stale entries are detected
-    // by comparing LastSeen timestamps in the presence logic, not by KV TTL.
+    // No bucket-wide TTL — game/invite keys must persist. Instead enable
+    // PER-KEY TTL (LimitMarkerTTL): presence keys are written with a
+    // per-message TTL so they self-expire, while game/invite keys (written
+    // without a TTL) live on. LimitMarkerTTL also makes the server emit a
+    // watchable delete marker on TTL expiry, so watchers learn a player left.
     return js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-        Bucket:  config.LobbyKVBucket,
-        Storage: jetstream.FileStorage,
+        Bucket:         config.LobbyKVBucket,
+        Storage:        jetstream.FileStorage,
+        LimitMarkerTTL: config.PresenceTTL,
     })
 }
+
+// PutLobbyPresence writes a presence value with a per-message TTL. The KV
+// client's Put/Update drop the TTL header (only Create carries one, once), so
+// this publishes straight to the key's KV subject ("$KV.<bucket>.<key>") with
+// jetstream.WithMsgTTL(config.PresenceTTL). Semantically a plain KV put.
+func PutLobbyPresence(ctx context.Context, js jetstream.JetStream, key string, data []byte) error
 ```
 
-Note: the bucket has no TTL or delete-marker TTL. Presence staleness is handled
-in application logic (`LastSeen` timestamps + `pruneStalePresence`) rather than by
-the KV layer, so a heartbeat refresh simply rewrites the entry.
+Presence liveness is now enforced by the **KV layer**, not application logic:
+each heartbeat write carries a fresh `config.PresenceTTL` (5 min), so the entry
+self-expires ~5 min after the last beat and the server emits a delete marker
+every watcher sees — no `LastSeen` bookkeeping, no `pruneStalePresence`. On a
+clean quit the client also deletes its own key (`Lobby.Leave`) for an immediate
+delete event. `LastSeen` remains on the presence value as informational data
+only. (Enabling per-key TTL sets `AllowMsgTTL`/`SubjectDeleteMarkerTTL` on the
+underlying `KV_JETRICKS_LOBBY` stream.)
 
 #### `consumer.go`
 
@@ -1894,9 +1909,14 @@ members belong to the given team).
 
 #### `presence.go`
 
-`runHeartbeat`: every `config.PresenceHeartbeat`, call `l.kv.Put(ctx, key, value)`.
-The value is JSON-encoded `PlayerPresence`. On context cancellation, delete the key
-(so presence expires immediately rather than waiting for TTL).
+`runHeartbeat`: every `config.PresenceHeartbeat` (30 s), write the JSON-encoded
+`PlayerPresence` via `natspkg.PutLobbyPresence(ctx, l.js, key, value)` — a KV put
+carrying a fresh `config.PresenceTTL` (5 min), so if this client stops beating
+the server deletes the key ~5 min later and every watcher is notified. No
+`pruneStalePresence`, no `LastSeen` comparison. On context cancellation it still
+best-effort-deletes the key; `Lobby.Leave(ctx)` (called synchronously from the
+UI's quit/teardown while the connection is up) deletes it explicitly so other
+clients get the delete event at once rather than after the TTL.
 
 #### `lobby.go`
 

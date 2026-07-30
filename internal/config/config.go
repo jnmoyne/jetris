@@ -191,6 +191,13 @@ const (
 	ArchiveSubject    = "jetricks.archive"
 	ChatMaxAge        = 7 * 24 * time.Hour
 	PresenceHeartbeat = 30 * time.Second
+	// PresenceTTL is the per-key expiry on lobby presence entries: a player's
+	// presence key self-deletes this long after its last heartbeat, so a client
+	// that crashes or drops off is removed from the lobby by the server (a KV
+	// TTL-expiry delete event) without any client watching last-seen timestamps.
+	// Comfortably longer than PresenceHeartbeat so a live client is never
+	// dropped between beats.
+	PresenceTTL = 5 * time.Minute
 )
 
 // Abandoned-game detection: every client re-checks the lobby's games on a

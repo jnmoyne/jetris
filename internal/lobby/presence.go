@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetricks/internal/config"
+	natspkg "jetricks/internal/nats"
 )
 
 // PresenceStatus represents the player's current state.
@@ -42,43 +43,38 @@ func (l *Lobby) runHeartbeat(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// On shutdown, delete our presence key
+			// Best-effort removal on any context cancellation (Leave already
+			// deletes it explicitly on a clean quit; this covers the rest).
+			// Otherwise the presence TTL removes it a few minutes later.
 			delCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = l.kv.Delete(delCtx, config.LobbyPlayerKey(l.playerID))
 			cancel()
 			return
 		case <-ticker.C:
 			l.publishPresence(ctx)
-			l.pruneStalePresence()
 		}
 	}
 }
 
-// pruneStalePresence removes players whose LastSeen is older than 3× the heartbeat interval.
-func (l *Lobby) pruneStalePresence() {
-	threshold := time.Now().Add(-3 * config.PresenceHeartbeat)
-	l.mu.Lock()
-	changed := false
-	for id, p := range l.players {
-		if id == l.playerID {
-			continue // never prune ourselves
-		}
-		if !p.LastSeen.IsZero() && p.LastSeen.Before(threshold) {
-			delete(l.players, id)
-			changed = true
-		}
+// Leave removes this player's presence entry from the lobby KV immediately, so
+// other clients' KV watchers get a delete event and drop the player from their
+// display right away instead of waiting for the presence TTL to expire. Call it
+// (synchronously, while the connection is still up) before tearing down.
+func (l *Lobby) Leave(ctx context.Context) {
+	if l.kv == nil {
+		return
 	}
-	l.mu.Unlock()
-	if changed {
-		l.emitUpdate(LobbyUpdate{Kind: LobbyUpdatePlayers})
+	if err := l.kv.Delete(ctx, config.LobbyPlayerKey(l.playerID)); err != nil {
+		log.Printf("delete presence on leave: %v", err)
 	}
 }
 
-// IsNameInUse scans the lobby KV for active player presence entries with a
-// matching display name. "Active" means LastSeen is within 3× the heartbeat
-// interval — stale entries from unclean shutdowns are ignored. Used by the
-// login flow to warn before accepting a duplicate name. The lookup is
-// case-insensitive and trims whitespace to match config.ValidatePlayerName.
+// IsNameInUse scans the lobby KV for a player presence entry with a matching
+// display name. A present key means an active player: stale entries self-expire
+// via the presence TTL, so mere existence is the liveness test — no last-seen
+// check. Used by the login flow to warn before accepting a duplicate name. The
+// lookup is case-insensitive and trims whitespace to match
+// config.ValidatePlayerName.
 func IsNameInUse(ctx context.Context, kv jetstream.KeyValue, name string) (bool, error) {
 	target := strings.ToLower(strings.TrimSpace(name))
 	if target == "" {
@@ -93,7 +89,6 @@ func IsNameInUse(ctx context.Context, kv jetstream.KeyValue, name string) (bool,
 		}
 		return false, err
 	}
-	threshold := time.Now().Add(-3 * config.PresenceHeartbeat)
 	for _, key := range keys {
 		if !strings.HasPrefix(key, "players.") {
 			continue
@@ -105,9 +100,6 @@ func IsNameInUse(ctx context.Context, kv jetstream.KeyValue, name string) (bool,
 		var p PlayerPresence
 		if err := json.Unmarshal(entry.Value(), &p); err != nil {
 			continue
-		}
-		if !p.LastSeen.IsZero() && p.LastSeen.Before(threshold) {
-			continue // stale entry, treat the slot as free
 		}
 		if strings.ToLower(strings.TrimSpace(p.Name)) == target {
 			return true, nil
@@ -133,8 +125,10 @@ func (l *Lobby) publishPresence(ctx context.Context) {
 		log.Printf("marshal presence: %v", err)
 		return
 	}
-	_, err = l.kv.Put(ctx, config.LobbyPlayerKey(l.playerID), data)
-	if err != nil {
+	// Write with a per-key TTL (not a plain Put) so the entry self-expires if
+	// this client stops heart-beating — the server then removes it and every
+	// watcher is notified, no last-seen bookkeeping needed.
+	if err := natspkg.PutLobbyPresence(ctx, l.js, config.LobbyPlayerKey(l.playerID), data); err != nil {
 		log.Printf("publish presence: %v", err)
 	}
 }

@@ -88,6 +88,72 @@ func TestEnsureLobbyKV(t *testing.T) {
 	}
 }
 
+// TestLobbyPresenceTTL verifies the lobby bucket has per-key TTL enabled and
+// that a presence-style write with a per-message TTL actually self-expires
+// (server-side removal), while a plain Put keeps its value.
+func TestLobbyPresenceTTL(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	kv, err := EnsureLobbyKV(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Per-key TTL / delete markers must be enabled on the bucket.
+	st, err := kv.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LimitMarkerTTL() != config.PresenceTTL {
+		t.Errorf("LimitMarkerTTL = %v, want %v", st.LimitMarkerTTL(), config.PresenceTTL)
+	}
+
+	// A plain (game/invite-style) key has no TTL and must persist.
+	if _, err := kv.Put(ctx, "games.persist", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a presence key straight to its KV subject with a short TTL (the
+	// same mechanism PutLobbyPresence uses, just a testable duration) and
+	// confirm it expires while the plain key survives.
+	subj := lobbyKVSubject("players.ttltest")
+	if _, err := js.Publish(ctx, subj, []byte("{}"), jetstream.WithMsgTTL(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kv.Get(ctx, "players.ttltest"); err != nil {
+		t.Fatalf("presence key should exist right after write: %v", err)
+	}
+
+	time.Sleep(2 * time.Second) // TTL (1s) + margin for the expiry sweep
+	if _, err := kv.Get(ctx, "players.ttltest"); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Errorf("presence key should have expired, got err=%v", err)
+	}
+	if _, err := kv.Get(ctx, "games.persist"); err != nil {
+		t.Errorf("plain key should NOT expire: %v", err)
+	}
+}
+
+// TestPutLobbyPresence writes a presence value with the production TTL and
+// confirms it reads back through the KV layer as a normal value.
+func TestPutLobbyPresence(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	kv, err := EnsureLobbyKV(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PutLobbyPresence(ctx, js, "players.alice", []byte(`{"name":"alice"}`)); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := kv.Get(ctx, "players.alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(entry.Value()) != `{"name":"alice"}` {
+		t.Errorf("value mismatch: %q", entry.Value())
+	}
+}
+
 func TestPublishMetaCAS(t *testing.T) {
 	js := setupJS(t)
 	ctx := context.Background()

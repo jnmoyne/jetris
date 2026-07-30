@@ -439,6 +439,19 @@ subscribes and turns foreign events into immediate refresh pings, so player
 availability, rosters, and invitation state update in real time (the KV watcher
 remains the source of truth; presence heartbeats alone would lag by seconds).
 
+### Presence & liveness
+
+Each player writes a presence entry (`players.<id>`) to the lobby KV and refreshes
+it on a heartbeat. **Liveness is enforced by the KV itself, not by any client
+watching timestamps:** every presence write carries a per-key **TTL of 5 minutes**,
+so if a client crashes or drops off the network the server deletes its entry a few
+minutes after the last heartbeat and every other client's KV watcher gets a delete
+event — the player simply disappears from the lobby, no last-seen bookkeeping. When
+a player **actively leaves** (quits the lobby / closes the window) the client
+deletes its own presence key right then, so others see the departure immediately
+rather than waiting out the TTL. (Game listings and invitations live in the same
+bucket but are written without a TTL, so they persist until explicitly removed.)
+
 ### Leaving and Rejoining a Game
 
 "Back to Lobby" does not give up your seat while the game is alive:

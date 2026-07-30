@@ -107,6 +107,12 @@ func (a *App) layoutLobby(gtx C) D {
 			id := g.GameID
 			go a.spectateGame(id)
 		}
+		if btns.reinvite.Clicked(gtx) {
+			// Re-open the picker for this already-created invite-only game so
+			// the creator can invite more players after joining and returning
+			// to the lobby.
+			a.reopenInvitePicker(g)
+		}
 		if btns.del.Clicked(gtx) {
 			a.confirmDeleteID = g.GameID
 		}
@@ -587,6 +593,11 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	rejoin := joined && gameAlive(g.Status)
 	canSpectate := !rejoin && (g.Status == config.GameStatusInProgress ||
 		(joinable && len(g.Players) >= g.PlayerCount))
+	// The creator of an invite-only game that still has open seats can re-open
+	// the invitee picker to send more invitations — even after joining and
+	// returning to the lobby (the picker only opens automatically at creation).
+	canReinvite := g.InviteOnly && lb != nil && me == g.CreatorID &&
+		joinable && len(g.Players) < g.PlayerCount
 
 	teams := g.Mode == config.ModeTeams
 	// In an invite-only game every roster member was let in by name, so spell
@@ -701,6 +712,14 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 			layout.Flexed(1, infoCol),
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						if !canReinvite {
+							return D{}
+						}
+						return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+							return a.secondaryButton(gtx, &btns.reinvite, "Invite")
+						})
+					}),
 					layout.Rigid(func(gtx C) D {
 						if rejoin {
 							// Back into the seat we already hold (any mode —

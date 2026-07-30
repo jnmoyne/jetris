@@ -139,6 +139,79 @@ func (a *App) openInvitePicker(mode config.GameMode, count int) {
 	a.invalidate()
 }
 
+// reopenInvitePicker re-opens the invitee picker for an invite-only game the
+// creator already made — so more players can be invited after the creator has
+// joined and gone "Back to Lobby" (the picker only opens on its own at
+// creation). Unlike openInvitePicker it neither creates the game nor forces a
+// seat: it seeds the picker from the existing listing and mirrors the current
+// state — pending invitations show checked, the creator's own row reflects
+// whether they presently hold a seat — so no spurious retract/join fires.
+func (a *App) reopenInvitePicker(g lobby.GameListing) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	mode := g.Mode
+	teams := mode == config.ModeTeams
+	playerCount, teamSize := g.PlayerCount, 0
+	if teams {
+		teamSize = g.TeamSize
+	}
+	invites := lb.SentInvites(g.GameID)
+
+	// Keep everyone involved with THIS game listed (roster members show as
+	// "joined", pending invitees as "invited") even when their presence reads
+	// "in game".
+	keep := make(map[string]bool, len(g.Players)+len(invites))
+	for _, p := range g.Players {
+		keep[p.PlayerID] = true
+	}
+	for _, inv := range invites {
+		keep[inv.InviteeID] = true
+	}
+	picker := make(map[string]*inviteChoice)
+	reconcileInvitePicker(picker, lb.Players(), lb.PlayerID(), keep)
+
+	// Mirror each still-pending invitation onto its candidate widget so the row
+	// renders checked and the per-frame handler sees no change (declined ones
+	// stay unchecked — the declined marker shows, re-selecting re-invites).
+	for _, inv := range invites {
+		c, ok := picker[inv.InviteeID]
+		if !ok || inv.Declined {
+			continue
+		}
+		if teams {
+			c.team.Value = fmt.Sprintf("%d", inv.Team)
+			c.lastTeam = c.team.Value
+		} else {
+			c.sel.Value, c.lastSel = true, true
+		}
+	}
+
+	// The creator's own row: checked only if they currently hold a seat.
+	me := lb.PlayerID()
+	selfTeam := ""
+	for _, p := range g.Players {
+		if p.PlayerID == me {
+			selfTeam = fmt.Sprintf("%d", p.Team)
+		}
+	}
+
+	a.mu.Lock()
+	a.invitePickerGameID = g.GameID
+	a.invitePicker = picker
+	a.invitePickerMode = mode
+	a.invitePickerPC = playerCount
+	a.invitePickerTS = teamSize
+	a.invitePickerErr = ""
+	a.inviteSelfSel.Value = selfTeam != ""
+	a.inviteSelfLastSel = selfTeam != ""
+	a.inviteSelfTeam.Value = selfTeam
+	a.inviteSelfLastTeam = selfTeam
+	a.mu.Unlock()
+	a.invalidate()
+}
+
 // reconcileInvitePicker updates the candidate map in place against the live
 // lobby presence: it adds every newly-eligible player (in the lobby, not in a
 // game, not yourself), drops anyone who left or joined some OTHER game, and

@@ -368,7 +368,11 @@ same either way.
   refuses a selection that would over-fill the game or a team. **Close** puts the
   picker away without touching anything (the game keeps filling; its lobby row
   carries the same live status); **Cancel game** retracts every outstanding
-  invitation and deletes the just-created game. **When the last seat fills, the
+  invitation and deletes the just-created game. The creator can always **re-open
+  the picker** later: while the game still has open seats its lobby row carries an
+  **Invite** button (so more players can be invited after the creator has joined
+  and gone back to the lobby — the picker reopens with the pending invitations
+  and the creator's own seat already reflected). **When the last seat fills, the
   picker hands the creator over automatically**: to the game screen (ready
   selection) if they kept their own seat, or to **spectating** the game if they
   deselected themselves. The invited game's lobby row is tagged **· invite only**
@@ -458,7 +462,7 @@ remains the source of truth; presence heartbeats alone would lag by seconds).
 
 1. Players join the game and see the game page with a "WAITING FOR PLAYERS" header
 2. Each player's ready state is shown as a filled pill badge next to their name: green "READY" / red "NOT READY"
-3. Players toggle READY/NOT READY by clicking the button
+3. Players toggle their own state by clicking the button, which reads "READY TO PLAY" (when not yet ready) / "NOT READY TO PLAY" (when ready, i.e. click to stand down)
 4. Ready state is stored in the KV game listing with CAS (prevents lost updates)
 5. When ALL players are ready: countdown begins, ready toggle is locked
 6. **Countdown:** 5...4...3...2...1...GO! (published to NATS countdown subject, consumed by all engines)

@@ -86,6 +86,7 @@ type gameRowBtns struct {
 	joinA    widget.Clickable // teams mode: join team A
 	joinB    widget.Clickable // teams mode: join team B
 	spectate widget.Clickable
+	reinvite widget.Clickable // invite-only creator: re-open the invitee picker
 	del      widget.Clickable // abandoned games: opens the delete confirmation
 	delYes   widget.Clickable // delete confirmation: "Yes, delete"
 	delNo    widget.Clickable // delete confirmation: "Cancel"

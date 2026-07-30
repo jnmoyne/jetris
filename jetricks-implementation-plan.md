@@ -2005,7 +2005,9 @@ ready via `ToggleReadyResult{AllReady, Players, MyReady}`. Advancing to
 `in_progress` is done separately by `StartGame(ctx, gameID)`, which transitions
 meta to `in_progress` (setting `StartedAt`). The native UI renders each
 player's state in the pre-game checklist as a filled pill badge (green
-"READY" / red "NOT READY" — `readyBadge` in `nativeui/game.go`).
+"READY" / red "NOT READY" — `readyBadge` in `nativeui/game.go`); the player's
+own toggle button (`readyArea`) reads "READY TO PLAY" when not yet ready and
+"NOT READY TO PLAY" when ready (click to stand down).
 
 **Abandoned-game detection & deletion.** `runAbandonedChecker` (goroutine,
 started by `Start`) re-evaluates every listed game once per
@@ -2704,7 +2706,12 @@ Invite-only games and player invitations, layered on the existing lobby KV.
   roster fills, the picker closes itself and hands the creator over — `joinGame`
   (ready screen) if they kept their seat, `spectateGame` if not. "Close" hides the
   overlay non-destructively; "Cancel game" retracts all invitations
-  (`cancelInviteGame`) and deletes the game. The incoming pop-up (driven by
+  (`cancelInviteGame`) and deletes the game. A creator who closed the picker
+  (or joined and went back to the lobby) can re-open it via an **Invite** button
+  on the game's lobby row while it still has open seats (`reopenInvitePicker`):
+  it seeds the picker from the existing listing without re-creating the game or
+  forcing a seat, pre-checking the pending invitations and reflecting the
+  creator's current seat. The incoming pop-up (driven by
   `MyInvites`, oldest first, next surfacing once answered) lists the game's
   current roster and offers Accept & Play / Decline. Lobby game rows tag
   invite-only games, gate Join to creator/invitee, mark roster names

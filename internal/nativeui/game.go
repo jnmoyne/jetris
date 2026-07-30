@@ -464,9 +464,9 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 }
 
 func (a *App) readyArea(gtx C, view gameView) D {
-	label := "READY"
+	label := "READY TO PLAY"
 	if view.myReady {
-		label = "NOT READY"
+		label = "NOT READY TO PLAY"
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.readyBtn, label) }),

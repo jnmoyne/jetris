@@ -3,9 +3,9 @@ package nativeui
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
 
+	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -32,6 +32,12 @@ type inviteChoice struct {
 	lastSel  bool
 	lastTeam string
 }
+
+// inviteRowHeight is the fixed content height (dp) of every picker row. It
+// matches the natural height of the Invite control (a material checkbox is
+// Size 26 + 2dp inset each side = 30dp) so a row doesn't shrink when the
+// control disappears the moment its player joins.
+const inviteRowHeight = 30
 
 // inviteRowStatus is the live state of one picker row, derived from the
 // game's roster and the invitations sent (pickerRowStatus).
@@ -96,10 +102,10 @@ func inviteSeatUsage(g lobby.GameListing, invites []lobby.Invitation, teams bool
 }
 
 // openInvitePicker creates the invite-only game and opens the invitee picker
-// over the lobby. The creator starts SELECTED: creating an invitation game
-// implies accepting your own invitation, so a seat is taken immediately (team
-// A in teams mode); deselect yourself to host without playing. Runs off the
-// UI goroutine (create and the self-join do NATS round trips).
+// over the lobby. The creator starts UNSELECTED — hosting without playing, so
+// they'll spectate once the game fills; select yourself to also take a seat.
+// No seat is taken at creation. Runs off the UI goroutine (create does a NATS
+// round trip).
 func (a *App) openInvitePicker(mode config.GameMode, count int) {
 	gameID := a.createGame(mode, count, 0, true) // invite-only: agent policy is per-invite
 	if gameID == "" {
@@ -119,11 +125,8 @@ func (a *App) openInvitePicker(mode config.GameMode, count int) {
 	picker := make(map[string]*inviteChoice)
 	reconcileInvitePicker(picker, lb.Players(), lb.PlayerID(), nil)
 
-	// Take our own seat right away (self pre-selected as invited+accepted).
-	if _, err := lb.JoinGame(context.Background(), gameID, 0); err != nil {
-		log.Printf("join own invite game: %v", err)
-	}
-
+	// The creator takes no seat by default: they host and will spectate unless
+	// they select themselves (which fires selfSeat via the per-frame handler).
 	a.mu.Lock()
 	a.invitePickerGameID = gameID
 	a.invitePicker = picker
@@ -131,10 +134,10 @@ func (a *App) openInvitePicker(mode config.GameMode, count int) {
 	a.invitePickerPC = playerCount
 	a.invitePickerTS = teamSize
 	a.invitePickerErr = ""
-	a.inviteSelfSel.Value = true
-	a.inviteSelfLastSel = true
-	a.inviteSelfTeam.Value = "0"
-	a.inviteSelfLastTeam = "0"
+	a.inviteSelfSel.Value = false
+	a.inviteSelfLastSel = false
+	a.inviteSelfTeam.Value = ""
+	a.inviteSelfLastTeam = ""
 	a.mu.Unlock()
 	a.invalidate()
 }
@@ -512,10 +515,28 @@ func (a *App) invitePickerOverlay(gtx C) D {
 	if teams {
 		title = "INVITE PLAYERS TO TEAMS"
 	}
+	// Seat tally, broken out so the header shows joined / invited / open at a
+	// glance (usage counts joined + pending together; joined is the roster).
 	usage := inviteSeatUsage(g, invites, teams)
-	capLine := fmt.Sprintf("%d of %d seats taken (joined or invited).", usage[0], pc)
+	var joined [config.TeamCount]int
+	for _, p := range g.Players {
+		t := 0
+		if teams {
+			t = p.Team
+		}
+		if t >= 0 && t < config.TeamCount {
+			joined[t]++
+		}
+	}
+	var capLines []string
 	if teams {
-		capLine = fmt.Sprintf("Team A: %d/%d · Team B: %d/%d taken (joined or invited).", usage[0], ts, usage[1], ts)
+		for t := 0; t < config.TeamCount; t++ {
+			capLines = append(capLines, fmt.Sprintf("Team %s  %d/%d seats — %d joined · %d invited · %d open",
+				teamName(t), usage[t], ts, joined[t], usage[t]-joined[t], ts-usage[t]))
+		}
+	} else {
+		capLines = append(capLines, fmt.Sprintf("%d/%d seats filled — %d joined · %d invited · %d open",
+			usage[0], pc, joined[0], usage[0]-joined[0], pc-usage[0]))
 	}
 
 	return layout.Center.Layout(gtx, func(gtx C) D {
@@ -527,9 +548,27 @@ func (a *App) invitePickerOverlay(gtx C) D {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 							layout.Rigid(a.pixel(unit.Sp(13), title, colFg).Layout),
 							layout.Rigid(spacer(4)),
-							layout.Rigid(a.body("Selecting a player invites them on the spot; deselecting retracts. Deselect yourself to host without playing.", colMuted)),
+							layout.Rigid(a.body("Selecting a player invites them on the spot; deselecting retracts. You're hosting as a spectator — select yourself to take a seat and play too.", colMuted)),
+							layout.Rigid(spacer(6)),
+							layout.Rigid(func(gtx C) D {
+								// The seat tally, rendered larger and bold so it's
+								// the header's most obvious line.
+								var kids []layout.FlexChild
+								for i, ln := range capLines {
+									ln := ln
+									if i > 0 {
+										kids = append(kids, layout.Rigid(spacer(3)))
+									}
+									kids = append(kids, layout.Rigid(func(gtx C) D {
+										l := material.Label(a.th, unit.Sp(16), ln)
+										l.Color = colAccent
+										l.Font.Weight = font.Bold
+										return l.Layout(gtx)
+									}))
+								}
+								return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+							}),
 							layout.Rigid(spacer(2)),
-							layout.Rigid(a.body(capLine, colAccent)),
 							layout.Rigid(func(gtx C) D {
 								if pickErr == "" {
 									return D{}
@@ -596,6 +635,7 @@ func (a *App) inviteSelfRow(gtx C, g lobby.GameListing, selfName string, teams b
 		status, statusCol = "joined ✓", colNATSGreen
 	}
 	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		gtx.Constraints.Min.Y = gtx.Dp(inviteRowHeight) // match the candidate rows' fixed height
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
@@ -639,6 +679,10 @@ func (a *App) inviteRow(gtx C, c *inviteChoice, st inviteRowStatus, teams bool) 
 		status, statusCol = "joined · ready ✓", colNATSGreen
 	}
 	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		// Pin a fixed row height so a row keeps the same height once the player
+		// joins and its Invite control (a ~30dp checkbox/radio) disappears —
+		// otherwise the row shrinks and the rows below jump up.
+		gtx.Constraints.Min.Y = gtx.Dp(inviteRowHeight)
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,

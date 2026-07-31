@@ -349,10 +349,11 @@ same either way.
   **invitee picker** over the lobby. There is no send button: **selecting a player
   sends their invitation at that moment**, and deselecting a still-pending player
   (or setting them back to **—** in teams) retracts it (their pop-up disappears).
-  The picker's first row is **you**: the creator is listed **pre-selected** —
-  creating an invitation game implies accepting your own invitation, so a seat is
-  taken immediately (team A by default in teams mode, switchable) and the row reads
-  **joined ✓**. Deselect yourself to host a game you won't play in. Below you the
+  The picker's first row is **you**: by default the creator is listed
+  **unselected** — you host as a spectator (the row reads **spectating when the
+  game starts**) and will watch once the game fills. Select yourself to also take
+  a seat and play (team A by default in teams mode, switchable), and the row
+  switches to **joined ✓**. Below you the
   picker lists every OTHER player **currently idle in the lobby** (players already
   in a game can't be invited — you can only invite people free to play). The list
   is **live**: players who enter the lobby appear, players who leave drop out
@@ -363,9 +364,10 @@ same either way.
   competitive/cooperative games each row is a simple **Invite** checkbox; for
   **teams** games each row is a three-way selector (**— / A / B**) so you invite
   each player to a specific team (changing the team re-invites them to the new
-  one). The picker shows the seats spoken for live — roster **plus pending
-  invitations** (total, or **Team A: k/size · Team B: k/size** for teams) — and
-  refuses a selection that would over-fill the game or a team. **Close** puts the
+  one). A prominent header line tallies the seats live, broken out so it's
+  obvious at a glance — **k/size seats filled — j joined · p invited · o open**
+  (one such line per team in teams mode) — and the picker refuses a selection
+  that would over-fill the game or a team. **Close** puts the
   picker away without touching anything (the game keeps filling; its lobby row
   carries the same live status); **Cancel game** retracts every outstanding
   invitation and deletes the just-created game. The creator can always **re-open

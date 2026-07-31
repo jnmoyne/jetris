@@ -2729,12 +2729,16 @@ Invite-only games and player invitations, layered on the existing lobby KV.
   modal. NO send button — selection IS the action: `handleInvitePicker` diffs each
   row's widget against its last-applied intent every frame and immediately sends
   (`lobby.Invite`; a teams change re-invites to the new team) or retracts
-  (`lobby.Uninvite`). The pinned first row is the CREATOR, pre-selected — creating
-  an invitation game implies accepting your own invitation, so `openInvitePicker`
-  takes a seat at once (deselecting frees it via `selfSeat`/`UnjoinGame`; teams
-  moves re-seat). Rows show live status (`pickerRowStatus`): "✉ invited —
-  waiting…", "✕ declined" (re-select to re-invite), "joined ✓"/"joined · ready ✓"
-  (control hidden); the candidate list stays reactive with a `keep` set so roster
+  (`lobby.Uninvite`). The pinned first row is the CREATOR, UNSELECTED by default —
+  `openInvitePicker` takes no seat, so the creator hosts as a spectator; selecting
+  the row seats them (`selfSeat`/`JoinGame`) and deselecting frees it
+  (`selfSeat`/`UnjoinGame`; teams moves re-seat). Rows show live status
+  (`pickerRowStatus`): "✉ invited — waiting…", "✕ declined" (re-select to
+  re-invite), "joined ✓"/"joined · ready ✓" (control hidden); each row is pinned
+  to a fixed height (`inviteRowHeight`) so it doesn't shrink and shift the list up
+  when the control disappears on join. A bold `unit.Sp(16)` header tallies seats
+  as "k/size filled — j joined · p invited · o open" (per team in teams mode). The
+  candidate list stays reactive with a `keep` set so roster
   members and invitees remain listed after their presence goes in-game. When the
   roster fills, the picker closes itself and hands the creator over — `joinGame`
   (ready screen) if they kept their seat, `spectateGame` if not. "Close" hides the

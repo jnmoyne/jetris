@@ -776,8 +776,14 @@ func (a *App) createOptions(countLabel string) layout.Widget {
 				return a.editorBox(gtx, &a.countEd, "2")
 			}),
 			// Agent policy: whether idle jetricks-agent players may take seats, and at
-			// most how many.
+			// most how many. Hidden for invite-only games — there the agent policy
+			// is per-invite (createGame is called with maxAgents 0), so the
+			// "Allow agents" toggle doesn't apply; it reappears if invite-only is
+			// unchecked.
 			layout.Rigid(func(gtx C) D {
+				if a.inviteOnlyCb.Value {
+					return D{}
+				}
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(hSpacer(12)),
 					layout.Rigid(func(gtx C) D {

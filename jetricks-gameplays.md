@@ -795,7 +795,9 @@ placement, so they are beatable and fun.
 Every game (any mode) carries its creator's **agent policy**: `MaxAgents`, the number of
 roster seats agent players may take (0 = agents may not join). In the GUI's create row the
 policy is an **"Allow agents" checkbox** (off by default — games are human-only unless
-opted in) plus a **Max** count, shown for every game mode. `lobby.JoinGame`
+opted in) plus a **Max** count, shown for every game mode. It is **hidden while
+"Invite only" is checked** — an invite-only game's agent policy is decided per invitation,
+not by this toggle — and reappears when "Invite only" is unchecked. `lobby.JoinGame`
 enforces the policy **atomically inside its CAS loop**: an agent joining a no-agents game
 gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats are held by agents further agent
 joins get `ErrAgentSlotsFull` — so several idle agents racing for the last agent seat can

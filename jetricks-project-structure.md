@@ -2146,7 +2146,10 @@ longer full), guarded by the game META's status (the listing never reads
 `in_progress`), and purges the caller's roster announcement via
 `nats.PurgeRosterEntry` so late joiners don't discover a ghost opponent. The GUI's
 create row exposes the policy for every game mode ("Allow agents" checkbox +
-max-agents editor, `nativeui/lobby.go:createRow`), tags agent players `[agent]` throughout
+max-agents editor, `nativeui/lobby.go:createOptions`) — but hides it while
+"Invite only" is checked (an invite-only game's agent policy is per-invitation,
+so `createGame` is called with maxAgents 0; the toggle reappears when invite-only
+is unchecked) — tags agent players `[agent]` throughout
 (lobby player list via `PlayerPresence.Agent`, game rows, ready roster, legend), and
 shows `agents k/N` on agent-allowed game rows. Relatedly, `cleanup.Run` applies a
 one-minute `creationGracePeriod` before treating a game as orphaned/creator-absent:

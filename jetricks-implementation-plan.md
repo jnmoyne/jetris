@@ -3032,7 +3032,9 @@ The agent plays cooperative and teams as well as competitive:
   per team in teams, like the GUI count); `Config.Mode`'s zero value is
   `config.ModeCooperative` (the enum's zero) — library callers set it explicitly.
   The create row's "Allow agents" checkbox now shows for every mode, with max-agents
-  clamped to the total player count (`TeamCount × count` for teams).
+  clamped to the total player count (`TeamCount × count` for teams). It is hidden
+  while "Invite only" is checked (invite-only agent policy is per-invitation —
+  `createGame` gets maxAgents 0), reappearing when invite-only is unchecked.
 - **Tests**: `modes_integration_test.go` — a full cooperative game (two agents on one
   shared board, both report `OVER`/no winner, the topper archives) and a 1v1 teams
   game (auto team selection, garbage between team boards, exactly one winner, the

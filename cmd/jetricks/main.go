@@ -30,6 +30,8 @@ func main() {
 	// the connection picker, and the app dials NATS when the player hits Play.
 	// --server/--context don't connect here — they only seed the picker's
 	// defaults (the URL field text, or which context radio starts selected).
+	nativeui.SetVersion(version) // shown in the window's top-right corner
+
 	names, selected, err := natspkg.ListContexts()
 	if err != nil {
 		log.Printf("warning: listing NATS contexts: %v", err)

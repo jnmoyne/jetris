@@ -507,7 +507,7 @@ Published to `JETRICKS_ARCHIVE` stream when a game finishes:
 
 Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`) and an `agent` flag (from the roster at archive time) marking seats that were played by agents. Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
 
-**History controls:** the lobby's GAME HISTORY header carries a sort selector — **By score** (headline score, the default) or **By date** (most recently finished first) — and an **"Agent games"** checkbox (checked by default); unchecking it hides every game that had at least one agent seat. Records from before the agent flag existed read as all-human.
+**History controls:** the lobby's GAME HISTORY header carries a sort selector — **By score** (headline score, the default) or **By date** (most recently finished first) — and an **"Agent games"** checkbox (checked by default); unchecking it hides every game that had at least one agent seat. Records from before the agent flag existed read as all-human. Each row's MODE column also carries a **crew line** telling the two kinds apart at a glance: **HUMANS** (green) for human-vs-human games, **WITH AGENTS** (orange) when any seat was an agent. When the listed history contains teams games, a **TEAMS OVERALL** standings line sits between the header and the table — each team's total wins (draws credit neither side) and summed points across those games (e.g. `TEAM A 3W · 12400 PTS — TEAM B 1W · 6100 PTS`), with the leading team (by wins, points as the tie-break) in gold; the agent filter applies to the standings too.
 
 The history is laid out as an **arcade high-score table**: a pixel-font column header (**SCORE · TIME · MODE · PLAYERS**) over one ruled row per game (a thin line delimits each game, so a row's PLAYERS column can wrap freely without blurring into the next). Per row: the headline **SCORE** is the largest figure, in gold pixel numerals, with the achieved level beneath it; **TIME** is the duration (prominent) over the start date; **MODE** names the game type over its player count (or `2v2` for teams); and **PLAYERS** puts the winner(s) first — a trophy and a gold name — with everyone else listed muted below. The headline score is the co-op total, the best team total for teams, or the best player score for competitive. The list is ordered by that headline score, highest first; when two games tie, the one with the **shorter game time** ranks higher, and any remaining tie shows the most recently finished game first.
 
@@ -515,7 +515,7 @@ Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or
 
 **End-of-game playfield snapshot.** The record also carries `boards`: a snapshot of every board exactly as it stood when the game ended, captured by the winning/finishing client from the game stream (latest message per cell) just before that stream is deleted. There is one board for cooperative, one per player for competitive, and one per team for teams mode — so the snapshot is complete for every mode. Each board stores its width, visible height, and the non-empty cells (the raw cell messages). In the lobby, each game in **GAME HISTORY** has a **"View board"** button that opens a viewer redrawing these boards — the picture of the playfield at the moment that game ended. To the **left** of the boards the viewer lists the game's players in their board colors, with the winner(s) highlighted — a trophy and a gold name: competitive survivors, or every member of the winning team (teams are grouped under color-matched TEAM A / TEAM B headers, the winning one in gold). Cooperative players — one shared board — simply list under a PLAYERS header with no per-player color or winner. When the game has enough boards that they are together wider than the window, the board strip is **horizontally scrollable** (a scrollbar appears) rather than letting a board spill off the edge.
 
-**Preserved chat history.** The record also carries `chat`: the game's conversation (each line's sender, text, timestamp, and spectator mark, capped at the most recent 200 lines), copied out of the archiver's chat log just **before** the game's messages are purged from the shared chat stream — after the purge the record is the only place the conversation survives. The archived-game viewer shows it in a **GAME CHAT** panel beside the boards (spectator lines marked "(spec)", times in the viewer's local clock); records from before this field simply show no chat.
+**Preserved chat history.** The record also carries `chat`: the game's conversation (each line's sender, text, timestamp, and spectator mark, capped at the most recent 200 lines), copied out of the archiver's chat log just **before** the game's messages are purged from the shared chat stream — after the purge the record is the only place the conversation survives. The archived-game viewer always shows a **GAME CHAT** panel beside the boards (spectator lines marked "(spec)", times in the viewer's local clock); a game with no recorded conversation — including records from before this field existed — says so in the panel instead of hiding it.
 
 ---
 
@@ -675,21 +675,52 @@ no RTT readout.
 The readout is color-coded by latency: the normal text color up to 75 ms, then a warning
 blend that starts yellow at 75 ms and reaches orange at 150 ms, and red above 150 ms.
 
-### Buffered moves line
+### Move-buffer strip
 
 Player inputs are serialized: each move's batch publish blocks on its commit ack before
 the next move is dequeued, so on a high-RTT server inputs typed during an in-flight
-publish wait in the engine's move buffer. A small muted line directly below the
-playfield shows that queue, oldest first (e.g. `← ← CW HD`) — each entry
-appears when the input is accepted into the buffer and disappears the moment its own
-batch publish starts. The line is empty (and invisible) at low latency, where moves are
-dequeued as fast as they are typed; spectators have no input and never show it.
+publish wait in the engine's move buffer. A prominent **MOVE BUFFER** strip directly
+below the playfield shows that queue like an arcade combo meter, oldest first: a row of
+eight big chunky chip slots (dim outlines while vacant) that fill with bright gold chips
+— blocky pixel-art arrows for the shifts and hard drop, blocky circular arrows (↻/↺)
+for the rotations — as inputs queue, alongside an `N QUEUED` counter (muted `EMPTY`
+otherwise)
+and a gold `+N` overflow marker beyond eight. The strip is animated in the video-game
+idiom: a freshly queued chip **pops in** with a scale overshoot, and while anything is
+queued a **glow chases** left-to-right across the chips. Each chip appears when the
+input is accepted into the buffer and vanishes the moment its own batch publish starts,
+so at low latency the strip just shows its empty slots (its footprint is constant — the
+board never jumps as it fills). Spectators have no input and never see it.
+
+### Mouse controls
+
+Below the move-buffer strip sits an on-screen **arcade control pad** — the whole
+keyboard scheme as chunky 8-bit buttons: ↺ (rotate CCW), ←, ↓, →, ↻ (rotate CW) — the
+rotations drawn as blocky circular arrows, not text — and a wide accent-filled `DROP`
+bar — so the game is fully playable with the mouse alone, no keyboard needed.
+The pad is drawn dimmed before the countdown finishes (clicks made while it is dimmed
+are swallowed, never queued) and disappears with the rest of the play controls once the
+player is out. Clicking a pad button dispatches exactly the same engine move as its key.
+
+### Window-size reactivity
+
+The game screen adapts to the window: the playfield's cell size is recomputed every
+frame to the largest size that fits the available area (within chunky-pixel bounds,
+14–56 dp) after reserving room for the move-buffer strip and control pad, the spectator
+multi-board and team-board strips size their cells to fit every board side by side
+(falling back to horizontal scrolling below a readability minimum), the opponent
+thumbnail column scales with window height, the HUD column takes ~19% of the window
+width (200–300 dp), the pre-game countdown numeral scales to ~1/8 of the window's short
+side, and the chat and NATS-message panels grow with window height as before. The
+window also enforces a **minimum size** (760×720 dp): the OS will not let it shrink
+below what the playfield (at its minimum cell size), the move-buffer strip, the control
+pad, and the chat panel need to stay displayed whole.
 
 ### NATS message panel
 
 A **"Show NATS messages"** checkbox sits in the left HUD column while playing or
-spectating. When checked, a fixed-height monospace strip appears across the bottom of
-the window showing the live tail (last 200) of the messages the engine's game-stream
+spectating. When checked, a monospace strip appears across the bottom of
+the window showing the live tail (last 5000) of the messages the engine's game-stream
 consumers deliver — the exact messages that update the in-memory playfields and drive
 the UI: own/opponent/team cell echoes, game events, meta transitions, countdown ticks,
 and roster entries. Each line prints the message's **JetStream stream timestamp** (taken
@@ -699,11 +730,47 @@ its raw **JSON payload**, syntax-colored (keys blue, string values green, number
 collected while the box is checked, and the log is cleared when entering or leaving a
 game.
 
+**Transactions are shown as blocks.** Nearly every board change is published as ONE
+atomic batch (see Playfield Storage) — a move is 4–8 cell messages that commit together.
+The server stores the batch's `Nats-Batch-Id` header on every message of the batch, so
+the panel can group them. The rows of one batch get three matching cues, all in that
+transaction's color:
+
+- a **tinted background** behind every row of the batch, with no gap between them;
+- a **bracket** down the left edge — a bar spanning the whole batch, closed by a short
+  stub at the top of its first row and the bottom of its last — so the batch's extent is
+  unambiguous even where two same-colored blocks would otherwise touch;
+- the **batch id** (first 6 characters of the `Nats-Batch-Id`) printed in a left gutter on
+  the batch's first row, naming the transaction those rows committed in.
+
+The gutter is a fixed monospace width on every row, so the timestamp and subject columns
+stay aligned down the whole strip. Successive transactions take successive colors from a
+six-entry palette, so neighbouring batches never look like one. Single-message publishes
+(meta, events, countdown, roster) carry no batch id: no tint, no bracket, blank gutter. A
+batch keeps its color even when another consumer's message interleaves between its rows
+(the id is printed again where it resumes). Reading down the strip, one bracketed block =
+one indivisible state change every player saw at once.
+
+**The strip is resizable.** A divider with a centered grip sits between the chat panel
+and the message strip; dragging it up or down resizes the strip (the cursor turns into a
+row-resize cursor over it). Until it is first dragged the strip is window-reactive — at
+least 170 dp, growing to 20% of the available height. Once dragged, the chosen height is
+kept, still clamped so the strip can never shrink below 56 dp or crowd out the board and
+chat above it.
+
 ### Lobby branding
 
 The lobby screen carries a banner across its top — the nats.io "N" logo flanking
 "Jetricks: peer to peer blackboard system made with NATS.io" — above the player/chat and
 games/history columns.
+
+### Version plate
+
+Every screen — login, lobby, game, archive — carries a small arcade-cabinet plate in the
+window's **top-right** corner reading **VER &lt;version&gt;** in the pixel face on its own
+framed chip, so it stays readable over a board. The string is the build's version: the
+release tag stamped into the binary (`-X main.version`), or `DEV` for a plain local
+build — the same value `jetricks --version` prints.
 
 ---
 

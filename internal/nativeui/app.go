@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gioui.org/app"
+	"gioui.org/gesture"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/paint"
@@ -171,8 +172,14 @@ type App struct {
 	// NATS message panel: msgShow mirrors the "Show NATS messages" checkbox
 	// each frame and gates collection; msgLog holds the tail of game-stream
 	// messages tapped via engine.OnStreamMsg (written by consumer goroutines).
-	msgShow bool
-	msgLog  []streamMsg
+	// msgGroupOf assigns each atomic batch (transaction) a stable ordinal that
+	// picks its row tint, msgGroupSeq is the counter behind it and
+	// msgGroupSeen the insertion-ordered id list that bounds the map.
+	msgShow      bool
+	msgLog       []streamMsg
+	msgGroupOf   map[string]int
+	msgGroupSeen []string
+	msgGroupSeq  int
 
 	// --- UI-goroutine-only widgets ---
 	loginEd        widget.Editor
@@ -253,7 +260,22 @@ type App struct {
 	backBtn  widget.Clickable
 	showMsgs widget.Bool // "Show NATS messages" checkbox
 	msgList  widget.List
-	boardTag int // address used as the key-input focus tag
+	// NATS-panel resize handle: msgDrag is the divider's drag gesture,
+	// msgPanelDp the user-chosen panel height in dp (0 = the window-reactive
+	// default) and msgGrabY the press offset inside the divider, so the panel
+	// edge tracks the grab point instead of jumping to the cursor.
+	msgDrag    gesture.Drag
+	msgPanelDp float32
+	msgGrabY   float32
+	boardTag   int // address used as the key-input focus tag
+
+	// On-screen arcade control pad (mouse play): rotate CCW/CW, shift
+	// left/down/right, hard drop. Clicks are dispatched by handlePadClicks.
+	padCCW, padLeft, padDown, padRight, padCW, padDrop widget.Clickable
+	// Move-buffer strip animation state (UI goroutine only): the queue length
+	// last laid out and when it last grew (drives the newest chip's pop-in).
+	bufN      int
+	bufGrewAt time.Time
 
 	// game-screen chat panel (game chat + folded-in lobby messages)
 	gameChatEd   widget.Editor
@@ -284,6 +306,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		specFlash:    map[int]map[[2]int]time.Time{},
 		gameBtns:     map[string]*gameRowBtns{},
 		uninviteBtns: map[string]*widget.Clickable{},
+		msgGroupOf:   map[string]int{},
 	}
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
@@ -403,12 +426,23 @@ func newUITheme() *material.Theme {
 	return th
 }
 
+// minWinW/minWinH is the smallest size the OS lets the window shrink to:
+// wide enough for the HUD column (≥200 dp) plus the control pad / move-buffer
+// strip under the board (~430 dp) and the window insets; tall enough for a
+// minimum-cell playfield (24 visible rows at the 14 dp fitCellPx floor) plus
+// the move-buffer strip, the control pad, and the chat panel. Below this the
+// playfield and controls could no longer be displayed whole.
+const (
+	minWinW = unit.Dp(760)
+	minWinH = unit.Dp(720)
+)
+
 // Run creates the window and pumps its event loop until the window is closed.
 // It must run on a goroutine other than the one that calls app.Main().
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 	a.win = new(app.Window)
-	a.win.Option(app.Title("Jetricks"), app.Size(unit.Dp(1280), unit.Dp(820)))
+	a.win.Option(app.Title("Jetricks"), app.Size(unit.Dp(1280), unit.Dp(820)), app.MinSize(minWinW, minWinH))
 
 	a.th = newUITheme()
 
@@ -439,7 +473,8 @@ func (a *App) layout(gtx C) D {
 	case screenArchive:
 		d = a.layoutArchive(gtx)
 	}
-	scanlines(gtx) // CRT overlay over the whole frame, screens and chrome alike
+	a.versionBadge(gtx) // build version, top-right corner of every screen
+	scanlines(gtx)      // CRT overlay over the whole frame, screens and chrome alike
 	return d
 }
 

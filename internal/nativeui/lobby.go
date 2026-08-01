@@ -278,6 +278,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 				}),
 			)
 		}),
+		layout.Rigid(func(gtx C) D { return a.teamStandingsLine(gtx, archives) }),
 		layout.Flexed(1, func(gtx C) D {
 			return bordered(gtx, func(gtx C) D {
 				if len(archives) == 0 {
@@ -326,6 +327,69 @@ func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRe
 		return sortedArchivesByDate(recs)
 	}
 	return sortedArchives(recs)
+}
+
+// teamStandings folds the teams-mode games among recs into overall per-team
+// totals: wins (a draw counts for neither side) and points (sum of final team
+// scores). games is how many teams games were counted.
+func teamStandings(recs []config.ArchiveRecord) (wins, points [config.TeamCount]int, games int) {
+	for _, r := range recs {
+		if r.Mode != config.ModeTeams {
+			continue
+		}
+		games++
+		if r.WinningTeam >= 0 && r.WinningTeam < config.TeamCount {
+			wins[r.WinningTeam]++
+		}
+		for t := 0; t < config.TeamCount && t < len(r.TeamScores); t++ {
+			points[t] += r.TeamScores[t]
+		}
+	}
+	return wins, points, games
+}
+
+// teamStandingsLine renders the all-time TEAM A vs TEAM B scoreboard over the
+// teams games currently listed in the history (so the agent filter applies):
+// wins and total points per team, the leading team (by wins, points as the
+// tie-break) in gold. Nothing is drawn while no teams game has finished.
+func (a *App) teamStandingsLine(gtx C, archives []config.ArchiveRecord) D {
+	wins, points, games := teamStandings(archives)
+	if games == 0 {
+		return D{}
+	}
+	lead := -1 // -1: dead even, no highlight
+	switch {
+	case wins[0] != wins[1]:
+		lead = 0
+		if wins[1] > wins[0] {
+			lead = 1
+		}
+	case points[0] != points[1]:
+		lead = 0
+		if points[1] > points[0] {
+			lead = 1
+		}
+	}
+	seg := func(t int) layout.FlexChild {
+		col := colFg
+		if t == lead {
+			col = colGold
+		}
+		txt := fmt.Sprintf("TEAM %s %dW · %d PTS", teamName(t), wins[t], points[t])
+		return layout.Rigid(a.pixel(unit.Sp(8), txt, col).Layout)
+	}
+	label := fmt.Sprintf("TEAMS OVERALL (%d GAMES)   ", games)
+	if games == 1 {
+		label = "TEAMS OVERALL (1 GAME)   "
+	}
+	return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(8), label, colMuted).Layout),
+			seg(0),
+			layout.Rigid(a.pixel(unit.Sp(8), "  —  ", colMuted).Layout),
+			seg(1),
+		)
+	})
 }
 
 // sortedArchivesByDate orders the history list by finish time, most recent
@@ -521,9 +585,16 @@ func (a *App) archiveModeCell(r config.ArchiveRecord) layout.Widget {
 		case config.ModeTeams:
 			name, sub = "TEAMS", fmt.Sprintf("%dv%d", r.TeamSize, r.TeamSize)
 		}
+		// Crew line: whether the game was human-vs-human or had agent seats,
+		// so the two kinds can be told apart at a glance.
+		crew, crewCol := "HUMANS", colNATSGreen
+		if r.HasAgents() {
+			crew, crewCol = "WITH AGENTS", colOrange
+		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(a.pixel(unit.Sp(8), name, colAccent).Layout),
 			layout.Rigid(a.caption(sub, colMuted)),
+			layout.Rigid(a.caption(crew, crewCol)),
 		)
 	}
 }

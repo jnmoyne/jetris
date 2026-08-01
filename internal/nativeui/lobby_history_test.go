@@ -44,6 +44,38 @@ func TestArchivesForDisplay(t *testing.T) {
 	}
 }
 
+// TestTeamStandings pins the all-time teams scoreboard fold: only teams games
+// count, draws credit neither side, and points sum each team's final scores.
+func TestTeamStandings(t *testing.T) {
+	recs := []config.ArchiveRecord{
+		{Mode: config.ModeTeams, WinningTeam: 0, TeamScores: []int{100, 40}},
+		{Mode: config.ModeTeams, WinningTeam: 1, TeamScores: []int{10, 90}},
+		{Mode: config.ModeTeams, WinningTeam: 0, TeamScores: []int{55, 20}},
+		{Mode: config.ModeTeams, WinningTeam: -1, TeamScores: []int{5, 5}}, // draw
+		{Mode: config.ModeCompetitive, WinningTeam: 0,
+			Players: []config.PlayerResult{{PlayerID: "x", Score: 999}}}, // not a teams game
+	}
+	wins, points, games := teamStandings(recs)
+	if games != 4 {
+		t.Fatalf("games = %d, want 4", games)
+	}
+	if wins != [config.TeamCount]int{2, 1} {
+		t.Fatalf("wins = %v, want [2 1]", wins)
+	}
+	if points != [config.TeamCount]int{170, 155} {
+		t.Fatalf("points = %v, want [170 155]", points)
+	}
+
+	// The rendered line appears only when a teams game exists.
+	a := newTestApp()
+	if d := a.teamStandingsLine(testCtx(1200, 60), recs); d.Size.X == 0 {
+		t.Fatal("standings line should render when teams games exist")
+	}
+	if d := a.teamStandingsLine(testCtx(1200, 60), recs[4:]); d.Size.X != 0 {
+		t.Fatal("standings line should be empty without teams games")
+	}
+}
+
 func ids(recs []config.ArchiveRecord) []string {
 	out := make([]string, len(recs))
 	for i, r := range recs {

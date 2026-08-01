@@ -462,6 +462,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.flash = map[[2]int]time.Time{}
 	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.msgLog = nil
+	a.resetMsgGroups()
 	a.screen = screenGame
 	a.mu.Unlock()
 }
@@ -576,6 +577,7 @@ func (a *App) returnToLobby() {
 	a.flash = map[[2]int]time.Time{}
 	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.msgLog = nil
+	a.resetMsgGroups()
 	if a.lobby != nil {
 		a.screen = screenLobby
 	} else {

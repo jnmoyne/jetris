@@ -115,6 +115,9 @@ func (a *App) layoutGame(gtx C) D {
 	if mode == engine.ModePlayer && started {
 		a.handleKeys(gtx, eng)
 	}
+	// The on-screen pad mirrors the keyboard scheme; its clicks are drained
+	// every frame and only dispatched while the game is actually playable.
+	a.handlePadClicks(gtx, eng, mode == engine.ModePlayer && started && !view.gameOver)
 
 	if a.readyBtn.Clicked(gtx) {
 		go a.toggleReady()
@@ -158,8 +161,11 @@ func (a *App) layoutGame(gtx C) D {
 	content := func(gtx C) D {
 		return layout.Flex{}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
-				gtx.Constraints.Max.X = gtx.Dp(240)
-				gtx.Constraints.Min.X = gtx.Dp(240)
+				// HUD column: width-reactive (~19% of the window) within sane
+				// bounds, so a wide window doesn't waste it all on the board.
+				hudW := min(max(gtx.Constraints.Max.X*19/100, gtx.Dp(200)), gtx.Dp(300))
+				gtx.Constraints.Max.X = hudW
+				gtx.Constraints.Min.X = hudW
 				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
 					return a.gameHUD(gtx, eng, view, mode, gmode)
 				})
@@ -184,7 +190,7 @@ func (a *App) layoutGame(gtx C) D {
 		layout.Rigid(func(gtx C) D { return a.gameChatPanel(gtx, eng, canType) }),
 	}
 	if showMsgs {
-		children = append(children, layout.Rigid(a.natsMsgPanel))
+		children = append(children, layout.Rigid(a.natsMsgSection))
 	}
 	root := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
 	base := root
@@ -553,8 +559,18 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if mode == engine.ModeSpectator {
 		localIdx = -1
 	}
-	cell := gtx.Dp(unit.Dp(22))
 	board := func(gtx C) D {
+		// Cell size tracks the window: as much board as fits after reserving
+		// room below for the player's move-buffer strip and (while the game is
+		// still playable) the mouse control pad.
+		reserved := 0
+		if mode == engine.ModePlayer {
+			reserved = gtx.Dp(90)
+			if !view.gameOver {
+				reserved += gtx.Dp(80)
+			}
+		}
+		cell := fitCellPx(gtx, snap.Width, snap.Height-snap.VisibleStart, 1, gtx.Dp(24), reserved, 14, 56)
 		return layout.Center.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now)),
@@ -562,11 +578,20 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					if mode != engine.ModePlayer {
 						return D{}
 					}
-					// Inputs queued behind the in-flight batch publish (visible
-					// on a high-RTT server); the line empties as each buffered
-					// move's own publish starts.
-					return layout.Inset{Top: unit.Dp(4)}.Layout(gtx,
-						a.body(bufferedMovesLine(eng.BufferedMoves()), colMuted))
+					// Inputs queued behind the in-flight batch publish (very
+					// visible on a high-RTT server); the strip drains as each
+					// buffered move's own publish starts.
+					return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
+						return a.bufferedMovesStrip(gtx, eng.BufferedMoves())
+					})
+				}),
+				layout.Rigid(func(gtx C) D {
+					if mode != engine.ModePlayer || view.gameOver {
+						return D{}
+					}
+					return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
+						return a.controlPad(gtx, view.status == string(config.GameStatusInProgress))
+					})
 				}),
 			)
 		})
@@ -619,13 +644,25 @@ func (a *App) countdownOverlay(gtx C, view gameView) D {
 	scale := 0.4 + 0.6*easeOutBack(t)
 	alpha := clampF(t/0.3, 0, 1)
 
-	l := a.pixel(unit.Sp(float32(countdownBaseSp*scale)), txt, withAlpha(col, alpha))
+	// The settled size tracks the window (≈1/8 of its short side) so the
+	// countdown stays huge on a big screen and fits a small one.
+	base := countdownBaseSp
+	if pps := gtx.Metric.PxPerSp; pps > 0 {
+		if m := min(gtx.Constraints.Max.X, gtx.Constraints.Max.Y); m > 0 {
+			base = clampF(float64(m)/8/float64(pps), 56, 180)
+		}
+	}
+	l := a.pixel(unit.Sp(float32(base*scale)), txt, withAlpha(col, alpha))
 	return l.Layout(gtx)
 }
 
 func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	opps := eng.OpponentSnapshots()
-	cell := gtx.Dp(unit.Dp(16))
+	// Reactive cells: fit every player's board side by side (16 dp gaps, name
+	// row above each); below the minimum the strip scrolls instead.
+	dims := eng.Snapshot()
+	n := max(len(view.players), 1)
+	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, n, n*gtx.Dp(16), gtx.Dp(30), 8, 30)
 
 	// Elimination states drive the per-board overlays: an eliminated player's
 	// board reads OUT, and once the game is decided (all but one out) the
@@ -736,7 +773,11 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	cell := gtx.Dp(unit.Dp(10))
+	// Thumbnail cells scale with the window height: the whole stack of
+	// opponent boards (plus ~34 dp of label/spacing each) should fit.
+	first := opps[ids[0]]
+	vis := first.Height - first.VisibleStart
+	cell := fitCellPx(gtx, first.Width, vis*len(ids), 1, 0, len(ids)*gtx.Dp(34), 6, 13)
 	var children []layout.FlexChild
 	for _, id := range ids {
 		snap := opps[id]
@@ -760,7 +801,9 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 // eliminated team's board reads OUT; once either team is out, the other reads
 // WINNERS.
 func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
-	cell := gtx.Dp(unit.Dp(14))
+	// Reactive cells: both team boards side by side, scrolling below the minimum.
+	dims := eng.Snapshot()
+	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, 2, 2*gtx.Dp(16), gtx.Dp(26), 10, 40)
 	teamB, okB := eng.OpponentSnapshots()[engine.TeamBoardKey(1)]
 
 	members := [config.TeamCount]int{}
@@ -984,37 +1027,6 @@ func formatRTT(d time.Duration) string {
 		return fmt.Sprintf("%.1f ms", ms)
 	}
 	return fmt.Sprintf("%.0f ms", ms)
-}
-
-// bufferedMovesLine renders the engine's queued-input mirror as the small
-// status line under the board: empty while nothing is waiting, otherwise
-// "← ← CW HD" oldest first.
-func bufferedMovesLine(moves []engine.MoveType) string {
-	parts := make([]string, len(moves))
-	for i, m := range moves {
-		parts[i] = moveSymbol(m)
-	}
-	return strings.Join(parts, " ")
-}
-
-// moveSymbol is the compact display token for one buffered move.
-func moveSymbol(m engine.MoveType) string {
-	switch m {
-	case engine.MoveLeft:
-		return "←"
-	case engine.MoveRight:
-		return "→"
-	case engine.MoveDown:
-		return "↓"
-	case engine.RotateCW:
-		return "CW"
-	case engine.RotateCCW:
-		return "CCW"
-	case engine.MoveHardDrop:
-		return "HD"
-	default:
-		return "?"
-	}
 }
 
 // rttColor maps the round trip to the HUD readout color: the normal text

@@ -1071,10 +1071,12 @@ The engine mirrors that buffer in a `bufferedMu`-guarded FIFO (`bufferedMoves`):
 `dispatch` appends on a successful enqueue, `runInput` pops (`popBufferedMove`)
 the moment it dequeues a move (its batch publish is starting), and
 `Engine.BufferedMoves()` returns a copy for the UI, which draws the queued moves
-as a small muted line under the player's board (`bufferedMovesLine` in
-`internal/nativeui/game.go`, e.g. `← ← CW HD`) — populated only when a
-high RTT makes inputs queue behind the in-flight publish. `UpdateBufferedMoves`
-on the `Updates` channel triggers the redraw.
+as the animated MOVE BUFFER chip strip under the player's board
+(`bufferedMovesStrip` in `internal/nativeui/controls.go`: eight big slots that
+fill with gold pixel-glyph chips — pop-in on enqueue, chase glow while queued,
+`+N` overflow) — chips appear only when a high RTT makes inputs queue behind
+the in-flight publish. `UpdateBufferedMoves` on the `Updates` channel triggers
+the redraw.
 
 Validation (e.g. `CanPlace`) reads from `e.playfield`, which the write-through
 keeps current the moment each publish commits. Two rapid inputs (or a gravity tick
@@ -2088,7 +2090,11 @@ draw the pre-game countdown, per-board OUT markers for eliminated players
 (competitive) / teams (teams), and a WINNER/WINNERS marker on the deciding
 board; the lobby's GAME HISTORY header gained a score/date sort selector and
 an "Agent games" filter checkbox backed by `PlayerResult.Agent` (stamped from
-the roster by `ArchiveAndCleanup`).
+the roster by `ArchiveAndCleanup`), each row a HUMANS / WITH AGENTS crew line,
+and — when teams games are listed — a TEAMS OVERALL standings line
+(`teamStandingsLine`: per-team wins and summed points, leader in gold); the
+game screen gained the mouse control pad, the animated MOVE BUFFER strip, and
+window-reactive sizing (`controls.go`, `fitCellPx`).
 
 ### 6.1 `internal/nativeui`
 
@@ -2107,6 +2113,17 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   under the game info, so it never squeezes the info text
   (`confirmDeleteID` on the App, `del`/`delYes`/`delNo` in `gameRowBtns`);
   confirming dispatches `deleteGame` (`lifecycle.go`) → `lobby.DeleteGame`.
+- `controls.go` — the on-screen arcade control pad (↺/←/↓/→/↻ — rotations as blocky
+  circular-arrow bitmaps, `glyphCW`/`glyphCCW` — + wide DROP bar;
+  `handlePadClicks` dispatches clicks to the engine only while the game is playable,
+  draining them otherwise) and the animated MOVE BUFFER chip strip
+  (`bufferedMovesStrip`), both drawn as blocky `fillRect` bitmap glyphs in the 8-bit
+  chrome. The game screen sizes itself to the window via `fitCellPx` (`board.go`):
+  player-board cells clamp to 14–56 dp after reserving room for the strip/pad,
+  spectator strips fit all boards (scrolling below their minimum), the HUD column is
+  ~19% of the width, the countdown scales to the window's short side; the window
+  enforces `app.MinSize(760, 720)` dp so it can't shrink below what the playfield,
+  strip, and pad need.
 - `board.go` — board drawing via `internal/render.CellStyle` (RGBA). `drawCell` shades
   filled cells with the 8-bit bevel (lighter top/left strips, darker bottom/right,
   a gloss pixel in the corner — `CellAppearance.Bevel` gates it so empty squares stay
@@ -2127,9 +2144,16 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   `returnToLobby`, `teardown` (wires `engine.OnGameFinished` → `archive.ArchiveAndCleanup`,
   and `engine.OnStreamMsg` → `recordStreamMsg` for the NATS message panel).
 - `natslog.go` — the "Show NATS messages" panel: `recordStreamMsg` (the `OnStreamMsg`
-  hook, capped 200-entry log under `a.mu`, gated on the checkbox mirror `msgShow`),
-  `natsMsgPanel` (fixed-height bottom strip, scroll-to-end list), and `jsonSpans`,
+  hook, capped `msgLogCap` = 5000-entry log under `a.mu`, gated on the checkbox mirror
+  `msgShow`, assigning each atomic batch a tint ordinal via `msgGroup`), `natsMsgSection`
+  (`msgPanelDivider` — the `gesture.Drag` resize handle — over `natsMsgPanel`, the
+  scroll-to-end strip whose height `msgPanelHeightPx` resolves and clamps each frame),
+  `msgRow` (per-transaction background tint, left bracket, and the `shortBatchID`
+  gutter), and `jsonSpans`,
   a display-only JSON syntax colorizer rendered in the Go Mono face.
+- `version.go` — `SetVersion` (called from `cmd/jetricks` with the `-X main.version`
+  build stamp, "dev" otherwise) and `versionBadge`, the pixel-face "VER <x>" plate
+  drawn on its own chip in the window's top-right corner over every screen.
 - `brand.go` — the nats.io "N" logo (`nats-icon.png`, embedded via `go:embed`,
   decoded once), `lobbyBanner` (the branding strip across the top of the lobby and
   archive screens), and `natsTag` (the inline "N"-logo + "NATS.io" chip reused on the
@@ -2208,6 +2232,23 @@ formatted `15:04:05.000`), the subject (accent color), and the raw JSON payload
 syntax-colored by `jsonSpans`. Collection happens only while the checkbox is checked
 (the UI mirrors it each frame into the `a.mu`-guarded `msgShow` flag read by the
 consumer-side hook); the log resets on game entry/exit.
+
+*Transactions.* The tap also carries each message's `Nats-Batch-Id` (the server stores
+the atomic-batch headers, so a stored message still names its batch). Rows of the same
+batch — a move's 4–8 cells, committed indivisibly — get three cues in that transaction's
+color: a background tint with no gap between rows, a bracket down the left edge (bar
+across the batch, stub closing it at the top of the first row and the bottom of the last),
+and the batch id's first 6 characters printed in a fixed-width left gutter on the first
+row (blank elsewhere, so the timestamp and subject columns stay aligned). One bracketed
+block on screen is one atomic publish; successive batches take successive palette slots
+and un-batched publishes (meta, events, countdown, roster) stay plain. Ordinals are
+assigned once, at record time, and survive another consumer's message interleaving
+mid-batch.
+
+*Resizing.* A grip divider sits between the chat panel and the strip; dragging it resizes
+the strip (row-resize cursor, accent while dragged). Before the first drag the height is
+window-reactive; after it, the chosen height is kept, clamped to `[56 dp, available −
+120 dp]` so the board and chat above always keep room.
 
 **Spectator mode.** The lobby's "Spectate" button creates an engine in `ModeSpectator`
 (no gravity, no moves, no controls). The game screen hides controls and the ready
@@ -2837,14 +2878,17 @@ filter `ChatSubjectFilter`). Game chat cannot live on the game stream
   the record is the conversation's only home.
 - **archive viewer:** the archived-game screen replays the preserved chat in a
   **GAME CHAT** panel beside the boards (`archiveChatPanel`/`archiveChatLine`:
-  local wall-clock time, "(spec)" markers; older chat-less records render
-  boards only).
+  local wall-clock time, "(spec)" markers). The panel is always laid out —
+  a record with no chat (a silent game, or one archived before the field
+  existed) says "No chat was recorded for this game." instead of the panel
+  disappearing.
 
 **Tests:** `TestGameChatScoping` (lobby: game vs lobby message tagging off the
 subject, spectator flag round-trip), `TestGameIDFromChatSubject` (config),
 `TestChatLine` + a `game-with-chat` render subtest (nativeui: formatting,
 cross-game filtering), `TestArchiveChatLine`/`TestArchiveViewRendersChat`
-(nativeui: preserved-chat formatting and the viewer with/without chat).
+(nativeui: preserved-chat formatting and the viewer with chat and with the
+empty-state panel).
 
 ---
 

@@ -62,8 +62,11 @@ func (a *App) layoutArchive(gtx C) D {
 					})
 				}
 				// The player roster sits to the LEFT of the boards (names in
-				// their board colors, winners highlighted); the preserved chat,
-				// when there is any, to the right — boards center-stage.
+				// their board colors, winners highlighted); the game's preserved
+				// chat to the right — boards center-stage. The chat panel is
+				// always there, saying so when the record has no conversation
+				// (an empty game, or one archived before chat was preserved),
+				// rather than silently vanishing.
 				children := []layout.FlexChild{
 					layout.Rigid(func(gtx C) D {
 						return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
@@ -71,13 +74,11 @@ func (a *App) layoutArchive(gtx C) D {
 						})
 					}),
 					layout.Flexed(1, boards),
-				}
-				if len(rec.Chat) > 0 {
-					children = append(children, layout.Rigid(func(gtx C) D {
+					layout.Rigid(func(gtx C) D {
 						gtx.Constraints.Max.X = gtx.Dp(320)
 						gtx.Constraints.Min.X = gtx.Dp(320)
 						return a.archiveChatPanel(gtx, rec.Chat)
-					}))
+					}),
 				}
 				return layout.Flex{}.Layout(gtx, children...)
 			}),
@@ -239,6 +240,10 @@ func (a *App) archiveChatPanel(gtx C, chat []config.ChatLine) D {
 		layout.Rigid(a.header("GAME CHAT")),
 		layout.Flexed(1, func(gtx C) D {
 			return bordered(gtx, func(gtx C) D {
+				if len(chat) == 0 {
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return layout.Center.Layout(gtx, a.body("No chat was recorded for this game.", colMuted))
+				}
 				return material.List(a.th, &a.archiveChatList).Layout(gtx, len(chat), func(gtx C, i int) D {
 					return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx,
 						a.body(archiveChatLine(chat[i]), colFg))

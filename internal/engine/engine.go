@@ -30,6 +30,11 @@ const (
 	ModeGameOver
 )
 
+// batchIDHeader is the JetStream atomic-batch header the server stores on
+// every message of a batch; tapMsg reads it so the UI can group a move's
+// cells as one transaction.
+const batchIDHeader = "Nats-Batch-Id"
+
 // Engine manages a single game session.
 type Engine struct {
 	gameID      string
@@ -94,9 +99,11 @@ type Engine struct {
 	// OnStreamMsg, when set before Start, receives every message delivered by
 	// this engine's game-stream consumers (own/opponent/team cells, events,
 	// meta, countdown, roster): the message's JetStream stream timestamp, its
-	// subject and its raw payload. Drives the UI's "Show NATS messages" panel.
+	// subject, its raw payload, and the id of the atomic batch it was committed
+	// in ("" for a single-message publish), which lets the UI group a move's
+	// cells as one transaction. Drives the UI's "Show NATS messages" panel.
 	// It is called from the consumer goroutines and must not block.
-	OnStreamMsg func(ts time.Time, subject string, payload []byte)
+	OnStreamMsg func(ts time.Time, subject string, payload []byte, batchID string)
 
 	js          jetstream.JetStream
 	ctx         context.Context
@@ -692,7 +699,9 @@ func (e *Engine) emitUpdate(u EngineUpdate) {
 
 // tapMsg forwards one delivered game-stream message to the OnStreamMsg hook.
 // Consumers call it before taking e.mu, so the hook never runs under the
-// engine lock.
+// engine lock. The atomic-batch headers survive into the stream, so the
+// stored message still carries the Nats-Batch-Id of the batch it committed in
+// (empty for a plain single-message publish).
 func (e *Engine) tapMsg(msg jetstream.Msg) {
 	if e.OnStreamMsg == nil {
 		return
@@ -701,7 +710,11 @@ func (e *Engine) tapMsg(msg jetstream.Msg) {
 	if md, err := msg.Metadata(); err == nil {
 		ts = md.Timestamp
 	}
-	e.OnStreamMsg(ts, msg.Subject(), msg.Data())
+	var batchID string
+	if h := msg.Headers(); h != nil {
+		batchID = h.Get(batchIDHeader)
+	}
+	e.OnStreamMsg(ts, msg.Subject(), msg.Data(), batchID)
 }
 
 // emitFullBoardRerender triggers a re-render of EVERY visible row from the

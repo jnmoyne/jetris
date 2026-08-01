@@ -9,6 +9,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
+	"gioui.org/unit"
 
 	"jetricks/internal/engine"
 	"jetricks/internal/render"
@@ -176,6 +177,27 @@ func hardShadow(gtx C, w layout.Widget) D {
 	fillRect(gtx.Ops, image.Rect(off, off, dims.Size.X+off, dims.Size.Y+off), colShadow)
 	call.Add(gtx.Ops)
 	return dims
+}
+
+// fitCellPx picks the cell size (px) at which `boards` side-by-side playfields
+// of cols×rows visible cells — each with its arcade-well frame, ≈cell/4 of
+// extra width/height per board — fill the current constraints, after reserving
+// reservedX/reservedY px for surrounding chrome. The result is clamped to
+// [minDp, maxDp]: boards never shrink into unreadability (below the minimum
+// the strips fall back to horizontal scrolling instead), and never blow up
+// past the chunky-pixel look on a huge window. This is what makes every board
+// view window-size reactive.
+func fitCellPx(gtx C, cols, rows, boards, reservedX, reservedY int, minDp, maxDp unit.Dp) int {
+	lo, hi := gtx.Dp(minDp), gtx.Dp(maxDp)
+	if cols <= 0 || rows <= 0 || boards <= 0 {
+		return lo
+	}
+	availX := gtx.Constraints.Max.X - reservedX
+	availY := gtx.Constraints.Max.Y - reservedY
+	// Frame per board: 2*fw with fw = cell/8, so width = cell*(8*cols+2)/8.
+	cw := availX * 8 / (boards * (8*cols + 2))
+	ch := availY * 8 / (8*rows + 2)
+	return min(max(min(cw, ch), lo), hi)
 }
 
 // boardWidget wraps drawBoard as a layout.Widget for placement in a Flex/Stack.

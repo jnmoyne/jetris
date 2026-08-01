@@ -8,9 +8,9 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
 )
 
 // testCtx builds a manual frame context of the given size (zero input.Source —

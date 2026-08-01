@@ -1,4 +1,4 @@
-// Command jetricks-agent is a headless computer player for jetricks. It plays
+// Command jetris-agent is a headless computer player for jetris. It plays
 // all three game modes — cooperative, competitive, and teams — as an ordinary
 // peer: it connects to the same NATS server as everyone else, joins (or
 // creates) a game through the lobby, and plays it with the same engine the
@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	"jetricks/internal/agent"
-	"jetricks/internal/config"
+	"jetris/internal/agent"
+	"jetris/internal/config"
 )
 
 // version is overridden at release time via -ldflags "-X main.version=<tag>"
@@ -44,7 +44,7 @@ func main() {
 
 	res, err := agent.Run(ctx, cfg)
 	if err != nil {
-		log.Fatalf("jetricks-agent: %v", err)
+		log.Fatalf("jetris-agent: %v", err)
 	}
 	// Per-game outcomes are logged as they happen; this is the run summary.
 	log.Printf("played %d game(s), won %d", res.Games, res.Wins)
@@ -75,7 +75,7 @@ func parseFlags() (agent.Config, error) {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("jetricks-agent %s\n", version)
+		fmt.Printf("jetris-agent %s\n", version)
 		os.Exit(0)
 	}
 

@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/synadia-io/orbit.go/natscontext"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // Connect establishes a NATS connection using the named NATS context.

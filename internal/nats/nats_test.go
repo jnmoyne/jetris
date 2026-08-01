@@ -10,9 +10,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/game"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	"jetris/internal/game"
+	"jetris/internal/testutil"
 )
 
 func setupJS(t *testing.T) jetstream.JetStream {
@@ -299,7 +299,7 @@ func TestParseCellFromSubject(t *testing.T) {
 	if row != 3 || col != 0 {
 		t.Errorf("competitive: got (%d,%d), want (3,0)", row, col)
 	}
-	if row, col = ParseCellFromSubject("jetricks.game.g1.meta"); row != -1 || col != -1 {
+	if row, col = ParseCellFromSubject("jetris.game.g1.meta"); row != -1 || col != -1 {
 		t.Errorf("non-cell subject: got (%d,%d), want (-1,-1)", row, col)
 	}
 }

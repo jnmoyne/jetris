@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
+	"jetris/internal/engine"
+	"jetris/internal/game"
 )
 
 // fakeMover applies moves synchronously to a local playfield with the same

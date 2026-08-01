@@ -11,7 +11,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 func (a *App) layoutLogin(gtx C) D {
@@ -117,7 +117,7 @@ func (a *App) layoutLogin(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
 					layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(14)}.Layout(gtx) }),
-					layout.Rigid(a.pixel(unit.Sp(28), "JETRICKS", colAccent).Layout),
+					layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
 					layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(14)}.Layout(gtx) }),
 					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
 				)

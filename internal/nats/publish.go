@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/synadia-io/orbit.go/jetstreamext"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // CellUpdate represents a single cell's new state and the CAS expectation. The

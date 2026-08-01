@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 // Rules captures the board variant the planner and simulator must respect —

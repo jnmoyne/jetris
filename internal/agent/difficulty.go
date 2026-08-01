@@ -1,4 +1,4 @@
-// Package agent implements a headless computer player for competitive jetricks.
+// Package agent implements a headless computer player for competitive jetris.
 // It is just another peer: it drives the exact same engine the GUI uses (the
 // six move methods plus the playfield accessors) over the exported engine and
 // lobby APIs — no engine internals, no direct cell publishes.

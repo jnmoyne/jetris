@@ -19,10 +19,10 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
-	"jetricks/internal/lobby"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	"jetris/internal/lobby"
 )
 
 // snapshotPNG renders one frame with the given layout func and writes it to
@@ -99,13 +99,13 @@ func sampleStreamMsgs() []streamMsg {
 	base := time.Date(2026, 1, 1, 20, 15, 4, 0, time.UTC)
 	at := func(ms int) time.Time { return base.Add(time.Duration(ms) * time.Millisecond) }
 	return []streamMsg{
-		{ts: at(0), subject: "jetricks.game.g1.playfield.cell.3.4", payload: `{"active":true,"pieceType":"T","playerIdx":0}`, batch: "8f3a2c91d4", group: 1, batched: true},
-		{ts: at(1), subject: "jetricks.game.g1.playfield.cell.4.3", payload: `{"active":true,"pieceType":"T","playerIdx":0}`, batch: "8f3a2c91d4", group: 1, batched: true},
-		{ts: at(1), subject: "jetricks.game.g1.playfield.cell.2.4", payload: `{}`, batch: "8f3a2c91d4", group: 1, batched: true},
-		{ts: at(120), subject: "jetricks.game.g1.meta", payload: `{"status":"in_progress","level":3,"score":1750}`, group: 2},
-		{ts: at(240), subject: "jetricks.game.g1.playfield.cell.4.4", payload: `{"occupied":true,"pieceType":"S","playerIdx":1}`, batch: "b17e05aa62", group: 3, batched: true},
-		{ts: at(241), subject: "jetricks.game.g1.playfield.cell.4.5", payload: `{"occupied":true,"pieceType":"S","playerIdx":1}`, batch: "b17e05aa62", group: 3, batched: true},
-		{ts: at(241), subject: "jetricks.game.g1.playfield.cell.3.5", payload: `{}`, batch: "b17e05aa62", group: 3, batched: true},
+		{ts: at(0), subject: "jetris.game.g1.playfield.cell.3.4", payload: `{"active":true,"pieceType":"T","playerIdx":0}`, batch: "8f3a2c91d4", group: 1, batched: true},
+		{ts: at(1), subject: "jetris.game.g1.playfield.cell.4.3", payload: `{"active":true,"pieceType":"T","playerIdx":0}`, batch: "8f3a2c91d4", group: 1, batched: true},
+		{ts: at(1), subject: "jetris.game.g1.playfield.cell.2.4", payload: `{}`, batch: "8f3a2c91d4", group: 1, batched: true},
+		{ts: at(120), subject: "jetris.game.g1.meta", payload: `{"status":"in_progress","level":3,"score":1750}`, group: 2},
+		{ts: at(240), subject: "jetris.game.g1.playfield.cell.4.4", payload: `{"occupied":true,"pieceType":"S","playerIdx":1}`, batch: "b17e05aa62", group: 3, batched: true},
+		{ts: at(241), subject: "jetris.game.g1.playfield.cell.4.5", payload: `{"occupied":true,"pieceType":"S","playerIdx":1}`, batch: "b17e05aa62", group: 3, batched: true},
+		{ts: at(241), subject: "jetris.game.g1.playfield.cell.3.5", payload: `{}`, batch: "b17e05aa62", group: 3, batched: true},
 	}
 }
 

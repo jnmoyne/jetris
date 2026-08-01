@@ -17,7 +17,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	"jetricks/internal/engine"
+	"jetris/internal/engine"
 )
 
 // Blocky glyph bitmaps ('X' = filled square) for the control pad and the

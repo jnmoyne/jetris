@@ -11,8 +11,8 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	"jetricks/internal/config"
-	"jetricks/internal/lobby"
+	"jetris/internal/config"
+	"jetris/internal/lobby"
 )
 
 // inviteChoice is one selectable player in the invitee picker. Selection IS

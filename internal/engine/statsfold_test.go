@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // TestTeamStatsFoldOnAllEngines verifies that a teams-mode line-clear event

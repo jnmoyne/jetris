@@ -3,7 +3,7 @@ package rng
 import (
 	"testing"
 
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 func TestDeterministic(t *testing.T) {

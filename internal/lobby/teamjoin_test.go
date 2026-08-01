@@ -9,9 +9,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/testutil"
 )
 
 // setupLobbies starts one embedded server and brings up n lobby instances on

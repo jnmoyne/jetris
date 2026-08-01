@@ -1,6 +1,6 @@
-# Jetricks agents
+# Jetris agents
 
-This directory is the home for **contributed agents** — programs that play Jetricks on
+This directory is the home for **contributed agents** — programs that play Jetris on
 their own. Write yours in **any language** and open a pull request adding it here.
 
 ## The only contract is the game
@@ -9,10 +9,10 @@ There is no framework to plug into and no interface to implement. An agent is ju
 program that connects to the same NATS server as everyone else and plays by the rules. The
 complete, authoritative contract is two documents at the repo root:
 
-- **[`../jetricks-agent-guide.md`](../jetricks-agent-guide.md)** — the wire protocol (the
+- **[`../jetris-agent-guide.md`](../jetris-agent-guide.md)** — the wire protocol (the
   NATS subjects, JetStream streams, KV keys, message payloads, and the CAS write
   discipline) plus the fair-play rules every agent must follow.
-- **[`../jetricks-gameplays.md`](../jetricks-gameplays.md)** — the game rules (modes,
+- **[`../jetris-gameplays.md`](../jetris-gameplays.md)** — the game rules (modes,
   spawning, gravity, line clears, garbage, lifecycle) that your agent's own logic
   implements.
 
@@ -36,7 +36,7 @@ speaks the protocol and follows the rules.
   Keep the name ≤ 32 characters using only `-`, `/`, `_`, `=`, `.` and alphanumerics (it is
   a NATS subject token *and* a KV key). Bump the codename when your play logic changes so
   game history records which version played.
-- **Broadcast your CAS-failure flashes** on `jetricks.flash.<game>.<name>` (core NATS, not
+- **Broadcast your CAS-failure flashes** on `jetris.flash.<game>.<name>` (core NATS, not
   the stream) so spectators see the same contention feedback a human's board shows.
 - **Carry your lifecycle weight**: presence heartbeat, join via CAS, run the 5→0 countdown
   if your ready toggle completes the set, archive the game if you trigger its finish, and
@@ -50,7 +50,7 @@ speaks the protocol and follows the rules.
    need to be part of the main repo's `go build ./...`, so heavy dependencies (LLM API
    clients, ML runtimes) never touch the game or the reference agent.
 2. Add `agents/<your-agent-name>/README.md` stating what it is, the language, how to build
-   and run it, and confirming it follows `jetricks-agent-guide.md`.
+   and run it, and confirming it follows `jetris-agent-guide.md`.
 3. Open a pull request.
 
 ## The worked example: `example-py`
@@ -63,7 +63,7 @@ point to copy: see its [README](example-python/README.md).
 
 ## The reference agent: `mk1`
 
-The repository ships one agent, **`mk1`** (`cmd/jetricks-agent`, source in
+The repository ships one agent, **`mk1`** (`cmd/jetris-agent`, source in
 `internal/agent`), written in Go. Because it lives in the repo it reuses the game's own
 engine code instead of re-implementing the protocol, so it is a *privileged* example, not a
 template you must follow — but everything it does over the wire, your agent can do too. Use
@@ -71,11 +71,11 @@ it to play against while you develop:
 
 ```sh
 # a resident opponent that joins agent-allowed games as they appear
-go run ./cmd/jetricks-agent --server nats://localhost:4222 --difficulty medium
+go run ./cmd/jetris-agent --server nats://localhost:4222 --difficulty medium
 
 # or have it host a game and wait for you
-go run ./cmd/jetricks-agent --server nats://localhost:4222 --create --players 2
+go run ./cmd/jetris-agent --server nats://localhost:4222 --create --players 2
 ```
 
-It reads the same guide your agent does; see `jetricks-agent-guide.md` §3 for how it is
+It reads the same guide your agent does; see `jetris-agent-guide.md` §3 for how it is
 built and §4 for the protocol your agent implements instead.

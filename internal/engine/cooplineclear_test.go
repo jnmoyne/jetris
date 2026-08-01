@@ -9,10 +9,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/game"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	"jetris/internal/game"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/testutil"
 )
 
 func lowestCellRow(p *game.Piece) int {

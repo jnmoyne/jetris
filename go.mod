@@ -1,4 +1,4 @@
-module jetricks
+module jetris
 
 go 1.25.6
 

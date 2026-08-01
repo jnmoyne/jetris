@@ -1,10 +1,10 @@
-# Jetricks — Implementation Plan
+# Jetris — Implementation Plan
 
 This document is the authoritative implementation guide for Claude Code. It contains
-everything needed to implement Jetricks from scratch. The full design specification is
-in `jetricks-project-structure.md` (same directory); refer to it for rationale and
+everything needed to implement Jetris from scratch. The full design specification is
+in `jetris-project-structure.md` (same directory); refer to it for rationale and
 extended explanations. Gameplay mechanics (cooperative/competitive/teams modes, scoring,
-gravity, line clears, game lifecycle) are defined in [`jetricks-gameplays.md`](jetricks-gameplays.md);
+gravity, line clears, game lifecycle) are defined in [`jetris-gameplays.md`](jetris-gameplays.md);
 this plan defers to that document for gameplay behavior. This plan is structured to be
 executed in strict phase order — each phase's packages are prerequisites for the next.
 
@@ -13,8 +13,8 @@ executed in strict phase order — each phase's packages are prerequisites for t
 ## Project Bootstrap
 
 ```bash
-mkdir jetricks && cd jetricks
-go mod init jetricks
+mkdir jetris && cd jetris
+go mod init jetris
 go get github.com/nats-io/nats.go
 go get github.com/nats-io/nats.go/jetstream
 go get github.com/synadia-io/orbit.go/natscontext
@@ -97,14 +97,14 @@ const (
     VisibleRows            = 24   // base visible rows (cooperative default)
     VisibleRowStart        = 4    // base visible row start (cooperative; competitive adjusts per game)
     StandardWidth          = 10
-    LobbyKVBucket          = "JETRICKS_LOBBY"
-    ChatStream             = "JETRICKS_CHAT"
+    LobbyKVBucket          = "JETRIS_LOBBY"
+    ChatStream             = "JETRIS_CHAT"
     LobbyChatGameID        = "lobby"                // reserved chat "game ID" for the lobby chat
-    LobbyChatSubject       = "jetricks.chat.lobby"  // = GameChatSubject(LobbyChatGameID)
+    LobbyChatSubject       = "jetris.chat.lobby"  // = GameChatSubject(LobbyChatGameID)
     ChatMaxAge             = 7 * 24 * time.Hour
-    ArchiveStream          = "JETRICKS_ARCHIVE"
-    ArchiveSubject         = "jetricks.archive"
-    LobbyEventsFilter      = "jetricks.lobby.event.>" // core NATS lobby events (no stream); LobbyEventSubject(kind)
+    ArchiveStream          = "JETRIS_ARCHIVE"
+    ArchiveSubject         = "jetris.archive"
+    LobbyEventsFilter      = "jetris.lobby.event.>" // core NATS lobby events (no stream); LobbyEventSubject(kind)
     InviteTTL              = 2 * time.Minute          // invitations at invites.<invitee>.<gameID> (LobbyInviteKey)
 
     PresenceHeartbeat      = 30 * time.Second
@@ -209,10 +209,10 @@ type BoardCell struct {
 **Subject builders** — implement all of these, producing the exact strings shown:
 ```go
 func GameStream(gameID string) string
-// → "JETRICKS_GAME_" + gameID
+// → "JETRIS_GAME_" + gameID
 
 func GameSubjectFilter(gameID string) string
-// → "jetricks.game." + gameID + ".>"
+// → "jetris.game." + gameID + ".>"
 
 // The playfield is stored in NATS as ONE MESSAGE PER CELL (x/y position) —
 // each cell of the board is its own subject, and the last message on that
@@ -224,15 +224,15 @@ func GameSubjectFilter(gameID string) string
 // Cooperative — single shared board, no player token (ownership in the payload
 // via Cell.PlayerIdx; coop never filters cells by player):
 func CoopCellSubject(gameID string, row, col int) string
-// → "jetricks.game." + gameID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+// → "jetris.game." + gameID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 func CoopCellSubjectFilter(gameID string) string
-// → "jetricks.game." + gameID + ".playfield.cell.>"
+// → "jetris.game." + gameID + ".playfield.cell.>"
 
 // Competitive — per-player board scoped by player UUID:
 func CompetitiveCellSubject(gameID, playerID string, row, col int) string
-// → "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+// → "jetris.game." + gameID + ".player." + playerID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 func CompetitiveCellSubjectFilter(gameID, playerID string) string
-// → "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell.>"
+// → "jetris.game." + gameID + ".player." + playerID + ".playfield.cell.>"
 
 // Teams — one shared board PER TEAM. Like the cooperative scheme the subject
 // carries no player token (all teammates publish to and consume from the same
@@ -240,24 +240,24 @@ func CompetitiveCellSubjectFilter(gameID, playerID string) string
 // which holds the GLOBAL roster index), but the board is scoped by team index
 // so the two teams' boards are disjoint:
 func TeamCellSubject(gameID string, team, row, col int) string
-// → "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+// → "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 func TeamCellSubjectFilter(gameID string, team int) string
-// → "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
+// → "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
 
 func MetaSubject(gameID string) string
-// → "jetricks.game." + gameID + ".meta"
+// → "jetris.game." + gameID + ".meta"
 
 func RosterSubject(gameID, playerID string) string
-// → "jetricks.game." + gameID + ".roster." + playerID
+// → "jetris.game." + gameID + ".roster." + playerID
 
 func EventsSubject(gameID string) string
-// → "jetricks.game." + gameID + ".events"
+// → "jetris.game." + gameID + ".events"
 
 func CountdownSubject(gameID string) string
-// → "jetricks.game." + gameID + ".countdown"
+// → "jetris.game." + gameID + ".countdown"
 
 func GameChatSubject(gameID string) string
-// → "jetricks.chat." + gameID (on the CHAT stream, not the game stream —
+// → "jetris.chat." + gameID (on the CHAT stream, not the game stream —
 //   game streams keep only the latest message per subject). Lobby and game
 //   chat share one stream, distinguished purely by the game-ID subject token
 //   (the lobby uses the reserved ID LobbyChatGameID, "lobby"); the consumer
@@ -270,7 +270,7 @@ func LobbyGameKey(gameID string) string
 // → "games." + gameID
 ```
 
-The archive subject is the `ArchiveSubject` const (`"jetricks.archive"`), not a
+The archive subject is the `ArchiveSubject` const (`"jetris.archive"`), not a
 builder function.
 
 **Tests** (`internal/config/config_test.go`):
@@ -566,7 +566,7 @@ func CompletedRows(pf *Playfield) []int
 
 // Mode scoring is computed inline in the lock-in handler (consumer.go
 // handleLockIn): cooperative adds playerCount×lines, competitive adds the line
-// count. There is no separate guideline-score helper. See jetricks-gameplays.md.
+// count. There is no separate guideline-score helper. See jetris-gameplays.md.
 
 // Level: increases every 10 lines cleared.
 //   level = totalLinesCleared / 10  (capped at 19 for the speed curve)
@@ -591,7 +591,7 @@ Gravity intervals (approximate, Tetris Guideline):
 - `CanPlaceCoop` rejects pieces overlapping locked cells or the other player's active cells, but allows overlapping own active cells.
 - `HardDropDestination` lands on the correct row with a tower of occupied cells.
 - `Rotate` applies SRS kicks correctly — at minimum test all J/L/S/T/Z transitions plus I.
-- `CompletedRows` correctly identifies full rows. (Mode scoring is not a `game` function; it is computed inline in `handleLockIn` — competitive adds the line count, cooperative adds `playerCount` per line. See `jetricks-gameplays.md`.)
+- `CompletedRows` correctly identifies full rows. (Mode scoring is not a `game` function; it is computed inline in `handleLockIn` — competitive adds the line count, cooperative adds `playerCount` per line. See `jetris-gameplays.md`.)
 - `GravityInterval(0)==800ms`, `GravityInterval(19)==33ms`.
 - `Cell.Marshal()` and `UnmarshalCell()` round-trip correctly for occupied and active cells, and the empty cell encodes as exactly `{}` (the vacate payload) and decodes back to the zero `Cell`.
 - `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces (and nil when no active piece for that player is present).
@@ -752,7 +752,7 @@ jetstream.StreamConfig{
 
 `DeleteGameStream`: `js.DeleteStream(ctx, config.GameStream(gameID))`.
 
-`ListGameStreams`: use `js.StreamNames(ctx)` with a filter prefix `JETRICKS_GAME_`.
+`ListGameStreams`: use `js.StreamNames(ctx)` with a filter prefix `JETRIS_GAME_`.
 The API accepts a `jetstream.StreamNamesFilter` or iterate the names channel/slice
 and filter by prefix.
 
@@ -786,7 +786,7 @@ every watcher sees — no `LastSeen` bookkeeping, no `pruneStalePresence`. On a
 clean quit the client also deletes its own key (`Lobby.Leave`) for an immediate
 delete event. `LastSeen` remains on the presence value as informational data
 only. (Enabling per-key TTL sets `AllowMsgTTL`/`SubjectDeleteMarkerTTL` on the
-underlying `KV_JETRICKS_LOBBY` stream.)
+underlying `KV_JETRIS_LOBBY` stream.)
 
 #### `consumer.go`
 
@@ -1763,7 +1763,7 @@ playfields. In teams mode `handleLockIn` scores `teamSize × lines`, publishes a
 `EventLineClear{Team, Score, LinesCleared}` (teammates fold in BOTH the score and
 the line count, keeping level/gravity in sync across the team) and an
 `EventShrink{Team, TargetTeam: 1−teamIdx, RowsRemoved}` aimed at the OPPOSING
-team's shared board (see Phase 8). See `jetricks-gameplays.md` for shrink rules.
+team's shared board (see Phase 8). See `jetris-gameplays.md` for shrink rules.
 
 Hard drops compute the destination ONCE (`HardDropDestination` /
 `HardDropDestinationCoop`) and project it with `ProjectHardDrop(...,
@@ -2071,9 +2071,9 @@ idempotent re-delete).
 cleanup works entirely through JetStream and the lobby maps):
 
 1. List game streams with `natspkg.ListGameStreams(ctx, js)` (which filters
-   `js.StreamNames` by the `jetricks.game.>` subject). There is no
+   `js.StreamNames` by the `jetris.game.>` subject). There is no
    `natssysclient`/`Jsz` fast path.
-2. For each stream name matching `JETRICKS_GAME_`, look up its game ID in the
+2. For each stream name matching `JETRIS_GAME_`, look up its game ID in the
    lobby's Games and Players maps.
 3. Apply cleanup rules: streams with no KV entry are deleted unless their meta is
    still `starting`/`in_progress` (in which case the KV entry is re-created);
@@ -2151,7 +2151,7 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   `msgRow` (per-transaction background tint, left bracket, and the `shortBatchID`
   gutter), and `jsonSpans`,
   a display-only JSON syntax colorizer rendered in the Go Mono face.
-- `version.go` — `SetVersion` (called from `cmd/jetricks` with the `-X main.version`
+- `version.go` — `SetVersion` (called from `cmd/jetris` with the `-X main.version`
   build stamp, "dev" otherwise) and `versionBadge`, the pixel-face "VER <x>" plate
   drawn on its own chip in the window's top-right corner over every screen.
 - `brand.go` — the nats.io "N" logo (`nats-icon.png`, embedded via `go:embed`,
@@ -2186,7 +2186,7 @@ games), chat (lobby-scoped lines plus a message editor — per-game messages are
 filtered out here), a create game form (with a "Players"
 number input 2–4), and a "Game History" section below the active games showing
 archived games with mode, players, and scores — fetched from the
-`JETRICKS_ARCHIVE` stream on lobby load. It is drawn as an **arcade high-score
+`JETRIS_ARCHIVE` stream on lobby load. It is drawn as an **arcade high-score
 table**: a pixel-font column header (`archiveHistoryHeader` — **SCORE · TIME ·
 MODE · PLAYERS**, aligned to shared `histScoreW`/`histTimeW`/`histModeW` widths
 via `fixedCol`) over one `archiveHistoryRow` per game, each closed by an `hrule`
@@ -2219,7 +2219,7 @@ are grouped under color-matched TEAM A / TEAM B headers (the winning team's
 header and members in gold), and cooperative players list plainly (one shared
 board — no per-player color, no winner). A "Back to Lobby" `secondaryButton` returns. A centered
 branding banner spans the top of both the lobby and the archive screen: the nats.io "N"
-logo flanking "JETRICKS: peer to peer blackboard system made with NATS.io" in the pixel face (the
+logo flanking "JETRIS: peer to peer blackboard system made with NATS.io" in the pixel face (the
 "NATS.io" text in the NATS-blue accent).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
@@ -2295,7 +2295,7 @@ when `showOutline`; empty / adversarial / compact opponent board → 1px grid li
 
 ## Phase 7 — Entrypoint
 
-### 7.1 `cmd/jetricks/main.go`
+### 7.1 `cmd/jetris/main.go`
 
 Follow the bootstrap sequence from Section 14 of the spec exactly. Use `flag` package
 for CLI flags. Use `os.Signal` channel with `signal.Notify` for graceful shutdown.
@@ -2339,7 +2339,7 @@ func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) 
 
 Built on top of Phases 1–7: a third game mode that composes the cooperative
 shared-board machinery (within a team) with the competitive garbage mechanic
-(between teams). Gameplay rules are in `jetricks-gameplays.md` §5 ("Teams
+(between teams). Gameplay rules are in `jetris-gameplays.md` §5 ("Teams
 Mode"); this phase defers to it for behavior and specifies the implementation.
 
 **Gameplay summary.** Two teams ("A" and "B") of equal size: `TeamSize`
@@ -2609,7 +2609,7 @@ tests, builds, and publishes — no manual steps beyond `git tag vX.Y.Z && git p
    linux/amd64, linux/arm64 (on `ubuntu-24.04-arm`), darwin/arm64, darwin/amd64,
    windows/amd64, windows/arm64.
    Each target builds with `-trimpath -ldflags "-s -w -X main.version=<tag>"`
-   and packages the binary as `jetricks-<tag>-<os>-<arch>.tar.gz` (`.zip` on
+   and packages the binary as `jetris-<tag>-<os>-<arch>.tar.gz` (`.zip` on
    Windows), uploaded as a workflow artifact. linux/arm64 requires the repo to
    be public (GitHub's free arm64 runners are public-repo only).
 
@@ -2617,7 +2617,7 @@ tests, builds, and publishes — no manual steps beyond `git tag vX.Y.Z && git p
    the GitHub release with `softprops/action-gh-release` using auto-generated
    release notes.
 
-Supporting code change: `cmd/jetricks/main.go` declares `var version = "dev"` and a
+Supporting code change: `cmd/jetris/main.go` declares `var version = "dev"` and a
 `--version` flag that prints it and exits; the workflow stamps the tag into it via
 `-X main.version`.
 
@@ -2632,7 +2632,7 @@ local macOS development.
 
 ## Phase 10 — Connection Picker (login-screen server selection)
 
-Jetricks never connects at startup: the window opens immediately and the ONE
+Jetris never connects at startup: the window opens immediately and the ONE
 login screen combines name entry with a CONNECT TO chooser (contexts + URL).
 `--server`/`--context` only seed the chooser's defaults — `--server` selects
 the URL option and replaces the default URL text with its value; `--context`
@@ -2653,7 +2653,7 @@ returns to this same screen.
 - `CheckConnection(cfg)` (`connection.go`) — dial, flush-ping RTT, close;
   provisions nothing (backs the "Check connection" button).
 
-**cmd/jetricks/main.go:** never connects — `ListContexts` +
+**cmd/jetris/main.go:** never connects — `ListContexts` +
 `nativeui.NewWithPicker(cfg, names, selected)`; `runNative(ctx, cancel, a)`;
 shutdown calls `App.DrainConn()` (nil-safe) for the app-owned connection.
 
@@ -2813,8 +2813,8 @@ resident agent's wait-to-be-invited default.
 
 - **Lobby events (core NATS — no stream):** every lobby action also publishes a
   transient `LobbyEvent{Kind, GameID, PlayerID, TargetID, Team, Time}` on
-  `config.LobbyEventSubject(kind)` = `jetricks.lobby.event.<kind>`
-  (`config.LobbyEventsFilter` = `jetricks.lobby.event.>`): `game.created`
+  `config.LobbyEventSubject(kind)` = `jetris.lobby.event.<kind>`
+  (`config.LobbyEventsFilter` = `jetris.lobby.event.>`): `game.created`
   (`CreateGame`), `game.joined` (a roster seat taken), `game.left` (a seat freed —
   `UnjoinGame`), `invite.sent` / `invite.retracted` / `invite.declined`.
   `Lobby.Start` subscribes via `startEventListener` (`js.Conn()`; failure is
@@ -2839,7 +2839,7 @@ resident agent's wait-to-be-invited default.
 - **Agent default:** `Config.AutoJoin` / `--auto-join` (default OFF): a resident
   waits for invitations and only scans for open agent-allowed games when the
   flag is set. `--once` composes with either behavior. The Python example agent
-  mirrors the flag; `jetricks-agent-guide.md` documents the mailbox scheme, the
+  mirrors the flag; `jetris-agent-guide.md` documents the mailbox scheme, the
   decline-by-rewrite protocol, the lobby event subjects, and the invite-default
   expectation for third-party residents.
 - **Tests:** `lobby/rejoin_test.go` — `TestSetReady` (exact + idempotent, visible
@@ -2849,10 +2849,10 @@ resident agent's wait-to-be-invited default.
 
 ## Phase 11 — Per-Game Chat
 
-Lobby chat and per-game chat share the `JETRICKS_CHAT` stream, distinguished
+Lobby chat and per-game chat share the `JETRIS_CHAT` stream, distinguished
 purely by the game-ID token of the subject: a game's messages on
-`jetricks.chat.<gameID>` (`config.GameChatSubject`), the lobby's under the
-reserved game ID `lobby` (`jetricks.chat.lobby`; the stream config is the one
+`jetris.chat.<gameID>` (`config.GameChatSubject`), the lobby's under the
+reserved game ID `lobby` (`jetris.chat.lobby`; the stream config is the one
 filter `ChatSubjectFilter`). Game chat cannot live on the game stream
 (MaxMsgsPerSubject: 1 keeps only the latest message).
 
@@ -2894,14 +2894,14 @@ empty-state panel).
 
 ## Phase 12 — Headless Agent (the `mk1` reference)
 
-A headless computer player, `mk1`: `internal/agent` (logic) + `cmd/jetricks-agent` (CLI).
+A headless computer player, `mk1`: `internal/agent` (logic) + `cmd/jetris-agent` (CLI).
 The agent is an ordinary peer built entirely on the exported engine/lobby API — no engine
-internals, no direct cell publishes, no UI imports. See `jetricks-gameplays.md` §11 for
-player-facing behavior and `jetricks-project-structure.md` §21 for the package reference.
+internals, no direct cell publishes, no UI imports. See `jetris-gameplays.md` §11 for
+player-facing behavior and `jetris-project-structure.md` §21 for the package reference.
 
 **Multi-agent model.** `mk1` is the *reference* agent, not a framework. Agents are
 independent programs that play by speaking the game's NATS protocol; the only contract is
-the wire protocol + fair-play rules in `jetricks-agent-guide.md` (no plugin interface, no
+the wire protocol + fair-play rules in `jetris-agent-guide.md` (no plugin interface, no
 shared SDK). Contributed agents — any language — live self-contained under `agents/<name>/`
 (see `agents/README.md`). `mk1` is privileged only in that, living in the repo, it reuses
 the game's Go engine instead of re-implementing the protocol. `agents/example-python/`
@@ -2976,9 +2976,9 @@ completion is `PieceIdx() > startIdx`.
   the finished transition); on losing it exits after a short grace or lingers until the
   game finishes (`--linger`). Teardown: engine stop, `LeaveGame`, lobby stop, drain.
 
-### 12.5 CLI (`cmd/jetricks-agent/main.go`)
+### 12.5 CLI (`cmd/jetris-agent/main.go`)
 
-Flags `--server/--context/--user/--password` (as in `cmd/jetricks`), `--name`
+Flags `--server/--context/--user/--password` (as in `cmd/jetris`), `--name`
 (the agent VERSION stem; default `mk1`, the reference `Codename`), `--difficulty`
 (default hard), `--join`, `--create`,
 `--mode` (cooperative/competitive/teams, with `--create`), `--players`, `--wait`,
@@ -3105,7 +3105,7 @@ top-out, and decent agents avoid topping out) — bounded only by interruption.
 These rules apply throughout all phases:
 
 1. **No hand-rolled subject strings.** Every subject or stream name is produced by a
-   `config.*` builder. No `fmt.Sprintf("jetricks.game.%s...")` anywhere except in
+   `config.*` builder. No `fmt.Sprintf("jetris.game.%s...")` anywhere except in
    `config/config.go`.
 
 2. **Goroutine lifecycle.** Every goroutine receives a `ctx context.Context` and must

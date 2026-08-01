@@ -89,7 +89,7 @@ func TestMsgGroupOrdinals(t *testing.T) {
 	a := newTestApp()
 	a.msgShow = true
 	rec := func(batchID string) {
-		a.recordStreamMsg(time.Now(), "jetricks.game.g1.playfield.cell.1.1", []byte(`{}`), batchID)
+		a.recordStreamMsg(time.Now(), "jetris.game.g1.playfield.cell.1.1", []byte(`{}`), batchID)
 	}
 	rec("batch-A")
 	rec("batch-A")

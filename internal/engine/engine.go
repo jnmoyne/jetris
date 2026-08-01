@@ -15,10 +15,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/game"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/rng"
+	"jetris/internal/config"
+	"jetris/internal/game"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/rng"
 )
 
 // Mode represents the engine's operating mode.
@@ -1453,7 +1453,7 @@ func (e *Engine) publishPieceIdxUpdate(pieceIdx uint64) {
 // runRosterConsumer watches for roster entries and starts opponent consumers
 // for each new player discovered. Keeps running to discover late joiners.
 func (e *Engine) runRosterConsumer(ctx context.Context) {
-	filterSubject := "jetricks.game." + e.gameID + ".roster.*"
+	filterSubject := "jetris.game." + e.gameID + ".roster.*"
 
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, e.js, natspkg.OrderedConsumerConfig{
 		Stream:        config.GameStream(e.gameID),

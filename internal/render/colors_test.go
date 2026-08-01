@@ -5,7 +5,7 @@ import (
 	"image/color"
 	"testing"
 
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 func hex(c color.NRGBA) string { return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B) }

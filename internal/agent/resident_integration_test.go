@@ -8,10 +8,10 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/testutil"
 )
 
 // TestResidentAgents exercises the resident lifecycle end to end: two resident

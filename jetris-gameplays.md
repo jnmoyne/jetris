@@ -1,10 +1,10 @@
-# Jetricks — Gameplay Reference
+# Jetris — Gameplay Reference
 
 **Version:** 1.0
 **Status:** Authoritative
 **Date:** April 2026
 
-This document is the single source of truth for all gameplay mechanics in Jetricks. The spec (`jetricks-project-structure.md`) and plan (`jetricks-implementation-plan.md`) defer to this document for gameplay behavior. Any gameplay change must be reflected here first.
+This document is the single source of truth for all gameplay mechanics in Jetris. The spec (`jetris-project-structure.md`) and plan (`jetris-implementation-plan.md`) defer to this document for gameplay behavior. Any gameplay change must be reflected here first.
 
 ---
 
@@ -300,7 +300,7 @@ There is a single login screen where the player both picks where to connect and 
 
 - If NATS CLI contexts are defined on the machine, a "Context:" option offers them in a pull-down button. The pull-down starts on the currently selected context (per `nats context select`); opening it lists every context — the selected one labeled "(selected)" — and picking one closes the list and makes it the choice.
 - A "NATS URL" option is **always** available, pre-filled with `nats://demo.nats.io:4222`; typing in the URL field selects it automatically.
-- A "LAN mode (embedded NATS server)" option is **always** available: hitting Play with it selected starts a JetStream-enabled NATS server **inside the Jetricks process itself** — default account, no authentication of any kind, listening on all interfaces on the port entered in the option's "Port:" field (default 4222; editing it selects the option automatically), storing its stream data in the local `jetstream-data` directory. While the option is selected the login screen shows the shareable URL (`Your server's URL is nats://<lan-ip>:<port>`), and once connected the lobby shows it too (`YOUR SERVER'S URL IS nats://<ip>:<port> — share this address so others can join you`) so the host can invite other players, who connect to that address via the NATS URL option. The embedded server keeps running until the window closes, so quitting to the login screen doesn't kick connected friends; logging back in with a **different** port restarts it on the new port.
+- A "LAN mode (embedded NATS server)" option is **always** available: hitting Play with it selected starts a JetStream-enabled NATS server **inside the Jetris process itself** — default account, no authentication of any kind, listening on all interfaces on the port entered in the option's "Port:" field (default 4222; editing it selects the option automatically), storing its stream data in the local `jetstream-data` directory. While the option is selected the login screen shows the shareable URL (`Your server's URL is nats://<lan-ip>:<port>`), and once connected the lobby shows it too (`YOUR SERVER'S URL IS nats://<ip>:<port> — share this address so others can join you`) so the host can invite other players, who connect to that address via the NATS URL option. The embedded server keeps running until the window closes, so quitting to the login screen doesn't kick connected friends; logging back in with a **different** port restarts it on the new port.
 - The `--server`/`--context` flags don't connect directly — they only set the picker's starting choice: `--server` selects the URL option and replaces the default URL text with its value; `--context` picks the context option with the pull-down preset to that context.
 - A **Check connection** button tests the current choice without joining: it connects, measures the server's ping (round-trip time), shows `✓ <server> · ping <rtt>` in green (or the error in red), and disconnects. With "LAN mode (embedded NATS server)" selected it dials nothing and reports the address the embedded server serves (or would serve) on.
 - Hitting Play connects with the chosen context/URL and logs in; a connection failure keeps the player on the login screen with the error shown so they can retry with a different choice.
@@ -407,7 +407,7 @@ dismiss it), deleted by the inviter = retracted.
   invitation as the strongest join signal and joins the invited game (and team) at
   once. Inviting an agent is how you bring a *specific* agent into an invite-only
   game — and it is the DEFAULT way agents get into games at all: a resident
-  `jetricks-agent` only joins games it is invited to unless started with
+  `jetris-agent` only joins games it is invited to unless started with
   `--auto-join`, which restores active scanning for open agent-allowed games. If
   the join can't be honored (the invited team was already filled by other
   invitees, or the game filled without it), the agent **declines** the invitation and
@@ -419,13 +419,13 @@ dismiss it), deleted by the inviter = retracted.
   join an invite-only game are refused.
 
 Third-party agents accept invitations by watching their own lobby mailbox keys —
-see `jetricks-agent-guide.md`.
+see `jetris-agent-guide.md`.
 
 ### Lobby Events
 
 Alongside the KV state, every lobby action is announced as a **transient core
 NATS message** (deliberately captured by no stream — these are real-time signals,
-not state) on `jetricks.lobby.event.<kind>`:
+not state) on `jetris.lobby.event.<kind>`:
 
 | Kind | Published when |
 |------|----------------|
@@ -485,7 +485,7 @@ bucket but are written without a TTL, so they persist until explicitly removed.)
 
 ### Archive Record
 
-Published to `JETRICKS_ARCHIVE` stream when a game finishes:
+Published to `JETRIS_ARCHIVE` stream when a game finishes:
 
 ```json
 {
@@ -521,7 +521,7 @@ Teams games additionally carry `team_size`, `winning_team` (0 or 1; -1 = draw or
 
 ## 6b. Chat
 
-There are two chat scopes, sharing one NATS stream (`JETRICKS_CHAT`) and distinguished purely by the game-ID token of the subject (`jetricks.chat.<gameID>`): the **lobby chat** (the reserved game ID `lobby`, i.e. `jetricks.chat.lobby`, shown on the lobby screen) and a **per-game chat** (`jetricks.chat.<gameID>`), seen only by that game's players and spectators.
+There are two chat scopes, sharing one NATS stream (`JETRIS_CHAT`) and distinguished purely by the game-ID token of the subject (`jetris.chat.<gameID>`): the **lobby chat** (the reserved game ID `lobby`, i.e. `jetris.chat.lobby`, shown on the lobby screen) and a **per-game chat** (`jetris.chat.<gameID>`), seen only by that game's players and spectators.
 
 On the game screen (player or spectator) a chat strip is displayed at the bottom:
 
@@ -588,7 +588,7 @@ Reconciliation with the consumer echo is automatic and is the single rule in `Pl
 
 ### Player-initiated moves (left, right, down, rotate, hard drop)
 
-CAS failure = **move is dropped, no retry, in either game mode**. The player must press the input again. The engine signals the failure with a **rainbow flash on the outline of the player's own piece** — cells of the active piece cycle through the seven spectrum colors over ~600 ms with a matching glow, then revert. The flash shows on the flashing player's own board, and — so a watcher sees the same contention feedback the players do — is also broadcast to **spectators**: the player publishes a transient **core NATS** message (fire-and-forget, on `jetricks.flash.<gameID>.<playerID>`, deliberately NOT on the game stream so it is never persisted or replayed) that spectators subscribe to and render on that player's board. Other **players** do not subscribe, so a player still sees only their **own** CAS flashes; only spectators see everyone's.
+CAS failure = **move is dropped, no retry, in either game mode**. The player must press the input again. The engine signals the failure with a **rainbow flash on the outline of the player's own piece** — cells of the active piece cycle through the seven spectrum colors over ~600 ms with a matching glow, then revert. The flash shows on the flashing player's own board, and — so a watcher sees the same contention feedback the players do — is also broadcast to **spectators**: the player publishes a transient **core NATS** message (fire-and-forget, on `jetris.flash.<gameID>.<playerID>`, deliberately NOT on the game stream so it is never persisted or replayed) that spectators subscribe to and render on that player's board. Other **players** do not subscribe, so a player still sees only their **own** CAS flashes; only spectators see everyone's.
 
 This is intentional in cooperative mode where two players share one playfield: CAS rejections are routine and a silent server-side retry would mask conflicts from the player and make their input timing feel non-deterministic. Loud, immediate, local-only feedback gives the player full agency over how to recover.
 
@@ -761,7 +761,7 @@ chat above it.
 ### Lobby branding
 
 The lobby screen carries a banner across its top — the nats.io "N" logo flanking
-"Jetricks: peer to peer blackboard system made with NATS.io" — above the player/chat and
+"Jetris: peer to peer blackboard system made with NATS.io" — above the player/chat and
 games/history columns.
 
 ### Version plate
@@ -770,21 +770,21 @@ Every screen — login, lobby, game, archive — carries a small arcade-cabinet 
 window's **top-right** corner reading **VER &lt;version&gt;** in the pixel face on its own
 framed chip, so it stays readable over a board. The string is the build's version: the
 release tag stamped into the binary (`-X main.version`), or `DEV` for a plain local
-build — the same value `jetricks --version` prints.
+build — the same value `jetris --version` prints.
 
 ---
 
 ## 11. Agents and the reference agent (`mk1`)
 
-An agent is any standalone program that plays Jetricks by speaking the game's NATS
+An agent is any standalone program that plays Jetris by speaking the game's NATS
 protocol — there is no plugin interface; the contract is the wire protocol and the
-fair-play rules in `jetricks-agent-guide.md` (with these game rules). Agents can be
+fair-play rules in `jetris-agent-guide.md` (with these game rules). Agents can be
 written in any language and contributed to the repo under `agents/<name>/`
 (see `agents/README.md`); each plays under a name of the form
 `<agent-name>-<instance>-<difficulty>` so rosters and history record exactly which agent,
 which running copy, and how strong.
 
-Jetricks ships one reference agent, **`mk1`** (`jetricks-agent`), written in Go, that plays
+Jetris ships one reference agent, **`mk1`** (`jetris-agent`), written in Go, that plays
 **all three modes** — cooperative, competitive, and teams. It is deliberately an ordinary
 peer — the same `lobby` join handshake, the same `engine` (all six moves: left, right,
 down, rotate CW/CCW, hard drop), the same consumers and CAS discipline — with a planner
@@ -829,7 +829,7 @@ the committed boards (its own and the opponents'/teams'), the roster and
 eliminations, scores/levels, the countdown, and its own falling piece. It may NOT
 read the game seed to predict upcoming pieces (the UI shows no next-piece preview),
 nor any stream state the UI does not render. This is the visibility contract every
-agent implementation must honor — see `jetricks-agent-guide.md`.
+agent implementation must honor — see `jetris-agent-guide.md`.
 
 ### Per-mode outcomes
 

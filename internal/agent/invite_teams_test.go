@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/testutil"
 )
 
 // A human creates a 2v2 invite-only teams game (4 players total), invites 4

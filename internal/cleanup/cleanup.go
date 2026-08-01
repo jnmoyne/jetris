@@ -9,9 +9,9 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
 )
 
 // creationGracePeriod exempts newly created games from cleanup. Game creation
@@ -34,7 +34,7 @@ func Run(ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue, lb 
 	players := lb.Players()
 
 	for _, streamName := range streamNames {
-		gameID := strings.TrimPrefix(streamName, "JETRICKS_GAME_")
+		gameID := strings.TrimPrefix(streamName, "JETRIS_GAME_")
 
 		listing, hasListing := games[gameID]
 		if !hasListing {

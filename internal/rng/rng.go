@@ -3,7 +3,7 @@ package rng
 import (
 	"math/rand/v2"
 
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 // Sequence provides a deterministic, seekable piece sequence.

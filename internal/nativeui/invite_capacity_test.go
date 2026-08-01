@@ -3,7 +3,7 @@ package nativeui
 import (
 	"testing"
 
-	"jetricks/internal/lobby"
+	"jetris/internal/lobby"
 )
 
 // The picker's capacity guard counts seats spoken for — roster members plus

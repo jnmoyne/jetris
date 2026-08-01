@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	"jetris/internal/testutil"
 )
 
 func TestBootstrapURL(t *testing.T) {

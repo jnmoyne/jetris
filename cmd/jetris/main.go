@@ -11,9 +11,9 @@ import (
 
 	"gioui.org/app"
 
-	"jetricks/internal/config"
-	"jetricks/internal/nativeui"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	"jetris/internal/nativeui"
+	natspkg "jetris/internal/nats"
 )
 
 // version is overridden at release time via -ldflags "-X main.version=<tag>"
@@ -80,7 +80,7 @@ func parseFlags() config.Config {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("jetricks %s\n", version)
+		fmt.Printf("jetris %s\n", version)
 		os.Exit(0)
 	}
 

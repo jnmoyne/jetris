@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // The archived-game viewer includes the game's preserved chat history: line

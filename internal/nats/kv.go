@@ -5,7 +5,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // EnsureLobbyKV creates or retrieves the lobby KV bucket.

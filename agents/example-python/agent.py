@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""A minimal Jetricks-playing agent in Python.
+"""A minimal Jetris-playing agent in Python.
 
-This agent depends on NOTHING in the jetricks repository: it implements the
-wire protocol described in ../../jetricks-agent-guide.md (with the game rules
-from ../../jetricks-gameplays.md) directly against NATS/JetStream, as a worked
+This agent depends on NOTHING in the jetris repository: it implements the
+wire protocol described in ../../jetris-agent-guide.md (with the game rules
+from ../../jetris-gameplays.md) directly against NATS/JetStream, as a worked
 example that the "any language, only NATS" contract is real.
 
 Scope (deliberately minimal):
@@ -48,16 +48,16 @@ import nats
 from nats.js import api as jsapi
 
 # --------------------------------------------------------------------------
-# Identity (jetricks-agent-guide.md §2): <codename>-<instance>-<difficulty>.
+# Identity (jetris-agent-guide.md §2): <codename>-<instance>-<difficulty>.
 # Bump CODENAME whenever this agent's play logic changes.
 CODENAME = "example-py"
 DIFFICULTY = "easy"  # one fixed strength; the label is part of the name
 
 # Protocol constants (guide §4, gameplays §2/§7).
-LOBBY_BUCKET = "JETRICKS_LOBBY"
-ARCHIVE_STREAM = "JETRICKS_ARCHIVE"
-ARCHIVE_SUBJECT = "jetricks.archive"
-CHAT_STREAM = "JETRICKS_CHAT"
+LOBBY_BUCKET = "JETRIS_LOBBY"
+ARCHIVE_STREAM = "JETRIS_ARCHIVE"
+ARCHIVE_SUBJECT = "jetris.archive"
+CHAT_STREAM = "JETRIS_CHAT"
 WIDTH = 10                    # competitive boards are always 10 wide
 HEADROOM = 4                  # rows 0..3 are the hidden spawn headroom
 GRAVITY_SECONDS = 0.8         # competitive gravity is fixed at level 0 (800 ms)
@@ -435,7 +435,7 @@ class Agent:
             except Exception:
                 await asyncio.sleep(0.05)
                 continue  # CAS conflict: retry from a fresh read
-            await self.js.publish(f"jetricks.game.{game_id}.roster.{self.name}",
+            await self.js.publish(f"jetris.game.{game_id}.roster.{self.name}",
                                   json.dumps(summary).encode())
             if full:
                 await self.transition_meta(game_id, "starting")
@@ -467,8 +467,8 @@ class Agent:
             return all_ready and len(players) >= g.get("player_count", 0)
 
     async def fetch_meta(self, game_id):
-        raw = await self.js.get_last_msg(f"JETRICKS_GAME_{game_id}",
-                                         f"jetricks.game.{game_id}.meta", direct=True)
+        raw = await self.js.get_last_msg(f"JETRIS_GAME_{game_id}",
+                                         f"jetris.game.{game_id}.meta", direct=True)
         return json.loads(raw.data), raw.seq
 
     async def transition_meta(self, game_id, status):
@@ -489,7 +489,7 @@ class Agent:
             if status == "finished":
                 meta["finished_at"] = now_rfc3339()
             try:
-                await self.js.publish(f"jetricks.game.{game_id}.meta",
+                await self.js.publish(f"jetris.game.{game_id}.meta",
                                       json.dumps(meta).encode(),
                                       headers={H_EXPECT_LAST: str(seq)})
                 return True
@@ -498,7 +498,7 @@ class Agent:
         return False
 
     async def run_countdown(self, game_id):
-        subject = f"jetricks.game.{game_id}.countdown"
+        subject = f"jetris.game.{game_id}.countdown"
         for i in range(5, 0, -1):
             await self.js.publish(subject, json.dumps({"seconds": i}).encode())
             await asyncio.sleep(1.0)
@@ -629,14 +629,14 @@ class Game:
         self.roster = []
 
     def cell_subject(self, r, c):
-        return f"jetricks.game.{self.id}.player.{self.a.name}.playfield.cell.{r}.{c}"
+        return f"jetris.game.{self.id}.player.{self.a.name}.playfield.cell.{r}.{c}"
 
     # ---- consumers -------------------------------------------------------
 
     async def meta_loop(self):
         try:
-            sub = await self.a.js.subscribe(f"jetricks.game.{self.id}.meta",
-                                            stream=f"JETRICKS_GAME_{self.id}",
+            sub = await self.a.js.subscribe(f"jetris.game.{self.id}.meta",
+                                            stream=f"JETRIS_GAME_{self.id}",
                                             ordered_consumer=True)
             async for msg in sub.messages:
                 meta = json.loads(msg.data)
@@ -650,8 +650,8 @@ class Game:
 
     async def events_loop(self):
         try:
-            sub = await self.a.js.subscribe(f"jetricks.game.{self.id}.events",
-                                            stream=f"JETRICKS_GAME_{self.id}",
+            sub = await self.a.js.subscribe(f"jetris.game.{self.id}.events",
+                                            stream=f"JETRIS_GAME_{self.id}",
                                             ordered_consumer=True)
             async for msg in sub.messages:
                 ev = json.loads(msg.data)
@@ -703,7 +703,7 @@ class Game:
         """Broadcast a CAS-failure flash so spectators see the dropped write
         (core NATS, never the stream — guide §4.3)."""
         payload = {"pi": self.idx, "c": [[r, c] for r, c in cells]}
-        await self.a.nc.publish(f"jetricks.flash.{self.id}.{self.a.name}",
+        await self.a.nc.publish(f"jetris.flash.{self.id}.{self.a.name}",
                                 json.dumps(payload).encode())
 
     async def resync(self):
@@ -713,7 +713,7 @@ class Game:
         for r in range(self.height):
             for c in range(WIDTH):
                 try:
-                    raw = await self.a.js.get_last_msg(f"JETRICKS_GAME_{self.id}",
+                    raw = await self.a.js.get_last_msg(f"JETRIS_GAME_{self.id}",
                                                        self.cell_subject(r, c), direct=True)
                 except Exception:
                     continue
@@ -789,7 +789,7 @@ class Game:
         self.total_lines += len(rows)
         ev = {"kind": "shrink", "player_id": self.a.name, "player_idx": self.idx,
               "rows_removed": len(rows), "team": 0, "target_team": 0}
-        await self.a.js.publish(f"jetricks.game.{self.id}.events", json.dumps(ev).encode())
+        await self.a.js.publish(f"jetris.game.{self.id}.events", json.dumps(ev).encode())
         log(f"cleared {len(rows)} line(s), score {self.score}")
 
     async def bump_meta_piece_idx(self):
@@ -797,7 +797,7 @@ class Game:
         try:
             meta, seq = await self.a.fetch_meta(self.id)
             meta["piece_idx"] = self.piece_idx
-            await self.a.js.publish(f"jetricks.game.{self.id}.meta",
+            await self.a.js.publish(f"jetris.game.{self.id}.meta",
                                     json.dumps(meta).encode(),
                                     headers={H_EXPECT_LAST: str(seq)})
         except Exception:
@@ -855,7 +855,7 @@ class Game:
         ev = {"kind": "game_over", "player_id": self.a.name, "score": self.score,
               "level": min(self.total_lines // 10, 19), "piece_count": self.piece_idx,
               "team": 0, "target_team": 0}
-        await self.a.js.publish(f"jetricks.game.{self.id}.events", json.dumps(ev).encode())
+        await self.a.js.publish(f"jetris.game.{self.id}.events", json.dumps(ev).encode())
 
     async def archive(self):
         """We triggered the finish: transition finished→archived (CAS elects
@@ -870,7 +870,7 @@ class Game:
             return
         meta["status"] = "archived"
         try:
-            await self.a.js.publish(f"jetricks.game.{self.id}.meta",
+            await self.a.js.publish(f"jetris.game.{self.id}.meta",
                                     json.dumps(meta).encode(),
                                     headers={H_EXPECT_LAST: str(seq)})
         except Exception:
@@ -886,7 +886,7 @@ class Game:
         }
         await self.a.js.publish(ARCHIVE_SUBJECT, json.dumps(record).encode())
         try:
-            await self.a.js.delete_stream(f"JETRICKS_GAME_{self.id}")
+            await self.a.js.delete_stream(f"JETRIS_GAME_{self.id}")
         except Exception:
             pass
         try:
@@ -895,7 +895,7 @@ class Game:
             pass
         try:
             await self.a.js.purge_stream(CHAT_STREAM,
-                                         subject=f"jetricks.chat.{self.id}")
+                                         subject=f"jetris.chat.{self.id}")
         except Exception:
             pass
         log(f"archived game {self.id}")
@@ -923,8 +923,8 @@ class Game:
         for i, pid in enumerate(ids):
             cells = []
             fetches = [(r, c, self.a.js.get_last_msg(
-                f"JETRICKS_GAME_{self.id}",
-                f"jetricks.game.{self.id}.player.{pid}.playfield.cell.{r}.{c}",
+                f"JETRIS_GAME_{self.id}",
+                f"jetris.game.{self.id}.player.{pid}.playfield.cell.{r}.{c}",
                 direct=True))
                 for r in range(HEADROOM, self.height) for c in range(WIDTH)]
             for r, c, fut in fetches:

@@ -14,8 +14,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
 )
 
 // Lobby manages all lobby-level state.

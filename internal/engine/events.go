@@ -3,7 +3,7 @@ package engine
 import (
 	"time"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // UpdateKind identifies the type of engine update sent to the UI.

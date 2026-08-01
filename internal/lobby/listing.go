@@ -3,7 +3,7 @@ package lobby
 import (
 	"time"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // GameListing represents a game visible in the lobby.
@@ -28,7 +28,7 @@ type PlayerSummary struct {
 	Ready    bool   `json:"ready"`
 	Team     int    `json:"team"`            // teams mode: 0 = A, 1 = B
 	TeamSlot int    `json:"team_slot"`       // teams mode: section index within the team board (join order)
-	Agent    bool   `json:"agent,omitempty"` // roster seat taken by an agent player (jetricks-agent)
+	Agent    bool   `json:"agent,omitempty"` // roster seat taken by an agent player (jetris-agent)
 }
 
 // TeamMemberCount returns how many roster members belong to the given team.

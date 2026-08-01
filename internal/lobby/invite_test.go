@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // waitInvites polls until the player's pending-invite count reaches want,

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/testutil"
 )
 
 // TestAgentVsAgent plays a full competitive game between a strong agent (creator)

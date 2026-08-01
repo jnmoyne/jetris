@@ -9,9 +9,9 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
 )
 
 // newTestApp builds an App wired for headless layout: nil NATS handles (only

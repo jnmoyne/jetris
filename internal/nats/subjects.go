@@ -1,6 +1,6 @@
 package nats
 
-import "jetricks/internal/config"
+import "jetris/internal/config"
 
 // Re-export config subject builders for convenience.
 var (

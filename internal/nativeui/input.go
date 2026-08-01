@@ -4,7 +4,7 @@ import (
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 
-	"jetricks/internal/engine"
+	"jetris/internal/engine"
 )
 
 // boardKeyFilters returns the event filters for the game board. The leading

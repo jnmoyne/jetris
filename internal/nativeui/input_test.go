@@ -9,7 +9,7 @@ import (
 	"gioui.org/io/key"
 	"gioui.org/op"
 
-	"jetricks/internal/engine"
+	"jetris/internal/engine"
 )
 
 // TestBoardKeyFiltersIncludeFocusFilter guards the exact regression that broke

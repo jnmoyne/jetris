@@ -11,8 +11,8 @@ import (
 	"gioui.org/op/paint"
 	"gioui.org/unit"
 
-	"jetricks/internal/engine"
-	"jetricks/internal/render"
+	"jetris/internal/engine"
+	"jetris/internal/render"
 )
 
 // fillRect paints r with c in absolute widget coordinates.

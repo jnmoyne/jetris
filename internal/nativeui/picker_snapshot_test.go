@@ -17,7 +17,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 func TestPickerSnapshots(t *testing.T) {

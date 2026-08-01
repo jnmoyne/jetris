@@ -10,8 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
 )
 
 // PresenceStatus represents the player's current state.
@@ -29,7 +29,7 @@ type PlayerPresence struct {
 	Name     string         `json:"name"`
 	Status   PresenceStatus `json:"status"`
 	GameID   string         `json:"game_id,omitempty"`
-	Agent    bool           `json:"agent,omitempty"` // this peer is an agent player (jetricks-agent)
+	Agent    bool           `json:"agent,omitempty"` // this peer is an agent player (jetris-agent)
 	LastSeen time.Time      `json:"last_seen"`
 }
 

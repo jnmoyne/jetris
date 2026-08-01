@@ -4,9 +4,9 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
 )
 
 // newBoard returns an empty competitive 2-player board (10 wide, 30 rows).

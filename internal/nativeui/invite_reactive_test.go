@@ -3,7 +3,7 @@ package nativeui
 import (
 	"testing"
 
-	"jetricks/internal/lobby"
+	"jetris/internal/lobby"
 )
 
 // The picker candidate list tracks live lobby presence: new lobby players are

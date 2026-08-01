@@ -3,8 +3,8 @@ package nativeui
 import (
 	"testing"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
+	"jetris/internal/config"
+	"jetris/internal/engine"
 )
 
 // The countdown overlay must show only BEFORE the game starts — and never

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 func TestPieceCells(t *testing.T) {

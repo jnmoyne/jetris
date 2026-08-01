@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
+	"jetris/internal/engine"
+	"jetris/internal/game"
 )
 
 // Mover is the slice of *engine.Engine the executor drives. The engine

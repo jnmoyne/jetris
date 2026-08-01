@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"jetricks/internal/config"
-	"jetricks/internal/game"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	"jetris/internal/game"
+	natspkg "jetris/internal/nats"
 )
 
 // runConsumer drives an ordered consumer over filterSubject, applying every

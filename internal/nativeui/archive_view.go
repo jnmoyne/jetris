@@ -8,10 +8,10 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget/material"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
-	"jetricks/internal/render"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	"jetris/internal/render"
 )
 
 // openArchive switches to the archive viewer for a finished game, showing the

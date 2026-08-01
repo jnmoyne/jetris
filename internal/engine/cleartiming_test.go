@@ -7,8 +7,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/game"
+	"jetris/internal/config"
+	"jetris/internal/game"
 )
 
 // publishCoopRowCells pre-fills one row of the shared coop board by publishing

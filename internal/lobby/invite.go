@@ -10,7 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // Invitation is the KV value of a game invitation, written to the invitee's

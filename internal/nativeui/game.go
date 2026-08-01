@@ -15,10 +15,10 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
-	"jetricks/internal/render"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
+	"jetris/internal/render"
 )
 
 // gameView is the per-frame snapshot of game scalars, taken under a.mu so the

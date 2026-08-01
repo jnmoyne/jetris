@@ -1,10 +1,10 @@
-# Jetricks — Go Project Structure
+# Jetris — Go Project Structure
 
 **Version:** 0.1 Draft
 **Status:** Design Phase
 **Date:** March 2026
 
-> **Gameplay reference:** All gameplay mechanics (cooperative/competitive/teams modes, scoring, gravity, line clears, game lifecycle) are defined in [`jetricks-gameplays.md`](jetricks-gameplays.md). This spec defers to that document for gameplay behavior and focuses on architecture, package structure, and implementation details.
+> **Gameplay reference:** All gameplay mechanics (cooperative/competitive/teams modes, scoring, gravity, line clears, game lifecycle) are defined in [`jetris-gameplays.md`](jetris-gameplays.md). This spec defers to that document for gameplay behavior and focuses on architecture, package structure, and implementation details.
 
 ---
 
@@ -12,7 +12,7 @@
 
 1. [Repository Layout](#1-repository-layout)
 2. [Package Dependency Graph](#2-package-dependency-graph)
-3. [cmd/jetricks](#3-cmdjetricks)
+3. [cmd/jetris](#3-cmdjetris)
 4. [internal/config](#4-internalconfig)
 5. [Player Identity](#5-player-identity)
 6. [internal/nats](#6-internalnats)
@@ -30,21 +30,21 @@
 18. [Testing Strategy](#18-testing-strategy)
 19. [Design Decision Log](#19-design-decision-log)
 20. [Release Pipeline](#20-release-pipeline)
-21. [internal/agent and cmd/jetricks-agent](#21-internalagent-and-cmdjetricks-agent)
+21. [internal/agent and cmd/jetris-agent](#21-internalagent-and-cmdjetris-agent)
 
 ---
 
 ## 1. Repository Layout
 
 ```
-jetricks/
+jetris/
 ├── .github/
 │   └── workflows/
 │       └── release.yml
 ├── cmd/
-│   ├── jetricks/
+│   ├── jetris/
 │   │   └── main.go
-│   └── jetricks-agent/
+│   └── jetris-agent/
 │       └── main.go
 ├── internal/
 │   ├── config/
@@ -108,7 +108,7 @@ jetricks/
 │       └── nats.go
 ├── scripts/
 │   └── cleanup.sh
-├── jetricks-agent-guide.md
+├── jetris-agent-guide.md
 ├── go.mod
 └── go.sum
 ```
@@ -120,7 +120,7 @@ jetricks/
 Arrows indicate "depends on". The rule is that `internal/game`, `internal/rng`, and `internal/config` are leaves — they have no internal dependencies. The front-end layer (`internal/nativeui`) depends on engine and lobby but neither engine nor lobby depends on the front end. All packages may depend on config.
 
 ```
-cmd/jetricks
+cmd/jetris
     ├── internal/config
     ├── internal/nats              ← uses: orbit.go/natscontext, orbit.go/jetstreamext
     ├── internal/rng
@@ -132,7 +132,7 @@ cmd/jetricks
     ├── internal/render            ← depends on: game (cell/board appearance)
     └── internal/nativeui          ← depends on: engine, lobby, render, config (the front end)
 
-cmd/jetricks-agent
+cmd/jetris-agent
     └── internal/agent               ← depends on: engine, lobby, game, rng, nats, config,
                                      archive, cleanup (headless player; no UI packages)
 
@@ -148,9 +148,9 @@ orbit.go modules used:
 
 ---
 
-## 3. cmd/jetricks
+## 3. cmd/jetris
 
-**File:** `cmd/jetricks/main.go`
+**File:** `cmd/jetris/main.go`
 
 The entrypoint. Responsible only for wiring — it constructs all top-level components, injects dependencies, and starts the application. Contains no business logic.
 
@@ -171,7 +171,7 @@ The player enters a name on the same screen; identity is NATS-backed presence. L
 | `--server` / `--user` / `--password` | `""` | NATS URL + credentials: `--server` pre-fills the picker's URL field and makes the URL option the starting choice (beating `--context`); user/password apply to URL connects. |
 | `--version` | `false` | Print the version and exit. The `main.version` variable defaults to `dev`, is overridden at release time via `-ldflags "-X main.version=<tag>"` (see [Section 20 — Release Pipeline](#20-release-pipeline)), and is passed to `nativeui.SetVersion` so the same string shows on the UI's top-right version plate. |
 
-Connecting via a context ultimately maps to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetricks shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetricks use them.
+Connecting via a context ultimately maps to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetris shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetris use them.
 
 The login screen always shows the **CONNECT TO** section offering the machine's NATS CLI contexts through a "Context:" pull-down button (preset to the CLI's currently selected context, which is labeled "(selected)" in the opened list), an always-present **NATS URL** option, default `nats://demo.nats.io:4222` (`nativeui.DefaultNATSURL`), and an always-present **LAN mode (embedded NATS server)** option with an indented "Port:" field (pre-filled with `config.DefaultEmbeddedPort` = 4222, digits-only; editing it selects the option, the same way typing a URL selects the URL option) — Play with it selected starts an in-process JetStream-enabled `nats-server` (default account, no auth, the entered port on all interfaces, storage in `./jetstream-data`) and connects to it via its LAN address. While the option is selected, an indented `Your server's URL is nats://<lan-ip>:<port>` line (LAN IP resolved once at construction into `App.lanIP`) shows the address to share, and the lobby displays it again once connected. The default choice precedence is `--server` (URL option, field pre-filled with its value) → `--context` (context option, the pull-down preset to it; appended to the list if the lister didn't find it) → the CLI's selected context → the URL option. A **Check connection** button dials the current choice, measures the server ping (flush round trip), reports `✓ <server> · ping <rtt>` or `✗ <error>` — and closes that probe connection without provisioning anything (for the embedded option it dials nothing and reports the address the server serves, or would serve, on).
 
@@ -231,12 +231,12 @@ const (
     VisibleRowStart = 4    // base first visible row index (cooperative; competitive adjusts per game)
     StandardWidth   = 10
 
-    LobbyKVBucket          = "JETRICKS_LOBBY"
-    ChatStream             = "JETRICKS_CHAT"
+    LobbyKVBucket          = "JETRIS_LOBBY"
+    ChatStream             = "JETRIS_CHAT"
     LobbyChatGameID        = "lobby"                // reserved chat "game ID" for the lobby chat
-    LobbyChatSubject       = "jetricks.chat.lobby"  // = GameChatSubject(LobbyChatGameID)
-    ArchiveStream          = "JETRICKS_ARCHIVE"
-    ArchiveSubject         = "jetricks.archive"
+    LobbyChatSubject       = "jetris.chat.lobby"  // = GameChatSubject(LobbyChatGameID)
+    ArchiveStream          = "JETRIS_ARCHIVE"
+    ArchiveSubject         = "jetris.archive"
     ChatMaxAge             = 7 * 24 * time.Hour
     PresenceHeartbeat      = 30 * time.Second
     PresenceTTL            = 5 * time.Minute  // per-key TTL on presence entries (KV LimitMarkerTTL)
@@ -309,7 +309,7 @@ type PlayerResult struct {
     Team       int    `json:"team,omitempty"` // teams mode: 0 = A, 1 = B
 }
 
-// ArchiveRecord is the JSON payload published to the JETRICKS_ARCHIVE stream
+// ArchiveRecord is the JSON payload published to the JETRIS_ARCHIVE stream
 // when a game finishes. Contains the full game outcome for historical display.
 type ArchiveRecord struct {
     GameID      string         `json:"game_id"`
@@ -352,13 +352,13 @@ type BoardCell struct {
 
 ### Game ID Format
 
-Game IDs are UUID v4 strings with dashes (e.g. `550e8400-e29b-41d4-a716-446655440000`). NATS stream names allow alphanumeric characters plus dashes and underscores, so `JETRICKS_GAME_550e8400-e29b-41d4-a716-446655440000` is a valid stream name. UUIDs are generated by the game creator's client using `github.com/google/uuid`.
+Game IDs are UUID v4 strings with dashes (e.g. `550e8400-e29b-41d4-a716-446655440000`). NATS stream names allow alphanumeric characters plus dashes and underscores, so `JETRIS_GAME_550e8400-e29b-41d4-a716-446655440000` is a valid stream name. UUIDs are generated by the game creator's client using `github.com/google/uuid`.
 
 ### Subject Builders
 
 ```go
-func GameStream(gameID string) string        // → "JETRICKS_GAME_<id>"
-func GameSubjectFilter(gameID string) string // → "jetricks.game.<id>.>"
+func GameStream(gameID string) string        // → "JETRIS_GAME_<id>"
+func GameSubjectFilter(gameID string) string // → "jetris.game.<id>.>"
 
 // Each mode uses its own playfield subject scheme — they are not
 // parameterisations of one builder and are free to diverge. A game is exactly
@@ -371,15 +371,15 @@ func GameSubjectFilter(gameID string) string // → "jetricks.game.<id>.>"
 // cell subjects carry NO player token. Every player publishes to / consumes from
 // the same subjects; per-cell ownership lives in the payload (Cell.PlayerIdx).
 func CoopCellSubject(gameID string, row, col int) string
-//   → jetricks.game.<id>.playfield.cell.<row>.<col>
+//   → jetris.game.<id>.playfield.cell.<row>.<col>
 func CoopCellSubjectFilter(gameID string) string
-//   → jetricks.game.<id>.playfield.cell.>
+//   → jetris.game.<id>.playfield.cell.>
 
 // Competitive — each player owns a private playfield scoped by their UUID.
 func CompetitiveCellSubject(gameID string, playerID string, row, col int) string
-//   → jetricks.game.<id>.player.<pid>.playfield.cell.<row>.<col>
+//   → jetris.game.<id>.player.<pid>.playfield.cell.<row>.<col>
 func CompetitiveCellSubjectFilter(gameID string, playerID string) string
-//   → jetricks.game.<id>.player.<pid>.playfield.cell.>
+//   → jetris.game.<id>.player.<pid>.playfield.cell.>
 
 // Teams — two shared boards (one per team), each TeamBoardWidth(teamSize) wide.
 // Like the cooperative scheme the subject carries NO player token — all
@@ -387,9 +387,9 @@ func CompetitiveCellSubjectFilter(gameID string, playerID string) string
 // lives in the payload (Cell.PlayerIdx, the GLOBAL roster index) — but the
 // board is scoped by team index so the two teams' boards are disjoint.
 func TeamCellSubject(gameID string, team, row, col int) string
-//   → jetricks.game.<id>.team.<t>.playfield.cell.<row>.<col>
+//   → jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>
 func TeamCellSubjectFilter(gameID string, team int) string
-//   → jetricks.game.<id>.team.<t>.playfield.cell.>
+//   → jetris.game.<id>.team.<t>.playfield.cell.>
 
 func MetaSubject(gameID string) string
 func RosterSubject(gameID string, playerID string) string
@@ -398,18 +398,18 @@ func CountdownSubject(gameID string) string
 
 // Lobby chat and per-game chat share the SAME stream (ChatStream),
 // distinguished purely by the game-ID token of the subject: a game's messages
-// on GameChatSubject ("jetricks.chat.<id>"), lobby messages under the
-// reserved game ID LobbyChatGameID ("jetricks.chat.lobby"). Game chat cannot
+// on GameChatSubject ("jetris.chat.<id>"), lobby messages under the
+// reserved game ID LobbyChatGameID ("jetris.chat.lobby"). Game chat cannot
 // live on the game stream because game streams keep only the latest message
 // per subject.
 func GameChatSubject(gameID string) string
-const ChatSubjectFilter = "jetricks.chat.*"       // stream config (lobby + games)
+const ChatSubjectFilter = "jetris.chat.*"       // stream config (lobby + games)
 func GameIDFromChatSubject(subject string) string // "" = lobby
 
 func LobbyPlayerKey(playerID string) string
 func LobbyGameKey(gameID string) string
 
-// The archive subject is the ArchiveSubject const ("jetricks.archive") — there
+// The archive subject is the ArchiveSubject const ("jetris.archive") — there
 // is no builder function for it.
 ```
 
@@ -417,7 +417,7 @@ All subject and stream names in the application are produced exclusively through
 
 ### Stream Configuration Notes
 
-`JETRICKS_GAME_<id>` is created with `MemoryStorage`, `MaxMsgsPerSubject: 1`, `LimitsPolicy` retention, and two stream-level flags:
+`JETRIS_GAME_<id>` is created with `MemoryStorage`, `MaxMsgsPerSubject: 1`, `LimitsPolicy` retention, and two stream-level flags:
 - `AllowAtomicPublish: true` — required for jetstreamext atomic batch move publishing
 - `AllowDirect: true` — enables direct get / `GetLastMsgsFor` for fast playfield reconstruction and per-subject refetch
 
@@ -425,7 +425,7 @@ The stream uses **memory storage** (game streams are ephemeral and deleted at ga
 
 ### GameMeta Struct
 
-`GameMeta` is the JSON payload published to `jetricks.game.<id>.meta`. All lifecycle transitions are CAS updates to this subject.
+`GameMeta` is the JSON payload published to `jetris.game.<id>.meta`. All lifecycle transitions are CAS updates to this subject.
 
 ```go
 type GameStatus string
@@ -473,7 +473,7 @@ The `PieceIdx` field is the number of pieces that have locked in across the enti
 
 ## 5. Player Identity
 
-Player identity is handled entirely in the UI at startup — no persistent files are stored on disk. When a player starts Jetricks, they are prompted on a login screen to enter a player name. This name **is** the player ID used in all NATS subjects, KV keys, and game rosters. There is no separate display name.
+Player identity is handled entirely in the UI at startup — no persistent files are stored on disk. When a player starts Jetris, they are prompted on a login screen to enter a player name. This name **is** the player ID used in all NATS subjects, KV keys, and game rosters. There is no separate display name.
 
 ### Validation
 
@@ -511,7 +511,7 @@ Wraps all NATS/JetStream client operations. Nothing in this package is game-spec
 func Connect(contextName string, opts ...nats.Option) (*nats.Conn, jetstream.JetStream, natscontext.Settings, error)
 ```
 
-Uses `natscontext.Connect(contextName, opts...)` from `orbit.go/natscontext`. The returned `Settings` struct includes `JSDomain`, which is passed to `jetstream.NewWithDomain` so that JetStream API calls are correctly scoped when connecting to a multi-domain NATS deployment. All connection config — server URL, credentials, TLS, SOCKS proxy — comes from the context file rather than from CLI flags, eliminating configuration drift between Jetricks and the `nats` CLI.
+Uses `natscontext.Connect(contextName, opts...)` from `orbit.go/natscontext`. The returned `Settings` struct includes `JSDomain`, which is passed to `jetstream.NewWithDomain` so that JetStream API calls are correctly scoped when connecting to a multi-domain NATS deployment. All connection config — server URL, credentials, TLS, SOCKS proxy — comes from the context file rather than from CLI flags, eliminating configuration drift between Jetris and the `nats` CLI.
 
 Also in `connection.go`:
 
@@ -583,7 +583,7 @@ func SealGameStream(ctx context.Context, js jetstream.JetStream, gameID string) 
 // games, and orphaned-stream cleanup).
 func DeleteGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error
 
-// ListGameStreams returns names of all streams matching the JETRICKS_GAME_ prefix.
+// ListGameStreams returns names of all streams matching the JETRIS_GAME_ prefix.
 func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, error)
 
 // PurgeGameChat removes one game's chat messages from the shared chat stream
@@ -603,7 +603,7 @@ func EnsureLobbyKV(ctx context.Context, js jetstream.JetStream) (jetstream.KeyVa
 func PutLobbyPresence(ctx context.Context, js jetstream.JetStream, key string, data []byte) error
 ```
 
-The bucket has **no bucket-wide TTL** (game/invite keys must persist) but **per-key TTL is enabled** via `LimitMarkerTTL: config.PresenceTTL`. Presence liveness is now the KV layer's job, not application code: each heartbeat writes the presence key with a fresh `PresenceTTL` (via `PutLobbyPresence`, which publishes straight to the key's `$KV.<bucket>.<key>` subject with `jetstream.WithMsgTTL` — the KV client's `Put`/`Update` drop the TTL header). If a client stops beating, the server deletes the key ~5 min later and emits a delete marker every watcher observes, so a dead client vanishes from the lobby with no `LastSeen` bookkeeping and no `pruneStalePresence`. Game/invite keys, written with plain `Put`, carry no TTL and live on. (Enabling per-key TTL sets `AllowMsgTTL`/`SubjectDeleteMarkerTTL` on the `KV_JETRICKS_LOBBY` stream.)
+The bucket has **no bucket-wide TTL** (game/invite keys must persist) but **per-key TTL is enabled** via `LimitMarkerTTL: config.PresenceTTL`. Presence liveness is now the KV layer's job, not application code: each heartbeat writes the presence key with a fresh `PresenceTTL` (via `PutLobbyPresence`, which publishes straight to the key's `$KV.<bucket>.<key>` subject with `jetstream.WithMsgTTL` — the KV client's `Put`/`Update` drop the TTL header). If a client stops beating, the server deletes the key ~5 min later and emits a delete marker every watcher observes, so a dead client vanishes from the lobby with no `LastSeen` bookkeeping and no `pruneStalePresence`. Game/invite keys, written with plain `Put`, carry no TTL and live on. (Enabling per-key TTL sets `AllowMsgTTL`/`SubjectDeleteMarkerTTL` on the `KV_JETRIS_LOBBY` stream.)
 
 #### `consumer.go`
 
@@ -939,7 +939,7 @@ Piece position and orientation are encoded in the `Active`/`Orientation`/`Anchor
 There is no explicit lock-in event message. Instead the engine detects lock-in by observing the transition in cell data delivered by the ordered consumer: cells that were `Active: true` in the previous state become `Active: false, Occupied: true` in the new state, and no `Active: true` cells remain anywhere in the playfield. When the engine detects this transition it:
 
 1. Increments `pieceIdx`.
-2. Publishes an updated `GameMeta` with `PieceIdx = pieceIdx` to `jetricks.game.<id>.meta` — this is a CAS update using the current meta sequence. If the CAS fails (the other player's engine raced to publish first for the same lock-in), the engine reads the new meta value; since both engines increment by 1 from the same base, the value is idempotent and the race winner's value is correct.
+2. Publishes an updated `GameMeta` with `PieceIdx = pieceIdx` to `jetris.game.<id>.meta` — this is a CAS update using the current meta sequence. If the CAS fails (the other player's engine raced to publish first for the same lock-in), the engine reads the new meta value; since both engines increment by 1 from the same base, the value is idempotent and the race winner's value is correct.
 3. Calls `rng.Sequence.Piece(pieceIdx)` to determine the next piece type and spawns it at the top of the playfield.
 
 This makes `PieceIdx` in `GameMeta` eventually consistent: any engine joining mid-game via `FetchGameMeta` gets the current piece count in one round trip.
@@ -1180,12 +1180,12 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 
 1. Call `nats.FetchGameMeta(gameID)` — returns `GameMeta` including `Seed`, `PieceIdx`, and `Status`. In **all** modes `e.seq = rng.New(meta.Seed)`. In competitive mode `e.pieceIdx = meta.PieceIdx`; in cooperative and teams mode `e.pieceIdx = 0` and each player tracks its own index independently (the sequence is shared, not forked with `seed+1` — in teams both teams therefore get the identical 7-bag). `e.playerIdx` was supplied at construction (from `lobby.JoinGame`); no discovery is done here. `e.playerCount`, `e.teamSize`, and `e.visibleRowStart` are set from meta, and the playfield is (re)allocated at the mode-appropriate width/height (teams: `TeamBoardWidth(teamSize)` × `TeamTotalRows(teamSize)` with `visibleRowStart = TeamVisibleRowStart(teamSize)`).
 2. Call `nats.FetchPlayfieldState(gameID, subjects)` for the player's own cell subjects — `cellSubjects()` builds all `width × height` of them, row-major (coop: the shared `playfield.cell.*` subjects with no player token; competitive: the player's own `player.<pid>.playfield.cell.*`; teams: the own team's `team.<t>.playfield.cell.*`). Above 512 subjects the fetch is chunked into ≤512-subject `GetLastMsgsFor` calls bounded to a common stream sequence (the server caps a multi-last direct get at 1024 responses). Apply all fetched cells to `e.playfield` via `pf.Apply`; never-written cells are absent from the result and stay empty. Record `maxSeq = max(all cell sequences)`.
-3. Start the ordered consumer with `startSeq = maxSeq + 1`. In cooperative mode this is ONE consumer on the shared cell subjects (filter `jetricks.game.<id>.playfield.cell.>`); in teams mode it filters the own team's board (`jetricks.game.<id>.team.<t>.playfield.cell.>`). In competitive mode this is the consumer for the player's own cells. Messages on non-cell subjects (events, meta, chat) that arrived between the lowest and highest fetched cell sequence are a tolerable gap — at most a few milliseconds of game time.
-4. In competitive mode only, also start the **roster consumer** (`runRosterConsumer`, watching `jetricks.game.<id>.roster.*`) which discovers opponents dynamically and calls `startOpponentConsumer` for each — fetching that opponent's cells and starting one `runConsumer` per opponent targeting `jetricks.game.<id>.player.<opponentPID>.playfield.cell.>`. A known opponent passed at construction is started immediately; late joiners are picked up as their roster entries appear. In cooperative mode there is no opponent consumer — both players write to and read from the same shared cell subjects. In teams mode there is no roster consumer either (the roster is fixed before the game starts and elimination events carry the team); instead `startTeamBoardConsumer(ctx, 1-teamIdx)` starts the single opposing-team board consumer.
+3. Start the ordered consumer with `startSeq = maxSeq + 1`. In cooperative mode this is ONE consumer on the shared cell subjects (filter `jetris.game.<id>.playfield.cell.>`); in teams mode it filters the own team's board (`jetris.game.<id>.team.<t>.playfield.cell.>`). In competitive mode this is the consumer for the player's own cells. Messages on non-cell subjects (events, meta, chat) that arrived between the lowest and highest fetched cell sequence are a tolerable gap — at most a few milliseconds of game time.
+4. In competitive mode only, also start the **roster consumer** (`runRosterConsumer`, watching `jetris.game.<id>.roster.*`) which discovers opponents dynamically and calls `startOpponentConsumer` for each — fetching that opponent's cells and starting one `runConsumer` per opponent targeting `jetris.game.<id>.player.<opponentPID>.playfield.cell.>`. A known opponent passed at construction is started immediately; late joiners are picked up as their roster entries appear. In cooperative mode there is no opponent consumer — both players write to and read from the same shared cell subjects. In teams mode there is no roster consumer either (the roster is fixed before the game starts and elimination events carry the team); instead `startTeamBoardConsumer(ctx, 1-teamIdx)` starts the single opposing-team board consumer.
 
 **Cooperative mode design:**
 
-In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Cell subjects carry no player token — the shared board publishes to `jetricks.game.<id>.playfield.cell.<row>.<col>` (every player publishes to and consumes from the same subjects) via the `config.CoopCellSubject` scheme, distinct from the competitive `config.CompetitiveCellSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
+In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Cell subjects carry no player token — the shared board publishes to `jetris.game.<id>.playfield.cell.<row>.<col>` (every player publishes to and consumes from the same subjects) via the `config.CoopCellSubject` scheme, distinct from the competitive `config.CompetitiveCellSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
 
 Each player spawns their piece centered in their section (player 0: center of cols 0–9, player 1: center of cols 10–19) but can move it anywhere on the full-width board. `ActivePieceForPlayer(playerIdx)` finds only the piece belonging to that player (by matching `Cell.PlayerIdx`). `SetActivePieceForPlayer(p, playerIdx)` only clears active cells with matching `PlayerIdx` before setting new ones. Collision detection (`CanPlaceCoop`) treats the other player's active cells as obstacles in addition to locked cells.
 
@@ -1365,7 +1365,7 @@ There is no recompute-and-retry-until-it-lands hard-drop loop. The hard-drop des
 
 #### `events.go`
 
-Defines the `EngineUpdate` type sent from engine to UI over the `Updates` channel, and the event message format published to `jetricks.game.<id>.events`.
+Defines the `EngineUpdate` type sent from engine to UI over the `Updates` channel, and the event message format published to `jetris.game.<id>.events`.
 
 ```go
 type UpdateKind int
@@ -1486,7 +1486,7 @@ of jumping to the cursor. The divider registers `gesture.Drag` plus
 upward drag grows the strip by exactly 100 px and that a drag past the window bottom
 stops at the floor.
 
-**Game events published to `jetricks.game.<id>.events`:**
+**Game events published to `jetris.game.<id>.events`:**
 
 ```go
 // EventKind identifies the type of game event.
@@ -1521,13 +1521,13 @@ type GameEvent struct {
 2. Player A publishes an atomic batch: the cells changed by the row shift on its own playfield (cleared lines removed, rows above shifted down — `changedCells` diffs the shift so only cells that differ are published).
 3. Player A also publishes a `GameEvent{Kind: EventShrink, PlayerID: playerA, RowsRemoved: n, PlayerIdx: ...}` to the events subject. The `TargetPlayer` field exists on `GameEvent` but is unused for shrink — the event is broadcast and ALL other players apply it.
 4. Every other player's events consumer reads the shrink event. Since `ev.PlayerID != e.playerID`, each opponent calls `applyOpponentShrink(n)` which shifts their own playfield up by n rows and adds n fully occupied permanent adversarial rows at the bottom. In a 3+ player game, all opponents are shrunk simultaneously. Adversarial cells are marked with `Cell.Adversarial = true` and rendered with a distinct grey color. Adversarial rows can never be completed or cleared — `IsFull()` returns false for any row containing adversarial cells.
-5. The shifted state is published using NoCAS (authoritative, same as line clears) to prevent stale consumer messages from undoing the shift. The opponent's own falling piece holds its position while the stack rises and is pushed up only as far as the rising stack/garbage forces it; `ProjectShrink` resolves the minimal lift (0..`rowsToAdd`) and returns a `topOut` flag. If no lift keeps the piece on the board, `applyOpponentShrink` calls `handleTopOut(ctx, false)`. See `jetricks-gameplays.md` for the full competitive shrink rules.
+5. The shifted state is published using NoCAS (authoritative, same as line clears) to prevent stale consumer messages from undoing the shift. The opponent's own falling piece holds its position while the stack rises and is pushed up only as far as the rising stack/garbage forces it; `ProjectShrink` resolves the minimal lift (0..`rowsToAdd`) and returns a `topOut` flag. If no lift keeps the piece on the board, `applyOpponentShrink` calls `handleTopOut(ctx, false)`. See `jetris-gameplays.md` for the full competitive shrink rules.
 
-**Shrink flow (teams mode):** the same attack at team granularity, but on a multi-writer shared board — so the application is CAS-guarded rather than NoCAS, idempotent across racing teammates, and never lifts (or tops out) a piece. See the "Teams mode design" section above (`applyTeamShrink`, `ProjectShrinkShared`, `AdversarialRowCount`) and `jetricks-gameplays.md` for the rules.
+**Shrink flow (teams mode):** the same attack at team granularity, but on a multi-writer shared board — so the application is CAS-guarded rather than NoCAS, idempotent across racing teammates, and never lifts (or tops out) a piece. See the "Teams mode design" section above (`applyTeamShrink`, `ProjectShrinkShared`, `AdversarialRowCount`) and `jetris-gameplays.md` for the rules.
 
 **Score tracking:**
 
-In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta, LinesCleared: n}` on the events subject; every other player's events consumer folds the delta into its own local `score` **and** the line count into `totalLines` (then `refreshLevel()` stores/emits the new level), so all clients converge on the same combined team total, shared level, and gravity. This is **not** a server-side counter CRDT and uses no score subject. See `jetricks-gameplays.md` for the authoritative scoring rules.
+In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta, LinesCleared: n}` on the events subject; every other player's events consumer folds the delta into its own local `score` **and** the line count into `totalLines` (then `refreshLevel()` stores/emits the new level), so all clients converge on the same combined team total, shared level, and gravity. This is **not** a server-side counter CRDT and uses no score subject. See `jetris-gameplays.md` for the authoritative scoring rules.
 
 **Line clear publishing:** The cells changed by a clear (`changedCells` over the shifted projection) are published using a no-CAS publish in competitive mode (the cleared state is authoritative on a single-writer board) and through CAS+merge-retry in coop (so the shift can never overwrite the other player's mid-flight piece — `refetchAndMerge` skips any cell currently holding their active piece, and the category order applies their shifted piece before vacating its old positions). After the clear cells are published, the per-cell `LastSeq` entries are advanced by the write-through from the publish acknowledgment so subsequent CAS publishes use the correct sequences.
 
@@ -1545,10 +1545,10 @@ When Player A's engine detects that the newly spawned piece (at the top of the p
 1. Publishes `GameEvent{Kind: EventGameOver, PlayerID: playerA, Score: e.score, Level: e.AchievedLevel(), PieceCount: e.pieceIdx}` to the events subject (`AchievedLevel` = `game.Level(totalLines)`, the level reached at the moment of top-out — recorded in the archive).
 2. Calls `e.transitionToSpectator(false)` — sets `mode = ModeGameOver` and emits `UpdateGameOver{Won: false}`. It does **not** itself stop the gravity ticker or move processor; those goroutines self-exit on their next iteration because they guard on `mode == ModePlayer`, and the consumers keep running. `handleTopOut` does not archive, delete the stream, or remove the KV entry.
 3. In **cooperative mode**, any top-out ends the game for everyone: `handleTopOut` kicks off `transitionGameToFinished` (CAS the meta to `finished`).
-4. In **competitive mode**, finishing is driven by last-player-standing in `handleGameEvent` rather than by `handleTopOut`: each engine tracks `eliminatedPlayers`; when a player receives game-over events for all but one player it calls `transitionToSpectator(true)` for itself if it is the survivor (win) and kicks off `transitionGameToFinished`. A simultaneous top-out (all eliminated) is a draw with no winner. The UI shows a player status list (playing/eliminated) and "YOU WON!"/"YOU LOST" at game over. See `jetricks-gameplays.md` for the authoritative game-over rules.
-5. In **teams mode**, `handleTopOut` routes to `handleTeamTopOut` instead: the player vacates their piece from the still-live shared board and spectates while their team plays on, and finishing is driven by whole-team elimination in `handleTeamGameOverEvent` — see the "Teams mode design" section above and `jetricks-gameplays.md` for the authoritative rules.
+4. In **competitive mode**, finishing is driven by last-player-standing in `handleGameEvent` rather than by `handleTopOut`: each engine tracks `eliminatedPlayers`; when a player receives game-over events for all but one player it calls `transitionToSpectator(true)` for itself if it is the survivor (win) and kicks off `transitionGameToFinished`. A simultaneous top-out (all eliminated) is a draw with no winner. The UI shows a player status list (playing/eliminated) and "YOU WON!"/"YOU LOST" at game over. See `jetris-gameplays.md` for the authoritative game-over rules.
+5. In **teams mode**, `handleTopOut` routes to `handleTeamTopOut` instead: the player vacates their piece from the still-live shared board and spectates while their team plays on, and finishing is driven by whole-team elimination in `handleTeamGameOverEvent` — see the "Teams mode design" section above and `jetris-gameplays.md` for the authoritative rules.
 
-**Meta transition + game archiving:** `transitionGameToFinished` CAS-retries the meta status to `finished` (setting `FinishedAt`), then — after `time.Sleep(5 * time.Second)`, giving every player time to receive the game-over — invokes `OnGameFinished`, which the front end wires to `archive.ArchiveAndCleanup`. That callback CAS-transitions the meta `finished → archived`, publishes an `ArchiveRecord` to the `JETRICKS_ARCHIVE` stream (subject `jetricks.archive`) with game ID, mode, player count, per-player results (ID, score, achieved level, piece count, winner), start/finish timestamps, — for cooperative — the total score and final shared level (`TotalScore`/`FinalLevel`), and the game's chat history (`Chat`, via `gameChatHistory`: the archiver's `lobby.ChatLog()` filtered to this game, last `ArchiveChatCap` = 200 lines — captured BEFORE the purge below, after which the record is the conversation's only home; nil lobby archives without it), then deletes the game stream, removes the KV entry, and purges the game's chat messages from the shared chat stream (`Purge` with the game's `GameChatSubject`). Archiving is therefore **delayed by ~5 s after game end**, not immediate, and is CAS-protected so only one client performs it.
+**Meta transition + game archiving:** `transitionGameToFinished` CAS-retries the meta status to `finished` (setting `FinishedAt`), then — after `time.Sleep(5 * time.Second)`, giving every player time to receive the game-over — invokes `OnGameFinished`, which the front end wires to `archive.ArchiveAndCleanup`. That callback CAS-transitions the meta `finished → archived`, publishes an `ArchiveRecord` to the `JETRIS_ARCHIVE` stream (subject `jetris.archive`) with game ID, mode, player count, per-player results (ID, score, achieved level, piece count, winner), start/finish timestamps, — for cooperative — the total score and final shared level (`TotalScore`/`FinalLevel`), and the game's chat history (`Chat`, via `gameChatHistory`: the archiver's `lobby.ChatLog()` filtered to this game, last `ArchiveChatCap` = 200 lines — captured BEFORE the purge below, after which the record is the conversation's only home; nil lobby archives without it), then deletes the game stream, removes the KV entry, and purges the game's chat messages from the shared chat stream (`Purge` with the game's `GameChatSubject`). Archiving is therefore **delayed by ~5 s after game end**, not immediate, and is CAS-protected so only one client performs it.
 
 For **teams mode** the archive builds `playerTeams` from the roster snapshot (the authoritative source) with `EventGameOver`'s `Team` field as the fallback for any player missing from it. The losing team is the team whose **every** member sent an `EventGameOver`; `WinningTeam` is the other team's index (or `-1` if both are dead — a draw). `Winner: true` is set on EVERY member of the winning team, eliminated members included (a team win is shared), `PlayerResult.Team` records each player's team, the record carries `TeamSize`/`WinningTeam`, `TotalScore` is left unset, and the final per-team totals are recorded in `TeamScores`/`TeamLevels` (slices indexed by team, taken from the archiving engine's converged `Engine.TeamScores()`/`TeamLevels()`) — the lobby history line renders them as `A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave` (stats omitted for pre-existing records without them).
 
@@ -1562,7 +1562,7 @@ Manages all lobby-level state: player presence, game listings, global chat, invi
 
 **Invitations** (`invite.go`) let a creator restrict a game to chosen players. `CreateGame` takes an `inviteOnly` flag (stored on the listing as `InviteOnly` alongside `CreatorID`); `Invite(ctx, toPlayerID, gameID, team)` writes an `Invitation` to the invitee's PER-GAME KV key `config.LobbyInviteKey(invitee, gameID)` = `invites.<invitee>.<gameID>` — a player may hold invitations to several games at once, one key each. The key's lifecycle is the invitation's state machine: written = pending; deleted by the invitee = accepted (`JoinGame` consumes it via `consumeInvite`); rewritten with `Declined: true` (`DeclineInvite`) = declined, KEPT so the inviter sees the refusal until dismissing it; deleted by the inviter (`Uninvite`) = retracted (or a declined marker dismissed); `DismissInvite` silently drops a stale invitation whose game is gone. `handleInviteUpdate` tracks EVERY invitation in the bucket (inviters need the state of the ones they sent), exposed as `MyInvites()` (own pending, oldest first), `InviteTo(gameID)`, and `SentInvites(gameID)` (pending + declined, for the creator's status rows). `JoinGame` guards invite-only games inside its CAS loop: only `CreatorID` or the holder of a fresh invitation (`inviteFor`, read straight from KV to beat watcher lag) may join, and an invitation exempts the joiner from the `MaxAgents` policy (`ErrNotInvited` otherwise). Invitations expire after `config.InviteTTL` (2 min). Every invite action also publishes a lobby event (below).
 
-**Lobby events** (`events.go` kinds + `lobby.go` `publishEvent`/`startEventListener`): every lobby action — `CreateGame`, a successful `JoinGame` roster append, `UnjoinGame` (`game.created`/`game.joined`/`game.left`), `Invite`/`Uninvite`/`DeclineInvite` (`invite.sent`/`invite.retracted`/`invite.declined`) — is also announced as a transient CORE NATS message (`LobbyEvent{Kind, GameID, PlayerID, TargetID, Team, Time}`) on `config.LobbyEventSubject(kind)` = `jetricks.lobby.event.<kind>`, captured by NO stream. `Start` subscribes (`config.LobbyEventsFilter`) and folds foreign events into immediate `LobbyUpdate` pings (games+players for game events, invite for invite events), so player availability and invitation state refresh in real time instead of at KV-watcher/heartbeat latency; `Stop` unsubscribes. `SetReady(ctx, gameID, ready)` is `ToggleReady`'s idempotent sibling (same CAS loop, exact value) used to CLEAR readiness when a player leaves the game screen.
+**Lobby events** (`events.go` kinds + `lobby.go` `publishEvent`/`startEventListener`): every lobby action — `CreateGame`, a successful `JoinGame` roster append, `UnjoinGame` (`game.created`/`game.joined`/`game.left`), `Invite`/`Uninvite`/`DeclineInvite` (`invite.sent`/`invite.retracted`/`invite.declined`) — is also announced as a transient CORE NATS message (`LobbyEvent{Kind, GameID, PlayerID, TargetID, Team, Time}`) on `config.LobbyEventSubject(kind)` = `jetris.lobby.event.<kind>`, captured by NO stream. `Start` subscribes (`config.LobbyEventsFilter`) and folds foreign events into immediate `LobbyUpdate` pings (games+players for game events, invite for invite events), so player availability and invitation state refresh in real time instead of at KV-watcher/heartbeat latency; `Stop` unsubscribes. `SetReady(ctx, gameID, ready)` is `ToggleReady`'s idempotent sibling (same CAS loop, exact value) used to CLEAR readiness when a player leaves the game screen.
 
 ### Files
 
@@ -1809,7 +1809,7 @@ was already draining when the lines arrived live — saw all of them.)
 
 Runs once at startup, after the ordered consumer on the lobby KV has caught up to current state. Inspects all known game streams and lobby KV entries and resolves any stale or abandoned state.
 
-It enumerates game streams using only `natspkg.ListGameStreams` (the JetStream `StreamNames` API filtered to the `jetricks.game.>` subject) — there is no `orbit.go/natssysclient`, no `Jsz`/system-account query, and no system-account fallback.
+It enumerates game streams using only `natspkg.ListGameStreams` (the JetStream `StreamNames` API filtered to the `jetris.game.>` subject) — there is no `orbit.go/natssysclient`, no `Jsz`/system-account query, and no system-account fallback.
 
 ### Key Function
 
@@ -1830,19 +1830,19 @@ Orphaned-stream detection relies solely on the JetStream `StreamNames` listing c
 | Status `created`, creator absent from KV | `cancelGame`: CAS-transition `→ cancelled`, delete stream, remove KV entry |
 | Status `starting`, all rostered players absent from KV | `cancelGame`: CAS-transition `→ cancelled`, delete stream, remove KV entry |
 | Status `in_progress`, all players absent from KV | `finishAbandonedGame`: CAS-transition `→ finished` with `abandoned: true` and `FinishedAt` (a later pass then archives it) |
-| `JETRICKS_GAME_<id>` stream exists, no matching KV entry | If meta status is `in_progress`/`starting`, re-create the KV listing (don't delete a live game); otherwise delete the orphaned stream (also delete if meta can't be read) |
+| `JETRIS_GAME_<id>` stream exists, no matching KV entry | If meta status is `in_progress`/`starting`, re-create the KV listing (don't delete a live game); otherwise delete the orphaned stream (also delete if meta can't be read) |
 
 Note: During normal play the engine archives a finished game ~5 s after game end via `OnGameFinished` → `archive.ArchiveAndCleanup` (delete stream + remove KV; see Section 9). The cleanup pass handles only games left in a stale state by a crash or disconnect, and seals (rather than deletes) an orphaned finished stream.
 
 ### CAS Coordination
 
-All transitions go through CAS on `jetricks.game.<id>.meta`. If a CAS fails during cleanup, the function re-reads the current status and re-evaluates. A failed CAS means another client already handled that game — no further action is needed.
+All transitions go through CAS on `jetris.game.<id>.meta`. If a CAS fails during cleanup, the function re-reads the current status and re-evaluates. A failed CAS means another client already handled that game — no further action is needed.
 
 ---
 
 ## 12. Front end: the native Gio UI
 
-Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logic. It depends on `engine` and `lobby` (one-way) and communicates with them exclusively through their `Updates` channels and exported method calls — it is never imported by the business logic.
+Jetris has a single front end, `internal/nativeui`, over the engine/lobby logic. It depends on `engine` and `lobby` (one-way) and communicates with them exclusively through their `Updates` channels and exported method calls — it is never imported by the business logic.
 
 **`internal/nativeui`** is a native OS window built with **Gio** (`gioui.org`, pure-Go, cross-platform). It reads `engine.Updates` / `lobby.Updates` directly in bridge goroutines and repaints via `window.Invalidate()`, and it calls `engine.MoveLeft()` etc. directly from a key handler — a NATS update reaches the screen within one display frame. Files: `app.go` (window + frame loop + screen state machine), `bridge.go` (the `pumpEngine`/`pumpLobby` channel→UI pumps), `login.go`/`lobby.go`/`game.go` (screens), `archive_view.go` (the `screenArchive` history viewer — redraws a finished game's saved end-of-game boards with a player roster beside them, winners highlighted), `board.go` (board drawing, plus `fitCellPx` — the window-reactive cell sizing every board view uses), `input.go` (keyboard → engine moves), `controls.go` (the on-screen arcade control pad and the animated MOVE BUFFER chip strip: blocky `fillRect` bitmap glyphs, `handlePadClicks` mouse-click → engine-move dispatch), `lifecycle.go` (login/create/join/spectate/countdown/teardown), `natslog.go` (the "Show NATS messages" panel: `recordStreamMsg` wired as `engine.OnStreamMsg`, the drag-resizable bottom message strip with per-transaction row tints, a display-only JSON colorizer), `brand.go` (the embedded nats.io "N" logo — `nats-icon.png`, `go:embed` — the lobby/archive branding banner, and the inline `natsTag` "N"+"NATS.io" chip used on the login tagline and at the foot of the game HUD), `fonts.go` (the embedded "Press Start 2P" pixel face — `PressStart2P-Regular.ttf`, SIL OFL 1.1, license in `PressStart2P-OFL.txt` — with `uiFontCollection` and the `a.pixel` label helper), `fireworks.go` (the victory fireworks overlay for competitive/teams wins), `version.go` (the build-version plate drawn in the window's top-right corner on every screen), `colors.go` alias to `internal/render`. Controls: ←/→ move, ↓ soft drop, ↑ or X rotate CW, Z rotate CCW, Space hard drop — and the same scheme as an on-screen **arcade control pad** under the board (`controlPad`, `controls.go`: ↺/←/↓/→/↻ buttons — the rotations are blocky circular-arrow glyphs (`glyphCW`, `glyphCCW` its mirror), not text — plus a wide accent DROP bar), so the game is fully mouse-playable; the pad renders dimmed pre-start and its clicks are swallowed (never queued) until the game runs. Keyboard focus uses Gio's `key.FocusFilter` + `key.FocusCmd` on the board tag. The game screen is **window-size reactive**: `fitCellPx` (`board.go`) picks the player-board cell size to fill the space left after the strip/pad (clamped 14–56 dp), the spectator multi-board/team strips fit all boards side by side (scrolling below their minimum), the opponent thumbnail column scales with height, the HUD column takes ~19% of the width (200–300 dp), and the countdown numeral scales to ~1/8 of the window's short side. The window itself carries an `app.MinSize` of 760×720 dp (`minWinW`/`minWinH`, `app.go`) so it can never shrink below what the playfield, strip, pad, and chat need.
 
@@ -1850,7 +1850,7 @@ Jetricks has a single front end, `internal/nativeui`, over the engine/lobby logi
 
 **Spectator overlays and history controls.** For spectators the pre-game countdown overlay renders over the multi-board views exactly as over a player's board (`countdownVisible` admits every non-finished mode; `gameBoardArea` stacks the overlay over the spectator content, and `runMetaConsumer` emits `UpdateGameStatus` to every engine — spectators included — so the overlay clears the moment the meta reads in_progress; visibility is gated on a PRE-START status check, not is-in-progress, so the stale GO! cannot resurrect when the status moves past in_progress to finished). Spectators also render every player's **CAS-failure flash**: a player broadcasts its dropped-write flash over CORE NATS (`config.FlashSubject`, outside the game stream's capture so it is never persisted), spectator engines subscribe (`runFlashConsumer`, `initialMode == ModeSpectator`) and re-emit it as `UpdateCASFlash`, and the UI keys it per board (`specFlash`, by player index competitively / team in teams) — players still see only their own flash (local, `emitCASFlash`). In the competitive spectator view each eliminated player's board carries a centered **OUT** chip (only the chip has a background — the board stays visible) and, once the game is decided, the survivor's board reads **WINNER** (`spectatorBoards` + `boardOverlay`, driven by `eng.IsEliminated` over the roster); the teams view does the same per team board (**OUT** / **WINNERS**, `spectatorTeamBoards`). Spectator content is wrapped in `layout.Center` so the boards stay centered in the board area with or without the countdown Stack; both spectator multi-board strips (and the archive final-playfield strip) are laid by `scrollableBoards`, which keeps the boards centered while they fit but turns the strip into a horizontally scrollable `material.List` (with a scrollbar) once the boards together are wider than the window — so an overflowing board can be scrolled to instead of spilling off the edge or overlapping its neighbour (it measures the strip's natural width, fixed by the cell size, against the available width to decide). Once a teams game is decided (`teamsOutcome`, derived from the roster + `eng.IsEliminated` — spectator engines never receive `UpdateGameOver`) the spectator gets `spectatorTeamResultBox` beside the boards: GAME OVER, "TEAM A/B WINS!" (or DRAW), both teams' final scores, and Back to Lobby. The lobby's GAME HISTORY header carries a sort selector (`histSortEnum`: "By score" — the default `sortedArchives` ranking — or "By date" — `sortedArchivesByDate`, most recent first) and an "Agent games" checkbox (`histAgentsCb`, checked by default) that filters out records with agent seats via `ArchiveRecord.HasAgents` (`archivesForDisplay`); the agent flag on each archived seat (`PlayerResult.Agent`) is stamped from the roster snapshot by `ArchiveAndCleanup`. Each history row's MODE cell carries a crew line — green **HUMANS** or orange **WITH AGENTS** (`archiveModeCell`) — and when the displayed history includes teams games a **TEAMS OVERALL** standings line renders between the header and the table (`teamStandingsLine`/`teamStandings`, `lobby.go`): per-team win and summed-point totals across those games, leader (wins, then points) in gold, agent filter applied.
 
-**Look and feel — modern 8-bit, NATS-branded.** Display type (the login title, section headers, buttons, HUD stats, ready badges, the countdown, the game-over dialog, and the branding banner) renders in the pixel face (`pixelTypeface`); body text (chat, lists, editors) stays in the Go faces for readability. All chrome corners are square; panels, editors, and the context pull-down carry chunky 2 dp `colBorder` frames; buttons and the game-over dialog sit on `hardShadow`'s offset solid shadow (`board.go`). Every playfield is drawn inside a `colBorder` arcade-well frame (`drawBoard`), filled cells are shaded with the classic 8-bit bevel — lighter top/left strips, darker bottom/right, a gloss pixel — gated by `CellAppearance.Bevel`, and `scanlines` paints a subtle CRT overlay over every frame (last in `App.layout`). The palette (`app.go`) is a dark blue-black (`colBg`/`colPanel`/`colBorder`) with the **NATS brand blue** `#27aae1` as `colAccent` and the NATS logo green as `colNATSGreen`, so the branding runs through the whole chrome; the login screen flanks the "JETRICKS" pixel title with NATS logos and ends with a "peer to peer · made with NATS.io" tagline. The theme is built by `newUITheme` (shared with the layout tests, so snapshots match the live window).
+**Look and feel — modern 8-bit, NATS-branded.** Display type (the login title, section headers, buttons, HUD stats, ready badges, the countdown, the game-over dialog, and the branding banner) renders in the pixel face (`pixelTypeface`); body text (chat, lists, editors) stays in the Go faces for readability. All chrome corners are square; panels, editors, and the context pull-down carry chunky 2 dp `colBorder` frames; buttons and the game-over dialog sit on `hardShadow`'s offset solid shadow (`board.go`). Every playfield is drawn inside a `colBorder` arcade-well frame (`drawBoard`), filled cells are shaded with the classic 8-bit bevel — lighter top/left strips, darker bottom/right, a gloss pixel — gated by `CellAppearance.Bevel`, and `scanlines` paints a subtle CRT overlay over every frame (last in `App.layout`). The palette (`app.go`) is a dark blue-black (`colBg`/`colPanel`/`colBorder`) with the **NATS brand blue** `#27aae1` as `colAccent` and the NATS logo green as `colNATSGreen`, so the branding runs through the whole chrome; the login screen flanks the "JETRIS" pixel title with NATS logos and ends with a "peer to peer · made with NATS.io" tagline. The theme is built by `newUITheme` (shared with the layout tests, so snapshots match the live window).
 
 **Login screen connection picker.** The App is built via `NewWithPicker` and starts with nil `js`/`kv`; there is a single combined login screen — name entry plus a **CONNECT TO** section (`connSection`, `login.go`): a "Context:" radio paired with a pull-down button (`connDropButton`, an editor-style bordered box showing the chosen context `connCtx` and a ▼/▲ arrow); clicking it expands `connDropList`, a bordered scroll-capped (`~180dp`) `material.List` of the contexts from `nats.ListContexts` — the CLI's selected context labeled "(selected)", the current choice highlighted in the accent color — and picking a row (or merely touching the pull-down) also selects the context radio. Below it sits a "NATS URL" radio with an editable URL field; typing in the URL editor auto-selects its radio, but the constructor's programmatic `SetText` queues one synthetic `ChangeEvent` that is swallowed via the `connURLSeeded` flag so it cannot override the context default on the first frame. Default choice and URL text are seeded from the CLI flags (`--server` → URL option with that value; `--context` → the context option with the pull-down preset to it, appended to the list if undiscovered; else the CLI's selected context; else the URL option with `DefaultNATSURL`); whichever option starts out, `connCtx` is preset to `--context`, else the CLI's selected context, else the first known context. A **Check connection** row (`connCheckRow`) dials the current choice off the UI goroutine (`doCheckConn` → `nats.CheckConnection`), shows "Checking…" while busy, and renders `✓ <server> · ping <rtt>` (green, via `formatRTT`) or `✗ <error>` (red); the probe connection is closed immediately and provisions nothing. On Play, `submitLogin` resolves the choice (`pickerConfig`) and dispatches `doConnectAndLogin` (`lifecycle.go`): it first `disconnect()`s any connection left over from a previous attempt (e.g. a cancelled name collision), then runs `nats.Bootstrap` under a 15 s cap — errors land on the login screen for retry, success stores `a.nc/a.js/a.kv` (the App owns the connection — `teardown`/`DrainConn` drain it) and falls through into the normal `doLogin` flow. `quit()` (lobby → login) also `disconnect()`s, so the player always lands back on the full chooser and can switch servers. `App` state: `nc`, `needConn`/`connContexts`/`connSelected`/`connCfg`/`lanIP` (immutable after construction), `connChecking`/`connCheckOK`/`connCheckMsg` (mu-guarded), and the `connEnum`/`connCtx`/`connDropOpen`/`connDropBtn`/`connOptBtns`/`connURLEd`/`connPortEd`/`connList`/`connCheckBtn` widget state (all UI-goroutine only).
 
@@ -1974,12 +1974,12 @@ All goroutines are started with a context derived from the root context and exit
 
 All orbit.go modules are independently versioned. Import only the modules needed rather than the whole library.
 
-| Module | Import path | Used in | Purpose in Jetricks |
+| Module | Import path | Used in | Purpose in Jetris |
 |--------|-------------|---------|-------------------|
 | `natscontext` | `github.com/synadia-io/orbit.go/natscontext` | `internal/nats` | Connect using NATS CLI context files. Replaces raw URL + credential flags with a single context name, sharing config with the `nats` CLI tool. |
 | `jetstreamext` | `github.com/synadia-io/orbit.go/jetstreamext` | `internal/nats` | Atomic batch publishing for move CAS operations. `GetLastMsgsFor` for instant playfield reconstruction on startup/reconnect (fetches the last message per cell subject; chunked via `GetLastMsgsUpToSeq` above 512 subjects to stay under the server's 1024-response cap). |
 
-These are the only two orbit.go modules used (`natsext` comes in as an indirect dependency). `counters` and `natssysclient` are **not** dependencies of Jetricks.
+These are the only two orbit.go modules used (`natsext` comes in as an indirect dependency). `counters` and `natssysclient` are **not** dependencies of Jetris.
 
 ### Modules considered but not used
 
@@ -1987,9 +1987,9 @@ These are the only two orbit.go modules used (`natsext` comes in as an indirect 
 |--------|----------------|
 | `counters` | The cooperative score is a plain local `int` propagated via `EventLineClear` events on the events subject and summed locally — no server-side counter CRDT (and no `AllowMsgCounter` stream flag). |
 | `natssysclient` | Cleanup detects orphaned streams with the plain JetStream `StreamNames` listing (`ListGameStreams`); no system-account `Jsz` query is needed. |
-| `kvcodec` | Jetricks KV keys are already NATS-compatible (no dots, spaces, or special chars). Values are plain JSON. No encoding layer needed. |
-| `natsext` (RequestMany) | Jetricks uses ordered consumers and direct publishes. Scatter-gather request/reply is not part of any game or lobby flow. (Present only as an indirect dependency.) |
-| `pcgroups` | Jetricks uses ordered consumers for strict in-order delivery per client. Partitioned consumer groups target parallel work-queue consumption patterns, which is not applicable here. |
+| `kvcodec` | Jetris KV keys are already NATS-compatible (no dots, spaces, or special chars). Values are plain JSON. No encoding layer needed. |
+| `natsext` (RequestMany) | Jetris uses ordered consumers and direct publishes. Scatter-gather request/reply is not part of any game or lobby flow. (Present only as an indirect dependency.) |
+| `pcgroups` | Jetris uses ordered consumers for strict in-order delivery per client. Partitioned consumer groups target parallel work-queue consumption patterns, which is not applicable here. |
 
 ---
 
@@ -2026,7 +2026,7 @@ Decisions settled during design review, recorded here for future reference.
 
 | # | Question | Decision | Rationale |
 |---|----------|----------|-----------|
-| 1 | Competitive playfield topology | Player-scoped cell subjects within one shared stream (`jetricks.game.<id>.player.<pid>.playfield.cell.<row>.<col>`) | One stream per game keeps lifecycle management simple. Player-scoped subjects provide full isolation within it. |
+| 1 | Competitive playfield topology | Player-scoped cell subjects within one shared stream (`jetris.game.<id>.player.<pid>.playfield.cell.<row>.<col>`) | One stream per game keeps lifecycle management simple. Player-scoped subjects provide full isolation within it. |
 | 2 | Lock-in detection | Implicit — engine scans the playfield state for the `Active→Occupied` transition after each cell message | No extra message; lock-in is definitionally visible in the cell data that would be fetched anyway on rejoin. |
 | 3 | Line-clear row shift publisher | Client whose piece caused the lock-in | Avoids a first-CAS-wins race on a large batch; the publisher has the most current local state. |
 | 4 | Opponent shrink in competitive | Player A publishes shrink event; Player B's engine applies it to its own cells | Player B's engine owns its cell subjects for CAS purposes. Shrink-as-event decouples A's writes from B's CAS keys. |
@@ -2035,7 +2035,7 @@ Decisions settled during design review, recorded here for future reference.
 | 7 | Lobby map concurrency | `sync.RWMutex` on `Lobby.mu`, maps unexported, accessed via `Players()` / `Games()` snapshot methods | Straightforward, low-overhead, and makes the access pattern explicit without channel complexity. |
 | 8 | Cooperative score propagation | Plain local score counter (`atomic.Int64`), propagated via `EventLineClear` events on the events subject and summed locally | No server-side counter CRDT is needed; the events stream the game already runs carries the deltas. The game stream sets `AllowAtomicPublish` and `AllowDirect` (not `AllowMsgCounter`). |
 | 9 | Game ID format | UUID v4 with dashes (`550e8400-e29b-41d4-a716-446655440000`) | UUIDs are globally unique, collision-free, and NATS stream names allow dashes. |
-| 10 | Game-over semantics | Cooperative: any top-out ends for all. Competitive: eliminated player becomes spectator; game continues until one player remains. | See `jetricks-gameplays.md`. |
+| 10 | Game-over semantics | Cooperative: any top-out ends for all. Competitive: eliminated player becomes spectator; game continues until one player remains. | See `jetris-gameplays.md`. |
 | 11 | HardDrop CAS behaviour | Destination computed once; competitive publishes the landing NoCAS, coop via merge-retry (≤16). No recompute-and-retry-until-it-lands loop. | The landing is authoritative state, so NoCAS (competitive) or CAS+merge (coop, to protect the other player's shared-board cells) is the right tool — not an unbounded CAS retry. |
 | 12 | Opponent display in competitive | Full live view via one ordered consumer per opponent's cell subjects | Provides the same real-time fidelity as the player's own field. The overhead of additional consumers is minimal (at most 3 opponents in a 4-player game). |
 | 13 | `pieceIdx` recovery on join/reconnect | Store `PieceIdx uint64` in `GameMeta`; locking engine CAS-updates it after each lock-in | `FetchGameMeta` gives any joining engine the current piece index in one round trip. No stream replay needed. |
@@ -2043,12 +2043,12 @@ Decisions settled during design review, recorded here for future reference.
 | 15 | `GameMeta` payload | Fully specified in Section 4 with lifecycle, identity, RNG seed, and `PieceIdx` fields | Status uses string constants for readability in the `nats` CLI. `PieceIdx` enables fast startup without stream replay. |
 | 16 | Real-time UI updates from JetStream | All UI data backed by JetStream uses ordered consumers pushing through the `Updates` channels — never polling or periodic refresh | The lobby runs consumers for KV (players/games), chat, and archives. The engine runs consumers for playfield cells, events, meta, and countdown. Any change in a JetStream stream or KV bucket is immediately pushed to the UI via the consumer → Updates channel → bridge pipeline. |
 | 17 | Playfield storage granularity | One message per CELL (`playfield.cell.<row>.<col>`), not per row | A cell's last message is its current state. Per-cell CAS shrinks coop contention to same-cell writes only; every publish is a diff of only the changed cells (~4–8 messages per move); the `orderedCellKeys` category order (active → locked → empty) replaces the per-row `bottomFirst` flag with one rule that covers every write path. The CAS/write-through/merge-retry/ordered-consumer architecture is unchanged, just at cell granularity. |
-| 18 | Teams playfield topology | Two team-scoped shared boards (`jetricks.game.<id>.team.<t>.playfield.cell.<row>.<col>`), each the cooperative scheme at team scale | Within a team, teams mode IS cooperative — the coop shared-board machinery (`CanPlaceCoop`, merge-retry, `Cell.PlayerIdx` ownership) is reused verbatim via `sharedBoard()`. The team token in the subject keeps the two boards disjoint, so cross-team writes are impossible by construction; no roster consumer is needed (the roster is fixed pre-start). |
+| 18 | Teams playfield topology | Two team-scoped shared boards (`jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>`), each the cooperative scheme at team scale | Within a team, teams mode IS cooperative — the coop shared-board machinery (`CanPlaceCoop`, merge-retry, `Cell.PlayerIdx` ownership) is reused verbatim via `sharedBoard()`. The team token in the subject keeps the two boards disjoint, so cross-team writes are impossible by construction; no roster consumer is needed (the roster is fixed pre-start). |
 | 19 | Shrink on a shared team board | `ProjectShrinkShared`: NO piece is lifted — every active piece is overlaid at its current position; a piece overtaken by the risen stack is "crushed" (locks where it is); shrink never tops a player out (top-out happens at spawn time). Application is CAS-guarded and idempotent via the `expectedGarbage` − `AdversarialRowCount()` deficit | Any of several teammates may win the race to apply a shrink, and lifting would relocate other players' mid-flight pieces from a possibly-stale snapshot. Holding every piece in place keeps the transform pure and symmetric; the monotonic garbage-row count makes the racing applications converge to exactly one committed shift (a stale shift would double-shift the stack, so CAS failures recompute from fresh state rather than blind merge-retry). |
-| 20 | Teams game-over semantics | A topped-out player vacates their piece and spectates while their team plays on; a team loses when ALL members topped out; every member of the other team (eliminated included) wins. Decided once per engine (`teamOutcomeDone`) off the ordered events subject | Per-player elimination keeps the shared board live for the teammates; the ordered events stream guarantees every engine reaches the same verdict without coordination. See `jetricks-gameplays.md`. |
+| 20 | Teams game-over semantics | A topped-out player vacates their piece and spectates while their team plays on; a team loses when ALL members topped out; every member of the other team (eliminated included) wins. Decided once per engine (`teamOutcomeDone`) off the ordered events subject | Per-player elimination keeps the shared board live for the teammates; the ordered events stream guarantees every engine reaches the same verdict without coordination. See `jetris-gameplays.md`. |
 | 23 | Roster overfill / stale invitations | `JoinGame` caps the overall roster (`ErrGameFull`) in its CAS loop for all modes; an agent whose invited join fails declines the invitation instead of retrying | The per-team teams cap left competitive/coop uncapped, so a race (or a mis-gated UI) could seat a 5th player in a 4-player game. An invited agent that couldn't be seated (team over-subscribed by the creator) otherwise re-accepted the same invitation in a tight loop; declining on failure breaks it. |
 | 22 | Game invitations | Written to the invitee's PER-GAME KV mailbox key `invites.<invitee>.<gameID>` (several at once, 2-min TTL); the key's lifecycle is the state machine (delete = accept/retract, rewrite `declined: true` = decline, kept for the inviter to see); `JoinGame` guards invite-only games inside its CAS loop (creator or invitation holder only, invitation exempts from `MaxAgents`); agents auto-accept | Reuses the lobby KV and its existing whole-bucket watcher — no new stream; the invitation is both the routing (which game/team) and the authorization (the creator's explicit choice), so it cleanly overrides the open agent policy. One key per (invitee, game) supports concurrent invitations from several games and gives the inviter a live per-invitee status view (`SentInvites`) from the same watch. |
-| 24 | Lobby events | Every lobby action (game created/joined/left, invite sent/retracted/declined) is also published as a transient CORE NATS `LobbyEvent` on `jetricks.lobby.event.<kind>`; every lobby subscribes and turns foreign events into immediate refresh pings | State stays in the KV (single source of truth); the events are pure low-latency signals — core NATS is enough, deliberately captured by no stream (nothing to replay, nothing to clean up). Closes the presence-heartbeat latency gap for "who is invitable right now" and gives external agents a push channel without polling. |
+| 24 | Lobby events | Every lobby action (game created/joined/left, invite sent/retracted/declined) is also published as a transient CORE NATS `LobbyEvent` on `jetris.lobby.event.<kind>`; every lobby subscribes and turns foreign events into immediate refresh pings | State stays in the KV (single source of truth); the events are pure low-latency signals — core NATS is enough, deliberately captured by no stream (nothing to replay, nothing to clean up). Closes the presence-heartbeat latency gap for "who is invitable right now" and gives external agents a push channel without polling. |
 | 25 | Live invite picker & self-seat | The picker sends/retracts invitations the moment a selection changes (no send button) and pins the creator as a first row whose selection IS a roster seat — UNSELECTED by default (the creator hosts as a spectator), selecting it `JoinGame`s, deselecting `UnjoinGame`s; when the roster fills the picker hands the creator to `joinGame` (kept seat) or `spectateGame` (opted out) | Selection-as-action removes a whole failure mode (configured-but-never-sent invites) and makes the picker double as the live status board; defaulting the creator to spectator keeps hosting and playing as two explicit, opt-in choices. Capacity is guarded at click time from roster+pending usage, so over-invites are refused rather than bounced later at the door. |
 | 26 | Leave/rejoin keeps the seat | "Back to Lobby" clears the READY mark (`SetReady(false)`) but keeps the roster seat while the game is alive; the lobby row reads **joined**/**playing** with a Rejoin button (`JoinGame`'s already-seated branch returns the same position); leaving an in-progress game asks for confirmation; presence stays In Game while a live seat is held | A seat is a commitment to the other players — silently freeing it on a screen change would strand games; keeping it makes leave/rejoin a pure view change (the stream replays the live board on rejoin). Ready must NOT survive the exit, though: an absent "ready" player would let the countdown fire without them. |
 | 21 | Shared-board spawn blocked by another player's ACTIVE piece | DEFER the spawn (`spawnPending`) and retry it from `runInput`'s gravity tick (`retrySpawnIfPending`) — top out only when the spawn cells hold LOCKED cells (`CanPlaceCoop` fails AND `CanPlace` fails) | Mirrors the locked-vs-active distinction gravity/hard-drop already make; a teammate's piece merely crossing the spawn area must not eliminate a player (in teams permanently — the "one piece per team board" bug — and in coop it would end the game for everyone). The gravity ticker is the retry heartbeat: no new goroutine, the single-write-goroutine invariant holds, and the cadence matches how fast the blocker can move. Known deferred edge: a *disconnected* player's abandoned mid-air piece blocks indefinitely — a pre-existing engine-wide gap (it equally blocks movement/locks today). |
@@ -2061,7 +2061,7 @@ Decisions settled during design review, recorded here for future reference.
 
 **File:** `.github/workflows/release.yml`
 
-Pushing a git tag matching `v*` (e.g. `v0.1.0`) triggers a GitHub Actions workflow that runs the test suite, builds the `jetricks` binary for every supported platform, and publishes a GitHub release containing one archive per platform plus a `SHA256SUMS` checksum file. Release notes are auto-generated from the commits since the previous tag.
+Pushing a git tag matching `v*` (e.g. `v0.1.0`) triggers a GitHub Actions workflow that runs the test suite, builds the `jetris` binary for every supported platform, and publishes a GitHub release containing one archive per platform plus a `SHA256SUMS` checksum file. Release notes are auto-generated from the commits since the previous tag.
 
 ### Supported platforms
 
@@ -2086,10 +2086,10 @@ Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps t
 
 ## 21. Agents: the `mk1` reference and the `agents/` home
 
-**The agent model.** An agent is a standalone program that plays Jetricks by speaking the
+**The agent model.** An agent is a standalone program that plays Jetris by speaking the
 game's NATS/JetStream protocol — there is no plugin interface or shared SDK to implement.
 The single, language-neutral contract is the wire protocol plus the fair-play rules in
-`jetricks-agent-guide.md` (with the game rules in `jetricks-gameplays.md`); a conformant
+`jetris-agent-guide.md` (with the game rules in `jetris-gameplays.md`); a conformant
 agent can be written in any language depending on nothing in this repo. Contributed agents
 live in `agents/<name>/`, each self-contained (own language/build/deps, its own README);
 `agents/README.md` is the submission guide. The game neither knows nor cares how any agent
@@ -2103,7 +2103,7 @@ with the Go structs). `agent.py --selftest` runs offline conformance checks (RNG
 fixtures generated from `internal/rng`).
 
 **The reference agent `mk1`.** The repository ships one Go agent — `mk1`, source in
-`internal/agent`, binary `cmd/jetricks-agent`. It is a *privileged* example: because it
+`internal/agent`, binary `cmd/jetris-agent`. It is a *privileged* example: because it
 lives in the repo it reuses the game's own Go engine (`engine`, `lobby`, `game`, `rng`,
 `nats`, `config`, `archive`, `cleanup`) instead of re-implementing the protocol, so it
 builds without cgo/Gio on every platform and its player name reads `mk1-<instance>-<difficulty>`.
@@ -2131,13 +2131,13 @@ accessors: game over is `Mode() != ModePlayer`, win/loss prefers the pump-captur
 agent never reads the game seed: the piece sequence is deterministic, but the UI
 shows humans no next-piece preview, so seed-derived lookahead would violate the
 fair-visibility contract (agents decide only on what a human can see —
-`jetricks-agent-guide.md`).
+`jetris-agent-guide.md`).
 
-### cmd/jetricks-agent flags
+### cmd/jetris-agent flags
 
 | Flag | Meaning |
 |------|---------|
-| `--server` / `--context` / `--user` / `--password` | Connection choice, same semantics as `cmd/jetricks` (URL wins over context) |
+| `--server` / `--context` / `--user` / `--password` | Connection choice, same semantics as `cmd/jetris` (URL wins over context) |
 | `--name` | The agent VERSION stem (default: `mk1`, the reference agent's `agent.Codename`, bumped when the agent's play logic changes). `Run` composes the full player name `<stem>-<instance>-<difficulty>` (`composeName` in agent.go) with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole passes `config.ValidatePlayerName` |
 | `--difficulty` | `easy` \| `medium` \| `hard` (default `hard`) |
 | `--join <gameID>` | Join a specific game (still subject to that game's agent policy) |

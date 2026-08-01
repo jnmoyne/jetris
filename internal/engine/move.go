@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 // runInput is the engine's single gameplay-write goroutine: it processes player

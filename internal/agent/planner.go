@@ -5,8 +5,8 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
+	"jetris/internal/engine"
+	"jetris/internal/game"
 )
 
 // Placement is one candidate final resting position for the active piece.
@@ -35,7 +35,7 @@ type candidate struct {
 // The planner deliberately considers ONLY the current piece. The piece
 // sequence is deterministic from the game seed, so an agent COULD compute its
 // upcoming pieces — but the UI shows a human no next-piece preview, and the
-// visibility contract for agents (see jetricks-agent-guide.md) is that they
+// visibility contract for agents (see jetris-agent-guide.md) is that they
 // decide only on what a human player can see.
 func PlanPlacements(pf *game.Playfield, r Rules, active game.Piece, tn Tuning) []Placement {
 	cands := enumerate(pf, r, active)

@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
 )
 
 // pumpEngine drains an engine's Updates channel, folds scalar state into the

@@ -8,8 +8,8 @@ package nativeui
 //
 //	FW_SNAPSHOT_DIR=. go test ./internal/nativeui/ -run TestCaptureREADMEScreenshots
 //
-// Writes Jetricks-screenshot-1.png (spectator view) and
-// Jetricks-screenshot-2.png (player view) into FW_SNAPSHOT_DIR.
+// Writes Jetris-screenshot-1.png (spectator view) and
+// Jetris-screenshot-2.png (player view) into FW_SNAPSHOT_DIR.
 
 import (
 	"context"
@@ -29,12 +29,12 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
-	"jetricks/internal/testutil"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
+	"jetris/internal/testutil"
 )
 
 const shotW, shotH = 2400, 1640 // 1200x820 dp at 2x for crisp README images
@@ -215,7 +215,7 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	a.teamScores = [config.TeamCount]int{14, 9}
 	a.teamLevels = [config.TeamCount]int{1, 0}
 	a.chatLog = chat
-	shootApp(t, w, a, dir, "Jetricks-screenshot-1.png")
+	shootApp(t, w, a, dir, "Jetris-screenshot-1.png")
 
 	// Screenshot 2: Bob's (team B) player view with the opposing-team sidebar.
 	a = newTestApp()
@@ -228,5 +228,5 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	a.level = 0
 	a.rtt = 2500 * time.Microsecond
 	a.chatLog = chat
-	shootApp(t, w, a, dir, "Jetricks-screenshot-2.png")
+	shootApp(t, w, a, dir, "Jetris-screenshot-2.png")
 }

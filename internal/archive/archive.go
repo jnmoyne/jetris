@@ -12,11 +12,11 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/game"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
 )
 
 // ArchiveAndCleanup transitions a finished game to archived (CAS on meta so only

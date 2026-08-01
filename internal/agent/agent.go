@@ -15,12 +15,12 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/archive"
-	"jetricks/internal/cleanup"
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/archive"
+	"jetris/internal/cleanup"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
 )
 
 // Config parameterizes one agent run.
@@ -155,7 +155,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if seed == 0 {
 		seed = uint64(time.Now().UnixNano())
 	}
-	rnd := rand.New(rand.NewPCG(seed, 0x6a65747269636b73)) // "jetricks"
+	rnd := rand.New(rand.NewPCG(seed, 0x6a65747269636b73)) // "jetris"
 
 	// Connect and provision the shared lobby/chat/archive resources.
 	connCtx, connCancel := context.WithTimeout(ctx, connectTimeout)

@@ -14,20 +14,20 @@ func TestSubjectBuilders(t *testing.T) {
 		got    string
 		expect string
 	}{
-		{"GameStream", GameStream(gameID), "JETRICKS_GAME_550e8400-e29b-41d4-a716-446655440000"},
-		{"GameSubjectFilter", GameSubjectFilter(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.>"},
-		{"CompetitiveCellSubject", CompetitiveCellSubject(gameID, playerID, 12, 7), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.player.a1b2c3d4-e5f6-7890-abcd-ef1234567890.playfield.cell.12.7"},
-		{"CoopCellSubject", CoopCellSubject(gameID, 12, 7), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.playfield.cell.12.7"},
-		{"CompetitiveCellSubjectFilter", CompetitiveCellSubjectFilter(gameID, playerID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.player.a1b2c3d4-e5f6-7890-abcd-ef1234567890.playfield.cell.>"},
-		{"CoopCellSubjectFilter", CoopCellSubjectFilter(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.playfield.cell.>"},
-		{"TeamCellSubject", TeamCellSubject(gameID, 1, 12, 7), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.team.1.playfield.cell.12.7"},
-		{"TeamCellSubjectFilter", TeamCellSubjectFilter(gameID, 0), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.team.0.playfield.cell.>"},
-		{"MetaSubject", MetaSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.meta"},
-		{"RosterSubject", RosterSubject(gameID, playerID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.roster.a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
-		{"EventsSubject", EventsSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.events"},
-		{"CountdownSubject", CountdownSubject(gameID), "jetricks.game.550e8400-e29b-41d4-a716-446655440000.countdown"},
-		{"GameChatSubject", GameChatSubject(gameID), "jetricks.chat.550e8400-e29b-41d4-a716-446655440000"},
-		{"LobbyChatSubject", LobbyChatSubject, "jetricks.chat.lobby"},
+		{"GameStream", GameStream(gameID), "JETRIS_GAME_550e8400-e29b-41d4-a716-446655440000"},
+		{"GameSubjectFilter", GameSubjectFilter(gameID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.>"},
+		{"CompetitiveCellSubject", CompetitiveCellSubject(gameID, playerID, 12, 7), "jetris.game.550e8400-e29b-41d4-a716-446655440000.player.a1b2c3d4-e5f6-7890-abcd-ef1234567890.playfield.cell.12.7"},
+		{"CoopCellSubject", CoopCellSubject(gameID, 12, 7), "jetris.game.550e8400-e29b-41d4-a716-446655440000.playfield.cell.12.7"},
+		{"CompetitiveCellSubjectFilter", CompetitiveCellSubjectFilter(gameID, playerID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.player.a1b2c3d4-e5f6-7890-abcd-ef1234567890.playfield.cell.>"},
+		{"CoopCellSubjectFilter", CoopCellSubjectFilter(gameID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.playfield.cell.>"},
+		{"TeamCellSubject", TeamCellSubject(gameID, 1, 12, 7), "jetris.game.550e8400-e29b-41d4-a716-446655440000.team.1.playfield.cell.12.7"},
+		{"TeamCellSubjectFilter", TeamCellSubjectFilter(gameID, 0), "jetris.game.550e8400-e29b-41d4-a716-446655440000.team.0.playfield.cell.>"},
+		{"MetaSubject", MetaSubject(gameID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.meta"},
+		{"RosterSubject", RosterSubject(gameID, playerID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.roster.a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
+		{"EventsSubject", EventsSubject(gameID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.events"},
+		{"CountdownSubject", CountdownSubject(gameID), "jetris.game.550e8400-e29b-41d4-a716-446655440000.countdown"},
+		{"GameChatSubject", GameChatSubject(gameID), "jetris.chat.550e8400-e29b-41d4-a716-446655440000"},
+		{"LobbyChatSubject", LobbyChatSubject, "jetris.chat.lobby"},
 		{"LobbyPlayerKey", LobbyPlayerKey(playerID), "players.a1b2c3d4-e5f6-7890-abcd-ef1234567890"},
 		{"LobbyGameKey", LobbyGameKey(gameID), "games.550e8400-e29b-41d4-a716-446655440000"},
 	}
@@ -78,7 +78,7 @@ func TestGameIDFromChatSubject(t *testing.T) {
 	if got := GameIDFromChatSubject(GameChatSubject("g-42")); got != "g-42" {
 		t.Errorf("game subject: got %q, want g-42", got)
 	}
-	if got := GameIDFromChatSubject("jetricks.chat."); got != "" {
+	if got := GameIDFromChatSubject("jetris.chat."); got != "" {
 		t.Errorf("empty game token: got %q, want empty", got)
 	}
 }

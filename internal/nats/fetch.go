@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/synadia-io/orbit.go/jetstreamext"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // PlayfieldCellMsg holds the fetched state for a single cell.

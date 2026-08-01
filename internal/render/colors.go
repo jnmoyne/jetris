@@ -1,4 +1,4 @@
-// Package render is the single source of truth for Jetricks cell/board
+// Package render is the single source of truth for Jetris cell/board
 // appearance: the decision logic lives in appearanceHex and is surfaced as
 // RGBA values for the native UI.
 package render
@@ -8,7 +8,7 @@ import (
 	"image/color"
 	"strings"
 
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 // Board background and grid-line colors. Every square's outline falls back to

@@ -1,6 +1,6 @@
 package game
 
-import "jetricks/internal/config"
+import "jetris/internal/config"
 
 // TotalRows is kept for backward compatibility but NewPlayfieldWithHeight should be preferred.
 const TotalRows = config.TotalRows

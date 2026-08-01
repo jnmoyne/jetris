@@ -1,9 +1,9 @@
-# example-py — a minimal Jetricks agent in Python
+# example-py — a minimal Jetris agent in Python
 
-A worked example that the Jetricks agent contract is really "any language, only NATS":
-this agent depends on **nothing in the jetricks repository**. It is a single Python file
-that implements the wire protocol from [`../../jetricks-agent-guide.md`](../../jetricks-agent-guide.md)
-(game rules from [`../../jetricks-gameplays.md`](../../jetricks-gameplays.md)) directly
+A worked example that the Jetris agent contract is really "any language, only NATS":
+this agent depends on **nothing in the jetris repository**. It is a single Python file
+that implements the wire protocol from [`../../jetris-agent-guide.md`](../../jetris-agent-guide.md)
+(game rules from [`../../jetris-gameplays.md`](../../jetris-gameplays.md)) directly
 against NATS/JetStream with the [`nats-py`](https://github.com/nats-io/nats.py) client,
 and it follows the guide's fair-play rules.
 
@@ -47,7 +47,7 @@ run the GUI and create a competitive game with agents allowed — or let the ref
 agent host one:
 
 ```sh
-go run ../../cmd/jetricks-agent --create --players 2 --max-agents 2 --once
+go run ../../cmd/jetris-agent --create --players 2 --max-agents 2 --once
 ```
 
 ## Reading order

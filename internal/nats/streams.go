@@ -5,7 +5,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // EnsureGameStream creates the per-game stream if it does not exist.
@@ -96,9 +96,9 @@ func PurgeRosterEntry(ctx context.Context, js jetstream.JetStream, gameID, playe
 	return s.Purge(ctx, jetstream.WithPurgeSubject(config.RosterSubject(gameID, playerID)))
 }
 
-// ListGameStreams returns names of all streams matching the JETRICKS_GAME_ prefix.
+// ListGameStreams returns names of all streams matching the JETRIS_GAME_ prefix.
 func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, error) {
-	sl := js.StreamNames(ctx, jetstream.WithStreamListSubject("jetricks.game.>"))
+	sl := js.StreamNames(ctx, jetstream.WithStreamListSubject("jetris.game.>"))
 	var names []string
 	for name := range sl.Name() {
 		names = append(names, name)

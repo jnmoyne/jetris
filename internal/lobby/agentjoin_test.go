@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
 )
 
 // A game with no agent seats rejects agents and accepts humans; one with agent

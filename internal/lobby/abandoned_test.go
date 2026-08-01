@@ -9,8 +9,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
 )
 
 // TestAbandonedRules exercises the per-game abandonment rules by injecting a

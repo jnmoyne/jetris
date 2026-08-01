@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 // TestOrderedCellKeys verifies the category publish order — active cells

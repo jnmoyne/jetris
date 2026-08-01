@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"jetricks/internal/game"
+	"jetris/internal/game"
 )
 
 // Board evaluation: Pierre Dellacherie's six per-move features with the

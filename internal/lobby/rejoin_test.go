@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // waitListing polls one lobby's view of a game listing until pred holds.

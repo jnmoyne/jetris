@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // TestBufferedMovesMirrorsDispatchQueue: dispatched moves appear in

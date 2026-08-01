@@ -10,7 +10,7 @@ import (
 
 // version is the build's version string, shown in the window's top-right
 // corner. It stays "dev" for a plain `go build`; releases stamp
-// -X main.version and cmd/jetricks hands it here via SetVersion.
+// -X main.version and cmd/jetris hands it here via SetVersion.
 var version = "dev"
 
 // SetVersion records the build version for the corner badge. Called once from

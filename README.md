@@ -1,24 +1,24 @@
-# Jetricks
+# Jetris
 
-![Jetricks-screenshot-1.png](Jetricks-screenshot-1.png)
+![Jetris-screenshot-1.png](Jetris-screenshot-1.png)
 
 **An example of a peer-to-peer distributed blackboard system built using 'nothing but [NATS](https://nats.io) for humans or agents to cooperate or compete towards a common goal and disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
 
-Let's get the game part out-of-the-way first: Jetricks is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetricks, but now there are other players that you are playing with or against!
+Let's get the game part out-of-the-way first: Jetris is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetris, but now there are other players that you are playing with or against!
 
 There are 3 game modes: cooperative, competitive, and teams. In cooperative, all the players work with each other to achieve the highest score, in competitive the last player alive wins the game, with teams as the name implies it's a competition between the teams.
 
-To just play the game with others over the Internet, go ahead and download the latest release of the `jetricks` binary for your platform and just run it.
+To just play the game with others over the Internet, go ahead and download the latest release of the `jetris` binary for your platform and just run it.
 
-You can then pick which NATS.io server(s) to connect to right : choose one of your NATS CLI contexts from the **Context** pull-down (it starts on your currently selected context), type a server URL into the **NATS URL** field, or select **LAN mode (embedded NATS server)** to have Jetricks start a JetStream-enabled `nats-server` inside the game process itself (no auth, port of your choosing — 4222 by default — storage in a local `jetstream-data` directory) — the window then shows "Your server's URL is `nats://<ip>:<port>`" so you can share it with the people you want to play with, who just type it into their NATS URL field. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). If you don't have a server to connect to, you can always connect to the NATS.io demo server at `demo.nats.io` with the default port number (4222) — the URL field is pre-filled with it. And start playing (or spectating)!
+You can then pick which NATS.io server(s) to connect to right : choose one of your NATS CLI contexts from the **Context** pull-down (it starts on your currently selected context), type a server URL into the **NATS URL** field, or select **LAN mode (embedded NATS server)** to have Jetris start a JetStream-enabled `nats-server` inside the game process itself (no auth, port of your choosing — 4222 by default — storage in a local `jetstream-data` directory) — the window then shows "Your server's URL is `nats://<ip>:<port>`" so you can share it with the people you want to play with, who just type it into their NATS URL field. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). If you don't have a server to connect to, you can always connect to the NATS.io demo server at `demo.nats.io` with the default port number (4222) — the URL field is pre-filled with it. And start playing (or spectating)!
 
-A note on latency: like all on-line multiplayer video games, the network latency between your machine and the NATS.io server has a noticeable effect on the latency between your player inputs and the playfield you see. Understand that by design in Jetricks there's no client-side pre-updating of what you see on your screen (which is what most Internet multiplayer games do): all your keyboard inputs are published to the server and it's only when the NATS server has persisted the messages associated with your move and then sent them back as updates to your machine that the screen gets updated and shows your move. This by design. The latency that you see on your screen is not just the network latency, it is the end-to-end latency of a transaction getting committed to a stream and stream consumers getting the updated data pushed to them.
+A note on latency: like all on-line multiplayer video games, the network latency between your machine and the NATS.io server has a noticeable effect on the latency between your player inputs and the playfield you see. Understand that by design in Jetris there's no client-side pre-updating of what you see on your screen (which is what most Internet multiplayer games do): all your keyboard inputs are published to the server and it's only when the NATS server has persisted the messages associated with your move and then sent them back as updates to your machine that the screen gets updated and shows your move. This by design. The latency that you see on your screen is not just the network latency, it is the end-to-end latency of a transaction getting committed to a stream and stream consumers getting the updated data pushed to them.
 
-now, if you are interested in understanding how Jetricks is implemented and why it's interesting, then please read on.
+now, if you are interested in understanding how Jetris is implemented and why it's interesting, then please read on.
 
 Every player runs the same desktop binary. That binary is just a NATS client. There is no authoritative server process computing the game: all of the game logic (collision, rotation, gravity, line clears, scoring, the whole lifecycle) runs *inside each player's client*, and the players coordinate purely by reading and writing a shared stream that lives on a NATS server. The NATS server stores and routes messages — it knows nothing about the game.
 
-Since it is a real blackboard system, you are also encouraged to create your own agents (literally, bots) that can play the game against (or with) human players or other agents (there is a default agent included), and even contribute them to this repository. Your agents however need to follow the rules and conventions stated in the Jetricks agent guide. Included are simple example agents. While 'playing Tetris well' is something relatively easy for software to do, 'playing Tetris well cooperatively' is much more challenging. Can your agent(s) top the scoreboard against other agents? What about against teams of humans? There is a surprisingly large number of interesting challenges to Jetricks gameplays.
+Since it is a real blackboard system, you are also encouraged to create your own agents (literally, bots) that can play the game against (or with) human players or other agents (there is a default agent included), and even contribute them to this repository. Your agents however need to follow the rules and conventions stated in the Jetris agent guide. Included are simple example agents. While 'playing Tetris well' is something relatively easy for software to do, 'playing Tetris well cooperatively' is much more challenging. Can your agent(s) top the scoreboard against other agents? What about against teams of humans? There is a surprisingly large number of interesting challenges to Jetris gameplays.
 
 ---
 
@@ -28,7 +28,7 @@ Since it is a real blackboard system, you are also encouraged to create your own
 2. [Why this is hard, and why only NATS does it in one primitive](#2-why-this-is-hard-and-why-only-nats-does-it-in-one-primitive)
 3. [Architecture: peers, not clients](#3-architecture-peers-not-clients)
 4. [The stream *is* the board](#4-the-stream-is-the-board)
-5. [The JetStream features Jetricks uses, and why each is necessary](#5-the-jetstream-features-jetricks-uses-and-why-each-is-necessary)
+5. [The JetStream features Jetris uses, and why each is necessary](#5-the-jetstream-features-jetris-uses-and-why-each-is-necessary)
 6. [Walkthroughs with diagrams](#6-walkthroughs-with-diagrams)
 7. [Game modes](#7-game-modes)
 8. [Build and run](#8-build-and-run)
@@ -39,11 +39,11 @@ Since it is a real blackboard system, you are also encouraged to create your own
 
 ## 1. The idea: a blackboard system over NATS.io
 
-Each game in Jetricks is a kind of [blackboard system](https://en.wikipedia.org/wiki/Blackboard_system): agents players (which can be human) work together towards a common goal on a shared Stream that contains the state of the playfield. Players or teams of players can be evaluated in the competitive and teams play modes. It is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetricks` processes or by agents and purely using the NATS servers for state storage and synchronization.
+Each game in Jetris is a kind of [blackboard system](https://en.wikipedia.org/wiki/Blackboard_system): agents players (which can be human) work together towards a common goal on a shared Stream that contains the state of the playfield. Players or teams of players can be evaluated in the competitive and teams play modes. It is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetris` processes or by agents and purely using the NATS servers for state storage and synchronization.
 
 A blackboard system is an artificial intelligence approach based on the blackboard architectural model: several independent agents share a common, structured knowledge store — the *blackboard* — that they all read from and write to. No agent owns the whole problem; each watches the blackboard, contributes the changes it can, and reacts to what the others have written. The blackboard is the only thing they share, and it is simultaneously the shared *state* and the shared *communication channel*.
 
-In Jetricks the blackboard is the playfield, stored as a NATS JetStream stream. The agents are the players. Each player drops their own piece onto a board that everyone shares, sees everyone else's pieces in real time, and must never overwrite another player's move.
+In Jetris the blackboard is the playfield, stored as a NATS JetStream stream. The agents are the players. Each player drops their own piece onto a board that everyone shares, sees everyone else's pieces in real time, and must never overwrite another player's move.
 
 ### The AI analogy
 
@@ -55,7 +55,7 @@ Picture a fleet of warehouse robots, each an autonomous agent, packing boxes of 
 - Concurrency control (CAS): two robots must never drop a box into the same slot. When a robot commits a placement, that commit has to be *conditional* on the slot still being empty; if another robot got there first, the commit must fail so the robot can re-plan, not silently clobber.
 - Real-time push: the instant any robot places a box, every other robot that cares must *see it*, immediately, without polling. Their next decision depends on it.
 
-This analogy is exactly what the Jetricks cooperative mode is: a shared board, compare-and-set on every change, and changes pushed to everyone the moment they happen, you can build a multi-agent coordination layer on the same foundation.
+This analogy is exactly what the Jetris cooperative mode is: a shared board, compare-and-set on every change, and changes pushed to everyone the moment they happen, you can build a multi-agent coordination layer on the same foundation.
 
 ---
 
@@ -77,7 +77,7 @@ A single JetStream stream is *at the same time*:
 
 And the write path itself carries optimistic concurrency control (per-subject CAS) and atomicity (all-or-nothing batches) - and crucially the two can be combined. The subject hierarchy gives you a separate addressable slot for *every cell of the board* with no "topic explosion" cost, plus wildcard subscriptions so each peer streams exactly the slice of the blackboard it cares about.
 
-That combination is why Jetricks needs no database, no separate KV, no separate message bus, and no game server.
+That combination is why Jetris needs no database, no separate KV, no separate message bus, and no game server.
 
 ---
 
@@ -106,44 +106,44 @@ That combination is why Jetricks needs no database, no separate KV, no separate 
                   └──────────────────────────────────────┘
 ```
 
-Every human player launches the same `jetricks` binary, which connects to NATS as an ordinary client. Agent players connect the same way. All players must obviously be connected to the same NATS server/cluster/super-cluster (and JetStream must be enabled on at least one server) in order to play together. There is no "host." Each peer:
+Every human player launches the same `jetris` binary, which connects to NATS as an ordinary client. Agent players connect the same way. All players must obviously be connected to the same NATS server/cluster/super-cluster (and JetStream must be enabled on at least one server) in order to play together. There is no "host." Each peer:
 
 - runs the complete game simulation locally,
 - publishes its own moves as batches of compare-and-set writes to the shared stream, and
 - consumes everyone's writes via Stream Consumers and applies them to its local board.
 
-Because the authoritative state is *the stream*, all peers converge on the same board. No peer is in charge; the server arbitrates writes (via CAS) but computes nothing. This is what makes Jetricks genuinely peer-to-peer rather than client-server.
+Because the authoritative state is *the stream*, all peers converge on the same board. No peer is in charge; the server arbitrates writes (via CAS) but computes nothing. This is what makes Jetris genuinely peer-to-peer rather than client-server.
 
 ---
 
 ## 4. The stream *is* the board
 
-Each game gets its own stream, `JETRICKS_GAME_<gameID>`, capturing the subject space `jetricks.game.<gameID>.>`. The trick is that every cell of the playfield is its own subject, and a subject's *last message* is that cell's *current value*.
+Each game gets its own stream, `JETRIS_GAME_<gameID>`, capturing the subject space `jetris.game.<gameID>.>`. The trick is that every cell of the playfield is its own subject, and a subject's *last message* is that cell's *current value*.
 
 ```
-Stream:  JETRICKS_GAME_<id>          (subjects: jetricks.game.<id>.>)
+Stream:  JETRIS_GAME_<id>          (subjects: jetris.game.<id>.>)
 
   subject  (one blackboard slot per cell)              last message = current value
   ─────────────────────────────────────────────       ─────────────────────────────
-  jetricks.game.<id>.playfield.cell.7.3          →     { occupied, playerIdx: 0, … }
-  jetricks.game.<id>.playfield.cell.7.4          →     { active,   playerIdx: 1, … }
-  jetricks.game.<id>.playfield.cell.8.3          →     (never written = empty cell)
+  jetris.game.<id>.playfield.cell.7.3          →     { occupied, playerIdx: 0, … }
+  jetris.game.<id>.playfield.cell.7.4          →     { active,   playerIdx: 1, … }
+  jetris.game.<id>.playfield.cell.8.3          →     (never written = empty cell)
   …                                                    …
   ── and, in the SAME stream, the rest of the game state ──
-  jetricks.game.<id>.meta                        →     { status: in_progress, seed, … }
-  jetricks.game.<id>.events                      →     append-only: line clears, top-outs
-  jetricks.game.<id>.roster.<playerID>           →     { name, team, slot }
-  jetricks.game.<id>.countdown                   →     { seconds: 3 }
+  jetris.game.<id>.meta                        →     { status: in_progress, seed, … }
+  jetris.game.<id>.events                      →     append-only: line clears, top-outs
+  jetris.game.<id>.roster.<playerID>           →     { name, team, slot }
+  jetris.game.<id>.countdown                   →     { seconds: 3 }
 ```
 
 Chat is the one thing that does NOT live here: the game stream keeps only the
 latest message per subject, which would truncate a conversation to its last
 line. All chat — the lobby's and every game's — lives in the shared
-`JETRICKS_CHAT` stream instead, distinguished purely by the game-ID token of
-the subject: a game's messages on `jetricks.chat.<gameID>` (seen only by that
+`JETRIS_CHAT` stream instead, distinguished purely by the game-ID token of
+the subject: a game's messages on `jetris.chat.<gameID>` (seen only by that
 game's players and spectators, and purged when the game is archived or
 deleted), lobby messages under the reserved game ID `lobby`
-(`jetricks.chat.lobby`).
+(`jetris.chat.lobby`).
 
 Two things to notice:
 
@@ -160,7 +160,7 @@ A consumer's subject *filter* then selects exactly the slice a peer wants: its o
 
 ---
 
-## 5. The JetStream features Jetricks uses, and why each is necessary
+## 5. The JetStream features Jetris uses, and why each is necessary
 
 ### 5.1 Subject-per-cell with last-message-per-subject (state via subjects)
 
@@ -188,13 +188,13 @@ Why it's necessary: This is the "push" half of the blackboard — the instant an
 
 ### 5.5 KV store for the lobby (presence, game listings, and KV-level CAS)
 
-What: The lobby uses a JetStream *KV bucket* (`JETRICKS_LOBBY`). Player presence lives under `players.<id>` (refreshed by a heartbeat, pruned when stale); game listings under `games.<id>`; game invitations under `invites.<player>.<gameID>` (written = pending, deleted = accepted/retracted, rewritten `declined: true` = declined — the key's lifecycle is the invitation's state machine, visible to both sides through the same watch). The lobby `WatchAll`s the bucket for real-time updates, and uses KV compare-and-set (`Update(key, value, revision)`) for join and ready-toggle so concurrent joins can't lose updates or two players claim the same team slot.
+What: The lobby uses a JetStream *KV bucket* (`JETRIS_LOBBY`). Player presence lives under `players.<id>` (refreshed by a heartbeat, pruned when stale); game listings under `games.<id>`; game invitations under `invites.<player>.<gameID>` (written = pending, deleted = accepted/retracted, rewritten `declined: true` = declined — the key's lifecycle is the invitation's state machine, visible to both sides through the same watch). The lobby `WatchAll`s the bucket for real-time updates, and uses KV compare-and-set (`Update(key, value, revision)`) for join and ready-toggle so concurrent joins can't lose updates or two players claim the same team slot.
 
 Why it's necessary: Lobby state is itself a small shared blackboard: who's online, what games exist, who's ready. KV gives last-value-per-key with a watch (the same push model) and revision-based CAS — and it's the *same* JetStream engine over the *same* connection, so presence, listings, and coordination need no extra infrastructure. A KV bucket is literally a stream with last-value-per-subject and a revision = CAS, which is exactly the blackboard pattern again, one level up.
 
 ### 5.6 One stream, many subjects: the whole game in a single stream
 
-What: Cells, `meta`, `events`, `roster.*`, and `countdown` all live in the one per-game stream, separated by subject and selected by per-consumer filters. (Chat is the deliberate exception — full-history retention, so it lives in the shared `JETRICKS_CHAT` stream under `jetricks.chat.<gameID>`, with the reserved game ID `lobby` for the lobby chat.)
+What: Cells, `meta`, `events`, `roster.*`, and `countdown` all live in the one per-game stream, separated by subject and selected by per-consumer filters. (Chat is the deliberate exception — full-history retention, so it lives in the shared `JETRIS_CHAT` stream under `jetris.chat.<gameID>`, with the reserved game ID `lobby` for the lobby chat.)
 
 Why it's necessary: The blackboard is *one* object with several regions. Keeping them in one stream means a single ordered history for the whole game — so, for example, every peer sees elimination `events` in the *same order* and independently reaches the *same* verdict about who won, with no coordinator. Different concerns are just different subject subspaces of the same board.
 
@@ -206,13 +206,13 @@ Why it's necessary: Several peers may try to advance the lifecycle at once (e.g.
 
 ### 5.8 Stream lifecycle: seal, delete, and a shared archive stream
 
-What: When a game ends, its result is published to a single shared `JETRICKS_ARCHIVE` stream (which the lobby watches to show recent results), and the per-game stream is then deleted. Startup runs a cleanup pass that reconciles orphaned/abandoned game streams against the lobby KV.
+What: When a game ends, its result is published to a single shared `JETRIS_ARCHIVE` stream (which the lobby watches to show recent results), and the per-game stream is then deleted. Startup runs a cleanup pass that reconciles orphaned/abandoned game streams against the lobby KV.
 
 Why it's necessary: Blackboards are created and torn down per task. Sealing freezes a finished game's history; deletion reclaims it. The archive stream is a second, long-lived blackboard of *outcomes*, consumed with the same push model. This keeps resource usage bounded as games come and go.
 
 ### 5.9 Bonus: measuring the loop itself (RTT)
 
-Because every visible board change travels the full *write → commit → consume* loop (publish a batch, the server commits it, the ordered consumer delivers it back), Jetricks measures that round-trip continuously and shows it in the HUD. It's not a JetStream feature so much as a window into one: it's the actual latency a player's move pays to become visible to everyone, including themselves.
+Because every visible board change travels the full *write → commit → consume* loop (publish a batch, the server commits it, the ordered consumer delivers it back), Jetris measures that round-trip continuously and shows it in the HUD. It's not a JetStream feature so much as a window into one: it's the actual latency a player's move pays to become visible to everyone, including themselves.
 
 ---
 
@@ -288,7 +288,7 @@ No update is missed and none is applied twice — the snapshot ends exactly wher
 
 ## 7. Game modes
 
-All three are the same blackboard pattern with different subject schemes and collision rules (full rules: [`jetricks-gameplays.md`](jetricks-gameplays.md)).
+All three are the same blackboard pattern with different subject schemes and collision rules (full rules: [`jetris-gameplays.md`](jetris-gameplays.md)).
 
 - Cooperative: 2+ players share one wide board (`playerCount × 10` columns), each controlling their own piece. Pieces can't overlap; the shared board uses per-cell CAS with merge-retry so neither player ever clobbers the other's in-flight piece. Score is shared.
 - Competitive: each player has a private board (their own subject namespace). Clearing lines sends "garbage" rows to opponents (an `events` message they each apply to their own board). Last player standing wins.
@@ -307,19 +307,19 @@ All three are the same blackboard pattern with different subject schemes and col
 ### Build
 
 ```sh
-go build -o jetricks ./cmd/jetricks
-go build -o jetricks-agent ./cmd/jetricks-agent   # optional: the headless computer player
+go build -o jetris ./cmd/jetris
+go build -o jetris-agent ./cmd/jetris-agent   # optional: the headless computer player
 ```
 
 Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`.
 
 ### Run
 
-Jetricks never connects at startup — the login screen is where you choose the connection. Its **CONNECT TO** section offers three options:
+Jetris never connects at startup — the login screen is where you choose the connection. Its **CONNECT TO** section offers three options:
 
 - **Context:** a pull-down of your NATS CLI contexts (the same contexts the `nats` CLI uses), preset to your currently selected context — click it to pick another.
 - **NATS URL:** an editable URL field, pre-filled with `nats://demo.nats.io:4222`; typing in it selects this option automatically.
-- **LAN mode (embedded NATS server):** Jetricks starts a JetStream-enabled `nats-server` inside the game process itself — default account, no auth, JetStream data in a local `jetstream-data` directory — and connects to it. The port is editable (4222 by default; typing in it selects this option), and the screen shows "Your server's URL is `nats://<ip>:<port>`" so you can share the address with other players, who connect to it via their NATS URL field. The server keeps running until you close the window, so quitting to the login screen doesn't kick your friends.
+- **LAN mode (embedded NATS server):** Jetris starts a JetStream-enabled `nats-server` inside the game process itself — default account, no auth, JetStream data in a local `jetstream-data` directory — and connects to it. The port is editable (4222 by default; typing in it selects this option), and the screen shows "Your server's URL is `nats://<ip>:<port>`" so you can share the address with other players, who connect to it via their NATS URL field. The server keeps running until you close the window, so quitting to the login screen doesn't kick your friends.
 
 A **Check connection** button dials the current choice and shows the server and its ping without joining anything; hitting **Play** connects and logs in. Quitting the lobby returns to this screen, so you can switch servers without restarting.
 
@@ -327,27 +327,27 @@ The CLI flags don't connect directly either — they only preset the picker:
 
 ```sh
 # Start with the pull-down on your currently-selected NATS context
-./jetricks
+./jetris
 
 # Preset the pull-down to a named context
-./jetricks --context my-context
+./jetris --context my-context
 
 # Preset the URL option to a specific server
-./jetricks --server nats://localhost:4222 --user alice --password secret
+./jetris --server nats://localhost:4222 --user alice --password secret
 ```
 
 To play multiplayer, **run more instances pointed at the same NATS server** — each instance is one peer. Create a game in the lobby, have the others join it, ready up, and play. A game can be **open** (anyone in the lobby joins it) or **invite-only** — check "Invite only" when creating, then select who to invite (including specific agents, and per-team in teams mode); each selection sends its invitation on the spot, and deselecting retracts it. You start selected yourself — creating an invitation game counts as accepting your own invitation, so a seat is taken immediately; deselect yourself to host a game you'll spectate instead. Invited players get a pop-up (showing who has already joined) to accept or decline — agents accept automatically — and the creator watches each invitation live: waiting, joined, ready, or declined. Once every seat is filled the creator is carried straight to the game (playing, or spectating if they opted out). Leaving a game with "Back to Lobby" keeps your seat: the lobby lists it as **joined** (or **playing** once started, after an are-you-sure prompt) with a **Rejoin** button.
 
 ### Playing with (and against) agents
 
-`jetricks-agent` is a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team — using the same engine as the GUI, driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
+`jetris-agent` is a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team — using the same engine as the GUI, driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
 
 ```sh
 # A resident agent: waits in the lobby to be invited, forever
-./jetricks-agent --server nats://localhost:4222 --name HAL --difficulty medium
+./jetris-agent --server nats://localhost:4222 --name HAL --difficulty medium
 
 # Also join any open agent-allowed game as it appears (the pre-invitations behavior)
-./jetricks-agent --server nats://localhost:4222 --auto-join
+./jetris-agent --server nats://localhost:4222 --auto-join
 ```
 
 Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.
@@ -356,25 +356,25 @@ Agents wear their identity on their name — `<version>-<instance>-<difficulty>`
 
 ```sh
 # Exit after a single game instead of staying resident
-./jetricks-agent --server nats://localhost:4222 --once
+./jetris-agent --server nats://localhost:4222 --once
 
 # Or have an agent host the game (agent-hosted games allow agents in all seats by default)
-./jetricks-agent --server nats://localhost:4222 --create --players 2
+./jetris-agent --server nats://localhost:4222 --create --players 2
 
 # Host a cooperative game and play alongside an agent teammate, or a 2v2 teams game
-./jetricks-agent --server nats://localhost:4222 --create --mode cooperative --players 2 --max-agents 1
-./jetricks-agent --server nats://localhost:4222 --create --mode teams --players 2
+./jetris-agent --server nats://localhost:4222 --create --mode cooperative --players 2 --max-agents 1
+./jetris-agent --server nats://localhost:4222 --create --mode teams --players 2
 ```
 
 In cooperative games agents play for the shared score and treat your falling piece as an obstacle to work around; in teams they take a seat on the emptier team and attack the other board like any teammate would.
 
-`--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score — never the RNG seed or upcoming pieces. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create a agents-only game to spectate an agent-vs-agent match. See `jetricks-agent -h` for the full flag list and [`jetricks-gameplays.md`](jetricks-gameplays.md) §11 for how it plays.
+`--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score — never the RNG seed or upcoming pieces. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create a agents-only game to spectate an agent-vs-agent match. See `jetris-agent -h` for the full flag list and [`jetris-gameplays.md`](jetris-gameplays.md) §11 for how it plays.
 
-**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. There is no framework to plug into: an agent is any program that speaks the game's NATS protocol and follows the fair-play rules, in **any language**. [`jetricks-agent-guide.md`](jetricks-agent-guide.md) is the complete wire contract, and [`agents/README.md`](agents/README.md) is where you submit your own. The shipped `jetricks-agent` (`mk1`) is the Go reference implementation you can play against.
+**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. There is no framework to plug into: an agent is any program that speaks the game's NATS protocol and follows the fair-play rules, in **any language**. [`jetris-agent-guide.md`](jetris-agent-guide.md) is the complete wire contract, and [`agents/README.md`](agents/README.md) is where you submit your own. The shipped `jetris-agent` (`mk1`) is the Go reference implementation you can play against.
 
 ### Clean up
 
-A finished game tidies up after itself, but to wipe *all* Jetricks streams and KV buckets from a server (i.e. game history and chat):
+A finished game tidies up after itself, but to wipe *all* Jetris streams and KV buckets from a server (i.e. game history and chat):
 
 ```sh
 ./scripts/cleanup.sh                 # uses the selected NATS context
@@ -392,8 +392,8 @@ In a game, toggle "Show NATS messages" to open a panel that prints, in real time
 ## 10. Project layout
 
 ```
-cmd/jetricks/          entry point: connect to NATS, ensure lobby streams/KV, launch UI
-cmd/jetricks-agent/      headless computer player for competitive mode (CLI, no UI)
+cmd/jetris/          entry point: connect to NATS, ensure lobby streams/KV, launch UI
+cmd/jetris-agent/      headless computer player for competitive mode (CLI, no UI)
 internal/
   nats/                the JetStream layer — streams, KV, CAS publish, atomic batches,
                        ordered consumers, multi-subject direct get  ← start here
@@ -412,11 +412,11 @@ internal/
 
 For the full design, see the companion documents:
 
-- [`jetricks-gameplays.md`](jetricks-gameplays.md) — authoritative gameplay rules
-- [`jetricks-project-structure.md`](jetricks-project-structure.md) — architecture and package design
-- [`jetricks-implementation-plan.md`](jetricks-implementation-plan.md) — implementation plan
-- [`jetricks-agent-guide.md`](jetricks-agent-guide.md) — how to build your own jetricks-playing agent
+- [`jetris-gameplays.md`](jetris-gameplays.md) — authoritative gameplay rules
+- [`jetris-project-structure.md`](jetris-project-structure.md) — architecture and package design
+- [`jetris-implementation-plan.md`](jetris-implementation-plan.md) — implementation plan
+- [`jetris-agent-guide.md`](jetris-agent-guide.md) — how to build your own jetris-playing agent
 
 ---
 
-* Jetricks is a demonstration that the blackboard pattern — shared state, concurrency control, and real-time push, over one substrate — is a first-class thing you can build directly on NATS.io. The players happen to be human as well as agents and the task happens to be multi-player Tetris *
+* Jetris is a demonstration that the blackboard pattern — shared state, concurrency control, and real-time push, over one substrate — is a first-class thing you can build directly on NATS.io. The players happen to be human as well as agents and the task happens to be multi-player Tetris *

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"jetricks/internal/archive"
-	"jetricks/internal/cleanup"
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/archive"
+	"jetris/internal/cleanup"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
 )
 
 // doConnectAndLogin dials NATS per the player's connection-picker choice (cfg
@@ -270,7 +270,7 @@ func (a *App) initLobby(name string) error {
 
 // createGame creates a game and returns its ID. For teams mode, count is the
 // number of players PER TEAM; for the other modes it is the total player
-// count. maxAgents is the agent policy — how many seats idle jetricks-agent
+// count. maxAgents is the agent policy — how many seats idle jetris-agent
 // players may take (0 = agents may not join). inviteOnly restricts joining to
 // invited players (the invite flow sets it and then sends the invitations).
 func (a *App) createGame(mode config.GameMode, count, maxAgents int, inviteOnly bool) string {

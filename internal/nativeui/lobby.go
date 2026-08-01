@@ -14,8 +14,8 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	"jetricks/internal/config"
-	"jetricks/internal/lobby"
+	"jetris/internal/config"
+	"jetris/internal/lobby"
 )
 
 func (a *App) layoutLobby(gtx C) D {
@@ -48,7 +48,7 @@ func (a *App) layoutLobby(gtx C) D {
 		} else if err != nil || count < 2 {
 			count = 2
 		}
-		// Agent policy: how many seats idle jetricks-agent players may take.
+		// Agent policy: how many seats idle jetris-agent players may take.
 		// Unchecked = 0 = agents may not join. Clamped to the game's total
 		// player count (the count editor is per-team in teams mode).
 		maxAgents := 0
@@ -846,7 +846,7 @@ func (a *App) createOptions(countLabel string) layout.Widget {
 				gtx.Constraints.Min.X = gtx.Dp(48)
 				return a.editorBox(gtx, &a.countEd, "2")
 			}),
-			// Agent policy: whether idle jetricks-agent players may take seats, and at
+			// Agent policy: whether idle jetris-agent players may take seats, and at
 			// most how many. Hidden for invite-only games — there the agent policy
 			// is per-invite (createGame is called with maxAgents 0), so the
 			// "Allow agents" toggle doesn't apply; it reappears if invite-only is

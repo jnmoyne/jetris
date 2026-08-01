@@ -1,21 +1,21 @@
-# Jetricks Agent Guide — how to build a jetricks-playing agent
+# Jetris Agent Guide — how to build a jetris-playing agent
 
 **Audience:** developers (and the coding agents working for them) who want to build
-an autonomous agent that plays Jetricks alongside — and against — human players and
+an autonomous agent that plays Jetris alongside — and against — human players and
 other agents.
 
-Jetricks is a blackboard system: the playfield lives in a NATS JetStream stream that
+Jetris is a blackboard system: the playfield lives in a NATS JetStream stream that
 every participant reads and writes. There is **no game server** and **no special
 agent support** — a "human player" is just an agent with a keyboard and a window.
 Your agent is a peer like any other: it joins through the same lobby, writes the
 same cell subjects under the same CAS discipline, and carries the same lifecycle
 responsibilities. Nothing in the protocol distinguishes silicon from carbon except
-one honesty flag. Remember that there are 3 game modes (cooperative, competitive and teams) in Jetricks.
+one honesty flag. Remember that there are 3 game modes (cooperative, competitive and teams) in Jetris.
 
 **The one and only interface is the game itself — the NATS server, the JetStream
 blackboard, and the fair-play rules below.** There is no framework to plug into and no
 interface to implement: your agent is a standalone program, in **any language**, that
-connects to NATS and plays by these rules. This guide plus `jetricks-gameplays.md` are
+connects to NATS and plays by these rules. This guide plus `jetris-gameplays.md` are
 the complete contract — read them and you can build a conformant agent depending on
 nothing in this repository. The repo ships one Go agent, **`mk1`**, purely as a
 reference/opponent; §3 explains how it (uniquely, because it lives in the repo) reuses
@@ -26,9 +26,9 @@ Companion documents (all at the repo root):
 
 | Document | What it holds |
 |----------|---------------|
-| `jetricks-gameplays.md` | The authoritative game rules (modes, spawning, gravity, clears, garbage, lifecycle) |
-| `jetricks-project-structure.md` | The full package/architecture reference, subject schemes, payload structs |
-| `jetricks-implementation-plan.md` | Implementation details, CAS behavior tables, design decisions |
+| `jetris-gameplays.md` | The authoritative game rules (modes, spawning, gravity, clears, garbage, lifecycle) |
+| `jetris-project-structure.md` | The full package/architecture reference, subject schemes, payload structs |
+| `jetris-implementation-plan.md` | Implementation details, CAS behavior tables, design decisions |
 | This guide | The authoritative wire contract + fair-play rules every agent implements |
 | `agents/README.md` | How to contribute your own agent to the repo |
 
@@ -69,7 +69,7 @@ your agent doesn't get to know it either.
 Agents are first-class but visible:
 
 - **Mark yourself as an agent.** Your presence entry (`players.<name>` in the
-  `JETRICKS_LOBBY` KV bucket) and your roster entry both carry
+  `JETRIS_LOBBY` KV bucket) and your roster entry both carry
   `"agent": true`. In Go this is `lobby.SetAgent(true)` before `Start`. The UI
   tags you `[agent]` everywhere.
 - **Respect the per-game agent policy.** Every game listing carries
@@ -103,14 +103,14 @@ Agents are first-class but visible:
   or you'll re-accept the same unsatisfiable invite forever. The Go `agent`
   package does all of this automatically.
 - **Wait to be invited by default.** The reference resident agent
-  (`jetricks-agent`) only joins games it is invited to unless started with
+  (`jetris-agent`) only joins games it is invited to unless started with
   `--auto-join`, which restores active scanning for open agent-allowed games.
   Third-party resident agents should offer the same choice (the Python example's
   `--auto-join` mirrors it) so a lobby full of idle agents stays quiet until
   someone asks them to play.
 - **Listen for lobby events (optional but recommended).** Every lobby action is
   also announced as a transient CORE NATS message (no stream captures them) on
-  `jetricks.lobby.event.<kind>` with kinds `game.created`, `game.joined`,
+  `jetris.lobby.event.<kind>` with kinds `game.created`, `game.joined`,
   `game.left`, `invite.sent`, `invite.retracted`, `invite.declined` — payload
   `{kind, game_id, player_id, target_id?, team?, time}`. State still lives in
   the KV; the events are low-latency pings that let you react (e.g. to a fresh
@@ -131,7 +131,7 @@ Agents are first-class but visible:
 
 ## 3. The reference agent `mk1` (in-repo Go only)
 
-The repository's own agent, `mk1` (`cmd/jetricks-agent`, source in `internal/agent`),
+The repository's own agent, `mk1` (`cmd/jetris-agent`, source in `internal/agent`),
 is a **privileged example, not a framework**. Because it lives inside the repo it can
 reuse the game's own Go engine packages (`internal/engine`, `internal/lobby`, …) instead
 of re-implementing the protocol — a convenience no third-party agent gets. Your agent —
@@ -144,8 +144,8 @@ ready/countdown, play, archive, teardown — is one call:
 ```go
 import (
     "context"
-    "jetricks/internal/agent"
-    "jetricks/internal/config"
+    "jetris/internal/agent"
+    "jetris/internal/config"
 )
 
 res, err := agent.Run(ctx, agent.Config{
@@ -178,7 +178,7 @@ your dispatches; don't spam).
 
 **This is what every agent except the in-repo reference does** — implement the client
 against the wire, in whatever language you like, depending on nothing in this repo. Read
-`jetricks-project-structure.md` §4/§6/§9 and `jetricks-gameplays.md` first; this is the
+`jetris-project-structure.md` §4/§6/§9 and `jetris-gameplays.md` first; this is the
 orientation map. Everything below, plus the fair-play rules in §1–§2 and the lifecycle in
 §5, is the complete contract. A complete worked example of this path is
 `agents/example-python/` — a single-file Python agent (competitive mode) built from this
@@ -189,11 +189,11 @@ discipline.
 
 | Resource | Kind | Purpose |
 |----------|------|---------|
-| `JETRICKS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game) |
-| `JETRICKS_CHAT` | stream | all chat on `jetricks.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby` |
-| `JETRICKS_ARCHIVE` | stream | finished-game records (`jetricks.archive`) |
-| `JETRICKS_GAME_<gameID>` | stream | the blackboard: `jetricks.game.<gameID>.>`, memory storage, **MaxMsgsPerSubject: 1**, atomic publish + direct get enabled |
-| `jetricks.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
+| `JETRIS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game) |
+| `JETRIS_CHAT` | stream | all chat on `jetris.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby` |
+| `JETRIS_ARCHIVE` | stream | finished-game records (`jetris.archive`) |
+| `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, **MaxMsgsPerSubject: 1**, atomic publish + direct get enabled |
+| `jetris.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
 
 The last property is the heart of the design: the stream keeps only the latest
 message per subject, so **the last message on each cell subject IS that cell's
@@ -204,14 +204,14 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetricks.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence |
-| `jetricks.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
-| `jetricks.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
-| `jetricks.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
-| `jetricks.game.<id>.events` | `GameEvent` JSON | line clears, garbage ("shrink"), game over — ONE subject, so only the last event is retained; consume live, never rely on replay |
-| `jetricks.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
-| `jetricks.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
-| `jetricks.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence |
+| `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
+| `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
+| `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
+| `jetris.game.<id>.events` | `GameEvent` JSON | line clears, garbage ("shrink"), game over — ONE subject, so only the last event is retained; consume live, never rely on replay |
+| `jetris.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
+| `jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
+| `jetris.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
 
 `Cell` JSON (empty cell marshals to `{}`, the vacate payload):
 
@@ -225,7 +225,7 @@ and the real-time push fabric.
 ### 4.3 The write discipline
 
 - **A move is not a message saying "left".** You locally validate the move
-  (collision rules in `jetricks-gameplays.md`; SRS kicks), project the changed
+  (collision rules in `jetris-gameplays.md`; SRS kicks), project the changed
   cells, and publish them as ONE **atomic batch** with per-subject CAS
   (`Nats-Expected-Last-Subject-Sequence` = the last sequence you have seen for
   each cell). Order cells within the batch by their new content: active first,
@@ -240,18 +240,18 @@ and the real-time push fabric.
   consecutive sequences ending at the commit ack); your own echo then no-ops via a
   strictly-higher-sequence rule.
 - **You are the engine.** There is no server running the game for you: your agent
-  must tick gravity (`jetricks-gameplays.md` §7), detect its own lock-in (your
+  must tick gravity (`jetris-gameplays.md` §7), detect its own lock-in (your
   active-cell count reaching zero on the consumer), clear lines, publish events,
   apply incoming garbage, spawn its next piece (including the deferred-spawn rule
   when another player's falling piece covers your spawn cells), and detect
-  top-out. This is the bulk of the work; `jetricks-gameplays.md` is the spec for
+  top-out. This is the bulk of the work; `jetris-gameplays.md` is the spec for
   all of it, and the `mk1` reference (§3) is a working implementation to compare against.
 - **Broadcast CAS-failure flashes.** When one of your writes loses its per-subject
   CAS and you drop the move, publish a **core NATS** message (NOT JetStream — this
   is transient UI feedback that must never be persisted or replayed) to
-  `jetricks.flash.<gameID>.<yourPlayerID>` with payload
+  `jetris.flash.<gameID>.<yourPlayerID>` with payload
   `{"pi": <yourPlayerIdx>, "tm": <yourTeam>, "c": [[row,col], …]}` (the cells of
-  the piece that didn't move). Spectators subscribe to `jetricks.flash.<gameID>.*`
+  the piece that didn't move). Spectators subscribe to `jetris.flash.<gameID>.*`
   and render each player's flash on that player's board — a human client does
   exactly this, so an agent must too, or a spectator watching your board would miss
   your contention feedback that every other player's board shows. You do NOT
@@ -277,7 +277,7 @@ eliminations and outcomes without a coordinator.
    the one that completes the ready set, YOU run the countdown**: publish
    `{"seconds": 5..0}` at 1s intervals, pause ~700ms, then CAS the meta to
    `in_progress`. Skip this and the game never starts.
-4. **Play** by the mode rules (`jetricks-gameplays.md` §3–§5). Never touch cells
+4. **Play** by the mode rules (`jetris-gameplays.md` §3–§5). Never touch cells
    that aren't yours to change.
 5. **Finish**: competitive's last player standing, any winning teams player, or
    the cooperative topper CAS-transitions the meta to `finished` — and then
@@ -297,7 +297,7 @@ eliminations and outcomes without a coordinator.
 - **Local server**: `nats-server -js`, or the GUI's LAN mode (it prints the URL to
   share).
 - **Against the reference agent**: run `mk1` residents at any difficulty and create
-  agent-allowed games — `go run ./cmd/jetricks-agent --server nats://localhost:4222
+  agent-allowed games — `go run ./cmd/jetris-agent --server nats://localhost:4222
   --difficulty medium` — or `... --create --mode teams --players 2` to host. `mk1`
   implements everything in this guide, so it is a conformant sparring partner.
 - **Against humans**: run the GUI and either create an invite-only game and invite
@@ -315,7 +315,7 @@ eliminations and outcomes without a coordinator.
 - [ ] `invite_only` games joined only when invited (watch `invites.<name>.*`; accept = join + delete key, decline = rewrite with `declined: true`)
 - [ ] Name is `<agent-name>-<instance>-<difficulty>`, KV-key-safe, ≤32 chars
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried
-- [ ] CAS-failure flashes broadcast on `jetricks.flash.<id>.<name>` (core NATS)
+- [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish

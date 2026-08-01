@@ -1,5 +1,5 @@
 # Release pipeline: push a tag matching v* (e.g. v0.1.0) and this workflow
-# builds the jetricks binary for every supported platform and publishes a
+# builds the jetris binary for every supported platform and publishes a
 # GitHub release with the archives and a SHA256SUMS file.
 #
 # Gio (gioui.org) constrains how we build:
@@ -74,15 +74,15 @@ jobs:
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           go build -trimpath \
             -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-            -o "jetricks${ext}" ./cmd/jetricks
+            -o "jetris${ext}" ./cmd/jetris
       - name: Package
         shell: bash
         run: |
-          name="jetricks-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          name="jetris-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           mkdir "$name"
-          mv "jetricks${ext}" "$name/"
+          mv "jetris${ext}" "$name/"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             7z a "${name}.zip" "$name"
           else
@@ -90,7 +90,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: jetricks-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: jetris-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             *.tar.gz
             *.zip

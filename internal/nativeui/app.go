@@ -1,4 +1,4 @@
-// Package nativeui is the native (Gio) player front end for Jetricks. It drives
+// Package nativeui is the native (Gio) player front end for Jetris. It drives
 // the lobby and engine business logic, draws directly into an OS window, and
 // reads engine.Updates / lobby.Updates straight off their Go channels, so a
 // NATS update reaches the screen within one display frame.
@@ -27,10 +27,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"jetricks/internal/config"
-	"jetricks/internal/engine"
-	"jetricks/internal/lobby"
-	natspkg "jetricks/internal/nats"
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/lobby"
+	natspkg "jetris/internal/nats"
 )
 
 // Layout type aliases used throughout the package.
@@ -442,7 +442,7 @@ const (
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 	a.win = new(app.Window)
-	a.win.Option(app.Title("Jetricks"), app.Size(unit.Dp(1280), unit.Dp(820)), app.MinSize(minWinW, minWinH))
+	a.win.Option(app.Title("Jetris"), app.Size(unit.Dp(1280), unit.Dp(820)), app.MinSize(minWinW, minWinH))
 
 	a.th = newUITheme()
 

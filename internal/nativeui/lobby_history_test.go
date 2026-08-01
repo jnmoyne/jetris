@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"jetricks/internal/config"
+	"jetris/internal/config"
 )
 
 // The history controls: the agent filter drops any record with an agent seat,

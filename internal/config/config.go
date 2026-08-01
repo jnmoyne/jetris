@@ -183,12 +183,12 @@ const (
 	VisibleRowStart = 4  // base visible row start (for cooperative; competitive adjusts per game)
 	StandardWidth   = 10
 
-	LobbyKVBucket     = "JETRICKS_LOBBY"
-	ChatStream        = "JETRICKS_CHAT"
+	LobbyKVBucket     = "JETRIS_LOBBY"
+	ChatStream        = "JETRIS_CHAT"
 	LobbyChatGameID   = "lobby" // reserved chat "game ID" for the lobby chat (real game IDs are UUIDs, so no collision)
 	LobbyChatSubject  = chatSubjectPrefix + LobbyChatGameID
-	ArchiveStream     = "JETRICKS_ARCHIVE"
-	ArchiveSubject    = "jetricks.archive"
+	ArchiveStream     = "JETRIS_ARCHIVE"
+	ArchiveSubject    = "jetris.archive"
 	ChatMaxAge        = 7 * 24 * time.Hour
 	PresenceHeartbeat = 30 * time.Second
 	// PresenceTTL is the per-key expiry on lobby presence entries: a player's
@@ -252,11 +252,11 @@ func TeamVisibleRowStart(teamSize int) int {
 }
 
 func GameStream(gameID string) string {
-	return "JETRICKS_GAME_" + gameID
+	return "JETRIS_GAME_" + gameID
 }
 
 func GameSubjectFilter(gameID string) string {
-	return "jetricks.game." + gameID + ".>"
+	return "jetris.game." + gameID + ".>"
 }
 
 // Cooperative and competitive modes use entirely separate playfield subject
@@ -270,26 +270,26 @@ func GameSubjectFilter(gameID string) string {
 // same cell subjects, and per-cell ownership lives in the payload via
 // Cell.PlayerIdx (coop never filters cells by player).
 func CoopCellSubject(gameID string, row, col int) string {
-	return "jetricks.game." + gameID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+	return "jetris.game." + gameID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 }
 
 // CoopCellSubjectFilter is the wildcard filter matching every cell of the
 // shared cooperative board.
 func CoopCellSubjectFilter(gameID string) string {
-	return "jetricks.game." + gameID + ".playfield.cell.>"
+	return "jetris.game." + gameID + ".playfield.cell.>"
 }
 
 // CompetitiveCellSubject is the subject one cell (row, col) of one competitive
 // player's private board is published to. Each player owns a separate board
 // scoped by player ID.
 func CompetitiveCellSubject(gameID, playerID string, row, col int) string {
-	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+	return "jetris.game." + gameID + ".player." + playerID + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 }
 
 // CompetitiveCellSubjectFilter is the wildcard filter matching every cell of
 // one competitive player's board.
 func CompetitiveCellSubjectFilter(gameID, playerID string) string {
-	return "jetricks.game." + gameID + ".player." + playerID + ".playfield.cell.>"
+	return "jetris.game." + gameID + ".player." + playerID + ".playfield.cell.>"
 }
 
 // TeamCellSubject is the subject one cell (row, col) of one team's shared
@@ -298,53 +298,53 @@ func CompetitiveCellSubjectFilter(gameID, playerID string) string {
 // cell subjects and per-cell ownership lives in the payload via Cell.PlayerIdx —
 // but the board is scoped by team index so the two teams' boards are disjoint.
 func TeamCellSubject(gameID string, team, row, col int) string {
-	return "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
+	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell." + strconv.Itoa(row) + "." + strconv.Itoa(col)
 }
 
 // TeamCellSubjectFilter is the wildcard filter matching every cell of one
 // team's shared board.
 func TeamCellSubjectFilter(gameID string, team int) string {
-	return "jetricks.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
+	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
 }
 
 func MetaSubject(gameID string) string {
-	return "jetricks.game." + gameID + ".meta"
+	return "jetris.game." + gameID + ".meta"
 }
 
 func RosterSubject(gameID, playerID string) string {
-	return "jetricks.game." + gameID + ".roster." + playerID
+	return "jetris.game." + gameID + ".roster." + playerID
 }
 
 func EventsSubject(gameID string) string {
-	return "jetricks.game." + gameID + ".events"
+	return "jetris.game." + gameID + ".events"
 }
 
 func CountdownSubject(gameID string) string {
-	return "jetricks.game." + gameID + ".countdown"
+	return "jetris.game." + gameID + ".countdown"
 }
 
 // FlashSubject and FlashSubjectFilter are CORE NATS subjects (deliberately
-// OUTSIDE the "jetricks.game.<id>.>" filter the game stream captures) used to
+// OUTSIDE the "jetris.game.<id>.>" filter the game stream captures) used to
 // broadcast a player's transient CAS-failure flash to spectators. A flash is
 // ephemeral UI feedback — it must NOT be persisted in the stream or replayed
 // on join — so it travels as fire-and-forget core pub/sub, not JetStream.
 func FlashSubject(gameID, playerID string) string {
-	return "jetricks.flash." + gameID + "." + playerID
+	return "jetris.flash." + gameID + "." + playerID
 }
 
 // FlashSubjectFilter matches every player's flash subject for a game.
 func FlashSubjectFilter(gameID string) string {
-	return "jetricks.flash." + gameID + ".*"
+	return "jetris.flash." + gameID + ".*"
 }
 
 // Lobby chat and per-game chat share the SAME stream (ChatStream) and are
 // distinguished purely by the game-ID token of the subject
-// ("jetricks.chat.<gameID>"): the lobby chat uses the reserved game ID
+// ("jetris.chat.<gameID>"): the lobby chat uses the reserved game ID
 // LobbyChatGameID ("lobby"), a game's messages use its own ID. Game chat
 // cannot live on the game stream because game streams keep only the latest
 // message per subject.
 
-const chatSubjectPrefix = "jetricks.chat."
+const chatSubjectPrefix = "jetris.chat."
 
 // GameChatSubject is the subject one game's chat messages are published to.
 func GameChatSubject(gameID string) string {
@@ -406,10 +406,10 @@ const InviteTTL = 2 * time.Minute
 // keep player lists and invite pop-ups current between KV watcher deliveries.
 
 // LobbyEventSubject is the subject one kind of lobby event is published to,
-// e.g. "jetricks.lobby.event.game.joined".
+// e.g. "jetris.lobby.event.game.joined".
 func LobbyEventSubject(kind string) string {
-	return "jetricks.lobby.event." + kind
+	return "jetris.lobby.event." + kind
 }
 
 // LobbyEventsFilter matches every lobby event subject (core NATS subscription).
-const LobbyEventsFilter = "jetricks.lobby.event.>"
+const LobbyEventsFilter = "jetris.lobby.event.>"

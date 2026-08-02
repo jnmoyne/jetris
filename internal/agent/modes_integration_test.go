@@ -101,7 +101,7 @@ func TestCoopAgents(t *testing.T) {
 		}(name)
 	}
 
-	gameID, err := human.CreateGame(ctx, config.ModeCooperative, 2, 0, 2, false)
+	gameID, err := human.CreateGame(ctx, config.ModeCooperative, 2, 0, 2, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestTeamsAgents(t *testing.T) {
 	}
 
 	// 1v1: one player per team.
-	gameID, err := human.CreateGame(ctx, config.ModeTeams, 2, 1, 2, false)
+	gameID, err := human.CreateGame(ctx, config.ModeTeams, 2, 1, 2, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestTeams2v2Agents(t *testing.T) {
 	}
 
 	// 2v2: two players per team, all four seats open to agents.
-	gameID, err := human.CreateGame(ctx, config.ModeTeams, 4, 2, 4, false)
+	gameID, err := human.CreateGame(ctx, config.ModeTeams, 4, 2, 4, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

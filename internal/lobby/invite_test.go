@@ -55,7 +55,7 @@ func TestInviteFlow(t *testing.T) {
 
 	// Invite-only game with agents disallowed by policy (maxAgents 0): the
 	// invitation itself must be what admits the invited agent.
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 3, 0, 0, true)
+	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 3, 0, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestInviteDecline(t *testing.T) {
 	a, b := lbs[0], lbs[1]
 	ctx := context.Background()
 
-	gameID, err := a.CreateGame(ctx, config.ModeTeams, 2, 1, 0, true)
+	gameID, err := a.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,11 +149,11 @@ func TestInviteMultiple(t *testing.T) {
 	a, b, c := lbs[0], lbs[1], lbs[2]
 	ctx := context.Background()
 
-	g1, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, true)
+	g1, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	g2, err := b.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, true)
+	g2, err := b.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestInviteRetract(t *testing.T) {
 	a, b := lbs[0], lbs[1]
 	ctx := context.Background()
 
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, true)
+	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

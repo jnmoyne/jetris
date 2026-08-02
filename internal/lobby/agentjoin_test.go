@@ -20,7 +20,7 @@ func TestAgentJoinPolicy(t *testing.T) {
 	ctx := context.Background()
 
 	// maxAgents 0: agents may not join at all.
-	noAgents, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, false)
+	noAgents, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestAgentJoinPolicy(t *testing.T) {
 	}
 
 	// maxAgents 1: one agent in, the second rejected, humans unaffected.
-	oneAgent, err := human.CreateGame(ctx, config.ModeCompetitive, 3, 0, 1, false)
+	oneAgent, err := human.CreateGame(ctx, config.ModeCompetitive, 3, 0, 1, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestAgentsConcurrentJoinsRespectCap(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 4, 0, 1, false)
+	gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 4, 0, 1, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestUnjoinGame(t *testing.T) {
 	a, b := lbs[0], lbs[1]
 	ctx := context.Background()
 
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, false)
+	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

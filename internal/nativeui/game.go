@@ -17,6 +17,7 @@ import (
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
+	"jetris/internal/game"
 	"jetris/internal/lobby"
 	"jetris/internal/render"
 )
@@ -391,6 +392,13 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 	if !(gmode == config.ModeTeams && mode == engine.ModeSpectator) {
 		children = append(children, layout.Rigid(a.hudStat("LEVEL", view.level)))
+	}
+
+	// Upcoming-piece preview, when the game reveals any (GameMeta.NextCount).
+	// Players only: every seat spawns from its own pieceIdx, so "next" is
+	// per-seat — a spectator's engine has no seat and no meaningful queue.
+	if mode == engine.ModePlayer && eng.NextCount() > 0 {
+		children = append(children, layout.Rigid(a.nextPanel(eng)))
 	}
 
 	if mode == engine.ModePlayer {
@@ -1013,6 +1021,62 @@ func (a *App) hudStatColored(label, val string, valCol colorN) layout.Widget {
 				layout.Rigid(a.pixel(unit.Sp(13), val, valCol).Layout),
 			)
 		})
+	}
+}
+
+// nextPanel is the HUD's upcoming-piece preview: a NEXT label over one mini
+// tile per revealed piece, leftmost spawning first. The tiles read straight
+// off the seekable sequence (Engine.NextPieces) every frame, so the panel
+// advances the moment a lock-in bumps pieceIdx — no queue state of its own.
+func (a *App) nextPanel(eng *engine.Engine) layout.Widget {
+	return func(gtx C) D {
+		pieces := eng.NextPieces()
+		if len(pieces) == 0 {
+			return D{}
+		}
+		return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(a.pixel(unit.Sp(9), "NEXT", colMuted).Layout),
+				layout.Rigid(spacer(4)),
+				layout.Rigid(func(gtx C) D {
+					cellPx := gtx.Dp(10)
+					gap := gtx.Dp(6)
+					for i, pt := range pieces {
+						drawMiniPiece(gtx.Ops, i*(previewCols*cellPx+gap), 0, cellPx, pt)
+					}
+					w := len(pieces)*previewCols*cellPx + (len(pieces)-1)*gap
+					return D{Size: image.Pt(w, previewRows*cellPx)}
+				}),
+			)
+		})
+	}
+}
+
+// Every piece's spawn orientation fits a 4-wide, 2-tall bounding box (the I is
+// 4x1, the O 2x2, the rest 3x2), so each preview tile is a fixed 4x2 grid.
+const (
+	previewCols = 4
+	previewRows = 2
+)
+
+// drawMiniPiece draws one preview tile at (x0,y0): the piece in its spawn
+// orientation, centered in the fixed previewCols-wide box, styled like a
+// locked cell of its type (render.CellStyle). Empty box cells stay unpainted
+// so the tile sits directly on the HUD background.
+func drawMiniPiece(ops *op.Ops, x0, y0, cellPx int, pt game.PieceType) {
+	cells := game.Piece{Type: pt}.Cells() // orientation 0 offsets from a (0,0) anchor
+	minR, minC, maxC := cells[0][0], cells[0][1], cells[0][1]
+	for _, rc := range cells[1:] {
+		minR = min(minR, rc[0])
+		minC = min(minC, rc[1])
+		maxC = max(maxC, rc[1])
+	}
+	shift := (previewCols-(maxC-minC+1))/2 - minC // whole-cell horizontal centering
+	ap := render.CellStyle(game.Cell{Occupied: true, PieceType: pt}, -1, false)
+	for _, rc := range cells {
+		x := x0 + (rc[1]+shift)*cellPx
+		y := y0 + (rc[0]-minR)*cellPx
+		drawCell(ops, x, y, cellPx, ap.Fill, ap.Outline, ap.OutlineW, ap.Bevel)
 	}
 }
 

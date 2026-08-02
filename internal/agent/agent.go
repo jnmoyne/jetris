@@ -44,6 +44,7 @@ type Config struct {
 	Mode       config.GameMode // game mode when creating; NOTE the zero value is config.ModeCooperative (the enum's zero) — set it explicitly (the CLI's --mode default is competitive)
 	Players    int             // player count when creating (default 2; teams: players PER TEAM, like the GUI)
 	MaxAgents  int             // agent policy when creating: agent seats incl. this agent (0 = all seats; an agent-hosted game is agent-friendly)
+	NextCount  int             // upcoming pieces the game reveals when creating (0..config.MaxNextCount; the CLI default is 1)
 	Once       bool
 
 	WaitTimeout     time.Duration                    // max wait for a joined game to fill and start (and, one-shot, for discovery); default 10m
@@ -593,7 +594,7 @@ func selectGame(ctx context.Context, lb *lobby.Lobby, cfg Config, waitTimeout ti
 		if maxAgents <= 0 || maxAgents > playerCount {
 			maxAgents = playerCount // agent-hosted games are agent-friendly by default
 		}
-		gameID, err := lb.CreateGame(ctx, cfg.Mode, playerCount, teamSize, maxAgents, false)
+		gameID, err := lb.CreateGame(ctx, cfg.Mode, playerCount, teamSize, maxAgents, cfg.NextCount, false)
 		if err != nil {
 			return "", nil, fmt.Errorf("create game: %w", err)
 		}
@@ -730,8 +731,9 @@ func pumpUpdates(ctx context.Context, e *engine.Engine, wonUpdate *atomic.Int32,
 
 // playGame is the per-piece loop: observe, plan, (blunder-)choose, execute,
 // and re-plan when the board shifts underneath the script. It reads only what
-// a human player can see in the UI: the committed boards, the roster, and its
-// own falling piece — never the RNG seed or upcoming pieces.
+// a human player can see in the UI: the committed boards, the roster, its own
+// falling piece, and the game's piece preview (Engine.NextPieces, empty when
+// the game was created with NextCount 0) — never the RNG seed beyond that.
 func playGame(ctx context.Context, e *engine.Engine, tn Tuning, rnd *rand.Rand, rules Rules, logf func(string, ...any)) {
 	playerIdx := e.PlayerIdx()
 	var lastIdx uint64
@@ -750,7 +752,7 @@ func playGame(ctx context.Context, e *engine.Engine, tn Tuning, rnd *rand.Rand, 
 			lastIdx, replans = idx, 0
 		}
 
-		ranked := PlanPlacements(pf, rules, *active, tn)
+		ranked := PlanPlacements(pf, rules, *active, tn, e.NextPieces()...)
 		placement, ok := ChoosePlacement(ranked, tn, rnd)
 		if !ok || replans >= maxReplans {
 			// Nowhere to go (or the board keeps shifting): drop where we are

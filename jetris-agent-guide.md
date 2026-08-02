@@ -46,6 +46,9 @@ An agent MAY use:
 - Its own board's **committed** state — the same no-client-side-prediction view a
   human sees: a move is visible only after it round-trips through the stream.
 - Its own falling piece (type, orientation, position).
+- **The game's piece preview**: the next `GameMeta.NextCount` pieces of its own
+  sequence (`seq.Piece(pieceIdx+1 .. +NextCount)`). That is exactly what the UI's
+  NEXT panel shows a human, so an agent may plan with it — and no further.
 - Opponents' boards (competitive) and both team boards (teams) — the UI renders
   them live for everyone.
 - The roster, everyone's `agent` flags and structured names, eliminations,
@@ -53,10 +56,11 @@ An agent MAY use:
 
 An agent may NOT use:
 
-- **`GameMeta.Seed` or the piece RNG.** The piece sequence is deterministic and any
-  client can compute every future piece — but the UI shows a human **no next-piece
-  preview**, so an agent must plan one piece at a time. (This is why `mk1`
-  has no lookahead.)
+- **`GameMeta.Seed` or the piece RNG beyond the game's preview.** The piece
+  sequence is deterministic and any client can compute every future piece — but
+  the UI shows a human exactly `NextCount` upcoming pieces (none when it is 0),
+  so an agent's lookahead stops at the same horizon. (`mk1`'s planner reads its
+  allowance from the meta it already fetches and caps its lookahead there.)
 - Stream internals the UI does not render: raw sequence numbers as game
   information, other players' in-flight publish timing, headers, or anything else
   observable only at the protocol layer.
@@ -204,7 +208,7 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `next_count` (0-4) is the piece-preview size — your lookahead allowance |
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
@@ -309,7 +313,7 @@ eliminations and outcomes without a coordinator.
 
 ## 7. Checklist
 
-- [ ] Decisions use only UI-visible information (no seed, no next-piece lookahead)
+- [ ] Decisions use only UI-visible information (no seed; lookahead at most the game's `next_count` preview)
 - [ ] `agent: true` on presence and roster entries
 - [ ] `max_agents` honored inside the join CAS
 - [ ] `invite_only` games joined only when invited (watch `invites.<name>.*`; accept = join + delete key, decline = rewrite with `declined: true`)

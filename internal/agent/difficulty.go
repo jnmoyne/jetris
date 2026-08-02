@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"jetris/internal/config"
 )
 
 // Difficulty selects how strongly the agent plays.
@@ -48,14 +50,16 @@ func ParseDifficulty(s string) (Difficulty, error) {
 
 // Tuning holds the per-difficulty knobs. It is exported so tests (and power
 // users embedding the agent) can override individual knobs via Config.Tuning.
-// There is deliberately NO lookahead knob: the piece sequence is deterministic
-// from the game seed, but a human sees no next-piece preview in the UI, and
-// agents only decide on what a human player can see.
+// Lookahead is capped by what the game itself reveals: the planner is only
+// ever handed the pieces of the game's preview (GameMeta.NextCount), so even
+// the maximum setting decides on exactly what a human player can see — a game
+// created with no preview yields no lookahead at any difficulty.
 type Tuning struct {
 	PieceDelay   time.Duration // "think" pause after a new piece is observed
 	MoveDelay    time.Duration // pause between dispatched moves (also keeps the engine's 8-deep input buffer from overflowing)
 	BlunderRate  float64       // probability of not taking the top-ranked placement
 	BlunderDepth int           // blunders pick uniformly among ranks 2..1+BlunderDepth
+	Lookahead    int           // max upcoming pieces used in planning, further capped by the game's revealed preview (0 = current piece only)
 
 	// Executor timeouts; zero values fall back to the package defaults. Exposed
 	// so tests can shrink them.
@@ -79,11 +83,13 @@ func (d Difficulty) Tuning() Tuning {
 			MoveDelay:    150 * time.Millisecond,
 			BlunderRate:  0.10,
 			BlunderDepth: 2,
+			Lookahead:    1,
 		}
 	default: // DifficultyHard
 		return Tuning{
 			PieceDelay: 100 * time.Millisecond,
 			MoveDelay:  30 * time.Millisecond,
+			Lookahead:  config.MaxNextCount, // use the full preview, whatever the game reveals
 		}
 	}
 }

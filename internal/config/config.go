@@ -86,6 +86,7 @@ type GameMeta struct {
 	Mode        GameMode   `json:"mode"`
 	PlayerCount int        `json:"player_count"`
 	TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
+	NextCount   int        `json:"next_count"`          // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
 	Seed        uint64     `json:"seed"`
 	Status      GameStatus `json:"status"`
 	CreatorID   string     `json:"creator_id"`
@@ -182,6 +183,11 @@ const (
 	VisibleRows     = 24 // base visible rows (cooperative and single mode)
 	VisibleRowStart = 4  // base visible row start (for cooperative; competitive adjusts per game)
 	StandardWidth   = 10
+
+	// MaxNextCount caps GameMeta.NextCount, the per-game number of upcoming
+	// pieces shown to players (0 = none). The same bound applies to agents:
+	// an agent may look ahead at most NextCount pieces in the sequence.
+	MaxNextCount = 4
 
 	LobbyKVBucket     = "JETRIS_LOBBY"
 	ChatStream        = "JETRIS_CHAT"

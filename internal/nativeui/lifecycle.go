@@ -271,9 +271,11 @@ func (a *App) initLobby(name string) error {
 // createGame creates a game and returns its ID. For teams mode, count is the
 // number of players PER TEAM; for the other modes it is the total player
 // count. maxAgents is the agent policy — how many seats idle jetris-agent
-// players may take (0 = agents may not join). inviteOnly restricts joining to
-// invited players (the invite flow sets it and then sends the invitations).
-func (a *App) createGame(mode config.GameMode, count, maxAgents int, inviteOnly bool) string {
+// players may take (0 = agents may not join). nextCount is how many upcoming
+// pieces the game reveals (0..config.MaxNextCount). inviteOnly restricts
+// joining to invited players (the invite flow sets it and then sends the
+// invitations).
+func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount int, inviteOnly bool) string {
 	lb := a.getLobby()
 	if lb == nil {
 		return ""
@@ -283,7 +285,7 @@ func (a *App) createGame(mode config.GameMode, count, maxAgents int, inviteOnly 
 		teamSize = count
 		playerCount = config.TeamCount * count
 	}
-	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, inviteOnly)
+	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, nextCount, inviteOnly)
 	if err != nil {
 		log.Printf("create game: %v", err)
 		return ""

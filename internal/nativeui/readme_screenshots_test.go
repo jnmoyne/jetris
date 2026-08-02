@@ -120,7 +120,8 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	}
 	meta := config.GameMeta{
 		GameID: gameID, Mode: config.ModeTeams, PlayerCount: 4, TeamSize: 2,
-		Seed: 7, Status: config.GameStatusInProgress,
+		NextCount: 3, // the player view shows the HUD's NEXT preview panel
+		Seed:      7, Status: config.GameStatusInProgress,
 		CreatorID: "Alice", CreatedAt: time.Now(), StartedAt: time.Now(),
 	}
 	data, _ := json.Marshal(meta)

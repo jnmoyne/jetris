@@ -204,6 +204,7 @@ type App struct {
 	countEd       widget.Editor
 	allowAgentsCb widget.Bool   // competitive create: allow idle agents to take seats
 	maxAgentsEd   widget.Editor // competitive create: how many seats agents may take
+	nextCountEd   widget.Editor // create: how many upcoming pieces the game reveals (0..config.MaxNextCount)
 	quitBtn       widget.Clickable
 	chatEd        widget.Editor
 	chatBtn       widget.Clickable
@@ -317,6 +318,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.maxAgentsEd.SingleLine = true
 	a.maxAgentsEd.Filter = "0123456789"
 	a.maxAgentsEd.SetText("1")
+	a.nextCountEd.SingleLine = true
+	a.nextCountEd.Filter = "0123456789"
+	a.nextCountEd.SetText("1")
 	a.modeEnum.Value = "cooperative"
 	a.histSortEnum.Value = "score"
 	a.histAgentsCb.Value = true // agent games shown by default

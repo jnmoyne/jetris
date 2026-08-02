@@ -66,6 +66,7 @@ func parseFlags() (agent.Config, error) {
 	flag.StringVar(&modeStr, "mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	flag.IntVar(&cfg.Players, "players", 2, "player count when creating a game (with --create; teams: players per team)")
 	flag.IntVar(&cfg.MaxAgents, "max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
+	flag.IntVar(&cfg.NextCount, "next", 1, "upcoming pieces the game reveals when creating a game (with --create; 0-4, 0 = none)")
 	flag.BoolVar(&cfg.AutoJoin, "auto-join", false, "actively join any open game that allows agents (default: only join games this agent is invited to)")
 	flag.BoolVar(&cfg.Once, "once", false, "exit after one game instead of staying in the lobby")
 	flag.DurationVar(&cfg.WaitTimeout, "wait", 10*time.Minute, "max wait for a joined game to fill and start")

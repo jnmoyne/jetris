@@ -63,7 +63,7 @@ func TestInviteTeamsFillsWithoutCreator(t *testing.T) {
 	}
 
 	// 2v2 invite-only teams (playerCount 4, teamSize 2), agents closed by policy.
-	gameID, err := human.CreateGame(ctx, config.ModeTeams, 4, 2, 0, true)
+	gameID, err := human.CreateGame(ctx, config.ModeTeams, 4, 2, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestInviteTeamsOversubscribedDeclines(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	gameID, err := human.CreateGame(ctx, config.ModeTeams, 4, 2, 0, true)
+	gameID, err := human.CreateGame(ctx, config.ModeTeams, 4, 2, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
+	"jetris/internal/config"
 	"jetris/internal/engine"
 	"jetris/internal/game"
 )
@@ -32,12 +33,17 @@ type candidate struct {
 // players' mid-flight pieces block exactly as the engine's own move validation
 // would.
 //
-// The planner deliberately considers ONLY the current piece. The piece
-// sequence is deterministic from the game seed, so an agent COULD compute its
-// upcoming pieces — but the UI shows a human no next-piece preview, and the
-// visibility contract for agents (see jetris-agent-guide.md) is that they
-// decide only on what a human player can see.
-func PlanPlacements(pf *game.Playfield, r Rules, active game.Piece, tn Tuning) []Placement {
+// upcoming is the piece preview the agent may use: the visibility contract
+// (see jetris-agent-guide.md) is that an agent decides only on what a human
+// player can see, so callers must pass at most the pieces the game reveals
+// (Engine.NextPieces, bounded by GameMeta.NextCount — nothing in a game
+// created with no preview). The planner uses at most tn.Lookahead of them:
+// each candidate's score gains the best achievable evaluation total of the
+// lookahead pieces played out on the simulated board (beam-pruned).
+func PlanPlacements(pf *game.Playfield, r Rules, active game.Piece, tn Tuning, upcoming ...game.PieceType) []Placement {
+	if tn.Lookahead < len(upcoming) {
+		upcoming = upcoming[:max(tn.Lookahead, 0)]
+	}
 	cands := enumerate(pf, r, active)
 	out := make([]Placement, 0, len(cands))
 	for _, cand := range cands {
@@ -46,11 +52,67 @@ func PlanPlacements(pf *game.Playfield, r Rules, active game.Piece, tn Tuning) [
 			Target: cand.dest,
 			Moves:  cand.moves,
 			Lines:  lines,
-			Score:  evaluateMove(board, cand.dest, lines, eroded),
+			Score:  evaluateMove(board, cand.dest, lines, eroded) + lookaheadScore(board, r, upcoming),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
+}
+
+const (
+	// lookaheadBeam bounds the search: at each lookahead level only this many
+	// best placements are expanded further. With ~34 placements per piece and
+	// up to config.MaxNextCount (4) levels, the full tree stays in the tens of
+	// thousands of board evaluations — comfortably per-piece realtime.
+	lookaheadBeam = 3
+	// lookaheadTopOutPenalty scores a lookahead piece that cannot be placed at
+	// all (spawn blocked on the simulated board — an imminent top-out).
+	lookaheadTopOutPenalty = -1e4
+)
+
+// lookaheadScore returns the best evaluation total achievable by playing the
+// upcoming pieces, in order, on board pf: max over the first piece's
+// placements of eval(placement) + lookaheadScore(rest), expanding only the
+// lookaheadBeam best-scoring placements at each level. pf is a simulation
+// board (already cloned) and is not mutated.
+func lookaheadScore(pf *game.Playfield, r Rules, upcoming []game.PieceType) float64 {
+	if len(upcoming) == 0 {
+		return 0
+	}
+	spawn := game.SpawnPiece(upcoming[0], config.StandardWidth)
+	spawn.Col += r.SectionIdx * config.StandardWidth // own section on shared boards, same offset engine.spawnPiece applies
+	// enumerate assumes a validly placed active piece, so the spawn itself
+	// must be checked first — a covered spawn is the engine's top-out.
+	if !r.canPlace(spawn, pf) {
+		return lookaheadTopOutPenalty
+	}
+	cands := enumerate(pf, r, spawn)
+	if len(cands) == 0 {
+		return lookaheadTopOutPenalty
+	}
+	type expanded struct {
+		board *game.Playfield
+		score float64
+	}
+	exp := make([]expanded, 0, len(cands))
+	for _, cand := range cands {
+		board, lines, eroded := simulateLock(pf, r.PlayerIdx, cand.dest)
+		exp = append(exp, expanded{board, evaluateMove(board, cand.dest, lines, eroded)})
+	}
+	sort.Slice(exp, func(i, j int) bool { return exp[i].score > exp[j].score })
+	if len(upcoming) == 1 {
+		return exp[0].score
+	}
+	if len(exp) > lookaheadBeam {
+		exp = exp[:lookaheadBeam]
+	}
+	best := exp[0].score + lookaheadScore(exp[0].board, r, upcoming[1:])
+	for _, e := range exp[1:] {
+		if s := e.score + lookaheadScore(e.board, r, upcoming[1:]); s > best {
+			best = s
+		}
+	}
+	return best
 }
 
 // ChoosePlacement applies the blunder model to a ranked placement list: with

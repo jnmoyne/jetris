@@ -70,7 +70,7 @@ func TestInviteAgents(t *testing.T) {
 	}
 
 	// Invite-only, agents-closed: invitations are the only way in.
-	gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, true)
+	gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}

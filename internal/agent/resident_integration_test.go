@@ -69,7 +69,7 @@ func TestResidentAgents(t *testing.T) {
 	}
 
 	// A no-agents game: the resident agents must never touch it.
-	noAgents, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, false)
+	noAgents, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestResidentAgents(t *testing.T) {
 	// Two agent-allowed games in sequence; each should be filled, played and
 	// archived by the resident agents.
 	for round := 1; round <= 2; round++ {
-		gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 2, false)
+		gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 2, 0, false)
 		if err != nil {
 			t.Fatal(err)
 		}

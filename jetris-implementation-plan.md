@@ -78,6 +78,7 @@ type GameMeta struct {
     Mode        GameMode   `json:"mode"`
     PlayerCount int        `json:"player_count"`
     TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
+    NextCount   int        `json:"next_count"`          // piece-preview size 0..MaxNextCount (see Phase 14); NOT omitempty — 0 is meaningful, pre-field metas unmarshal to 0
     Seed        uint64     `json:"seed"`
     Status      GameStatus `json:"status"`
     CreatorID   string     `json:"creator_id"`
@@ -1907,7 +1908,8 @@ As specified in Section 10, plus the teams-mode fields: `GameListing.TeamSize`
 (players per team), `PlayerSummary.Team` and `PlayerSummary.TeamSlot` (the
 player's team 0/1 and their section index within the team board, assigned in
 join order), and `GameListing.TeamMemberCount(team int) int` (how many roster
-members belong to the given team).
+members belong to the given team). Later phases add `MaxAgents`/`InviteOnly`/
+`CreatorID` (Phases 12.7/13) and `NextCount` (Phase 15).
 
 #### `presence.go`
 
@@ -1982,7 +1984,9 @@ config.TeamCount × teamSize`; other modes pass `teamSize = 0`:
 3. Create `config.GameMeta` with the new ID, mode, player count, team size, seed, status=created, creatorID
 4. Publish to `config.MetaSubject(gameID)` with `ExpectLastSeq: 0`
 5. Update own roster entry
-6. Update `games.<id>` KV entry (listing carries `TeamSize` for teams games)
+6. Update `games.<id>` KV entry (listing carries `TeamSize` for teams games,
+   and — from later phases — the agent policy, invite-only flag, and
+   `NextCount` piece-preview size, the last also written to meta; see Phase 15)
 7. Return `gameID`
 
 ```go
@@ -2913,10 +2917,12 @@ changes required.
 ### 12.1 Difficulty (`difficulty.go`)
 
 `Difficulty` (easy/medium/hard) → `Tuning{PieceDelay, MoveDelay, BlunderRate,
-BlunderDepth, MoveTimeout, DropTimeout}`. Easy: 1.5 s think, 300 ms/move, 30%
-blunders over 4 ranks. Medium: 600 ms, 150 ms, 10% over 2. Hard: 100 ms, 30 ms, no
-blunders. No lookahead knob — agents decide only on UI-visible state and the UI has
-no next-piece preview. MoveDelay also
+BlunderDepth, Lookahead, MoveTimeout, DropTimeout}`. Easy: 1.5 s think, 300 ms/move, 30%
+blunders over 4 ranks, no lookahead. Medium: 600 ms, 150 ms, 10% over 2, lookahead 1.
+Hard: 100 ms, 30 ms, no blunders, lookahead `config.MaxNextCount`. `Lookahead` is the
+max preview pieces used in planning and is always further capped by the game's own
+`next_count` (Phase 14) — agents decide only on UI-visible state, so in a no-preview
+game every difficulty plans one piece at a time. MoveDelay also
 guarantees the engine's 8-deep input buffer (silent drop on overflow) never fills.
 
 ### 12.2 Planner + eval (`planner.go`, `eval.go`)
@@ -2929,9 +2935,14 @@ reachable; orientations with duplicate cell shapes (O ×4, I/S/Z pairs) are prun
 (adversarial garbage rows never complete, matching the engine). Scoring is
 Dellacherie/El-Tetris: `-4.500158825·landingHeight + 3.4181268·erodedCells −
 3.2178882·rowTransitions − 9.348695·colTransitions − 7.899265·holes −
-3.3855972·wells`. Planning considers the CURRENT piece only: the sequence is
-deterministic from the meta seed, but reading it would use information a human
-cannot see (no next-piece preview in the UI) — the fair-visibility contract.
+3.3855972·wells`. Planning looks ahead exactly as far as the game's piece preview:
+`PlanPlacements`' variadic `upcoming` tail is fed from `Engine.NextPieces()` (never
+more — the fair-visibility contract) and truncated to `Tuning.Lookahead`; each
+candidate's score adds `lookaheadScore`, a beam-pruned (width 3) recursive best
+play-out of the revealed pieces on the simulated board, future spawns placed at the
+section-offset spawn position (`Rules.SectionIdx`) and a blocked spawn scored as a
+top-out penalty. Reading the seed past `next_count` would use information a human
+cannot see — in a no-preview game planning is the CURRENT piece only.
 `ChoosePlacement` implements the blunder model.
 
 ### 12.3 Executor (`executor.go`)
@@ -3097,6 +3108,66 @@ meta check and listing CAS are not atomic, so an un-join racing the exact start
 instant can still slip through — accepted because the agent only un-joins after a long
 start-timeout; an agent-only cooperative game has no natural end (coop ends on a
 top-out, and decent agents avoid topping out) — bounded only by interruption.
+
+---
+
+## Phase 15 — Piece Preview (`next_count`)
+
+A per-game attribute: how many upcoming pieces the game reveals, 0 (none) to
+`config.MaxNextCount` (4), chosen at creation and fixed for the game's life. It
+applies to the UI for humans AND to agents — one horizon for every eye — which
+re-parameterizes the fair-visibility contract from "never look ahead" to "look
+ahead at most `next_count` pieces".
+
+**Data:** `GameMeta.NextCount` (`next_count`, deliberately NOT omitempty: 0 is a
+meaningful value and metas written before the field unmarshal to 0, preserving
+their no-preview behavior) — meta because it is the game-stream protocol record
+every peer fetches; mirrored as `GameListing.NextCount` (omitempty) for the lobby
+row. `config.MaxNextCount = 4`. `CreateGame(ctx, mode, playerCount, teamSize,
+maxAgents, nextCount, inviteOnly)` clamps to 0..MaxNextCount and writes both
+records; unlike `MaxAgents` (join policy, listing-only) this is gameplay and
+lives in meta.
+
+**Engine:** captures `meta.NextCount` at `Start` (`e.nextCount`); accessors
+`NextCount() int` and `NextPieces() []game.PieceType` — the latter a pure read
+of the seekable sequence (`seq.Piece(pieceIdx+1+i)`, i < NextCount), empty for
+no-preview games. No queue state exists anywhere; the preview advances the
+moment a lock-in bumps `pieceIdx`. Coop/teams correctness is by construction:
+each seat runs its own `pieceIdx` over the shared sequence, so "next" is
+per-seat.
+
+**UI (`nativeui`):** create row gains a **"Next:" editor** (`nextCountEd`,
+default "1", digit-filtered, parse+clamp in the create handler) placed after the
+count editor; gameplay-not-policy, so it stays visible when "Invite only" is
+checked (unlike the agent cluster) and threads through both create paths
+(`createGame`, `openInvitePicker`). Game rows tag "· next N". The game HUD
+gains a **NEXT panel** (`nextPanel`, players only, gated on
+`eng.NextCount() > 0`): one mini tile per revealed piece, leftmost spawning
+first, each a fixed 4×2 grid (`previewCols`/`previewRows` — every spawn
+orientation fits) drawn by `drawMiniPiece` with `render.CellStyle` locked-cell
+styling, horizontally centered by whole cells.
+
+**Agent (`mk1`):** `Tuning.Lookahead` (easy 0, medium 1, hard
+`config.MaxNextCount`) is the max preview pieces used in planning.
+`PlanPlacements(pf, r, active, tn, upcoming...)` takes the preview variadically
+— callers pass `Engine.NextPieces()`, never more — truncates it to
+`tn.Lookahead`, and adds `lookaheadScore` to each candidate: a recursive,
+beam-pruned (width `lookaheadBeam` = 3) best play-out of the revealed pieces on
+the simulated board, future pieces spawned at the section-offset spawn
+(`Rules.SectionIdx`, mirroring `engine.spawnPiece`); a blocked future spawn
+scores `lookaheadTopOutPenalty` (-1e4), steering plans away from placements
+that top the agent out next. The wire contract (`jetris-agent-guide.md` §1,
+`agents/README.md`) now reads: an agent may compute `seq.Piece(pieceIdx+1 ..
++next_count)` and no further; `agents/example-python` stays one-ply (using
+less than the allowance is always legal). `cmd/jetris-agent` gains
+`--next K` (default 1) for `--create`.
+
+**Tests:** `lookahead_test.go` — Lookahead 0 ignores a passed preview entirely
+(identical ranking and scores); with the preview, planning reserves a line the
+revealed next piece can finish (O stays out of a 4-wide gap an upcoming I
+fills); a spawn-blocked future scores exactly the top-out penalty. The README
+screenshot capture sets `NextCount: 3` so the player-view shot exercises the
+HUD panel.
 
 ---
 

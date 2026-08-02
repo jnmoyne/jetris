@@ -493,14 +493,22 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // may take (0 = agents may not join); enforced atomically by JoinGame's CAS
 // loop. inviteOnly restricts joining to invited players (and the creator) —
 // see Invite/JoinGame; invited agents are exempt from the maxAgents policy,
-// the invitation being explicit permission.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents int, inviteOnly bool) (string, error) {
+// the invitation being explicit permission. nextCount is how many upcoming
+// pieces the game reveals (clamped to 0..config.MaxNextCount); it is stored in
+// GameMeta so every peer — human UI and agent alike — sees the same lookahead.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount int, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	if maxAgents < 0 {
 		maxAgents = 0
 	}
 	if maxAgents > playerCount {
 		maxAgents = playerCount
+	}
+	if nextCount < 0 {
+		nextCount = 0
+	}
+	if nextCount > config.MaxNextCount {
+		nextCount = config.MaxNextCount
 	}
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
@@ -512,6 +520,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Mode:        mode,
 		PlayerCount: playerCount,
 		TeamSize:    teamSize,
+		NextCount:   nextCount,
 		Seed:        uint64(time.Now().UnixNano()),
 		Status:      config.GameStatusCreated,
 		CreatorID:   l.playerID,
@@ -533,6 +542,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		PlayerCount: playerCount,
 		TeamSize:    teamSize,
 		MaxAgents:   maxAgents,
+		NextCount:   nextCount,
 		InviteOnly:  inviteOnly,
 		CreatorID:   l.playerID,
 		Players:     nil,

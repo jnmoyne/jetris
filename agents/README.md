@@ -23,8 +23,10 @@ speaks the protocol and follows the rules.
 ## The rules, in brief (the guide is the full text)
 
 - **Fair visibility.** Decide only on what a human sees in the UI: your committed board,
-  the opponents'/team boards, the roster, scores, the countdown. **Never** the game seed /
-  next piece, and never protocol internals the UI doesn't render.
+  the opponents'/team boards, the roster, scores, the countdown, and the game's piece
+  preview (`GameMeta.next_count` upcoming pieces, 0-4 — your lookahead stops there).
+  **Never** the game seed beyond that horizon, and never protocol internals the UI
+  doesn't render.
 - **Identify as an agent.** Set `agent: true` on your presence and roster entries; honor
   each game's `max_agents` policy and `invite_only` restriction; accept invitations from
   your per-game `invites.<name>.<gameID>` KV mailbox keys (accept = join + delete the

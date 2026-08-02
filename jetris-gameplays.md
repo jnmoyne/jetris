@@ -30,6 +30,30 @@ Each player has a color associated with it: used for the outline color of the pi
 
 ---
 
+## 1b. Piece Preview (the game's NEXT count)
+
+**How many upcoming pieces a game reveals is a per-game attribute**: `next_count`,
+an integer 0-4 chosen on the create row (the **"Next:"** field, default 1) and fixed
+for the life of the game in its meta record (`GameMeta.NextCount`). It applies to
+every mode and to **everyone in the game equally — humans and agents**:
+
+- **0** — nobody sees anything coming: no NEXT panel, no agent lookahead (the
+  original Jetris behavior, and what games created before the attribute existed
+  replay as).
+- **1-4** — while playing, the HUD shows a **NEXT panel**: one mini tile per
+  revealed piece, leftmost spawning first, always your **own** queue (each seat
+  advances its own `pieceIdx`, so "next" is per-seat; spectators get no panel).
+  The lobby row advertises the setting as a `next N` tag.
+
+Because the 7-bag sequence is seekable, the preview is a pure read
+(`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
+
+The same number is an **agent's lookahead allowance**: the fair-visibility contract
+(§11) lets an agent plan with exactly the pieces a human can see in the NEXT panel
+and no further. One knob moves both eyes.
+
+---
+
 ## 2. Playfield
 
 | Property | Value |
@@ -286,6 +310,7 @@ A team **loses when ALL its members have topped out**. At that point every membe
 ### Visual Indicators
 
 - HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
+- When the game reveals upcoming pieces (§1b), players also get the HUD's **NEXT panel** with their own queue as mini piece tiles
 - Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
 - The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
 - Spectators see both team boards side by side
@@ -340,7 +365,9 @@ An abandoned game's lobby row is marked `· abandoned` in red and grows a red **
 
 A game is created **open** (anyone in the lobby may join it) or **invite-only**. The
 create row's **"Invite only"** checkbox chooses; the **"Create"** button reads the
-same either way.
+same either way. The row also carries the game's **"Next:" piece-preview count**
+(0-4, default 1 — see §1b); being gameplay rather than join policy, it stays
+visible when "Invite only" is checked, unlike the agent-policy cluster.
 
 - **Open games** work as always: they list in the lobby with Join/Spectate buttons,
   and (for the applicable modes) an agent policy — the **"Allow agents"** checkbox and
@@ -804,9 +831,12 @@ that implements the whole protocol, engine included, with no repo dependency.
   vocabulary (SRS rotations in place, one-column slides, hard drop), simulates the lock
   and line clear on a board copy, and scores the result with Pierre Dellacherie's
   six-feature heuristic (landing height, eroded cells, row/column transitions, holes,
-  cumulative wells). It plans one piece at a time: the piece sequence is deterministic
-  from the game seed (§4), but the UI shows humans no next-piece preview, so reading
-  the seed to look ahead would violate the fair-visibility contract.
+  cumulative wells). Its lookahead is exactly the game's piece preview (§1b): each
+  candidate's score adds the best play-out of the revealed next pieces on the
+  simulated board (beam-pruned, spawn-blocked futures scored as top-outs). The piece
+  sequence is deterministic from the game seed (§4), but reading it past
+  `next_count` would violate the fair-visibility contract — in a no-preview game
+  the agent plans one piece at a time, exactly like its human opponents.
 - **Execution:** moves are issued one at a time — observe the piece, dispatch the one
   move that advances it toward the target, wait for the effect to appear on the
   committed board, repeat, hard drop. A move that never takes effect (collision
@@ -826,10 +856,12 @@ that implements the whole protocol, engine included, with no repo dependency.
 
 An agent may base decisions ONLY on information a human player can see in the UI:
 the committed boards (its own and the opponents'/teams'), the roster and
-eliminations, scores/levels, the countdown, and its own falling piece. It may NOT
-read the game seed to predict upcoming pieces (the UI shows no next-piece preview),
-nor any stream state the UI does not render. This is the visibility contract every
-agent implementation must honor — see `jetris-agent-guide.md`.
+eliminations, scores/levels, the countdown, its own falling piece, and the game's
+piece preview — the `next_count` upcoming pieces the HUD's NEXT panel shows (§1b).
+It may NOT read the game seed to predict pieces beyond that horizon (in a
+`next_count: 0` game, no lookahead at all), nor any stream state the UI does not
+render. This is the visibility contract every agent implementation must honor —
+see `jetris-agent-guide.md`.
 
 ### Per-mode outcomes
 
@@ -854,10 +886,13 @@ agent implementation must honor — see `jetris-agent-guide.md`.
 | Pause between moves | 300 ms | 150 ms | 30 ms |
 | Blunder rate (P of not playing the best move) | 30% | 10% | 0 |
 | Blunder depth (picks among ranks 2..N+1) | 4 | 2 | — |
+| Lookahead (max preview pieces used in planning) | 0 | 1 | 4 |
 
 Hard plays the best placement it finds, as fast as the NATS round-trips allow. Easy and
 medium think slower, pace their moves, and sometimes deliberately play a lower-ranked
-placement, so they are beatable and fun.
+placement, so they are beatable and fun. Lookahead is always **further capped by the
+game's own `next_count`** (§1b): even hard plans one piece at a time in a no-preview
+game, and easy ignores the preview entirely.
 
 ### Agent policy: who decides whether agents may join
 

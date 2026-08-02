@@ -14,6 +14,7 @@ type GameListing struct {
 	PlayerCount int               `json:"player_count"`
 	TeamSize    int               `json:"team_size,omitempty"`   // teams mode: players per team
 	MaxAgents   int               `json:"max_agents,omitempty"`  // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
+	NextCount   int               `json:"next_count,omitempty"`  // how many upcoming pieces are shown (0..config.MaxNextCount); mirrors GameMeta.NextCount for the lobby row
 	InviteOnly  bool              `json:"invite_only,omitempty"` // players join by invitation only (creator excepted); auto-joining agents skip it
 	CreatorID   string            `json:"creator_id,omitempty"`  // who created (and may always join) the game
 	Players     []PlayerSummary   `json:"players"`

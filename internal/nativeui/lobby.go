@@ -65,10 +65,23 @@ func (a *App) layoutLobby(gtx C) D {
 				maxAgents = total
 			}
 		}
+		// Upcoming-piece preview: how many next pieces the game reveals to
+		// everyone (players, spectators, agents). Blank or junk falls back to
+		// the default of 1; clamped to 0..config.MaxNextCount.
+		nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
+		if err != nil {
+			nextCount = 1
+		}
+		if nextCount < 0 {
+			nextCount = 0
+		}
+		if nextCount > config.MaxNextCount {
+			nextCount = config.MaxNextCount
+		}
 		if a.inviteOnlyCb.Value {
-			go a.openInvitePicker(mode, count)
+			go a.openInvitePicker(mode, count, nextCount)
 		} else {
-			go func() { a.createGame(mode, count, maxAgents, false) }()
+			go func() { a.createGame(mode, count, maxAgents, nextCount, false) }()
 		}
 	}
 	a.handleChatSubmit(gtx)
@@ -846,6 +859,16 @@ func (a *App) createOptions(countLabel string) layout.Widget {
 				gtx.Constraints.Min.X = gtx.Dp(48)
 				return a.editorBox(gtx, &a.countEd, "2")
 			}),
+			// Upcoming-piece preview count. Gameplay, not join policy, so unlike
+			// the agent cluster it stays visible for invite-only games.
+			layout.Rigid(hSpacer(12)),
+			layout.Rigid(a.body("Next:", colMuted)),
+			layout.Rigid(hSpacer(4)),
+			layout.Rigid(func(gtx C) D {
+				gtx.Constraints.Max.X = gtx.Dp(40)
+				gtx.Constraints.Min.X = gtx.Dp(40)
+				return a.editorBox(gtx, &a.nextCountEd, "1")
+			}),
 			// Agent policy: whether idle jetris-agent players may take seats, and at
 			// most how many. Hidden for invite-only games — there the agent policy
 			// is per-invite (createGame is called with maxAgents 0), so the
@@ -988,6 +1011,9 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	}
 	if g.MaxAgents > 0 {
 		extra += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
+	}
+	if g.NextCount > 0 {
+		extra += fmt.Sprintf(" · next %d", g.NextCount)
 	}
 
 	// The creator of an invite-only game sees each outstanding invitation's

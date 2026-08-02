@@ -21,7 +21,7 @@ func TestAbandonedRules(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestDeleteGame(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

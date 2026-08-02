@@ -17,7 +17,9 @@ Scope (deliberately minimal):
     offset, so its move repertoire is a legal subset of the game's.
   - Fair visibility: decisions use only its own committed board. It never
     reads the meta seed beyond generating its OWN piece sequence (which the
-    protocol requires every peer to do) — no lookahead, no next-piece.
+    protocol requires every peer to do). Games may reveal a piece preview
+    (meta next_count, 0-4) that an agent MAY plan with — this one keeps its
+    strategy one-ply and simply ignores its allowance, which is always legal.
 
 Everything it carries as a peer, per the guide:
   presence heartbeat - join via KV CAS - roster announcement - ready toggle -

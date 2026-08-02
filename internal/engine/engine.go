@@ -43,6 +43,7 @@ type Engine struct {
 	initialMode Mode // original mode at creation (ModePlayer or ModeSpectator)
 	playerIdx   int  // 0 for creator, 1 for joiner; used on shared boards for Cell.PlayerIdx
 	playerCount int  // number of players in the game
+	nextCount   int  // how many upcoming pieces this game reveals (from meta at Start; 0 = none)
 	teamIdx     int  // teams mode: which team this player is on (0 = A, 1 = B)
 	teamSlot    int  // teams mode: section index within the team board (spawn column offset)
 	teamSize    int  // teams mode: players per team (from meta at Start)
@@ -172,6 +173,7 @@ func (e *Engine) Start() error {
 	}
 	e.playerCount = meta.PlayerCount
 	e.teamSize = meta.TeamSize
+	e.nextCount = meta.NextCount
 
 	// Set visible row start based on mode
 	switch e.gameMode {
@@ -927,6 +929,26 @@ func (e *Engine) IsEliminated(id string) bool {
 }
 
 func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
+
+// NextCount reports how many upcoming pieces this game reveals
+// (GameMeta.NextCount, fixed at game creation; 0 = no preview).
+func (e *Engine) NextCount() int { return e.nextCount }
+
+// NextPieces returns the upcoming piece types this game reveals, in play
+// order: element 0 is the piece that will spawn after the current one. The
+// slice is empty when the game was created with no preview. The sequence is
+// seekable (rng.Sequence.Piece), so this is a pure read with no queue state.
+func (e *Engine) NextPieces() []game.PieceType {
+	if e.nextCount <= 0 || e.seq == nil {
+		return nil
+	}
+	idx := e.pieceIdx.Load()
+	out := make([]game.PieceType, e.nextCount)
+	for i := range out {
+		out[i] = e.seq.Piece(idx + 1 + uint64(i))
+	}
+	return out
+}
 
 // handleTopOut handles this player topping out. locked reports whether the
 // caller already holds e.mu (spawnPiece always does at its top-out branch;

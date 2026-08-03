@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -31,58 +32,19 @@ func (a *App) layoutLobby(gtx C) D {
 	if a.quitBtn.Clicked(gtx) {
 		go a.quit()
 	}
-	if a.createBtn.Clicked(gtx) {
-		mode := config.ModeCooperative
-		switch a.modeEnum.Value {
-		case "competitive":
-			mode = config.ModeCompetitive
-		case "teams":
-			mode = config.ModeTeams
-		}
-		count, err := strconv.Atoi(strings.TrimSpace(a.countEd.Text()))
-		if mode == config.ModeTeams {
-			// For teams the count editor means players PER TEAM.
-			if err != nil || count < 1 {
-				count = 1
-			}
-		} else if err != nil || count < 2 {
-			count = 2
-		}
-		// Agent policy: how many seats idle jetris-agent players may take.
-		// Unchecked = 0 = agents may not join. Clamped to the game's total
-		// player count (the count editor is per-team in teams mode).
-		maxAgents := 0
-		if a.allowAgentsCb.Value {
-			total := count
-			if mode == config.ModeTeams {
-				total = config.TeamCount * count
-			}
-			maxAgents, err = strconv.Atoi(strings.TrimSpace(a.maxAgentsEd.Text()))
-			if err != nil || maxAgents < 1 {
-				maxAgents = 1
-			}
-			if maxAgents > total {
-				maxAgents = total
-			}
-		}
-		// Upcoming-piece preview: how many next pieces the game reveals to
-		// everyone (players, spectators, agents). Blank or junk falls back to
-		// the default of 1; clamped to 0..config.MaxNextCount.
-		nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
-		if err != nil {
-			nextCount = 1
-		}
-		if nextCount < 0 {
-			nextCount = 0
-		}
-		if nextCount > config.MaxNextCount {
-			nextCount = config.MaxNextCount
-		}
-		if a.inviteOnlyCb.Value {
-			go a.openInvitePicker(mode, count, nextCount)
-		} else {
-			go func() { a.createGame(mode, count, maxAgents, nextCount, false) }()
-		}
+	// Modal overlays: the create-game wizard, the invitee picker (after
+	// creating an invite-only game), and the incoming-invitation pop-up.
+	// Their buttons are dispatched here so a click can't fall through to the
+	// lobby underneath.
+	wizOpen := a.handleCreateWizard(gtx)
+	pickerOpen := a.handleInvitePicker(gtx)
+	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
+	// The Create button just opens the wizard; the wizard's last step does
+	// the actual creating (finishCreateWizard). The previous run's choices
+	// stick around as this run's defaults.
+	if a.createBtn.Clicked(gtx) && !wizOpen && !pickerOpen && !inviteOpen {
+		a.createWizStep = wizStepMode
+		wizOpen = true
 	}
 	a.handleChatSubmit(gtx)
 
@@ -139,12 +101,6 @@ func (a *App) layoutLobby(gtx C) D {
 		}
 	}
 
-	// Modal overlays: the invitee picker (after creating an invite-only game)
-	// and the incoming-invitation pop-up. Their buttons are dispatched here so
-	// a click can't fall through to the lobby underneath.
-	pickerOpen := a.handleInvitePicker(gtx)
-	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
-
 	// --- render ---
 	base := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.lobbyBanner),
@@ -163,7 +119,7 @@ func (a *App) layoutLobby(gtx C) D {
 			)
 		}),
 	)
-	if !pickerOpen && !inviteOpen {
+	if !pickerOpen && !inviteOpen && !wizOpen {
 		return base
 	}
 	return layout.Stack{}.Layout(gtx,
@@ -175,10 +131,14 @@ func (a *App) layoutLobby(gtx C) D {
 		}),
 		layout.Stacked(func(gtx C) D {
 			gtx.Constraints.Min = gtx.Constraints.Max
-			if inviteOpen {
+			switch {
+			case inviteOpen:
 				return a.incomingInviteOverlay(gtx, pendingInvite)
+			case pickerOpen:
+				return a.invitePickerOverlay(gtx)
+			default:
+				return a.createWizardOverlay(gtx)
 			}
-			return a.invitePickerOverlay(gtx)
 		}),
 	)
 }
@@ -812,106 +772,11 @@ func archiveModeLine(r config.ArchiveRecord) string {
 	return fmt.Sprintf("competitive · %s", strings.Join(parts, ", "))
 }
 
+// createRow is the single entry point to game creation: one button that opens
+// the create-game wizard (the game's attributes are chosen there, step by
+// step, instead of on an inline option row).
 func (a *App) createRow(gtx C) D {
-	countLabel := "Players:"
-	if a.modeEnum.Value == "teams" {
-		countLabel = "Per team:"
-	}
-	// The Create button is a top-level Rigid (measured before the Flexed
-	// options), so no combination of options can squish it — when width runs
-	// short, the options row gives, never the button.
-	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-		layout.Flexed(1, a.createOptions(countLabel)),
-		layout.Rigid(hSpacer(10)),
-		layout.Rigid(func(gtx C) D {
-			return a.primaryButton(gtx, &a.createBtn, "Create")
-		}),
-	)
-}
-
-// createOptions is the game-creation option cluster to the left of the Create
-// button: mode radios, seat count, agent policy, and the invite-only toggle.
-func (a *App) createOptions(countLabel string) layout.Widget {
-	return func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx C) D {
-				rb := material.RadioButton(a.th, &a.modeEnum, "cooperative", "Co-op")
-				rb.Color = colFg
-				return rb.Layout(gtx)
-			}),
-			layout.Rigid(hSpacer(6)),
-			layout.Rigid(func(gtx C) D {
-				rb := material.RadioButton(a.th, &a.modeEnum, "competitive", "Competitive")
-				rb.Color = colFg
-				return rb.Layout(gtx)
-			}),
-			layout.Rigid(hSpacer(6)),
-			layout.Rigid(func(gtx C) D {
-				rb := material.RadioButton(a.th, &a.modeEnum, "teams", "Teams")
-				rb.Color = colFg
-				return rb.Layout(gtx)
-			}),
-			layout.Rigid(hSpacer(12)),
-			layout.Rigid(a.body(countLabel, colMuted)),
-			layout.Rigid(hSpacer(4)),
-			layout.Rigid(func(gtx C) D {
-				gtx.Constraints.Max.X = gtx.Dp(48)
-				gtx.Constraints.Min.X = gtx.Dp(48)
-				return a.editorBox(gtx, &a.countEd, "2")
-			}),
-			// Upcoming-piece preview count. Gameplay, not join policy, so unlike
-			// the agent cluster it stays visible for invite-only games.
-			layout.Rigid(hSpacer(12)),
-			layout.Rigid(a.body("Next:", colMuted)),
-			layout.Rigid(hSpacer(4)),
-			layout.Rigid(func(gtx C) D {
-				gtx.Constraints.Max.X = gtx.Dp(40)
-				gtx.Constraints.Min.X = gtx.Dp(40)
-				return a.editorBox(gtx, &a.nextCountEd, "1")
-			}),
-			// Agent policy: whether idle jetris-agent players may take seats, and at
-			// most how many. Hidden for invite-only games — there the agent policy
-			// is per-invite (createGame is called with maxAgents 0), so the
-			// "Allow agents" toggle doesn't apply; it reappears if invite-only is
-			// unchecked.
-			layout.Rigid(func(gtx C) D {
-				if a.inviteOnlyCb.Value {
-					return D{}
-				}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(hSpacer(12)),
-					layout.Rigid(func(gtx C) D {
-						cb := material.CheckBox(a.th, &a.allowAgentsCb, "Allow agents")
-						cb.Color = colFg
-						cb.IconColor = colAccent
-						return cb.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx C) D {
-						if !a.allowAgentsCb.Value {
-							return D{}
-						}
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Rigid(hSpacer(8)),
-							layout.Rigid(a.body("Max:", colMuted)),
-							layout.Rigid(hSpacer(4)),
-							layout.Rigid(func(gtx C) D {
-								gtx.Constraints.Max.X = gtx.Dp(40)
-								gtx.Constraints.Min.X = gtx.Dp(40)
-								return a.editorBox(gtx, &a.maxAgentsEd, "1")
-							}),
-						)
-					}),
-				)
-			}),
-			layout.Rigid(hSpacer(12)),
-			layout.Rigid(func(gtx C) D {
-				cb := material.CheckBox(a.th, &a.inviteOnlyCb, "Invite only")
-				cb.Color = colFg
-				cb.IconColor = colAccent
-				return cb.Layout(gtx)
-			}),
-		)
-	}
+	return a.attractButton(gtx, &a.createBtn, "Create a new game")
 }
 
 // invitedTo reports whether this player holds a pending invitation to gameID.
@@ -1258,6 +1123,61 @@ func pixelize(b material.ButtonStyle) material.ButtonStyle {
 func (a *App) primaryButton(gtx C, btn *widget.Clickable, label string) D {
 	return hardShadow(gtx, func(gtx C) D {
 		return pixelize(material.Button(a.th, btn, label)).Layout(gtx)
+	})
+}
+
+const (
+	attractPeriod = 3 * time.Second        // time between glint sweeps
+	attractSweep  = 600 * time.Millisecond // duration of one sweep
+)
+
+// attractButton renders a primaryButton in attract mode — the treatment for
+// the one action a screen is waiting on (Create a new game, the initial
+// ready-up click): a bas-relief bevel lit from the upper-left (same idiom as
+// the board cells' block shading) and a chunky diagonal glint that sweeps
+// across the face every few seconds, arcade attract-screen style.
+func (a *App) attractButton(gtx C, btn *widget.Clickable, label string) D {
+	return hardShadow(gtx, func(gtx C) D {
+		dims := pixelize(material.Button(a.th, btn, label)).Layout(gtx)
+		w, h := dims.Size.X, dims.Size.Y
+		bounds := image.Rect(0, 0, w, h)
+
+		bv := gtx.Dp(3)
+		hi := colorN{R: 0xff, G: 0xff, B: 0xff, A: 0x48}
+		lo := colorN{A: 0x55}
+		fillRect(gtx.Ops, image.Rect(0, 0, w-bv, bv), hi)
+		fillRect(gtx.Ops, image.Rect(0, 0, bv, h-bv), hi)
+		fillRect(gtx.Ops, image.Rect(bv, h-bv, w, h), lo)
+		fillRect(gtx.Ops, image.Rect(w-bv, bv, w, h), lo)
+
+		// Glint sweep, phase-locked to the wall clock so every attract button
+		// on screen flashes in unison.
+		ph := time.Duration(gtx.Now.UnixNano()) % attractPeriod
+		if ph < 0 {
+			ph += attractPeriod // zero/pre-epoch Now (headless tests)
+		}
+		if ph < attractSweep {
+			t := float64(ph) / float64(attractSweep)
+			band := gtx.Dp(16)
+			step := max(gtx.Dp(4), 1)
+			span := w + h/2 + 2*band
+			pos := -band + int(t*float64(span))
+			glint := colorN{R: 0xff, G: 0xff, B: 0xff, A: 0x5a}
+			for y := 0; y < h; y += step {
+				// Stepped 45° slant: each pixel-row of the band sits half a
+				// step left of the one above, giving a chunky "/" streak.
+				seg := image.Rect(pos-y/2, y, pos-y/2+band, y+step).Intersect(bounds)
+				if !seg.Empty() {
+					fillRect(gtx.Ops, seg, glint)
+				}
+			}
+			a.invalidate() // keep the sweep animating
+		} else {
+			// Idle between sweeps: wake up exactly when the next one is due
+			// instead of redrawing every frame.
+			gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(attractPeriod - ph)})
+		}
+		return dims
 	})
 }
 

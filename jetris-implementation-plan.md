@@ -1069,8 +1069,12 @@ live playfield. Player input is serialized and buffered on the `e.moves` channel
 `runInput` processes one at a time and each publish blocks on its commit ack
 before the next is dequeued, so a player never has two input batches in flight.
 The engine mirrors that buffer in a `bufferedMu`-guarded FIFO (`bufferedMoves`):
-`dispatch` appends on a successful enqueue, `runInput` pops (`popBufferedMove`)
-the moment it dequeues a move (its batch publish is starting), and
+`dispatch` appends BEFORE the channel send (and takes the entry back if the
+full buffer drops the move) — appending after the send loses a race on a fast
+ack round-trip, where `runInput` pops the not-yet-appended entry as a no-op
+and the append then strands a phantom chip in the strip forever — `runInput`
+pops (`popBufferedMove`) the moment it dequeues a move (its batch publish is
+starting), and
 `Engine.BufferedMoves()` returns a copy for the UI, which draws the queued moves
 as the animated MOVE BUFFER chip strip under the player's board
 (`bufferedMovesStrip` in `internal/nativeui/controls.go`: eight big slots that
@@ -2032,8 +2036,14 @@ ready via `ToggleReadyResult{AllReady, Players, MyReady}`. Advancing to
 meta to `in_progress` (setting `StartedAt`). The native UI renders each
 player's state in the pre-game checklist as a filled pill badge (green
 "READY" / red "NOT READY" — `readyBadge` in `nativeui/game.go`); the player's
-own toggle button (`readyArea`) reads "READY TO PLAY" when not yet ready and
-"NOT READY TO PLAY" when ready (click to stand down).
+own toggle button (`readyArea`) reads "CLICK WHEN READY TO PLAY" when not yet
+ready — rendered as an `attractButton` (bas-relief bevel plus a periodic
+diagonal glint sweep, the same attract chrome as the lobby's "Create a new
+game" button) — and "CLICK IF NOT READY ANYMORE" (a plain `primaryButton`)
+when ready (click to stand down). The pre-game countdown numeral that follows
+is stacked over the player's own playfield (inside `boardCol` in
+`gameBoardArea`), so it centers on the board itself rather than on the whole
+board area with its NEXT well and centering whitespace.
 
 **Abandoned-game detection & deletion.** `runAbandonedChecker` (goroutine,
 started by `Start`) re-evaluates every listed game once per
@@ -2165,7 +2175,13 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   liberal: the chrome accent is the NATS brand blue and `colNATSGreen` is the logo's
   green, so the brand colors run through headers, buttons, and borders everywhere.
 - `fireworks.go` — the victory fireworks overlay: `newFireworksShow` (rolled once in
-  `pumpEngine` when `UpdateGameOver{Won: true}` arrives for a competitive/teams win),
+  `pumpEngine` when `UpdateGameOver{Won: true}` arrives for a competitive/teams win,
+  or when a cooperative game ends having strictly beaten the best archived co-op
+  `TotalScore` for the same seat count — `beatsCoopBest` over `lobby.Archives()`,
+  pure predicate `coopScoreIsRecord` in `bridge.go`: own `GameID` excluded since the
+  game's archive may already have round-tripped, zero scores never count, and the
+  check runs BEFORE `a.mu` is taken because `getLobby` locks it; every coop member's
+  engine emits the shared game over, so the whole crew celebrates),
   `fireworksOverlay` (a paint-only full-screen `layout.Stack` layer over the game
   screen; each frame is a pure function of `gtx.Now` in the countdown/CAS-flash
   idiom, drawn at elapsed time modulo the ~8 s `cycle` and kept animating via
@@ -2770,8 +2786,8 @@ Invite-only games and player invitations, layered on the existing lobby KV.
   game); the invite picker's capacity guard additionally refuses selections beyond
   the free seats at click time (`inviteSeatUsage`: roster + pending invitations,
   per team for teams).
-- **UI (`nativeui/invite.go`):** "Invite only" create toggle → invitee-picker
-  modal. NO send button — selection IS the action: `handleInvitePicker` diffs each
+- **UI (`nativeui/invite.go`):** "Invite only" create choice (since Phase 16
+  the create wizard's who-can-join step) → invitee-picker modal. NO send button — selection IS the action: `handleInvitePicker` diffs each
   row's widget against its last-applied intent every frame and immediately sends
   (`lobby.Invite`; a teams change re-invites to the new team) or retracts
   (`lobby.Uninvite`). The pinned first row is the CREATOR, UNSELECTED by default —
@@ -3036,9 +3052,10 @@ Games decide whether agents may join, and agents live in the lobby between games
   longer full, checks the game META for started-ness (the listing never reads
   `in_progress`), and purges the caller's roster announcement
   (`nats.PurgeRosterEntry`, new) so engines never discover a ghost opponent.
-- **GUI:** the create row shows, for competitive mode only, an "Allow agents" checkbox
+- **GUI:** the create UI shows, for competitive mode only, an "Allow agents" checkbox
   (`widget.Bool`, off by default) and a max-agents editor (digits-only, clamped to
-  `[1, players]` when checked); `createGame`/`CreateGame` carry the value. Game rows
+  `[1, players]` when checked); `createGame`/`CreateGame` carry the value. (Since
+  Phase 16 these controls live on the create wizard's agents step.) Game rows
   show `agents k/N`; agent players are tagged `[agent]` in the lobby player list, game
   rows, ready roster, and in-game legend (`agentName` helper).
 - **Resident agents:** auto-join mode is resident by default — `Run` wraps a per-game
@@ -3090,10 +3107,11 @@ The agent plays cooperative and teams as well as competitive:
 - **CLI/GUI**: `--mode cooperative|competitive|teams` for `--create` (`--players` is
   per team in teams, like the GUI count); `Config.Mode`'s zero value is
   `config.ModeCooperative` (the enum's zero) — library callers set it explicitly.
-  The create row's "Allow agents" checkbox now shows for every mode, with max-agents
-  clamped to the total player count (`TeamCount × count` for teams). It is hidden
-  while "Invite only" is checked (invite-only agent policy is per-invitation —
-  `createGame` gets maxAgents 0), reappearing when invite-only is unchecked.
+  The "Allow agents" checkbox now shows for every mode, with max-agents
+  clamped to the total player count (`TeamCount × count` for teams). Invite-only
+  games never see it (their agent policy is per-invitation — `createGame` gets
+  maxAgents 0); since Phase 16 that split is structural — the wizard's agents
+  step is only reached for open games.
 - **Tests**: `modes_integration_test.go` — a full cooperative game (two agents on one
   shared board, both report `OVER`/no winner, the topper archives) and a 1v1 teams
   game (auto team selection, garbage between team boards, exactly one winner, the
@@ -3136,15 +3154,21 @@ moment a lock-in bumps `pieceIdx`. Coop/teams correctness is by construction:
 each seat runs its own `pieceIdx` over the shared sequence, so "next" is
 per-seat.
 
-**UI (`nativeui`):** create row gains a **"Next:" editor** (`nextCountEd`,
-default "1", digit-filtered, parse+clamp in the create handler) placed after the
-count editor; gameplay-not-policy, so it stays visible when "Invite only" is
-checked (unlike the agent cluster) and threads through both create paths
-(`createGame`, `openInvitePicker`). Game rows tag "· next N". The game HUD
-gains a **NEXT panel** (`nextPanel`, players only, gated on
-`eng.NextCount() > 0`): one mini tile per revealed piece, leftmost spawning
-first, each a fixed 4×2 grid (`previewCols`/`previewRows` — every spawn
-orientation fits) drawn by `drawMiniPiece` with `render.CellStyle` locked-cell
+**UI (`nativeui`):** the create UI gains a **next-pieces editor** (`nextCountEd`,
+default "1", digit-filtered, parse+clamp in the create handler; since Phase 16
+it is the wizard's own piece-preview step); gameplay-not-policy, so every game
+gets asked (unlike the agent policy) and it threads through both create paths
+(`createGame`, `openInvitePicker`). Game rows tag "· next N". The game screen
+gains a **NEXT well** (`nextWell`, players only, rendered when
+`eng.NextPieces()` is non-empty): a framed sub-division to the left of the
+playfield (arcade-well frame over the panel background) stacking one tile
+per revealed piece top-down in play order. Tiles use the same cell size as
+the playfield, so the preview reads exactly like the pieces on the board and
+scales with the window alongside it (`gameBoardArea`
+reserves `previewCols` extra columns plus 18 dp in the `fitCellPx` call);
+each tile is `previewCols` (4) cells wide (every spawn orientation fits)
+and its piece's own rows tall (`drawMiniPiece` returns the drawn height, so
+the 1-row I leaves no dead row), drawn with `render.CellStyle` locked-cell
 styling, horizontally centered by whole cells.
 
 **Agent (`mk1`):** `Tuning.Lookahead` (easy 0, medium 1, hard
@@ -3170,6 +3194,46 @@ screenshot capture sets `NextCount: 3` so the player-view shot exercises the
 HUD panel.
 
 ---
+
+## Phase 16 — Create-Game Wizard
+
+Replaces the lobby's inline create-option row with a single **"Create a new
+game"** button (`lobby.go:createRow` → `createBtn`) that opens a modal
+**wizard** (`nativeui/createwizard.go`) walking the creator through the game's
+attributes one step at a time. All the option widgets survive unchanged on
+`App` (`modeEnum`, `countEd`, `nextCountEd`, `createJoinEnum` — replacing the
+old `inviteOnlyCb` checkbox — `allowAgentsCb`, `maxAgentsEd`); only where they
+render moved. Their values persist between runs, so the wizard's defaults are
+the previous game's choices.
+
+- **State:** `createWizStep` on `App` (0 = closed; `wizStep*` constants 1-4),
+  plus `wizBackBtn`/`wizNextBtn`/`wizCancelBtn` clickables.
+- **Steps** (each a renderer in `createwizard.go`):
+  1. `wizardModeStep` — game-type radios with one-line descriptions
+     (co-op/competitive/teams) + seat-count editor (labeled "Players per
+     team:" in teams mode, with a total-seats hint).
+  2. `wizardNextStep` — the piece-preview count (0..`config.MaxNextCount`).
+  3. `wizardJoinStep` — "Open game" vs "Invite only" radios
+     (`createJoinEnum`), with a hint line matching the selection.
+  4. `wizardAgentsStep` — open games only: "Allow agents to join" checkbox +
+     max-agents editor.
+- **Flow:** `handleCreateWizard` (called from `layoutLobby` alongside the other
+  modal handlers, before the createBtn click check) dispatches Cancel (close,
+  create nothing), Back, and Next each frame. Next advances 1→2→3; at step 3
+  "Invite only" finishes immediately (button label **"Choose players…"**),
+  "Open game" continues to step 4 (**"Create game"**). The header advertises
+  "STEP n OF total" with total 3/4 following the who-can-join selection.
+- **Finish:** `finishCreateWizard` does the parse/clamp the old create-row
+  handler did (count ≥2, per-team ≥1; next 0-4 default 1; max agents clamped
+  to total seats) and launches: `openInvitePicker(mode, count, nextCount)` for
+  invite-only (agent policy stays per-invite — maxAgents 0), else
+  `createGame(mode, count, maxAgents, nextCount, false)`.
+- **Rendering:** the wizard reuses the invite overlays' modal treatment
+  (scrim + `layout.Stack` in `layoutLobby`; priority incoming-invite > picker >
+  wizard) and chrome (`hardShadow`, 3dp accent border, 480dp max width).
+- **Tests:** `layout_test.go` "create-wizard" renders every step and branch
+  (teams labels, agents editor shown, invite-only relabel) plus the wizard as
+  the lobby's live overlay.
 
 ## Cross-Cutting Implementation Rules
 

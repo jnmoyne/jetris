@@ -442,6 +442,10 @@ func (e *Engine) PlayerID() string { return e.playerID }
 func (e *Engine) Score() int       { return int(e.score.Load()) }
 func (e *Engine) Level() int       { return int(e.level.Load()) }
 
+// PlayerCount reports the game's seat count (GameMeta.PlayerCount, captured
+// at Start and immutable after — the game is full before it can begin).
+func (e *Engine) PlayerCount() int { return e.playerCount }
+
 // TeamScores returns both teams' current scores (teams mode). The line-clear
 // events subject is consumed by every engine, so the totals converge on both
 // teams' players, eliminated players, and spectators alike.
@@ -513,19 +517,30 @@ func (e *Engine) dispatch(m MoveType) {
 	if e.getMode() != ModePlayer {
 		return
 	}
+	// Mirror the enqueue in the buffered-moves list shown under the board
+	// (visible when a high RTT makes inputs queue behind an in-flight
+	// publish). The mirror entry MUST be appended BEFORE the channel send:
+	// runInput pops the mirror the moment it dequeues a move, and on a fast
+	// ack round-trip it wins that race — a mirror appended after the send can
+	// be popped before it exists, stranding a phantom chip in the strip.
+	// Before the send our entry cannot be popped (it is not in the channel
+	// yet, and runInput pops only after a dequeue), so the mirror stays a
+	// faithful FIFO image of e.moves.
+	e.bufferedMu.Lock()
+	e.bufferedMoves = append(e.bufferedMoves, m)
+	e.bufferedMu.Unlock()
 	select {
 	case e.moves <- m:
-		// Mirror the enqueue in the buffered-moves list shown under the board
-		// (visible when a high RTT makes inputs queue behind an in-flight
-		// publish). dispatch is the only producer and runInput the only
-		// consumer of e.moves, so this FIFO mirror stays in sync with the
-		// channel: appended here, popped by popBufferedMove when runInput
-		// dequeues the move and its publish begins.
-		e.bufferedMu.Lock()
-		e.bufferedMoves = append(e.bufferedMoves, m)
-		e.bufferedMu.Unlock()
 		e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
 	default:
+		// Buffer full — the move is dropped, so take the mirror entry back.
+		// dispatch is the only producer, so ours is still the last element;
+		// concurrent pops only ever remove from the front.
+		e.bufferedMu.Lock()
+		if n := len(e.bufferedMoves); n > 0 {
+			e.bufferedMoves = e.bufferedMoves[:n-1]
+		}
+		e.bufferedMu.Unlock()
 	}
 }
 

@@ -33,23 +33,26 @@ Each player has a color associated with it: used for the outline color of the pi
 ## 1b. Piece Preview (the game's NEXT count)
 
 **How many upcoming pieces a game reveals is a per-game attribute**: `next_count`,
-an integer 0-4 chosen on the create row (the **"Next:"** field, default 1) and fixed
-for the life of the game in its meta record (`GameMeta.NextCount`). It applies to
+an integer 0-4 chosen in the create-game wizard (the **piece-preview step**, default 1)
+and fixed for the life of the game in its meta record (`GameMeta.NextCount`). It applies to
 every mode and to **everyone in the game equally — humans and agents**:
 
-- **0** — nobody sees anything coming: no NEXT panel, no agent lookahead (the
+- **0** — nobody sees anything coming: no NEXT well, no agent lookahead (the
   original Jetris behavior, and what games created before the attribute existed
   replay as).
-- **1-4** — while playing, the HUD shows a **NEXT panel**: one mini tile per
-  revealed piece, leftmost spawning first, always your **own** queue (each seat
-  advances its own `pieceIdx`, so "next" is per-seat; spectators get no panel).
-  The lobby row advertises the setting as a `next N` tag.
+- **1-4** — while playing, a **NEXT well** sits in its own framed sub-division
+  hugging the playfield's top-left, classic arcade style: one mini tile per
+  revealed piece, stacked top-down in play order, always your **own** queue
+  (each seat advances its own `pieceIdx`, so "next" is per-seat; spectators get
+  no well). The tiles use the same cell size as the playfield itself and scale
+  with it, so the preview reads exactly like the pieces on the board at any
+  window size. The lobby row advertises the setting as a `next N` tag.
 
 Because the 7-bag sequence is seekable, the preview is a pure read
 (`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
 
 The same number is an **agent's lookahead allowance**: the fair-visibility contract
-(§11) lets an agent plan with exactly the pieces a human can see in the NEXT panel
+(§11) lets an agent plan with exactly the pieces a human can see in the NEXT well
 and no further. One knob moves both eyes.
 
 ---
@@ -191,6 +194,8 @@ When **any** player tops out (newly spawned piece cannot be placed **on locked c
 
 The overlay shows the team's final result — `Score: N (level L)`, the shared total — above the "Back to Lobby" button.
 
+**High-score fireworks:** if the crew's shared score strictly beats the best archived co-op score **for the same number of players** (the `TotalScore` of past cooperative games in the lobby's GAME HISTORY; the very first co-op game at a seat count sets the first record, though a zero score never counts), every crew member's screen plays the same victory fireworks show a competitive winner gets — a new best is a win for the whole crew. Ties don't count, and the finished game never competes against its own just-written archive record.
+
 ### Visual Indicators
 
 For **every** square, `internal/render` computes a concrete fill color and an outline
@@ -310,7 +315,7 @@ A team **loses when ALL its members have topped out**. At that point every membe
 ### Visual Indicators
 
 - HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
-- When the game reveals upcoming pieces (§1b), players also get the HUD's **NEXT panel** with their own queue as mini piece tiles
+- When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles
 - Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
 - The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
 - Spectators see both team boards side by side
@@ -341,7 +346,7 @@ created → starting → [countdown] → in_progress → finished → archived
 
 | From | To | Trigger |
 |------|----|---------|
-| — | created | Player clicks "Create" (open, or invite-only when the checkbox is set) |
+| — | created | Player finishes the create-game wizard (open, or invite-only per its who-can-join step) |
 | created | starting | All player slots filled (roster full; in teams mode, both teams full). A join into an already-full game is refused |
 | starting | [countdown] | All players click READY |
 | [countdown] | in_progress | 5-second countdown completes |
@@ -361,16 +366,29 @@ The check rebuilds the flag set from scratch each pass, so a game where activity
 
 An abandoned game's lobby row is marked `· abandoned` in red and grows a red **Delete** button next to Join/Spectate. Clicking it replaces the row's action buttons with a confirmation on its own line under the game info (so the question never squeezes the info text) — **"Are you sure you want to delete this game?"** with **Yes, delete** / **Cancel** — so a stray click can't destroy the game. Confirming tears down everything the game left behind: the per-game stream, the game's chat messages in the shared chat stream, and the lobby KV listing (whose deletion removes the game from every player's list).
 
-### Creating a Game: Open vs. Invite-Only
+### Creating a Game: the Create Wizard, Open vs. Invite-Only
 
-A game is created **open** (anyone in the lobby may join it) or **invite-only**. The
-create row's **"Invite only"** checkbox chooses; the **"Create"** button reads the
-same either way. The row also carries the game's **"Next:" piece-preview count**
-(0-4, default 1 — see §1b); being gameplay rather than join policy, it stays
-visible when "Invite only" is checked, unlike the agent-policy cluster.
+Games are created through a **create-game wizard**: the lobby carries a single
+**"Create a new game"** button (drawn with the shiny "attract" treatment — an
+embossed bevel and a diagonal glint sweeping across it every few seconds, so
+the lobby's main call to action can't be missed) that opens a modal walking the creator through the
+game's attributes one step at a time — **1. game type & players** (co-op /
+competitive / teams radios and the seat count, per-team in teams mode),
+**2. piece preview** (the next-piece count, 0-4, default 1 — see §1b),
+**3. who can join** (**open game** or **invite only**), and — open games only —
+**4. agents** (the agent policy below). Each step has Next/Back plus a Cancel
+that closes the wizard without creating anything, and the previous run's choices
+are the next run's defaults.
+
+Step 3 decides how the wizard ends. A game is **open** (anyone in the lobby may
+join it) or **invite-only**: choosing invite-only ends the wizard at step 3 (the
+Next button reads **"Choose players…"**) and hands off to the invitee picker —
+there is no agents step, because an invite-only game's agent policy is
+per-invitation; choosing open continues to the agents step, whose button reads
+**"Create game"**.
 
 - **Open games** work as always: they list in the lobby with Join/Spectate buttons,
-  and (for the applicable modes) an agent policy — the **"Allow agents"** checkbox and
+  and the wizard's agents step — the **"Allow agents to join"** checkbox and
   max-agents count — controls whether idle agents may take seats.
 - **Invite-only games** are joined by invitation only. Creating one opens an
   **invitee picker** over the lobby. There is no send button: **selecting a player
@@ -504,10 +522,10 @@ bucket but are written without a TTL, so they persist until explicitly removed.)
 
 1. Players join the game and see the game page with a "WAITING FOR PLAYERS" header
 2. Each player's ready state is shown as a filled pill badge next to their name: green "READY" / red "NOT READY"
-3. Players toggle their own state by clicking the button, which reads "READY TO PLAY" (when not yet ready) / "NOT READY TO PLAY" (when ready, i.e. click to stand down)
+3. Players toggle their own state by clicking the button, which reads "CLICK WHEN READY TO PLAY" (when not yet ready — drawn with the shiny "attract" treatment: an embossed bevel and a glint that sweeps across it every few seconds) / "CLICK IF NOT READY ANYMORE" (when ready, i.e. click to stand down; plain button, no glint)
 4. Ready state is stored in the KV game listing with CAS (prevents lost updates)
 5. When ALL players are ready: countdown begins, ready toggle is locked
-6. **Countdown:** 5...4...3...2...1...GO! (published to NATS countdown subject, consumed by all engines)
+6. **Countdown:** 5...4...3...2...1...GO! (published to NATS countdown subject, consumed by all engines), drawn as a big numeral centered over your own playfield
 7. After "GO!": game meta transitions to `in_progress`, pieces spawn
 
 ### Archive Record
@@ -857,7 +875,7 @@ that implements the whole protocol, engine included, with no repo dependency.
 An agent may base decisions ONLY on information a human player can see in the UI:
 the committed boards (its own and the opponents'/teams'), the roster and
 eliminations, scores/levels, the countdown, its own falling piece, and the game's
-piece preview — the `next_count` upcoming pieces the HUD's NEXT panel shows (§1b).
+piece preview — the `next_count` upcoming pieces the NEXT well shows (§1b).
 It may NOT read the game seed to predict pieces beyond that horizon (in a
 `next_count: 0` game, no lookahead at all), nor any stream state the UI does not
 render. This is the visibility contract every agent implementation must honor —
@@ -897,11 +915,12 @@ game, and easy ignores the preview entirely.
 ### Agent policy: who decides whether agents may join
 
 Every game (any mode) carries its creator's **agent policy**: `MaxAgents`, the number of
-roster seats agent players may take (0 = agents may not join). In the GUI's create row the
-policy is an **"Allow agents" checkbox** (off by default — games are human-only unless
-opted in) plus a **Max** count, shown for every game mode. It is **hidden while
-"Invite only" is checked** — an invite-only game's agent policy is decided per invitation,
-not by this toggle — and reappears when "Invite only" is unchecked. `lobby.JoinGame`
+roster seats agent players may take (0 = agents may not join). In the GUI the policy is
+the create wizard's **agents step** — an **"Allow agents to join" checkbox** (off by
+default — games are human-only unless opted in) plus a **Max agents** count, offered for
+every game mode. The step is **reached only for open games** — an invite-only game's
+agent policy is decided per invitation, so its wizard ends at the who-can-join step and
+never asks. `lobby.JoinGame`
 enforces the policy **atomically inside its CAS loop**: an agent joining a no-agents game
 gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats are held by agents further agent
 joins get `ErrAgentSlotsFull` — so several idle agents racing for the last agent seat can

@@ -394,13 +394,6 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		children = append(children, layout.Rigid(a.hudStat("LEVEL", view.level)))
 	}
 
-	// Upcoming-piece preview, when the game reveals any (GameMeta.NextCount).
-	// Players only: every seat spawns from its own pieceIdx, so "next" is
-	// per-seat — a spectator's engine has no seat and no meaningful queue.
-	if mode == engine.ModePlayer && eng.NextCount() > 0 {
-		children = append(children, layout.Rigid(a.nextPanel(eng)))
-	}
-
 	if mode == engine.ModePlayer {
 		children = append(children, layout.Rigid(a.hudStatColored("Batch RTT", formatRTT(view.rtt), rttColor(view.rtt))))
 	}
@@ -478,12 +471,19 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 }
 
 func (a *App) readyArea(gtx C, view gameView) D {
-	label := "READY TO PLAY"
+	label := "CLICK WHEN READY TO PLAY"
 	if view.myReady {
-		label = "NOT READY TO PLAY"
+		label = "CLICK IF NOT READY ANYMORE"
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.readyBtn, label) }),
+		layout.Rigid(func(gtx C) D {
+			if view.myReady {
+				// Standing down is not the action we're fishing for — no
+				// attract chrome once the player has readied up.
+				return a.primaryButton(gtx, &a.readyBtn, label)
+			}
+			return a.attractButton(gtx, &a.readyBtn, label)
+		}),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(func(gtx C) D {
 			var rows []layout.FlexChild
@@ -567,6 +567,12 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if mode == engine.ModeSpectator {
 		localIdx = -1
 	}
+	// Players with a piece preview get the NEXT well beside the playfield —
+	// per-seat queue, so spectators (no seat) never have one. Read the live
+	// queue (not just NextCount) so the space is only reserved once the
+	// engine's sequence is up and the well will actually render.
+	nextPieces := eng.NextPieces()
+	showNext := mode == engine.ModePlayer && len(nextPieces) > 0
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
 		// room below for the player's move-buffer strip and (while the game is
@@ -578,10 +584,31 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				reserved += gtx.Dp(80)
 			}
 		}
-		cell := fitCellPx(gtx, snap.Width, snap.Height-snap.VisibleStart, 1, gtx.Dp(24), reserved, 14, 56)
-		return layout.Center.Layout(gtx, func(gtx C) D {
+		reservedX, extraCols := gtx.Dp(24), 0
+		if showNext {
+			// The NEXT well's tiles use the board cell size, so the well is
+			// previewCols board cells wide: count it as extra board columns
+			// plus a fixed slice for its frame and the gap, so the pair
+			// always fits the window.
+			extraCols = previewCols
+			reservedX += gtx.Dp(18)
+		}
+		cell := fitCellPx(gtx, snap.Width+extraCols, snap.Height-snap.VisibleStart, 1, reservedX, reserved, 14, 56)
+		boardCol := func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now)),
+				layout.Rigid(func(gtx C) D {
+					bw := a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now)
+					if !countdownVisible(view, mode) {
+						return bw(gtx)
+					}
+					// The pre-game countdown centers on the playfield itself
+					// (not the whole board area, which would drift it toward
+					// the NEXT well / surrounding whitespace).
+					return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+						layout.Stacked(bw),
+						layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
+					)
+				}),
 				layout.Rigid(func(gtx C) D {
 					if mode != engine.ModePlayer {
 						return D{}
@@ -602,6 +629,18 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					})
 				}),
 			)
+		}
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			if !showNext {
+				return boardCol(gtx)
+			}
+			// NEXT well in its own sub-division hugging the playfield's
+			// top-left, classic arcade style.
+			return layout.Flex{Alignment: layout.Start}.Layout(gtx,
+				layout.Rigid(func(gtx C) D { return a.nextWell(gtx, nextPieces, cell) }),
+				layout.Rigid(hSpacer(12)),
+				layout.Rigid(boardCol),
+			)
 		})
 	}
 	switch {
@@ -616,12 +655,9 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				})
 			}),
 		)
-	case countdownVisible(view, mode):
-		return layout.Stack{Alignment: layout.Center}.Layout(gtx,
-			layout.Expanded(board),
-			layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
-		)
 	default:
+		// The pre-game countdown is stacked over the playfield inside
+		// boardCol, so it needs no case of its own here.
 		return board(gtx)
 	}
 }
@@ -1024,50 +1060,71 @@ func (a *App) hudStatColored(label, val string, valCol colorN) layout.Widget {
 	}
 }
 
-// nextPanel is the HUD's upcoming-piece preview: a NEXT label over one mini
-// tile per revealed piece, leftmost spawning first. The tiles read straight
-// off the seekable sequence (Engine.NextPieces) every frame, so the panel
-// advances the moment a lock-in bumps pieceIdx — no queue state of its own.
-func (a *App) nextPanel(eng *engine.Engine) layout.Widget {
-	return func(gtx C) D {
-		pieces := eng.NextPieces()
-		if len(pieces) == 0 {
-			return D{}
-		}
-		return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(a.pixel(unit.Sp(9), "NEXT", colMuted).Layout),
-				layout.Rigid(spacer(4)),
-				layout.Rigid(func(gtx C) D {
-					cellPx := gtx.Dp(10)
-					gap := gtx.Dp(6)
-					for i, pt := range pieces {
-						drawMiniPiece(gtx.Ops, i*(previewCols*cellPx+gap), 0, cellPx, pt)
-					}
-					w := len(pieces)*previewCols*cellPx + (len(pieces)-1)*gap
-					return D{Size: image.Pt(w, previewRows*cellPx)}
-				}),
-			)
-		})
+// nextWell is the player's upcoming-piece preview in its own sub-division
+// beside the playfield: a miniature arcade well (same colBorder frame idiom
+// as the board, over the panel background so it reads as its own division)
+// holding the NEXT label and one tile per revealed piece, stacked top-down in
+// play order. Tiles use the SAME cell size as the playfield, so the preview
+// reads exactly like the pieces on the board and tracks the window size along
+// with it. pieces comes straight off the seekable sequence
+// (Engine.NextPieces) every frame, so the well advances the moment a lock-in
+// bumps pieceIdx — no queue state of its own.
+func (a *App) nextWell(gtx C, pieces []game.PieceType, boardCellPx int) D {
+	if len(pieces) == 0 {
+		return D{}
 	}
+	cell := boardCellPx
+	fw := max(cell/8, 2) // same frame proportion as the board's arcade well
+	gap := max(cell/3, 6)
+
+	inner := func(gtx C) D {
+		kids := []layout.FlexChild{
+			// The label scales with the tiles (≈0.55 cells tall).
+			layout.Rigid(a.pixel(gtx.Metric.PxToSp(cell*11/20), "NEXT", colMuted).Layout),
+		}
+		for i, pt := range pieces {
+			pt := pt
+			top := gap
+			if i == 0 {
+				top = gap * 3 / 4
+			}
+			kids = append(kids, layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: gtx.Metric.PxToDp(top)}.Layout(gtx, func(gtx C) D {
+					h := drawMiniPiece(gtx.Ops, 0, 0, cell, pt)
+					return D{Size: image.Pt(previewCols*cell, h)}
+				})
+			}))
+		}
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx, kids...)
+	}
+
+	macro := op.Record(gtx.Ops)
+	dims := layout.UniformInset(gtx.Metric.PxToDp(fw + gap)).Layout(gtx, inner)
+	call := macro.Stop()
+	w, h := dims.Size.X, dims.Size.Y
+	fillRect(gtx.Ops, image.Rect(0, 0, w, h), colBorder)
+	fillRect(gtx.Ops, image.Rect(fw, fw, w-fw, h-fw), colPanel)
+	call.Add(gtx.Ops)
+	return dims
 }
 
-// Every piece's spawn orientation fits a 4-wide, 2-tall bounding box (the I is
-// 4x1, the O 2x2, the rest 3x2), so each preview tile is a fixed 4x2 grid.
-const (
-	previewCols = 4
-	previewRows = 2
-)
+// Every piece's spawn orientation fits a 4-wide bounding box (the I is 4x1,
+// the O 2x2, the rest 3x2), so each preview tile is previewCols wide; tile
+// height follows the piece's own rows.
+const previewCols = 4
 
 // drawMiniPiece draws one preview tile at (x0,y0): the piece in its spawn
 // orientation, centered in the fixed previewCols-wide box, styled like a
 // locked cell of its type (render.CellStyle). Empty box cells stay unpainted
-// so the tile sits directly on the HUD background.
-func drawMiniPiece(ops *op.Ops, x0, y0, cellPx int, pt game.PieceType) {
+// so the tile sits directly on the well background. Returns the drawn height
+// in px (the piece's own row count), so callers can pack tiles without the
+// dead row a fixed-height box would leave under the 1-row I.
+func drawMiniPiece(ops *op.Ops, x0, y0, cellPx int, pt game.PieceType) int {
 	cells := game.Piece{Type: pt}.Cells() // orientation 0 offsets from a (0,0) anchor
-	minR, minC, maxC := cells[0][0], cells[0][1], cells[0][1]
+	minR, maxR, minC, maxC := cells[0][0], cells[0][0], cells[0][1], cells[0][1]
 	for _, rc := range cells[1:] {
 		minR = min(minR, rc[0])
+		maxR = max(maxR, rc[0])
 		minC = min(minC, rc[1])
 		maxC = max(maxC, rc[1])
 	}
@@ -1078,6 +1135,7 @@ func drawMiniPiece(ops *op.Ops, x0, y0, cellPx int, pt game.PieceType) {
 		y := y0 + (rc[0]-minR)*cellPx
 		drawCell(ops, x, y, cellPx, ap.Fill, ap.Outline, ap.OutlineW, ap.Bevel)
 	}
+	return (maxR - minR + 1) * cellPx
 }
 
 // formatRTT renders the publish→echo round trip for the HUD: sub-10ms with a

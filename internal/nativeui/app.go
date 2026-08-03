@@ -199,18 +199,29 @@ type App struct {
 	connList       widget.List        // scrollable pull-down option list
 	connCheckBtn   widget.Clickable   // "Check connection" (connect + ping, no side effects)
 
-	createBtn     widget.Clickable
-	modeEnum      widget.Enum
-	countEd       widget.Editor
-	allowAgentsCb widget.Bool   // competitive create: allow idle agents to take seats
-	maxAgentsEd   widget.Editor // competitive create: how many seats agents may take
-	nextCountEd   widget.Editor // create: how many upcoming pieces the game reveals (0..config.MaxNextCount)
-	quitBtn       widget.Clickable
-	chatEd        widget.Editor
-	chatBtn       widget.Clickable
-	playerList    widget.List
-	gameList      widget.List
-	archiveLst    widget.List
+	// Create-game wizard: the lobby's single "Create a new game" button
+	// (createBtn) opens a modal that walks through the game's attributes one
+	// step at a time — 1: game type + seats, 2: next-piece preview, 3: open
+	// vs invite-only, 4: agent policy (open games only; an invite-only game
+	// finishes at step 3 and hands off to the invitee picker). createWizStep
+	// is the current step, 0 while the wizard is closed.
+	createBtn      widget.Clickable
+	createWizStep  int
+	createJoinEnum widget.Enum      // wizard step 3: "open" or "invite"
+	wizBackBtn     widget.Clickable // wizard: back one step
+	wizNextBtn     widget.Clickable // wizard: Next / Choose players… / Create game
+	wizCancelBtn   widget.Clickable // wizard: close without creating
+	modeEnum       widget.Enum
+	countEd        widget.Editor
+	allowAgentsCb  widget.Bool   // wizard agents step: allow idle agents to take seats
+	maxAgentsEd    widget.Editor // wizard agents step: how many seats agents may take
+	nextCountEd    widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
+	quitBtn        widget.Clickable
+	chatEd         widget.Editor
+	chatBtn        widget.Clickable
+	playerList     widget.List
+	gameList       widget.List
+	archiveLst     widget.List
 	// Game-history controls: sort selector ("score"/"date") and the
 	// show-games-with-agents filter (checked = shown).
 	histSortEnum widget.Enum
@@ -230,16 +241,15 @@ type App struct {
 	leaveYesBtn  widget.Clickable
 	leaveNoBtn   widget.Clickable
 
-	// Invite-only create flow. inviteOnlyCb toggles it on the create row.
-	// While invitePickerGameID is non-empty the invitee-picker overlay is
-	// open for that just-created game; invitePicker holds one row of widget
+	// Invite-only create flow, entered from the create wizard's "Invite only"
+	// choice. While invitePickerGameID is non-empty the invitee-picker overlay
+	// is open for that just-created game; invitePicker holds one row of widget
 	// state per selectable player (keyed by player ID). Selecting a player
 	// sends their invitation IMMEDIATELY (deselecting retracts it) — there is
 	// no send button. The creator appears as a pinned first row, pre-selected:
 	// selecting yourself means playing (a seat is taken right away — creating
 	// an invitation game implies accepting your own invitation), deselecting
 	// frees the seat and you'll spectate instead once the game fills.
-	inviteOnlyCb       widget.Bool
 	invitePickerGameID string
 	invitePicker       map[string]*inviteChoice
 	invitePickerErr    string          // capacity-guard message shown in the picker
@@ -322,6 +332,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.nextCountEd.Filter = "0123456789"
 	a.nextCountEd.SetText("1")
 	a.modeEnum.Value = "cooperative"
+	a.createJoinEnum.Value = "open"
 	a.histSortEnum.Value = "score"
 	a.histAgentsCb.Value = true // agent games shown by default
 	a.inviteList.Axis = layout.Vertical

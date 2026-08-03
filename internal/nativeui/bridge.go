@@ -22,6 +22,12 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 			if !ok {
 				return
 			}
+			// A cooperative game-over can still earn fireworks: beating the
+			// best archived co-op score for this seat count. Resolved BEFORE
+			// taking a.mu — beatsCoopBest reads the lobby via getLobby, which
+			// locks a.mu itself.
+			coopRecord := u.Kind == engine.UpdateGameOver &&
+				e.GameMode() == config.ModeCooperative && a.beatsCoopBest(e)
 			a.mu.Lock()
 			switch u.Kind {
 			case engine.UpdateScore:
@@ -43,11 +49,16 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				a.won = u.Won
 				// A competitive or teams win earns a fireworks show. Teams
 				// re-emits Won:true to already-eliminated members of the
-				// winning team, so their screens celebrate too.
+				// winning team, so their screens celebrate too. A cooperative
+				// crew celebrates a high score instead: every member's engine
+				// emits the shared game over, so all their screens light up.
 				if u.Won {
 					if gm := e.GameMode(); gm == config.ModeCompetitive || gm == config.ModeTeams {
 						a.fireworks = newFireworksShow(time.Now())
 					}
+				}
+				if coopRecord {
+					a.fireworks = newFireworksShow(time.Now())
 				}
 			case engine.UpdateCASFlash:
 				now := time.Now()
@@ -79,6 +90,36 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 			a.invalidate()
 		}
 	}
+}
+
+// beatsCoopBest reports whether the finished cooperative game's shared score
+// is a new record against the lobby's archived history.
+func (a *App) beatsCoopBest(e *engine.Engine) bool {
+	lb := a.getLobby()
+	if lb == nil {
+		return false
+	}
+	return coopScoreIsRecord(lb.Archives(), e.Score(), e.PlayerCount(), e.GameID())
+}
+
+// coopScoreIsRecord reports whether score strictly beats the best archived
+// co-op TotalScore for the same seat count. The game's own record is excluded
+// by gameID — depending on how fast the archive round-trips, it may or may
+// not already be in the list when the game-over update arrives, and a game
+// must never compete against itself. A zero score never counts as a record
+// (an instant top-out with an empty history is nothing to celebrate).
+func coopScoreIsRecord(recs []config.ArchiveRecord, score, playerCount int, gameID string) bool {
+	if score <= 0 {
+		return false
+	}
+	best := 0
+	for _, rec := range recs {
+		if rec.Mode == config.ModeCooperative && rec.PlayerCount == playerCount &&
+			rec.GameID != gameID && rec.TotalScore > best {
+			best = rec.TotalScore
+		}
+	}
+	return score > best
 }
 
 // pumpLobby drains the lobby Updates channel. Player/game/archive lists are read

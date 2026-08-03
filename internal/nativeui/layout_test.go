@@ -216,8 +216,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("lobby-game-row-with-agents", func(t *testing.T) {
 		// A competitive row with an agent policy shows the "agents k/N" info and
-		// tags agent players; the create row with the Allow-agents checkbox on
-		// renders the max-agents editor.
+		// tags agent players; the create row is the wizard-opening button.
 		a := newTestApp()
 		g := lobby.GameListing{
 			GameID:      "agent-game-1234",
@@ -241,9 +240,41 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 			w(gtx)
 		}
 		render(func(gtx C) D { return a.gameRow(gtx, g, false) })
-		a.modeEnum.Value = "competitive"
-		a.allowAgentsCb.Value = true
 		render(a.createRow)
+	})
+
+	t.Run("create-wizard", func(t *testing.T) {
+		// Every wizard step lays out, including the branches: teams mode's
+		// per-team seat label (step 1), the agents step with the max-agents
+		// editor shown (Allow agents checked), and step 3 with invite-only
+		// selected (which relabels Next and drops the step count to 3).
+		render := func(w func(C) D) {
+			var ops op.Ops
+			gtx := layout.Context{
+				Ops:         &ops,
+				Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+				Constraints: layout.Exact(image.Pt(1200, 820)),
+			}
+			w(gtx)
+		}
+		a := newTestApp()
+		a.modeEnum.Value = "teams"
+		for step := wizStepMode; step <= wizStepAgents; step++ {
+			a.createWizStep = step
+			render(a.createWizardOverlay)
+		}
+		a.allowAgentsCb.Value = true
+		a.createWizStep = wizStepAgents
+		render(a.createWizardOverlay)
+		a.createJoinEnum.Value = "invite"
+		a.createWizStep = wizStepJoin
+		render(a.createWizardOverlay)
+
+		// The wizard also renders as the lobby's modal overlay.
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		a.createWizStep = wizStepMode
+		renderOnce(t, a)
 	})
 
 	t.Run("invite-overlays", func(t *testing.T) {

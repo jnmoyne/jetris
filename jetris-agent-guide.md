@@ -48,7 +48,7 @@ An agent MAY use:
 - Its own falling piece (type, orientation, position).
 - **The game's piece preview**: the next `GameMeta.NextCount` pieces of its own
   sequence (`seq.Piece(pieceIdx+1 .. +NextCount)`). That is exactly what the UI's
-  NEXT panel shows a human, so an agent may plan with it — and no further.
+  NEXT well shows a human, so an agent may plan with it — and no further.
 - Opponents' boards (competitive) and both team boards (teams) — the UI renders
   them live for everyone.
 - The roster, everyone's `agent` flags and structured names, eliminations,

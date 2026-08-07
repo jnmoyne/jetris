@@ -24,9 +24,9 @@ Scope (deliberately minimal):
 Everything it carries as a peer, per the guide:
   presence heartbeat - join via KV CAS - roster announcement - ready toggle -
   countdown election - its own engine (spawn, gravity, lock-in, line clears,
-  garbage application, top-out) - shrink/game-over events - CAS batch writes
-  with write-through - CAS-failure flashes - finish + archive when it wins -
-  clean teardown.
+  garbage ledger CAS-adds + gated application, top-out) - per-player game_over
+  events - CAS batch writes with write-through - CAS-failure flashes - finish +
+  archive when it wins - clean teardown.
 
 Usage:
   python agent.py --server nats://localhost:4222            # resident: waits for invitations
@@ -72,7 +72,7 @@ H_BATCH_ID = "Nats-Batch-Id"
 H_BATCH_SEQ = "Nats-Batch-Sequence"
 H_BATCH_COMMIT = "Nats-Batch-Commit"
 H_EXPECT_LAST = "Nats-Expected-Last-Subject-Sequence"
-CAS_ERR_CODE = 10071          # "wrong last msg seq for subject"
+CAS_ERR_CODES = (10071, 10164)  # wrong last seq for subject (plain / batch-constant variant)
 
 # Tetromino cell offsets [piece][orientation] -> 4 (rowOff, colOff) from the
 # anchor; orientation 0 is the spawn orientation. Pieces: I O T S Z J L = 0..6.
@@ -535,7 +535,7 @@ class Agent:
                                          timeout=5, headers=headers)
             body = json.loads(resp.data) if resp.data else {}
             if body.get("error"):
-                if body["error"].get("err_code") == CAS_ERR_CODE:
+                if body["error"].get("err_code") in CAS_ERR_CODES:
                     raise CASFailure(body["error"].get("description", "cas"))
                 raise RuntimeError(f"publish: {body['error']}")
             game.seqs[(r, c)] = body["seq"]
@@ -554,7 +554,7 @@ class Agent:
                 resp = await self.nc.request(subject, payload, timeout=5, headers=headers)
                 body = json.loads(resp.data) if resp.data else {}
                 if body.get("error"):
-                    if body["error"].get("err_code") == CAS_ERR_CODE:
+                    if body["error"].get("err_code") in CAS_ERR_CODES:
                         raise CASFailure(body["error"].get("description", "cas"))
                     raise RuntimeError(f"batch publish: {body['error']}")
                 if last:
@@ -563,6 +563,56 @@ class Agent:
                 await self.nc.publish(subject, payload, headers=headers)
         for i, ((r, c), _cell) in enumerate(ordered):  # write-through
             game.seqs[(r, c)] = commit_seq - (n - 1 - i)
+
+    async def publish_gated_batch(self, game, txn, cells):
+        """Publish one BULK TRANSFORM (garbage application or line-clear
+        collapse) as a single gated atomic batch: message 1 is the board's txn
+        register carrying a per-subject CAS expectation — the exactly-once
+        gate — and every cell after it is NoCAS (the transform overrides
+        in-flight moves; a stale gate atomically rejects the WHOLE batch and
+        nothing is stored). Cells keep the active → locked → empty order. On
+        success the txn/cell sequences advance by write-through."""
+        def category(cell):
+            if cell and cell.get("a"):
+                return 0
+            if cell and cell.get("o"):
+                return 1
+            return 2
+        ordered = sorted(cells, key=lambda e: (category(e[1]), e[0][0], e[0][1]))
+        n = len(ordered) + 1  # + the txn register message
+        batch_id = secrets.token_hex(11)
+        txn_payload = json.dumps({k: v for k, v in txn.items() if v or k == "applied"}).encode()
+        headers = {H_BATCH_ID: batch_id, H_BATCH_SEQ: "1",
+                   H_EXPECT_LAST: str(game.txn_seq)}
+        if n == 1:
+            headers[H_BATCH_COMMIT] = "1"
+        resp = await self.nc.request(game.txn_subject(), txn_payload, timeout=5, headers=headers)
+        body = json.loads(resp.data) if resp.data else {}
+        if body.get("error"):
+            if body["error"].get("err_code") in CAS_ERR_CODES:
+                raise CASFailure(body["error"].get("description", "cas"))
+            raise RuntimeError(f"gated batch: {body['error']}")
+        commit_seq = body.get("seq", 0)
+        for i, ((r, c), cell) in enumerate(ordered):
+            payload = json.dumps({k: v for k, v in (cell or {}).items() if v}).encode()
+            headers = {H_BATCH_ID: batch_id, H_BATCH_SEQ: str(i + 2)}
+            if i == len(ordered) - 1:
+                headers[H_BATCH_COMMIT] = "1"
+                resp = await self.nc.request(game.cell_subject(r, c), payload,
+                                             timeout=5, headers=headers)
+                body = json.loads(resp.data) if resp.data else {}
+                if body.get("error"):
+                    if body["error"].get("err_code") in CAS_ERR_CODES:
+                        raise CASFailure(body["error"].get("description", "cas"))
+                    raise RuntimeError(f"gated batch: {body['error']}")
+                commit_seq = body["seq"]
+            else:
+                await self.nc.publish(game.cell_subject(r, c), payload, headers=headers)
+        # Write-through: the txn is message 1 of n, cells follow.
+        game.txn_seq = commit_seq - (n - 1)
+        game.txn_applied = txn["applied"]
+        for i, ((r, c), _cell) in enumerate(ordered):
+            game.seqs[(r, c)] = commit_seq - (n - 1 - (i + 1))
 
     # ---- one game --------------------------------------------------------
 
@@ -629,9 +679,22 @@ class Game:
         self.dead = False         # we topped out
         self.meta = None
         self.roster = []
+        # Garbage protocol registers (guide §4.4): rows OWED to this board
+        # (attackers CAS-add our garbage register) vs rows APPLIED (recorded in
+        # our txn register, whose per-subject CAS gates every bulk transform).
+        self.garbage_owed = 0
+        self.garbage_by = 0
+        self.txn_applied = 0
+        self.txn_seq = 0          # txn register's last stream seq — the gate expectation
 
     def cell_subject(self, r, c):
         return f"jetris.game.{self.id}.player.{self.a.name}.playfield.cell.{r}.{c}"
+
+    def garbage_subject(self, player=None):
+        return f"jetris.game.{self.id}.player.{player or self.a.name}.playfield.garbage"
+
+    def txn_subject(self):
+        return f"jetris.game.{self.id}.player.{self.a.name}.playfield.txn"
 
     # ---- consumers -------------------------------------------------------
 
@@ -651,21 +714,58 @@ class Game:
             self.ended.set()  # stream deleted → the game is gone
 
     async def events_loop(self):
+        """Events live on per-kind, per-player subjects (events.<kind>.<pid>)
+        so per-subject retention can never trim one player's event with
+        another's. Garbage is NOT an event — it arrives via the garbage
+        register (garbage_loop below)."""
         try:
-            sub = await self.a.js.subscribe(f"jetris.game.{self.id}.events",
+            sub = await self.a.js.subscribe(f"jetris.game.{self.id}.events.>",
                                             stream=f"JETRIS_GAME_{self.id}",
                                             ordered_consumer=True)
             async for msg in sub.messages:
                 ev = json.loads(msg.data)
                 kind, pid = ev.get("kind"), ev.get("player_id")
-                if kind == "shrink" and pid != self.a.name:
-                    await self.apply_shrink(ev.get("rows_removed", 0), ev.get("player_idx", 0))
-                elif kind == "game_over":
+                if kind == "game_over":
                     self.eliminated.add(pid)
                     if pid != self.a.name:
                         self.record_result(ev)
         except Exception:
             self.ended.set()
+
+    async def garbage_loop(self):
+        """Watch our garbage register — the cumulative rows OWED to this
+        board, CAS-added by attackers — and apply the deficit. The register
+        is a monotonic total, so a trimmed intermediate value or a missed
+        message is subsumed by the next one."""
+        try:
+            sub = await self.a.js.subscribe(self.garbage_subject(),
+                                            stream=f"JETRIS_GAME_{self.id}",
+                                            ordered_consumer=True)
+            async for msg in sub.messages:
+                reg = json.loads(msg.data) if msg.data else {}
+                self.garbage_owed = max(self.garbage_owed, reg.get("total", 0))
+                self.garbage_by = reg.get("by", 0)
+                if self.garbage_owed > self.txn_applied and not self.dead:
+                    await self.apply_owed_garbage()
+        except Exception:
+            pass
+
+    async def refresh_registers(self):
+        """Reload both registers from the stream (after a lost gate race or a
+        board resync)."""
+        for subject, apply in ((self.txn_subject(), "txn"), (self.garbage_subject(), "owed")):
+            try:
+                raw = await self.a.js.get_last_msg(f"JETRIS_GAME_{self.id}", subject, direct=True)
+                body = json.loads(raw.data) if raw.data else {}
+                if apply == "txn":
+                    self.txn_seq = raw.seq
+                    self.txn_applied = body.get("applied", 0)
+                else:
+                    self.garbage_owed = max(self.garbage_owed, body.get("total", 0))
+                    self.garbage_by = body.get("by", self.garbage_by)
+            except Exception:
+                if apply == "txn":
+                    self.txn_seq, self.txn_applied = 0, 0
 
     def record_result(self, ev):
         for p in self.roster:
@@ -769,30 +869,84 @@ class Game:
         return cell
 
     async def clear_rows(self, rows):
-        new = {}
-        removed = set(rows)
-        shift = 0
-        for r in range(self.height - 1, -1, -1):
-            if r in removed:
-                shift += 1
+        """Collapse completed rows as a GATED transform (guide §4.4): the txn
+        register gates the batch, so a garbage application racing this clear
+        can never be clobbered by a stale collapse — the loser recomputes from
+        fresh state. Then CAS-add the attack to every surviving opponent's
+        garbage register."""
+        cleared = 0
+        for attempt in range(3):
+            if attempt > 0:
+                # Lost the gate (our own garbage application landed between
+                # detection and publish): converge and re-detect.
+                await self.refresh_registers()
+                await self.resync()
+                rows = completed_rows(self.locked, self.height)
+                if not rows:
+                    return
+            new = {}
+            removed = set(rows)
+            shift = 0
+            for r in range(self.height - 1, -1, -1):
+                if r in removed:
+                    shift += 1
+                    continue
+                for c in range(WIDTH):
+                    if (r, c) in self.locked:
+                        new[(r + shift, c)] = self.locked[(r, c)]
+            diff = []
+            for r in range(self.height):
+                for c in range(WIDTH):
+                    if new.get((r, c)) != self.locked.get((r, c)):
+                        diff.append(((r, c), new.get((r, c))))
+            txn = {"applied": self.txn_applied, "op": "clear", "by": self.idx}
+            try:
+                await self.a.publish_gated_batch(self, txn, diff)
+            except CASFailure:
                 continue
-            for c in range(WIDTH):
-                if (r, c) in self.locked:
-                    new[(r + shift, c)] = self.locked[(r, c)]
-        diff = []
-        for r in range(self.height):
-            for c in range(WIDTH):
-                if new.get((r, c)) != self.locked.get((r, c)):
-                    diff.append(((r, c), new.get((r, c))))
-        self.locked = new
-        if diff:
-            await self.a.publish_batch(self, diff, cas=False)
-        self.score += len(rows)
-        self.total_lines += len(rows)
-        ev = {"kind": "shrink", "player_id": self.a.name, "player_idx": self.idx,
-              "rows_removed": len(rows), "team": 0, "target_team": 0}
-        await self.a.js.publish(f"jetris.game.{self.id}.events", json.dumps(ev).encode())
-        log(f"cleared {len(rows)} line(s), score {self.score}")
+            self.locked = new
+            cleared = len(rows)
+            break
+        if not cleared:
+            return
+        self.score += cleared
+        self.total_lines += cleared
+        log(f"cleared {cleared} line(s), score {self.score}")
+        await self.bump_victim_ledgers(cleared)
+
+    async def bump_victim_ledgers(self, lines):
+        """The attack: CAS-add `lines` to every surviving opponent's garbage
+        register. The register is a cumulative total, so simultaneous
+        attackers' adds serialize on the per-subject expectation and converge
+        to the exact sum — an attack can never be lost."""
+        for p in self.roster:
+            pid = p["player_id"]
+            if pid == self.a.name or pid in self.eliminated:
+                continue
+            subject = self.garbage_subject(pid)
+            for _ in range(20):
+                total, seq = 0, 0
+                try:
+                    raw = await self.a.js.get_last_msg(f"JETRIS_GAME_{self.id}",
+                                                       subject, direct=True)
+                    body = json.loads(raw.data) if raw.data else {}
+                    total, seq = body.get("total", 0), raw.seq
+                except Exception:
+                    pass  # never written: expect 0
+                payload = json.dumps({"total": total + lines, "by": self.idx}).encode()
+                try:
+                    resp = await self.a.nc.request(subject, payload, timeout=5,
+                                                   headers={H_EXPECT_LAST: str(seq)})
+                    body = json.loads(resp.data) if resp.data else {}
+                    if not body.get("error"):
+                        break
+                    if body["error"].get("err_code") not in CAS_ERR_CODES:
+                        log(f"ledger bump {pid}: {body['error']}")
+                        break
+                    # Lost the add race to another attacker: refresh, re-add.
+                except Exception as exc:
+                    log(f"ledger bump {pid}: {exc}")
+                    break
 
     async def bump_meta_piece_idx(self):
         """Best-effort: mirror our piece cursor into the meta (informational)."""
@@ -805,59 +959,90 @@ class Game:
         except Exception:
             pass  # racing writers are fine; this field is advisory
 
-    async def apply_shrink(self, n, causer_idx):
-        """Incoming garbage: shift our stack up N rows, fill the bottom with
-        permanent adversarial cells, lift our falling piece the minimum amount
-        that keeps it placeable — or top out if it's squeezed off the top."""
-        if n <= 0 or self.dead:
-            return
+    async def apply_owed_garbage(self):
+        """Apply the outstanding deficit (owed − applied) as ONE gated cascade
+        transform: shift the stack up, fill the bottom with permanent
+        adversarial rows, keep the falling piece at its position unless the
+        risen stack overlaps it — then lift it the MINIMUM amount that clears
+        the conflict, and top out if it's pushed off the board. Locked cells
+        shoved past row 0 mean the whole board is full: also a top-out. The
+        txn register (message 1 of the batch, per-subject CAS) makes the
+        application exactly-once across duplicate signals and replays."""
         async with self.lock:
-            garbage = {"o": True, "t": 1, "g": True}
-            if causer_idx:
-                garbage["pi"] = causer_idx
-            new = {}
-            for (r, c), cell in self.locked.items():
-                if r - n >= 0:
-                    new[(r - n, c)] = cell
-            for r in range(self.height - n, self.height):
-                for c in range(WIDTH):
-                    new[(r, c)] = garbage
-            old_wire = {rc: self.locked.get(rc) for rc in set(self.locked) | set(new)}
-            new_piece, squeezed = self.piece, False
-            if self.piece:
-                for k in range(n + 1):
-                    cand = [self.piece[0], self.piece[1], self.piece[2] - k, self.piece[3]]
-                    if can_place(new, self.height, piece_cells(*cand)):
-                        new_piece = cand
-                        break
-                else:
+            for attempt in range(3):
+                n = self.garbage_owed - self.txn_applied
+                if n <= 0 or self.dead:
+                    return
+                causer_idx = self.garbage_by
+                garbage = {"o": True, "t": 1, "g": True}
+                if causer_idx:
+                    garbage["pi"] = causer_idx
+                board_full = any(r < n for r, _c in self.locked)
+                new = {}
+                for (r, c), cell in self.locked.items():
+                    if r - n >= 0:
+                        new[(r - n, c)] = cell
+                for r in range(self.height - n, self.height):
+                    for c in range(WIDTH):
+                        new[(r, c)] = garbage
+                old_wire = {rc: self.locked.get(rc) for rc in set(self.locked) | set(new)}
+                new_piece, squeezed = self.piece, False
+                if self.piece:
                     squeezed = True
-            diff = [(rc, cell) for rc, cell in
-                    ((rc, new.get(rc)) for rc in old_wire) if cell != old_wire[rc]]
-            if self.piece and not squeezed and new_piece != self.piece:
-                old_active = set(self.active_cells())
-                new_cells = set(piece_cells(*new_piece))
-                diff += [((r, c), self.active_cell_payload(*new_piece)) for r, c in new_cells]
-                diff += [((r, c), None) for r, c in old_active - new_cells
-                         if (r, c) not in new]
-            self.locked = new
-            if squeezed:
-                self.piece = None
-            elif self.piece:
-                self.piece = new_piece
-            if diff:
-                await self.a.publish_batch(self, diff, cas=False)
-            log(f"garbage: +{n} row(s) from player {causer_idx}")
-            if squeezed:
-                self.dead = True  # the play loop raises GameOver on its next step
+                    k = 0
+                    while True:
+                        cand = [self.piece[0], self.piece[1], self.piece[2] - k, self.piece[3]]
+                        cand_cells = piece_cells(*cand)
+                        if min(r for r, _c in cand_cells) < 0:
+                            break  # off the top: squeezed out
+                        if can_place(new, self.height, cand_cells):
+                            new_piece, squeezed = cand, False
+                            break
+                        k += 1
+                diff = [(rc, cell) for rc, cell in
+                        ((rc, new.get(rc)) for rc in old_wire) if cell != old_wire[rc]]
+                if self.piece:
+                    old_active = set(self.active_cells())
+                    if squeezed:
+                        diff += [((r, c), None) for r, c in old_active if (r, c) not in new]
+                    elif new_piece != self.piece:
+                        new_cells = set(piece_cells(*new_piece))
+                        diff += [((r, c), self.active_cell_payload(*new_piece)) for r, c in new_cells]
+                        diff += [((r, c), None) for r, c in old_active - new_cells
+                                 if (r, c) not in new]
+                txn = {"applied": self.garbage_owed, "op": "shrink", "by": self.idx}
+                if squeezed:
+                    txn["topped"] = [self.idx]
+                if board_full:
+                    txn["full"] = True
+                try:
+                    await self.a.publish_gated_batch(self, txn, diff)
+                except CASFailure:
+                    # A replayed signal lost the gate: converge and re-check.
+                    await self.refresh_registers()
+                    await self.resync()
+                    continue
+                self.locked = new
+                if squeezed:
+                    self.piece = None
+                elif self.piece:
+                    self.piece = new_piece
+                log(f"garbage: +{n} row(s) from player {causer_idx}")
+                if squeezed or board_full:
+                    self.dead = True  # the play loop raises GameOver on its next step
+                return
 
     # ---- outcome ---------------------------------------------------------
 
     async def publish_game_over(self):
+        # Per-player subject: our one game_over can never be trimmed by
+        # another player's events.
         ev = {"kind": "game_over", "player_id": self.a.name, "score": self.score,
               "level": min(self.total_lines // 10, 19), "piece_count": self.piece_idx,
-              "team": 0, "target_team": 0}
-        await self.a.js.publish(f"jetris.game.{self.id}.events", json.dumps(ev).encode())
+              "team": 0}
+        await self.a.js.publish(
+            f"jetris.game.{self.id}.events.game_over.{self.a.name}",
+            json.dumps(ev).encode())
 
     async def archive(self):
         """We triggered the finish: transition finished→archived (CAS elects
@@ -950,7 +1135,8 @@ class Game:
         listing = self.a.listings.get(self.id) or {}
         self.roster = [dict(p) for p in (listing.get("players") or [])]
         tasks = [asyncio.create_task(self.meta_loop()),
-                 asyncio.create_task(self.events_loop())]
+                 asyncio.create_task(self.events_loop()),
+                 asyncio.create_task(self.garbage_loop())]
         try:
             if await self.a.toggle_ready(self.id):
                 log("all ready — running the countdown")

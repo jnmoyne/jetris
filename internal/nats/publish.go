@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	natsclient "github.com/nats-io/nats.go"
@@ -12,6 +13,28 @@ import (
 	"jetris/internal/config"
 )
 
+// ExpectMode selects which CAS expectation (if any) a batch message carries.
+// A message can carry at most ONE expectation: about its own subject or about
+// another subject (a "carrier" guard for state the batch doesn't rewrite).
+type ExpectMode int
+
+const (
+	// ExpectOwnSubject asserts ExpectLastSeq against the message's own subject
+	// (Nats-Expected-Last-Subject-Sequence). The zero value, so existing
+	// callers that fill only Subject/Payload/ExpectLastSeq keep per-cell CAS.
+	ExpectOwnSubject ExpectMode = iota
+	// ExpectNone carries no expectation — an authoritative overwrite inside a
+	// batch whose consistency is guarded by another (gated) message.
+	ExpectNone
+	// ExpectForSubject asserts ExpectLastSeq against ExpectSubject instead of
+	// the message's own subject. The server rejects the whole batch if that
+	// subject's last sequence moved — used to guard other players' piece cells
+	// without rewriting them. Note the server rejects an expectation about a
+	// subject the SAME batch already wrote earlier, so carriers must precede
+	// any write to their asserted subject.
+	ExpectForSubject
+)
+
 // CellUpdate represents a single cell's new state and the CAS expectation. The
 // caller supplies the fully-built cell subject — this package is subject-agnostic
 // and knows nothing about game modes or players.
@@ -19,17 +42,47 @@ type CellUpdate struct {
 	Subject       string
 	Payload       []byte
 	ExpectLastSeq uint64
+	Expect        ExpectMode
+	ExpectSubject string // required when Expect == ExpectForSubject
 }
 
-// ErrCASFailure indicates a CAS sequence expectation was not met.
-var ErrCASFailure = errors.New("CAS sequence expectation not met")
+// Sentinel errors for batch publish outcomes, matched with errors.Is.
+var (
+	// ErrCASFailure indicates a CAS sequence expectation was not met (the whole
+	// atomic batch was rejected; nothing was stored).
+	ErrCASFailure = errors.New("CAS sequence expectation not met")
+	// ErrBatchTransient indicates the server temporarily refused the batch
+	// (incomplete/abandoned batch state or too many inflight batches); the
+	// operation can be recomputed and retried.
+	ErrBatchTransient = errors.New("transient batch publish failure")
+	// ErrBatchTooLarge indicates the batch exceeded the server's atomic batch
+	// size limit — a programming error, batches must be pre-chunked.
+	ErrBatchTooLarge = errors.New("atomic batch exceeds server limit")
+)
 
-// PublishMoveAtomically publishes a set of cell updates as an atomic batch with
-// per-subject CAS expectations (Nats-Expected-Last-Subject-Sequence). Consumers
-// never observe a torn intermediate state — either every cell is committed or
-// none is. CAS is enforced per cell subject, so concurrent writes to other
-// cells (e.g. another player's piece in cooperative mode) don't cause spurious
-// rejections.
+// batchNoAckFirst disables the extra first-message ack round trip. Per-message
+// acks carry no error information (all expectation checks happen at commit), so
+// AckFirst only costs a full RTT per batch. Commit waits on the context.
+var batchNoAckFirst = jetstreamext.BatchFlowControl{AckFirst: false}
+
+// batchMsgOpts maps a CellUpdate's expectation mode to batch message options.
+func batchMsgOpts(u CellUpdate) []jetstreamext.BatchMsgOpt {
+	switch u.Expect {
+	case ExpectNone:
+		return nil
+	case ExpectForSubject:
+		return []jetstreamext.BatchMsgOpt{jetstreamext.WithBatchExpectLastSequenceForSubject(u.ExpectLastSeq, u.ExpectSubject)}
+	default:
+		return []jetstreamext.BatchMsgOpt{jetstreamext.WithBatchExpectLastSequencePerSubject(u.ExpectLastSeq)}
+	}
+}
+
+// PublishMoveAtomically publishes a set of cell updates as an atomic batch,
+// each message carrying the CAS expectation selected by its ExpectMode
+// (per-subject CAS by default). Consumers never observe a torn intermediate
+// state — either every cell is committed or none is: every expectation is
+// checked at commit time and a single failure rejects the whole batch, which
+// surfaces here as ErrCASFailure.
 //
 // Callers must keep a batch within the server's atomic-batch limit (default
 // max_batch_size is 1000 messages); the engine chunks larger writes.
@@ -48,7 +101,7 @@ func PublishMoveAtomically(
 		return 0, nil
 	}
 
-	batch, err := jetstreamext.NewBatchPublisher(js)
+	batch, err := jetstreamext.NewBatchPublisher(js, batchNoAckFirst)
 	if err != nil {
 		return 0, err
 	}
@@ -61,13 +114,9 @@ func PublishMoveAtomically(
 			Data:    u.Payload,
 			Header:  natsclient.Header{},
 		}
-		err := batch.AddMsg(msg, jetstreamext.WithBatchExpectLastSequencePerSubject(u.ExpectLastSeq))
-		if err != nil {
+		if err := batch.AddMsg(msg, batchMsgOpts(u)...); err != nil {
 			_ = batch.Discard()
-			if isCASError(err) {
-				return 0, ErrCASFailure
-			}
-			return 0, err
+			return 0, classifyPublishErr(err)
 		}
 	}
 
@@ -78,12 +127,9 @@ func PublishMoveAtomically(
 		Data:    last.Payload,
 		Header:  natsclient.Header{},
 	}
-	ack, err := batch.CommitMsg(ctx, commitMsg, jetstreamext.WithBatchExpectLastSequencePerSubject(last.ExpectLastSeq))
+	ack, err := batch.CommitMsg(ctx, commitMsg, batchMsgOpts(last)...)
 	if err != nil {
-		if isCASError(err) {
-			return 0, ErrCASFailure
-		}
-		return 0, err
+		return 0, classifyPublishErr(err)
 	}
 
 	return ack.Sequence, nil
@@ -91,8 +137,9 @@ func PublishMoveAtomically(
 
 // PublishCellsAtomicallyNoCAS publishes a set of cell updates as an atomic
 // batch without CAS expectations. Used for authoritative state changes (lock,
-// hard-drop landing, line-clear, shrink) where the publisher's view is the
-// new ground truth and partial writes must not be visible to consumers.
+// hard-drop landing, and the NoCAS tail of an oversized gated transform) where
+// the publisher's view is the new ground truth and partial writes must not be
+// visible to consumers.
 //
 // Like PublishMoveAtomically it is subject to the server's atomic-batch limit
 // (default 1000 messages) and returns the commit ack's stream sequence (the
@@ -107,7 +154,7 @@ func PublishCellsAtomicallyNoCAS(
 		return 0, nil
 	}
 
-	batch, err := jetstreamext.NewBatchPublisher(js)
+	batch, err := jetstreamext.NewBatchPublisher(js, batchNoAckFirst)
 	if err != nil {
 		return 0, err
 	}
@@ -121,7 +168,7 @@ func PublishCellsAtomicallyNoCAS(
 		}
 		if err := batch.AddMsg(msg); err != nil {
 			_ = batch.Discard()
-			return 0, err
+			return 0, classifyPublishErr(err)
 		}
 	}
 
@@ -133,7 +180,7 @@ func PublishCellsAtomicallyNoCAS(
 	}
 	ack, err := batch.CommitMsg(ctx, commitMsg)
 	if err != nil {
-		return 0, err
+		return 0, classifyPublishErr(err)
 	}
 	return ack.Sequence, nil
 }
@@ -149,22 +196,42 @@ func PublishMeta(
 	_, err := js.Publish(ctx, config.MetaSubject(gameID), payload,
 		jetstream.WithExpectLastSequencePerSubject(expectLastSeq))
 	if err != nil {
-		if isCASError(err) {
-			return ErrCASFailure
-		}
-		return err
+		return classifyPublishErr(err)
 	}
 	return nil
 }
 
-func isCASError(err error) bool {
+// classifyPublishErr maps JetStream publish errors onto the package's sentinel
+// errors so callers can branch with errors.Is:
+//
+//   - 10071 (wrong last sequence for subject) and 10164 (the batch/in-process
+//     variant of the same check) → ErrCASFailure: an expectation lost the race,
+//     the batch was atomically rejected, recompute from converged state.
+//   - 10176 (batch incomplete/abandoned), 10210/10211 (too many inflight
+//     batches) → ErrBatchTransient: server-side pressure, retry.
+//   - 10199 (batch too large) → ErrBatchTooLarge: a bug — batches are chunked
+//     client-side and must never exceed the server limit.
+//
+// Anything else is returned unchanged.
+func classifyPublishErr(err error) error {
 	if err == nil {
-		return false
+		return nil
 	}
-	// Check for JetStream API error with wrong last sequence
 	var apiErr *jetstream.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode == 10071 // wrong last msg seq for subject
+		switch apiErr.ErrorCode {
+		case 10071, 10164:
+			return ErrCASFailure
+		case 10176, 10210, 10211:
+			return fmt.Errorf("%w: %s", ErrBatchTransient, apiErr.Description)
+		case 10199:
+			return fmt.Errorf("%w: %s", ErrBatchTooLarge, apiErr.Description)
+		}
+		return err
 	}
-	return strings.Contains(err.Error(), "wrong last msg seq")
+	if strings.Contains(err.Error(), "wrong last msg seq") ||
+		strings.Contains(err.Error(), "wrong last sequence") {
+		return ErrCASFailure
+	}
+	return err
 }

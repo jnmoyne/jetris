@@ -51,7 +51,6 @@ type EventKind string
 
 const (
 	EventLineClear EventKind = "line_clear"
-	EventShrink    EventKind = "shrink"
 	EventGameOver  EventKind = "game_over"
 )
 
@@ -61,19 +60,28 @@ const (
 // event. A CAS failure that drops a step (player move, gravity tick, or spawn)
 // is local information for that player; it surfaces as an UpdateCASFlash on the
 // local engine's Updates channel only and never round-trips through NATS.
+// Garbage attacks are NOT events either: they are recorded durably in the
+// victim board's garbage register (see GarbageRegister), which simultaneous
+// attackers CAS-add and victims reconcile against — an event on the trimming
+// events subject could be lost, a cumulative register cannot.
 type GameEvent struct {
 	Kind         EventKind `json:"kind"`
 	PlayerID     string    `json:"player_id"`
 	LinesCleared int       `json:"lines_cleared,omitempty"`
-	TargetPlayer string    `json:"target_player,omitempty"`
-	RowsRemoved  int       `json:"rows_removed,omitempty"`
 	ClearedRows  []int     `json:"cleared_rows,omitempty"`
 	Score        int       `json:"score,omitempty"`
 	Level        int       `json:"level,omitempty"` // EventGameOver: level achieved (from the sender's line total)
 	PieceCount   uint64    `json:"piece_count,omitempty"`
-	PlayerIdx    int       `json:"player_idx,omitempty"` // causer's index for EventShrink
-	Team         int       `json:"team"`                 // teams: sender's team (0 = A, 1 = B)
-	TargetTeam   int       `json:"target_team"`          // teams: receiving team for EventShrink
+	PlayerIdx    int       `json:"player_idx,omitempty"`
+	Team         int       `json:"team"` // teams: sender's team (0 = A, 1 = B)
+
+	// line_clear only: the sender's CUMULATIVE totals from its OWN clears.
+	// Receivers fold the DELTA against the last total they saw from that
+	// sender, so a trimmed intermediate event (per-subject retention keeps
+	// only the last) is subsumed by the next — and a late joiner replaying
+	// each sender's last event reconstructs the full scoreboard.
+	TotalScore int `json:"total_score,omitempty"`
+	TotalLines int `json:"total_lines,omitempty"`
 }
 
 // MoveType represents a player move.

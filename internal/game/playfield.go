@@ -1,6 +1,10 @@
 package game
 
-import "jetris/internal/config"
+import (
+	"sort"
+
+	"jetris/internal/config"
+)
 
 // TotalRows is kept for backward compatibility but NewPlayfieldWithHeight should be preferred.
 const TotalRows = config.TotalRows
@@ -281,31 +285,85 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row 
 	return newRows
 }
 
-// ProjectShrink returns the full new set of rows after a competitive shrink:
-// the locked stack shifts up by rowsToAdd and rowsToAdd permanent adversarial
-// rows tagged with causerIdx are added at the bottom.
+// ProjectShrinkCascade returns the full new set of rows after a garbage raise
+// on any board (competitive or shared): the locked stack shifts up by
+// rowsToAdd and rowsToAdd permanent adversarial rows tagged with causerIdx are
+// added at the bottom.
 //
-// The falling piece belonging to ownPlayerIdx holds its on-screen position
-// while the stack rises beneath it ("dropped into place"). It is pushed up only
-// when the risen stack or garbage would overlap it, and only by the minimum
-// number of rows needed to clear the conflict (0..rowsToAdd). If no amount of
-// lift keeps the piece on the board (the only way to avoid the overlap is to
-// push a cell above the top), the second return value is true to signal that
-// the player has been squeezed out and tops out.
+// Every falling piece on the board — whoever owns it — holds its on-screen
+// position while the stack rises beneath it ("dropped into place"). A piece is
+// pushed up only when the risen stack, the new garbage, or another falling
+// piece would overlap it, and only by the minimum number of rows needed to
+// clear the conflict. Lifts cascade: pieces are resolved bottom-most first, and
+// a piece already lifted is an obstacle for the pieces above it, so a rising
+// stack can push a whole column of stacked pieces upward. A piece is never
+// merged into the risen stack.
 //
-// rowsToAdd is a sufficient search bound for the lift: the piece was placeable
-// at its old anchor, and the new locked cells are exactly the old ones shifted
-// up by rowsToAdd, so the piece at anchor-rowsToAdd has identical geometry
-// relative to the stack and always clears it — the only remaining failure at
-// that lift is a cell crossing row 0, which is the top-out case.
-func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Row, bool) {
-	// Capture the falling piece before the shift; it is re-placed below.
-	piece := pf.ActivePieceForPlayer(ownPlayerIdx)
+// topped lists the players whose pieces could not be kept on the board (the
+// only conflict-free lift would push a cell above row 0); their pieces are left
+// unstamped so the board shows the risen stack only, and the engine eliminates
+// them. boardFull is true when the shift pushed a LOCKED cell past the top of
+// the board (the stack itself no longer fits): the engine eliminates the
+// board's owner (competitive) or every remaining player on it (teams).
+// Competitive boards are simply the one-piece case of the same transform.
+func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int) ([]Row, []int, bool) {
+	if rowsToAdd <= 0 {
+		return CloneRows(pf.Rows), nil, false
+	}
+
+	// The stack no longer fits if any LOCKED cell sits in the rows the shift
+	// pushes past the top. Active cells don't count — pieces get lifted (or
+	// topped) individually below.
+	boardFull := false
+	for i := 0; i < rowsToAdd && i < pf.Height; i++ {
+		for _, c := range pf.Rows[i].Cells {
+			if c.Occupied && !c.Active {
+				boardFull = true
+				break
+			}
+		}
+		if boardFull {
+			break
+		}
+	}
+
+	// Capture every falling piece before the shift; each is re-placed below.
+	type fallingPiece struct {
+		playerIdx int
+		piece     Piece
+		lowestRow int
+	}
+	var pieces []fallingPiece
+	seen := make(map[int]bool)
+	for _, row := range pf.Rows {
+		for _, c := range row.Cells {
+			if c.Active && !seen[c.PlayerIdx] {
+				seen[c.PlayerIdx] = true
+				p := Piece{Type: c.PieceType, Orientation: c.Orientation, Row: c.AnchorRow, Col: c.AnchorCol}
+				lowest := 0
+				for _, cell := range p.Cells() {
+					if cell[0] > lowest {
+						lowest = cell[0]
+					}
+				}
+				pieces = append(pieces, fallingPiece{playerIdx: c.PlayerIdx, piece: p, lowestRow: lowest})
+			}
+		}
+	}
+	// Bottom-most piece first (ties broken by playerIdx for determinism):
+	// pieces resolved earlier become obstacles for the pieces above them,
+	// which is what makes the lifts cascade upward.
+	sort.Slice(pieces, func(i, j int) bool {
+		if pieces[i].lowestRow != pieces[j].lowestRow {
+			return pieces[i].lowestRow > pieces[j].lowestRow
+		}
+		return pieces[i].playerIdx < pieces[j].playerIdx
+	})
 
 	out := make([]Row, pf.Height)
-	// Shift the stack up by rowsToAdd, stripping active cells (the piece is
-	// re-stamped at its resolved position, not carried along by the shift).
-	for i := 0; i < pf.Height-rowsToAdd; i++ {
+	// Shift the locked stack up by rowsToAdd, stripping ALL active cells (each
+	// piece is re-stamped at its resolved position, not carried by the shift).
+	for i := 0; i+rowsToAdd < pf.Height; i++ {
 		cells := make([]Cell, pf.Width)
 		for j, c := range pf.Rows[i+rowsToAdd].Cells {
 			if !c.Active {
@@ -315,7 +373,11 @@ func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Ro
 		out[i] = Row{Cells: cells}
 	}
 	// Permanent adversarial garbage fills the bottom rows.
-	for i := pf.Height - rowsToAdd; i < pf.Height; i++ {
+	garbageStart := pf.Height - rowsToAdd
+	if garbageStart < 0 {
+		garbageStart = 0
+	}
+	for i := garbageStart; i < pf.Height; i++ {
 		cells := make([]Cell, pf.Width)
 		for c := range cells {
 			cells[c] = Cell{
@@ -328,75 +390,40 @@ func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Ro
 		out[i] = Row{Cells: cells}
 	}
 
-	if piece == nil {
-		return out, false
-	}
-
-	// Keep the piece where it is (k=0) unless the risen stack/garbage overlaps
-	// it; then lift it the minimum needed to rest on top of the new stack.
+	// Re-place each piece with the minimum lift that clears the risen stack,
+	// the garbage, and every piece already resolved below it. The lift search
+	// ends when the candidate's top cell would leave the board: that piece is
+	// squeezed off the top and its owner tops out.
+	var topped []int
 	tmp := &Playfield{Width: pf.Width, Height: pf.Height, Rows: out}
-	for k := 0; k <= rowsToAdd; k++ {
-		cand := *piece
-		cand.Row = piece.Row - k
-		if CanPlace(cand, tmp) {
-			tmp.SetActivePieceForPlayer(cand, ownPlayerIdx)
-			return out, false
+	for _, fp := range pieces {
+		placed := false
+		for k := 0; ; k++ {
+			cand := fp.piece
+			cand.Row = fp.piece.Row - k
+			minRow := pf.Height
+			for _, cell := range cand.Cells() {
+				if cell[0] < minRow {
+					minRow = cell[0]
+				}
+			}
+			if minRow < 0 {
+				break // off the top: no lift keeps the piece on the board
+			}
+			if CanPlaceCoop(cand, tmp, fp.playerIdx) {
+				tmp.SetActivePieceForPlayer(cand, fp.playerIdx)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			topped = append(topped, fp.playerIdx)
 		}
 	}
-	// No lift keeps the piece on the board: it is pushed off the top → top-out.
-	// Leave the doomed piece unstamped so the board shows the risen stack only.
-	return out, true
+	return out, topped, boardFull
 }
 
-// ProjectShrinkShared is the teams-mode variant of ProjectShrink for a shared
-// team board where several teammates' active pieces coexist. The locked stack
-// shifts up by rowsToAdd and rowsToAdd permanent adversarial rows tagged with
-// causerIdx are added at the bottom.
-//
-// Unlike the competitive ProjectShrink, NO piece is lifted: every player's
-// active cells (the applier's own included) are overlaid back at their
-// CURRENT, unshifted positions. Any teammate may win the race to apply a
-// shared-board shrink, and a lift would relocate other players' mid-flight
-// pieces from a snapshot that may already be stale; holding every piece in
-// place keeps the transform pure and symmetric. A piece overtaken by the
-// risen stack simply sits in the holes its overlay preserved and locks there
-// on its next blocked drop — it is "crushed" rather than carried up. Top-out
-// on a full team board therefore happens at spawn time, not during a shrink.
-func (pf *Playfield) ProjectShrinkShared(rowsToAdd, causerIdx int) []Row {
-	out := make([]Row, pf.Height)
-	// Shift the locked stack up by rowsToAdd, stripping ALL active cells.
-	for i := 0; i < pf.Height-rowsToAdd; i++ {
-		cells := make([]Cell, pf.Width)
-		for j, c := range pf.Rows[i+rowsToAdd].Cells {
-			if !c.Active {
-				cells[j] = c
-			}
-		}
-		out[i] = Row{Cells: cells}
-	}
-	// Permanent adversarial garbage fills the bottom rows.
-	for i := pf.Height - rowsToAdd; i < pf.Height; i++ {
-		cells := make([]Cell, pf.Width)
-		for c := range cells {
-			cells[c] = Cell{
-				Occupied:    true,
-				PieceType:   PieceO,
-				Adversarial: true,
-				PlayerIdx:   causerIdx,
-			}
-		}
-		out[i] = Row{Cells: cells}
-	}
-	// Overlay every player's active cells at their current positions.
-	for i := range pf.Rows {
-		for j, c := range pf.Rows[i].Cells {
-			if c.Active {
-				out[i].Cells[j] = c
-			}
-		}
-	}
-	return out
-}
+
 
 // AdversarialRowCount returns the number of garbage rows at the bottom of the
 // board: contiguous bottom rows containing at least one adversarial cell.

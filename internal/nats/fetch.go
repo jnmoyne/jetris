@@ -13,10 +13,14 @@ import (
 	"jetris/internal/config"
 )
 
-// PlayfieldCellMsg holds the fetched state for a single cell.
+// PlayfieldCellMsg holds the fetched state for a single playfield subject.
+// Cell subjects carry their parsed (Row, Col); non-cell playfield subjects
+// (the per-board garbage/txn registers) come back with Row = Col = -1 and the
+// caller branches on Subject.
 type PlayfieldCellMsg struct {
 	Row     int
 	Col     int
+	Subject string
 	Payload []byte
 	Seq     uint64
 }
@@ -27,13 +31,14 @@ type PlayfieldCellMsg struct {
 // stream sequence for a consistent snapshot.
 const fetchChunkSize = 512
 
-// FetchPlayfieldState retrieves the current state of the given cell subjects
-// for a game in one round trip (or a few, for boards above fetchChunkSize
-// cells). The caller builds the subjects using the mode-appropriate scheme
-// (coop or competitive), so this function stays subject-agnostic. The returned
-// cells are keyed by the (row, col) parsed from the subject, so the result is
-// independent of the subject shape. Cells that have never been written have no
-// last message and are simply absent from the result (empty cell).
+// FetchPlayfieldState retrieves the current state of the given playfield
+// subjects for a game in one round trip (or a few, for boards above
+// fetchChunkSize cells). The caller builds the subjects using the
+// mode-appropriate scheme (coop or competitive), so this function stays
+// subject-agnostic. Cell subjects come back keyed by the (row, col) parsed
+// from the subject; non-cell subjects (the garbage/txn registers) come back
+// with Row = Col = -1 and their Subject set. Subjects that have never been
+// written have no last message and are simply absent from the result.
 func FetchPlayfieldState(
 	ctx context.Context,
 	js jetstream.JetStream,
@@ -72,12 +77,10 @@ func FetchPlayfieldState(
 				return nil, err
 			}
 			row, col := ParseCellFromSubject(msg.Subject)
-			if row < 0 {
-				continue
-			}
 			result = append(result, PlayfieldCellMsg{
 				Row:     row,
 				Col:     col,
+				Subject: msg.Subject,
 				Payload: msg.Data,
 				Seq:     msg.Sequence,
 			})

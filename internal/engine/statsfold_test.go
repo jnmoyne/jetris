@@ -15,8 +15,10 @@ func TestTeamStatsFoldOnAllEngines(t *testing.T) {
 	e := New(nil, "g", "me", "", config.ModeTeams, ModePlayer, 0, 0, 0)
 
 	// The other team clears 10 lines in total → their level ticks to 1.
+	// Events carry the sender's cumulative totals; receivers fold deltas.
 	e.handleGameEvent(context.Background(), GameEvent{
-		Kind: EventLineClear, PlayerID: "them", Team: 1, Score: 20, LinesCleared: 10,
+		Kind: EventLineClear, PlayerID: "them", Team: 1,
+		Score: 20, LinesCleared: 10, TotalScore: 20, TotalLines: 10,
 	})
 
 	if got, want := e.TeamScores(), [config.TeamCount]int{0, 20}; got != want {
@@ -37,7 +39,8 @@ func TestCoopLineClearFoldsLinesAndLevel(t *testing.T) {
 	e := New(nil, "g", "me", "", config.ModeCooperative, ModePlayer, 0, 0, 0)
 
 	e.handleGameEvent(context.Background(), GameEvent{
-		Kind: EventLineClear, PlayerID: "other", Score: 20, LinesCleared: 10,
+		Kind: EventLineClear, PlayerID: "other",
+		Score: 20, LinesCleared: 10, TotalScore: 20, TotalLines: 10,
 	})
 
 	if e.Score() != 20 {

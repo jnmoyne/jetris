@@ -187,9 +187,10 @@ func TestCoopLineClearRerendersOtherPlayer(t *testing.T) {
 
 	// Another player clears a line on the shared cooperative board.
 	e.handleGameEvent(context.Background(), GameEvent{
-		Kind:     EventLineClear,
-		PlayerID: "other-player",
-		Score:    4,
+		Kind:       EventLineClear,
+		PlayerID:   "other-player",
+		Score:      4,
+		TotalScore: 4,
 	})
 
 	wantRows := e.playfield.Height - e.VisibleRowStart()

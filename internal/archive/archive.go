@@ -43,12 +43,12 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		return
 	}
 
-	// Collect players' results. The stream's events subject keeps only its
-	// LAST message (the whole game stream is MaxMsgsPerSubject: 1), so the
-	// replay below recovers at most the final EventGameOver — score/level
-	// details for earlier eliminations are gone. Verdicts therefore never
-	// come from the replay: the archiving ENGINE lived through the game and
-	// its elimination set / GameOutcome are the authoritative record.
+	// Collect players' results. Events live on per-kind, per-player subjects
+	// (the whole game stream is MaxMsgsPerSubject: 1), so each player's single
+	// game_over survives retention and the replay below recovers EVERY
+	// player's final score/level. Verdicts still never come from the replay:
+	// the archiving ENGINE lived through the game and its elimination set /
+	// GameOutcome remain the authoritative record.
 	playerResults := make(map[string]config.PlayerResult)
 	// playerTeams maps playerID → team (teams mode). The roster listing is the
 	// authoritative source; EventGameOver's Team field is the fallback for
@@ -65,7 +65,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// Read EventGameOver events from others
 	evtCh, evtCancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
 		Stream:        config.GameStream(eng.GameID()),
-		FilterSubject: config.EventsSubject(eng.GameID()),
+		FilterSubject: config.EventsSubjectFilter(eng.GameID()),
 	})
 	if err == nil {
 		// Drain all EventGameOver events on the stream (the consumer uses

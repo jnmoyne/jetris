@@ -14,7 +14,8 @@ var (
 	TeamCellSubjectFilter        = config.TeamCellSubjectFilter
 	MetaSubject                  = config.MetaSubject
 	RosterSubject                = config.RosterSubject
-	EventsSubject                = config.EventsSubject
+	EventKindSubject             = config.EventKindSubject
+	EventsSubjectFilter          = config.EventsSubjectFilter
 	CountdownSubject             = config.CountdownSubject
 	GameChatSubject              = config.GameChatSubject
 	LobbyPlayerKey               = config.LobbyPlayerKey

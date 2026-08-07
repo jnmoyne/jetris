@@ -245,14 +245,50 @@ func TeamCellSubject(gameID string, team, row, col int) string
 func TeamCellSubjectFilter(gameID string, team int) string
 // → "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
 
+// Per-board REGISTERS — every competitive/team board carries two single-subject
+// registers under its playfield prefix, so board consumers and snapshot fetches
+// cover cells AND registers with one widened "…playfield.>" filter. The GARBAGE
+// register holds the cumulative garbage rows OWED to the board (CAS-added by
+// attackers; payload {"total":N,"by":idx}); the TXN register holds the
+// cumulative rows APPLIED plus the exactly-once gate for every bulk board
+// transform (payload {"applied":N,"op":…,"topped":[…],"full":bool,"by":idx}).
+// Cooperative boards have neither — coop has no garbage.
+func CompetitiveGarbageSubject(gameID, playerID string) string
+// → "jetris.game." + gameID + ".player." + playerID + ".playfield.garbage"
+func CompetitiveTxnSubject(gameID, playerID string) string
+// → "jetris.game." + gameID + ".player." + playerID + ".playfield.txn"
+func CompetitivePlayfieldFilter(gameID, playerID string) string
+// → "jetris.game." + gameID + ".player." + playerID + ".playfield.>"
+func TeamGarbageSubject(gameID string, team int) string
+// → "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.garbage"
+func TeamTxnSubject(gameID string, team int) string
+// → "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.txn"
+func TeamPlayfieldFilter(gameID string, team int) string
+// → "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.>"
+func IsGarbageSubject(subject string) bool // suffix match on ".playfield.garbage"
+func IsTxnSubject(subject string) bool     // suffix match on ".playfield.txn"
+// Consumers branch on IsGarbageSubject/IsTxnSubject BEFORE the cell parse.
+
 func MetaSubject(gameID string) string
 // → "jetris.game." + gameID + ".meta"
 
 func RosterSubject(gameID, playerID string) string
 // → "jetris.game." + gameID + ".roster." + playerID
 
-func EventsSubject(gameID string) string
-// → "jetris.game." + gameID + ".events"
+// Game events live on PER-KIND, PER-PLAYER subjects. The game stream keeps
+// only the last message per subject (MaxMsgsPerSubject: 1), so events sharing
+// one subject would trim each other — near-simultaneous events from different
+// players, or a game_over overwritten by a later event, would simply vanish
+// for any consumer that wasn't perfectly live. Scoping the subject by kind AND
+// sender bounds the loss to "an older event of the same kind from the same
+// player", which the payloads are designed to tolerate: line_clear carries the
+// sender's CUMULATIVE totals (a newer total subsumes a trimmed older one) and
+// each player publishes at most one game_over. Stream order across subjects is
+// still total, so every engine sees the same verdict order.
+func EventKindSubject(gameID, kind, playerID string) string
+// → "jetris.game." + gameID + ".events." + kind + "." + playerID
+func EventsSubjectFilter(gameID string) string
+// → "jetris.game." + gameID + ".events.>"
 
 func CountdownSubject(gameID string) string
 // → "jetris.game." + gameID + ".countdown"
@@ -276,7 +312,7 @@ builder function.
 
 **Tests** (`internal/config/config_test.go`):
 - Verify every subject builder returns the exact expected string for a known gameID/playerID/(row, col).
-- Verify `CompetitiveCellSubject` produces the correct per-player subject, `CoopCellSubject` produces the shared subject with no player token, and `TeamCellSubject` produces the team-scoped subject (also with no player token); likewise for the `*CellSubjectFilter` builders.
+- Verify `CompetitiveCellSubject` produces the correct per-player subject, `CoopCellSubject` produces the shared subject with no player token, and `TeamCellSubject` produces the team-scoped subject (also with no player token); likewise for the `*CellSubjectFilter` builders, the register builders (`Competitive`/`TeamGarbageSubject`, `Competitive`/`TeamTxnSubject`, the `*PlayfieldFilter`s that cover cells + registers) with `IsGarbageSubject`/`IsTxnSubject` matching them, and the per-kind event builders (`EventKindSubject`, `EventsSubjectFilter`).
 - Verify the team board-dimension helpers: `TeamBoardWidth(teamSize) == teamSize×10`, `TeamVisibleRows(teamSize) == 24+teamSize`, `TeamTotalRows`, `TeamVisibleRowStart == 4`.
 - Verify `GameStream` produces a valid NATS stream name (alphanumeric + dash + underscore only, `strings.ContainsAny` check).
 
@@ -454,9 +490,9 @@ func (pf *Playfield) ActivePieceForPlayer(playerIdx int) *Piece
 
 // SetActivePieceForPlayer / ClearActiveCellsForPlayer mutate the playfield in
 // place (SetActivePieceForPlayer clears the player's old active cells first).
-// They are used by ProjectShrink (to probe candidate piece placements) and by
-// unit-test setup; the engine itself still mutates e.playfield only via Apply.
-// See the "State mutation invariant" note at the start of Phase 3.
+// They are used by ProjectShrinkCascade (to probe candidate piece placements)
+// and by unit-test setup; the engine itself still mutates e.playfield only via
+// Apply. See the "State mutation invariant" note at the start of Phase 3.
 func (pf *Playfield) SetActivePieceForPlayer(p Piece, playerIdx int)
 func (pf *Playfield) ClearActiveCellsForPlayer(playerIdx int)
 
@@ -470,24 +506,35 @@ func (pf *Playfield) ProjectMove(affectedRows []int, newPiece *Piece, playerIdx 
 func (pf *Playfield) ProjectLock(affectedRows []int, playerIdx int) map[int]Row
 func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx int, lockOnLand bool) map[int]Row
 func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row
-func (pf *Playfield) ProjectShrink(rowsToAdd, causerIdx, ownPlayerIdx int) ([]Row, bool)
 
-// ProjectShrinkShared is the SHARED-BOARD shrink projection (teams mode):
-// shifts the locked stack up by rowsToAdd, adds adversarial garbage rows
-// (tagged causerIdx) at the bottom, and overlays EVERY player's active cells
-// AT THEIR CURRENT POSITIONS — no piece is lifted. A piece overtaken by the
-// risen stack simply remains where it is (it will lock there, "crushed"); a
-// shared shrink can therefore never top a player out, so there is no topOut
-// return. Compare ProjectShrink, which lifts the single own piece and can
-// squeeze it off the top.
-func (pf *Playfield) ProjectShrinkShared(rowsToAdd, causerIdx int) []Row
+// ProjectShrinkCascade is THE garbage-raise projection for every board shape —
+// competitive private boards and shared team boards run the SAME semantics
+// (competitive is simply the one-piece case): the locked stack shifts up by
+// rowsToAdd and rowsToAdd permanent adversarial rows tagged causerIdx fill the
+// bottom. Every falling piece on the board — whoever owns it — holds its
+// on-screen position ("dropped into place") unless the risen stack, the new
+// garbage, or another falling piece would overlap it, and then lifts by the
+// MINIMUM rows that clear the conflict. Lifts CASCADE: pieces are resolved
+// bottom-most first (ties broken by playerIdx for determinism), and a piece
+// already lifted is an obstacle for the pieces above it, so a rising stack can
+// push a whole column of stacked falling pieces upward — a piece is never
+// merged ("crushed") into the risen stack. topped lists the players whose
+// pieces could not be kept on the board (the only conflict-free lift would
+// push a cell above row 0); their pieces are left unstamped and the engine
+// eliminates them. boardFull is true when the shift pushed a LOCKED cell past
+// the top of the board (the stack itself no longer fits): the engine
+// eliminates the board's owner (competitive) or every remaining player on it
+// (teams).
+func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int) ([]Row, []int, bool)
 
 // AdversarialRowCount returns the number of contiguous bottom rows containing
 // at least one adversarial cell. Garbage rows are permanent and bottom-anchored,
-// so this count grows monotonically — it is the idempotency guard for the
-// teams-mode shrink application ("≥1 adversarial cell" rather than "all cells"
-// because crushed pieces lock INTO garbage rows and vacated active overlays
-// leave hollow cells in them).
+// so this count is monotonically non-decreasing ("≥1 adversarial cell" rather
+// than "all cells" because a garbage row can permanently keep the holes a
+// skipped shared-board overlay leaves behind). It is no longer a publish-path
+// idempotency guard — exactly-once now comes from the txn register gate — but
+// the agent uses it to detect a mid-placement garbage raise, and tests assert
+// raise outcomes with it.
 func (pf *Playfield) AdversarialRowCount() int
 ```
 
@@ -598,8 +645,8 @@ Gravity intervals (approximate, Tetris Guideline):
 - `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces (and nil when no active piece for that player is present).
 - `SetActivePieceForPlayer()` clears only the matching player's active cells before placing new ones, leaving the other player's active cells intact.
 - `Playfield.Apply()` updates the cell content and `CellLastSeq(row, col)`; a same-sequence re-apply is a no-op and a strictly higher sequence overwrites (the per-cell seq rules the write-through/echo convergence relies on).
-- `ProjectShrinkShared()` (`teamshrink_test.go`) holds every active piece at its current position while the locked stack shifts up (no lift), tags the new bottom rows with the causer's index, and leaves a piece overtaken by the stack in place (to be crushed/locked there).
-- `AdversarialRowCount()` counts only the contiguous bottom garbage rows, including rows partially filled by crushed pieces or hollowed by vacated overlays.
+- `ProjectShrinkCascade()` (`cascadeshrink_test.go`) — table-driven over the cascade-lift semantics: a piece with no conflict holds its row while the locked stack shifts up and the causer-tagged garbage fills the bottom; a conflicting piece is pushed up by exactly the minimum (1-row and multi-row rises); a lifted piece cascades the piece above it upward; a piece squeezed off the top comes back in `topped` (and is left unstamped) with `boardFull` false; locked rows pushed past the top set `boardFull`.
+- `AdversarialRowCount()` (`teamshrink_test.go`) counts only the contiguous bottom garbage rows, including rows hollowed by the shared-board skip artifact and rows sitting under a locked stack.
 
 ---
 
@@ -831,6 +878,26 @@ context, which terminates the goroutine.
 #### `publish.go`
 
 ```go
+// ExpectMode selects which CAS expectation (if any) a batch message carries.
+// A message can carry at most ONE expectation: about its own subject or about
+// another subject (a "carrier" guard for state the batch doesn't rewrite).
+type ExpectMode int
+const (
+    // ExpectOwnSubject asserts ExpectLastSeq against the message's own subject
+    // (Nats-Expected-Last-Subject-Sequence). The ZERO VALUE, so existing
+    // callers that fill only Subject/Payload/ExpectLastSeq keep per-cell CAS.
+    ExpectOwnSubject ExpectMode = iota
+    // ExpectNone carries no expectation — an authoritative overwrite inside a
+    // batch whose consistency is guarded by another (gated) message.
+    ExpectNone
+    // ExpectForSubject asserts ExpectLastSeq against ExpectSubject instead of
+    // the message's own subject — used to guard other players' piece cells
+    // without rewriting them. The server rejects an expectation about a
+    // subject the SAME batch already wrote earlier, so carriers must precede
+    // any write to their asserted subject.
+    ExpectForSubject
+)
+
 // The caller supplies the fully-built cell Subject, so this package is
 // subject-agnostic — it knows nothing about game modes or players. The engine
 // builds Subject with the mode-appropriate scheme (Coop*/Competitive*CellSubject)
@@ -839,46 +906,64 @@ type CellUpdate struct {
     Subject       string
     Payload       []byte
     ExpectLastSeq uint64
+    Expect        ExpectMode
+    ExpectSubject string // required when Expect == ExpectForSubject
 }
 
-var ErrCASFailure = errors.New("CAS sequence expectation not met")
+// Sentinel errors for batch publish outcomes, matched with errors.Is.
+var (
+    ErrCASFailure    = errors.New("CAS sequence expectation not met")     // whole batch atomically rejected, nothing stored
+    ErrBatchTransient = errors.New("transient batch publish failure")     // server-side pressure; recompute and retry
+    ErrBatchTooLarge = errors.New("atomic batch exceeds server limit")    // a bug — batches must be pre-chunked
+)
+
+// batchNoAckFirst disables the extra first-message ack round trip. Per-message
+// acks carry no error information (all expectation checks happen at commit),
+// so AckFirst only costs a full RTT per batch. Commit waits on the context.
+var batchNoAckFirst = jetstreamext.BatchFlowControl{AckFirst: false}
 
 // PublishMoveAtomically publishes a set of cell updates as a SINGLE atomic
-// batch with PER-SUBJECT CAS expectations. Either every cell commits or none
-// does; consumers never observe a torn state. On success it returns the commit
-// ack's stream sequence (the last message's sequence) so the caller can write
-// through the committed cells into its playfield without waiting for the echo.
+// batch, each message carrying the CAS expectation selected by its ExpectMode
+// (per-subject CAS by default). Either every cell commits or none does;
+// consumers never observe a torn state — every expectation is checked at
+// commit time and a single failure rejects the whole batch (ErrCASFailure).
+// On success it returns the commit ack's stream sequence (the last message's
+// sequence) so the caller can write through the committed cells into its
+// playfield without waiting for the echo.
 func PublishMoveAtomically(ctx context.Context, js jetstream.JetStream, updates []CellUpdate) (uint64, error)
 
 // PublishCellsAtomicallyNoCAS publishes a set of cell updates as a SINGLE
 // atomic batch WITHOUT CAS expectations. Used for authoritative state changes
-// (lock, hard-drop landing, line-clear, shrink) where the publisher's view is
-// the new ground truth. Also returns the commit ack's stream sequence.
+// (lock, hard-drop landing, and the NoCAS tail of an oversized gated
+// transform) where the publisher's view is the new ground truth. Also returns
+// the commit ack's stream sequence.
 func PublishCellsAtomicallyNoCAS(ctx context.Context, js jetstream.JetStream, updates []CellUpdate) (uint64, error)
 ```
 
-Use `jetstreamext.NewBatchPublisher(js)` and add each cell update with a per-subject
-expected sequence — implemented by `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`,
-which sets the `Nats-Expected-Last-Subject-Sequence` header. **Use the per-subject
-form, not `WithBatchExpectLastSequence` (stream-level CAS).** Each cell has its
-own subject; per-subject CAS lets concurrent writes to other cells succeed and
-only rejects when our specific cell has been overwritten since we last saw it —
-in coop, two pieces moving in the same ROW no longer conflict; only writes to
-the SAME cell do.
+Use `jetstreamext.NewBatchPublisher(js, batchNoAckFirst)` and map each
+update's `ExpectMode` to batch message options (`batchMsgOpts`):
+`ExpectOwnSubject` → `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`
+(the `Nats-Expected-Last-Subject-Sequence` header — **the per-subject form,
+not `WithBatchExpectLastSequence` (stream-level CAS)**); `ExpectForSubject` →
+`jetstreamext.WithBatchExpectLastSequenceForSubject(seq, subject)`;
+`ExpectNone` → no options. Each cell has its own subject; per-subject CAS lets
+concurrent writes to other cells succeed and only rejects when our specific
+cell has been overwritten since we last saw it — in coop, two pieces moving in
+the same ROW no longer conflict; only writes to the SAME cell do.
 
 **Batch size limit:** the server caps an atomic batch at its `max_batch_size`
 (default **1000 messages**). Both functions assume the caller stays within the
-limit; the engine chunks larger writes (only reachable on degenerate
-many-player boards — see `publishProjectedCellsNoCAS`).
+limit; the engine chunks larger writes (only reachable on the largest boards —
+see `publishProjectedCellsNoCAS` and `splitGatedItems` in Phase 3).
 
 ```go
-batch, err := jetstreamext.NewBatchPublisher(js)
+batch, err := jetstreamext.NewBatchPublisher(js, batchNoAckFirst)
 for i, u := range updates {
     msg := &nats.Msg{Subject: u.Subject, Data: u.Payload, Header: nats.Header{}}
     if i < len(updates)-1 {
-        err = batch.AddMsg(msg, jetstreamext.WithBatchExpectLastSequencePerSubject(u.ExpectLastSeq))
+        err = batch.AddMsg(msg, batchMsgOpts(u)...)
     } else {
-        _, err = batch.CommitMsg(ctx, msg, jetstreamext.WithBatchExpectLastSequencePerSubject(u.ExpectLastSeq))
+        _, err = batch.CommitMsg(ctx, msg, batchMsgOpts(u)...)
     }
 }
 ```
@@ -890,10 +975,20 @@ cell's last message (and by the publish write-through on commit). Because every
 cell is its own subject, the CAS expectation is per-cell and won't be
 invalidated by other concurrent cell writes.
 
-On CAS failure, the server returns a JetStream API error with code 10071
-("wrong last msg seq for subject"). Detect this (via `errors.As` on
-`*jetstream.APIError`, with a string-match fallback) and wrap it as
-`ErrCASFailure`.
+Every publish error funnels through `classifyPublishErr`, which maps JetStream
+API error codes onto the package's sentinel errors (via `errors.As` on
+`*jetstream.APIError`, with a string-match fallback for the wrong-sequence
+message) so callers branch with `errors.Is`:
+
+- **10071** ("wrong last msg seq for subject") and **10164** (the
+  batch/in-process variant of the same check) → `ErrCASFailure`: an
+  expectation lost the race, the batch was atomically rejected, recompute from
+  converged state.
+- **10176** (batch incomplete/abandoned) and **10210**/**10211** (too many
+  inflight batches) → `ErrBatchTransient`: server-side pressure, retry.
+- **10199** (batch too large) → `ErrBatchTooLarge`: a bug — batches are
+  chunked client-side and must never exceed the server limit.
+- Anything else is returned unchanged.
 
 `PublishMeta`:
 ```go
@@ -901,10 +996,7 @@ func PublishMeta(ctx context.Context, js jetstream.JetStream, gameID string, pay
     _, err := js.Publish(ctx, config.MetaSubject(gameID), payload,
         jetstream.WithExpectLastSequencePerSubject(expectLastSeq))
     if err != nil {
-        if isCASError(err) {
-            return ErrCASFailure
-        }
-        return err
+        return classifyPublishErr(err)
     }
     return nil
 }
@@ -913,10 +1005,14 @@ func PublishMeta(ctx context.Context, js jetstream.JetStream, gameID string, pay
 #### `fetch.go`
 
 ```go
-// PlayfieldCellMsg holds the fetched state for a single cell.
+// PlayfieldCellMsg holds the fetched state for a single playfield subject.
+// Cell subjects carry their parsed (Row, Col); non-cell playfield subjects
+// (the per-board garbage/txn registers) come back with Row = Col = -1 and the
+// caller branches on Subject.
 type PlayfieldCellMsg struct {
     Row     int
     Col     int
+    Subject string
     Payload []byte
     Seq     uint64
 }
@@ -928,10 +1024,11 @@ type PlayfieldCellMsg struct {
 const fetchChunkSize = 512
 
 // The caller builds subjects with the mode-appropriate scheme (coop or
-// competitive), so this stays subject-agnostic. Results are keyed by the
-// (row, col) parsed from each subject, so it works for either subject shape.
-// Cells that have never been written have no last message and are simply
-// ABSENT from the result (empty cell).
+// competitive), so this stays subject-agnostic. Cell subjects come back keyed
+// by the (row, col) parsed from each subject; non-cell subjects (the
+// garbage/txn registers) come back with Row = Col = -1 and their Subject set.
+// Subjects that have never been written have no last message and are simply
+// ABSENT from the result (empty cell / zero register).
 func FetchPlayfieldState(ctx context.Context, js jetstream.JetStream, gameID string, subjects []string) ([]PlayfieldCellMsg, error) {
     var opts []jetstreamext.GetLastForOpt
     if len(subjects) > fetchChunkSize {
@@ -956,10 +1053,10 @@ func FetchPlayfieldState(ctx context.Context, js jetstream.JetStream, gameID str
                 if errors.Is(err, jetstreamext.ErrNoMessages) { continue }
                 return nil, err
             }
-            row, col := ParseCellFromSubject(msg.Subject)
-            if row < 0 { continue }
+            row, col := ParseCellFromSubject(msg.Subject) // (-1, -1) for registers
             result = append(result, PlayfieldCellMsg{
-                Row: row, Col: col, Payload: msg.Data, Seq: msg.Sequence,
+                Row: row, Col: col, Subject: msg.Subject,
+                Payload: msg.Data, Seq: msg.Sequence,
             })
         }
     }
@@ -978,10 +1075,11 @@ func FetchGameMeta(ctx context.Context, js jetstream.JetStream, gameID string) (
 ```
 
 Boards stay within one round trip for the common sizes (a 28×10 competitive
-board is 280 subjects; a 2-player coop board is 28×20 = 560, just over one
-chunk); only the chunked path needs the `GetLastMsgsUpToSeq` bound, since a
-single `GetLastMsgsFor` call is already a point-in-time read. The 512 chunk
-size keeps each request comfortably under the server's 1024-response cap.
+board is 280 subjects plus its 2 registers; a 2-player coop board is 28×20 =
+560, just over one chunk); only the chunked path needs the
+`GetLastMsgsUpToSeq` bound, since a single `GetLastMsgsFor` call is already a
+point-in-time read. The 512 chunk size keeps each request comfortably under
+the server's 1024-response cap.
 
 `ParseCellFromSubject(subject) (row, col int)`: the subject ends in
 `.cell.<row>.<col>` — split on "." and parse the LAST TWO tokens. Returns
@@ -1022,6 +1120,24 @@ var (
 - `FetchGameMeta` returns the latest meta.
 - `NewOrderedConsumer` delivers messages in sequence order.
 
+**Gated-batch tests** (`internal/nats/publish_test.go`, against an embedded
+server) — the batch semantics the Phase 3 gated transform relies on:
+- `TestGatedBatchMixedExpectations` — the gated-transform batch shape: one
+  register message with per-subject CAS (the gate) plus NoCAS cell overwrites.
+  A stale gate rejects the WHOLE batch atomically (nothing stored,
+  `ErrCASFailure`), and a committed batch assigns contiguous sequences so the
+  write-through math (`message i of N → commitSeq−(N−1−i)`) holds.
+- `TestForSubjectExpectationGuardsForeignCell` — an `ExpectForSubject` carrier
+  guards a subject the batch never writes: the batch commits while the
+  asserted subject is unchanged and is atomically rejected once it moves.
+- `TestExpectationAfterInBatchWriteRejected` — the in-batch ordering rule: the
+  server rejects an expectation about a subject the SAME batch already wrote
+  earlier, which is why carriers must precede any write to their asserted
+  subject (and why `splitGatedItems` keeps every expectation in the gate head).
+- `TestClassifyPublishErr` — the error-code mapping ({10071, 10164} →
+  `ErrCASFailure`, {10176, 10210, 10211} → `ErrBatchTransient`, 10199 →
+  `ErrBatchTooLarge`, everything else passed through).
+
 ---
 
 ## Phase 3 — Engine
@@ -1034,11 +1150,12 @@ The in-memory `*game.Playfield` is mutated only via `pf.Apply(row, col, cell,
 seq)`, from exactly two places: the cell consumer (`runConsumer`) on an
 ordered-consumer echo, and the **publish write-through** (`applyPublishedCells`)
 the instant a batch commits. Every other code path — local moves, hard drops,
-locks, line clears, shrinks, piece spawns — must compute its result as a set of
-*projected* rows (using `ProjectMove`, `ProjectLock`, `ProjectHardDrop`,
-`ProjectClearRows`, `ProjectShrink` in `internal/game/playfield.go`), diff them
-against the live board into per-cell payloads (`diffCells` / `changedCells`),
-and publish those cells; it does not mutate `e.playfield` directly.
+locks, line clears, garbage raises, piece spawns — must compute its result as a
+set of *projected* rows (using `ProjectMove`, `ProjectLock`, `ProjectHardDrop`,
+`ProjectClearRows`, `ProjectShrinkCascade` in `internal/game/playfield.go`),
+diff them against the live board into per-cell payloads (`diffCells` /
+`changedCells`), and publish those cells; it does not mutate `e.playfield`
+directly.
 
 The write-through is what lets a successful publish advance `e.playfield`
 (content **and** the per-cell `LastSeq`) without waiting for its own echo: the
@@ -1093,12 +1210,13 @@ and is surfaced as a `CASFlash` event for visual feedback.
 ### Atomic batch publish + per-subject CAS
 
 Every multi-cell publication from the engine goes through a SINGLE atomic batch
-— either `natspkg.PublishMoveAtomically` (CAS) or
-`natspkg.PublishCellsAtomicallyNoCAS` (no CAS) — never cell-by-cell publishes.
-Atomicity matters because a player's move typically touches ~4–8 cells (the
-new footprint plus the vacated old positions); if those cells arrived at the
-consumer one at a time and the batch could tear, every other player would
-briefly see a half-erased / half-placed piece.
+— `natspkg.PublishMoveAtomically` (per-message CAS expectations, selected per
+message via `CellUpdate.Expect`) or `natspkg.PublishCellsAtomicallyNoCAS` (no
+expectations at all) — never cell-by-cell publishes. Atomicity matters because
+a player's move typically touches ~4–8 cells (the new footprint plus the
+vacated old positions); if those cells arrived at the consumer one at a time
+and the batch could tear, every other player would briefly see a half-erased /
+half-placed piece.
 
 The CAS expectation is **per subject** (`Nats-Expected-Last-Subject-Sequence`,
 applied via `jetstreamext.WithBatchExpectLastSequencePerSubject(seq)`), not
@@ -1127,11 +1245,46 @@ Mapping from engine action to publish path (every path takes a `diffCells`/
 | Lock-on-blocked-down (competitive) | `publishProjectedCellsNoCAS` | no |
 | Hard drop (coop/teams) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
 | Hard drop (competitive) | `publishProjectedCellsNoCAS` | no |
-| Line clear (coop/teams) | `publishProjectedCellsWithMergeRetry`, **changed cells only** | yes, per-subject (merge-retry) |
-| Line clear (competitive) | `publishProjectedCellsNoCAS`, **changed cells only** | no |
-| Opponent shrink (apply locally, competitive) | `publishProjectedCellsNoCAS`, **changed cells only** | no |
-| Team shrink (apply locally, teams — every ALIVE member of the target team races) | `applyTeamShrink` → `PublishMoveAtomically`, **changed cells only** | yes, per-subject (**recompute on fail** behind the `expectedGarbage − AdversarialRowCount()` deficit guard — never merge-retry, which would double-shift; see Phase 8) |
-| Elimination vacate (teams — topped-out player erases own active piece) | `publishProjectedCellsWithMergeRetry` | yes, per-subject (merge-retry) |
+| Line clear (coop) | `publishProjectedCellsWithMergeRetry`, **changed cells only** | yes, per-subject (merge-retry — coop has no registers) |
+| Line clear (competitive/teams) | `publishGatedTransform` (op `clear`), **changed cells only, full 0..H−1 row range** | txn gate only: register CAS + NoCAS cells (**recompute from a fresh server snapshot on gate rejection**) |
+| Garbage attack (attacker bumps every victim board's garbage register) | `bumpVictimLedgers` → `bumpLedger` → `PublishMoveAtomically` (one register message) | yes, per-subject CAS-add (read `total`, publish `total+lines` expecting the read seq; refresh-and-re-add on a lost race, ≤ 20 attempts) |
+| Garbage application (victim applies owed−applied on its own board, competitive/teams) | `applyOwedGarbage` → `publishGatedTransform` (op `shrink`), **changed cells only, full row range** | txn gate (+ teammate guards on team boards); cells NoCAS — the raise overrides in-flight moves |
+| Elimination vacate (teams — topped-out player erases own active piece) | `handleTeamTopOut` → `publishGatedTransform` (op `vacate`) | txn gate — a racing garbage application can never resurrect the dead piece from a stale snapshot |
+
+**The txn-gated transform** (`publishGatedTransform`, `internal/engine/transform.go`)
+is the single publish path for every whole-board state change on a
+competitive/team board — line-clear collapse, garbage application, and the
+teams elimination vacate. A transform is ONE atomic batch of the shape
+**[txn register | changed cells]**: the board's txn register
+(`…playfield.txn`) rides FIRST with a per-subject CAS expectation at the
+register's last sequence — the exactly-once **gate** — and the cells follow
+NoCAS over the FULL `0..Height-1` row range (there is no visible-range
+truncation: a truncated diff used to strand duplicated or orphaned cells in
+the headroom rows). When two transforms race — teammates applying the same
+garbage, or a clear racing a raise on the same board — the server atomically
+rejects the loser's ENTIRE batch (nothing stored; every expectation is checked
+at commit), and the loser recomputes from a freshly fetched consistent
+snapshot (`fetchBoardSnapshot`: all cells + both registers, sequences
+included), up to `gatedTransformMaxAttempts` (6) tries. A recompute that finds
+nothing left to do (deficit already zero, rows already cleared) ends the
+transform as a no-op — no merge-retry, no double-shift. On TEAM boards the
+batch additionally guards teammate concurrency (`buildGatedItems`): every
+write to a cell of another player's snapshot piece — and every write to a
+headroom row a teammate's fresh spawn could claim — carries per-subject CAS at
+the snapshot sequence, and every foreign piece the transform leaves completely
+untouched contributes one `ExpectForSubject` **carrier** (a batch message
+asserting that piece's first cell is still at its snapshot sequence; the batch
+never writes that subject, so the assertion is legal at any batch position —
+with a fallback that re-writes one unchanged snapshot cell under per-subject
+CAS if there are more held pieces than plain writes to ride on). Any teammate
+move/lock/spawn committed since the snapshot rejects the whole batch. Batches
+above the 1000-message server limit are split (`splitGatedItems`) into a gate
+head — the txn register, EVERY expectation-carrying message (a guard in a
+NoCAS tail would be no guard at all), and as many leading plain cells as fit —
+plus NoCAS tail chunks; winning the gate has already excluded every concurrent
+bulk transform. Committed batches write through via `applyGatedItems` (the txn
+register occupies `commitSeq−(N−1)`; the cells follow at consecutive
+sequences), so the applier's own echoes are no-ops.
 
 Every path publishes only the cells that **actually changed**: `diffCells`
 diffs a `Project*` row map against the live board (moves, spawns, locks, hard
@@ -1155,15 +1308,21 @@ vacates their piece — then republishes. Competitive mode owns per-player
 subjects (no shared writer), so NoCAS is safe there. The teams-mode shared
 team board has the same multi-writer shape as coop (engine code gates on
 `sharedBoard()`, true for coop **and** teams), so every argument in this
-paragraph applies to it unchanged — except the team-shrink application, which
-has its own CAS discipline (recompute, not merge — see Phase 8).
+paragraph applies to it unchanged — except the bulk transforms (line-clear
+collapse, garbage application, elimination vacate), which run as txn-gated
+batches with their own discipline: gate rejection → recompute from a fresh
+snapshot, never merge (a blind merge would double-shift), with the teammate
+guards above protecting mid-flight pieces (see Phase 8).
 
 **Batch ordering (`orderedCellKeys`):** the ordered consumer applies a batch
 one cell at a time and detects lock-in (firing the completed-line check) the
 instant the player's last `Active` cell disappears — so the order *within* a
 batch matters even though the batch commits atomically. A single rule covers
-every write path: order the batch by **category of each cell's NEW content** —
-**active cells first, locked/occupied cells second, empty (vacate) cells
+every write path: **the txn register first when the batch is a gated
+transform** (so the gate rides the batch head and the register echo — which
+carries the in-band `Topped`/`Full` elimination signal — is delivered before
+any vacating cell), then the cells by **category of each cell's NEW content**
+— **active cells first, locked/occupied cells second, empty (vacate) cells
 last** — with an ascending (row, col) tie-break for determinism. Two
 invariants follow:
 (1) a **relocating piece** (gravity, lateral move, rotation, spawn, hard drop
@@ -1177,10 +1336,12 @@ conversion for an in-place lock) — by which point all locked/landing cells are
 already applied, so a line completed by a hard drop is detected at *that* lock,
 not one piece later. The same argument covers a coop line clear (the other
 player's shifted active piece is applied before its old cells are vacated, so
-their engine never sees it vanish) and a competitive shrink (the re-stamped
-piece first, the risen stack second, vacates last). There are no
-`bottomFirst`/`applyBottomFirst` parameters anywhere — the category rule
-subsumes them.
+their engine never sees it vanish) and a garbage raise (txn register first,
+the re-stamped lifted pieces next, the risen stack second, vacates last — and
+a victim whose piece the raise removed sees the register's `Topped` listing
+before the vacates, so the zero-active edge reads as an elimination, not a
+lock-in). There are no `bottomFirst`/`applyBottomFirst` parameters anywhere —
+the category rule subsumes them.
 
 CAS failure handling for **player moves** — same in both modes: **drop the
 move, no retry**. The engine signals the local player with an `UpdateCASFlash`
@@ -1249,6 +1410,8 @@ The mode→path mapping for CAS publishes is:
 | Gravity (`runInput` gravity arm → `attemptMove(MoveDown, internal=true)`) | cooperative/teams | merge-retry; flash only if all retries exhausted |
 | Spawn (`spawnPiece`) | competitive | drop + flash (cannot race in practice) |
 | Spawn (`spawnPiece`) | cooperative/teams | merge-retry; flash only if all retries exhausted. Placement first: spawn cells blocked ONLY by another player's active piece → deferred (`spawnPending`) and retried on the gravity tick, not a top-out |
+| Gated transform (`publishGatedTransform`: clear / garbage application / vacate) | competitive/teams | gate (or teammate-guard) rejection = the WHOLE batch atomically rejected → recompute from a fresh `fetchBoardSnapshot`, retry (≤ 6 attempts, tiny settle backoff); a recompute with nothing left to do no-ops. Never flashes — a transform is engine-driven, and losing the gate means the work was (or is being) done by someone else |
+| Garbage ledger bump (`bumpLedger` CAS-add) | competitive/teams | refresh the register from the stream and re-add (≤ 20 attempts, per-player-offset backoff ≤ 10 ms) — a lost race only means another attacker's add landed first; the totals still sum |
 
 ### 3.1 `internal/engine`
 
@@ -1295,23 +1458,34 @@ type EngineUpdate struct {
 type EventKind string
 const (
     EventLineClear EventKind = "line_clear"
-    EventShrink    EventKind = "shrink"
     EventGameOver  EventKind = "game_over"
 )
 
+// GameEvent is the JSON payload published to the per-kind, per-player event
+// subjects (config.EventKindSubject(gameID, kind, playerID)). There is NO
+// shrink event: garbage attacks are recorded durably in the victim board's
+// garbage register (a cumulative CAS-added total that trimming cannot lose),
+// never as events. CAS-failure feedback is not an event either — it stays
+// local (UpdateCASFlash) and never round-trips through NATS.
 type GameEvent struct {
     Kind         EventKind `json:"kind"`
     PlayerID     string    `json:"player_id"`
     LinesCleared int       `json:"lines_cleared,omitempty"`
-    TargetPlayer string    `json:"target_player,omitempty"`
-    RowsRemoved  int       `json:"rows_removed,omitempty"`
     ClearedRows  []int     `json:"cleared_rows,omitempty"`
-    Score        int       `json:"score,omitempty"`          // for EventGameOver: player's final score
+    Score        int       `json:"score,omitempty"`          // line_clear: this clear's delta; game_over: player's final score
     Level        int       `json:"level,omitempty"`          // for EventGameOver: level achieved at game end
     PieceCount   uint64    `json:"piece_count,omitempty"`    // for EventGameOver: total pieces placed
-    PlayerIdx    int       `json:"player_idx,omitempty"`     // causer's index for EventShrink
+    PlayerIdx    int       `json:"player_idx,omitempty"`
     Team         int       `json:"team"`                     // teams: sender's team (0 = A, 1 = B)
-    TargetTeam   int       `json:"target_team"`              // teams: receiving team for EventShrink
+
+    // line_clear only: the sender's CUMULATIVE totals from its OWN clears
+    // (Engine.ownClearScore/ownClearLines). Receivers fold the DELTA against
+    // the last total they saw from that sender (Engine.eventTotals), so a
+    // trimmed intermediate event (per-subject retention keeps only the last)
+    // is subsumed by the next — and a late joiner replaying each sender's
+    // last event reconstructs the full scoreboard.
+    TotalScore int `json:"total_score,omitempty"`
+    TotalLines int `json:"total_lines,omitempty"`
 }
 
 type MoveType int
@@ -1364,12 +1538,37 @@ type Engine struct {
     score             atomic.Int64
     totalLines        atomic.Int64
     level             atomic.Int64
-    hadActivePiece    bool            // only the own-rows consumer goroutine touches it
-    eliminatedPlayers map[string]bool // players who have topped out (competitive); guarded by e.mu
+    ownClearScore     atomic.Int64    // cumulative score from OWN clears only — the line_clear event's TotalScore
+    ownClearLines     atomic.Int64    // cumulative lines from OWN clears only — the line_clear event's TotalLines
+    hadActivePiece    bool            // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
+    eliminatedPlayers map[string]bool // players who have topped out (competitive/teams); guarded by e.mu
     eliminatedTeam    map[string]int  // teams: eliminated player → team; guarded by e.mu
     teamOutcomeDone   bool            // teams: win/loss/draw already decided; guarded by e.mu
-    expectedGarbage   int             // teams: cumulative adversarial rows owed to this team's board; guarded by e.mu
     visibleRowStart   int             // first visible row index; cooperative: 4, competitive: CompetitiveVisibleRowStart(playerCount), teams: TeamVisibleRowStart(teamSize)
+
+    // Garbage ledger + txn gate mirrors (competitive/teams; guarded by e.mu).
+    // garbageOwed/garbageOwedSeq/garbageOwedBy mirror the own board's garbage
+    // register (rows OWED, written by attackers); txnApplied/txnSeq mirror its
+    // txn register (rows APPLIED, advanced by gated transforms) — the deficit
+    // is garbageOwed − txnApplied. toppedByShrink is set when a txn echo lists
+    // THIS player as topped, so the imminent zero-active edge in runConsumer
+    // routes to handleTopOut instead of handleLockIn. opponentGarbage caches
+    // each opponent/opposing-team board's garbage register (keyed like
+    // opponentPlayfields) so the attacker-side CAS-add bump starts from the
+    // replica instead of a read round trip.
+    garbageOwed     int
+    garbageOwedSeq  uint64
+    garbageOwedBy   int
+    txnApplied      int
+    txnSeq          uint64
+    toppedByShrink  bool
+    opponentGarbage map[string]opponentLedger
+
+    // eventTotals tracks, per sender, the last cumulative line_clear totals
+    // folded from the events stream, so handleGameEvent folds deltas even when
+    // per-subject retention trimmed intermediate events. Touched only by the
+    // events-consumer goroutine — no lock needed.
+    eventTotals map[string]struct{ score, lines int }
 
     Updates        chan EngineUpdate
     OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -1379,6 +1578,17 @@ type Engine struct {
     cancelFn    context.CancelFunc
     moves       chan MoveType // internal move dispatch channel (buf 8)
     cellUpdated chan struct{} // CAS notification channel (buf 1)
+
+    // applyGarbage (cap 1) signals runInput to run one garbage-application
+    // attempt against the own board (competitive/teams). Signaled by the
+    // register echo handlers whenever owed > applied.
+    applyGarbage chan struct{}
+
+    // testHookBeforeGatedCommit, when set by a test, runs between a gated
+    // transform's projection and its batch publish — the seam deterministic
+    // race tests use to interleave a competing write and assert the gate
+    // rejects and the recompute converges. Nil in production.
+    testHookBeforeGatedCommit func(op string)
 }
 
 // New initialises fields and channels; it does NOT take a context — Start()
@@ -1472,18 +1682,30 @@ func (e *Engine) Start() error {
     }
     e.metaSeq = metaSeq
 
-    // 2. Fetch playfield state — one message per cell; never-written cells are
-    // absent from the result and stay empty. The engine builds its own cell
-    // subjects (row-major, via cellSubjects) with the mode-appropriate scheme —
-    // coop: CoopCellSubject (shared board, no player token); competitive:
-    // CompetitiveCellSubject (scoped by own UUID).
-    cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.cellSubjects())
+    // 2. Fetch the board snapshot — one message per cell PLUS the board
+    // registers (snapshotSubjects = cellSubjects + boardRegisterSubjects;
+    // never-written subjects are absent and stay empty/zero). The engine
+    // builds its own cell subjects (row-major, via cellSubjects) with the
+    // mode-appropriate scheme — coop: CoopCellSubject (shared board, no player
+    // token); competitive: CompetitiveCellSubject (scoped by own UUID).
+    cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.snapshotSubjects())
     if err != nil { cancel(); return err }
     var maxSeq uint64
     for _, c := range cells {
+        if c.Seq > maxSeq { maxSeq = c.Seq }
+        if c.Row < 0 {
+            // A board register: fold it through the same paths the live
+            // consumer uses (captureRegisterSnapshot → the register echo
+            // handlers). A positive deficit (owed > applied) is retained on
+            // the applyGarbage channel until runInput starts — THE late-join/
+            // reconnect reconcile: a (re)joining engine applies everything
+            // still owed before playing, and a Full txn register tells a late
+            // joiner its board was already lost.
+            e.captureRegisterSnapshot(ctx, "", false, c.Subject, c.Payload, c.Seq)
+            continue
+        }
         data, _ := game.UnmarshalCell(c.Payload)
         e.playfield.Apply(c.Row, c.Col, data, c.Seq)
-        if c.Seq > maxSeq { maxSeq = c.Seq }
     }
     e.hadActivePiece = e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
 
@@ -1530,23 +1752,32 @@ consumer instead of the roster/opponent consumers — specified in Phase 8.)
 
 The engine runs ONE ordered consumer per concern, not a single wildcard consumer:
 
-- **Own cell consumer** (`runConsumer`): filter `cellFilterSubject()` — coop's shared
-  `…playfield.cell.>` or competitive's own `…player.<ownID>.playfield.cell.>`.
+- **Own board consumer** (`runConsumer`): filter `cellFilterSubject()` — coop's
+  shared `…playfield.cell.>` (cells only; coop has no registers) or the widened
+  competitive/teams playfield filter `…playfield.>`
+  (`CompetitivePlayfieldFilter` / `TeamPlayfieldFilter`), which delivers the
+  cells AND the board's garbage/txn registers. The consumer branches on
+  `IsGarbageSubject`/`IsTxnSubject` BEFORE the cell parse and folds registers
+  through `handleGarbageRegisterEcho`/`handleTxnRegisterEcho`.
 - **Opponent cell consumers** (competitive only): one `runConsumer` per discovered
-  opponent, filter `…player.<oppID>.playfield.cell.>`, started by
+  opponent, filter `CompetitivePlayfieldFilter(gameID, oppID)`, started by
   `startOpponentConsumer` (which first fetches the opponent's board snapshot via
-  `FetchPlayfieldState` over `CompetitiveCellSubject(gameID, oppID, r, c)` subjects).
+  `FetchPlayfieldState` over the opponent's cell subjects plus their two register
+  subjects — the register capture keeps the attacker-side ledger cache warm).
 - **Roster consumer** (competitive only, `runRosterConsumer`): filter
   `…roster.*` — discovers opponents (including late joiners) and spins up their
   cell consumers.
 - **Opposing-team board consumer** (teams only): ONE extra `runConsumer` over the
-  opposing team's shared board, started by `startTeamBoardConsumer(ctx, 1-e.teamIdx)`
+  opposing team's shared board (filter `TeamPlayfieldFilter(gameID, 1-teamIdx)` —
+  cells + registers, keeping the attacker-side ledger cache warm), started by
+  `startTeamBoardConsumer(ctx, 1-e.teamIdx)`
   and stored in `opponentPlayfields` under `TeamBoardKey(team)` (`"team-<idx>"`),
   so `OpponentSnapshots` flows to the UI unchanged. Teams runs NO roster consumer
   and no per-player opponent consumers (the roster is fixed before the game
   starts; elimination events carry the player's team). See Phase 8.
-- **Events consumer** (`runEventsConsumer`): filter `…events` — handles
-  `EventLineClear`, `EventShrink`, and `EventGameOver`.
+- **Events consumer** (`runEventsConsumer`): filter `…events.>`
+  (`EventsSubjectFilter` — events live on per-kind, per-player subjects) —
+  handles `EventLineClear` and `EventGameOver`.
 - **Meta consumer** (`runMetaConsumer`): filter `…meta` — spawns the first piece
   when the game transitions to `in_progress`.
 - **Countdown consumer** (`runCountdownConsumer`): filter `…countdown`.
@@ -1567,10 +1798,25 @@ active piece for our `playerIdx`", and when the piece's last active cell
 disappears it calls `handleLockIn(ctx)`. The check is gated on
 `e.getMode() == ModePlayer` — an eliminated teams player's vacate batch (the
 elimination erases their own active cells) echoes back through this same
-consumer, and without the gate that echo would fire a spurious lock-in. The `orderedCellKeys` publish order
-guarantees that this happens at the batch's LAST vacate, with the
-landing/locked cells already applied. `handleLockIn` runs the completed-row
-check and scoring, increments `pieceIdx`, fires `publishPieceIdxUpdate`, and (if
+consumer, and without the gate that echo would fire a spurious lock-in. A
+zero-active edge flagged by `toppedByShrink` (a remote gated shrink's txn
+register listed us in `Topped` — delivered before its vacates, since the
+register is the batch's first message) routes to `handleTopOut` instead: that
+edge is an elimination, not a lock-in. The `orderedCellKeys` publish order
+guarantees the edge fires at the batch's LAST vacate, with the landing/locked
+cells already applied. `handleLockIn` detects completed rows on the live
+replica and publishes the collapse — cooperative with merge-retry (no
+registers in coop), competitive and teams as a GATED transform (op `clear`)
+whose recompute re-detects the completed rows from converged state if the gate
+is lost (a shrink landed first and shifted them, or a teammate's clear already
+took them); score, the line-clear event, and the attack are derived from the
+rows the COMMITTED transform actually cleared, never the pre-race detection.
+It then updates score/level, publishes the cumulative-totals `line_clear`
+event (coop/teams), bumps every victim board's garbage register on a goroutine
+(`go e.bumpVictimLedgers(ctx, clearedLines)` — handleLockIn holds `e.mu`,
+which the bump needs briefly, and the bump's publishes must not extend the
+lock-in critical section), increments `pieceIdx`, fires
+`publishPieceIdxUpdate`, and (if
 we are a player) spawns the next piece via `spawnPiece(ctx, true)` (locked=true:
 handleLockIn runs under the consumer's e.mu), which calls `handleTopOut` if the
 new piece cannot be placed on locked cells. On shared boards a spawn blocked
@@ -1591,8 +1837,10 @@ the countdown's final StartGame is a detached write that a fast game can beat
 to the finish line.
 
 `handleTopOut(ctx, locked bool)` (`locked` reports whether the caller already
-holds `e.mu`) only publishes an `EventGameOver` (with `Score` and `PieceCount`)
-and transitions this engine to spectator (`transitionToSpectator(false)`); in
+holds `e.mu`) only publishes an `EventGameOver` (with `Score`, `Level` and
+`PieceCount`, to the player's own per-kind event subject — one game_over per
+player, which per-kind/per-player retention can never trim) and transitions
+this engine to spectator (`transitionToSpectator(false)`); in
 COOPERATIVE mode it also kicks off `transitionGameToFinished`. In TEAMS mode it
 routes to `handleTeamTopOut` instead — per-player elimination while the team
 plays on; no `transitionGameToFinished` (see Phase 8). It does NOT publish
@@ -1601,19 +1849,30 @@ in `archive.ArchiveAndCleanup`, wired via `engine.OnGameFinished` and run ~5s af
 the finish transition. ArchiveAndCleanup takes its VERDICTS from the archiving
 engine's live record (competitive winners = `!eng.IsEliminated(id)`; the teams
 winning team = `eng.GameOutcome()` + `eng.TeamIdx()`), never from replaying the
-events subject: the game stream keeps only the LAST message per subject and all
-events share one subject, so a post-game replay sees at most the final
-EventGameOver — it can recover that one player's score/level details, but not
-the elimination history (and a who-sent-an-event set mis-scores
-near-simultaneous final top-outs as a draw). Competitive finishing is decided by the last player standing
+events: with events on per-kind, per-player subjects every player's single
+game_over survives retention, so the archiver's post-game event drain now
+recovers EVERY player's final score/level/piece-count — but a
+who-sent-an-event set still cannot pick the winner (near-simultaneous final
+top-outs put both sides' events on the stream and would mis-score as a draw);
+only the engine that lived through the ordered stream holds the verdict.
+Competitive finishing is decided by the last player standing
 in `handleGameEvent` (which also handles the all-eliminated draw); teams finishing
 by `handleTeamGameOverEvent` when a whole team is eliminated (Phase 8).
 
 ```go
 hasActive := pf.ActivePieceForPlayer(e.playerIdx) != nil
-if e.hadActivePiece && !hasActive {
-    e.handleLockIn(ctx) // completed-row check, scoring, pieceIdx++, spawn next
-    hasActive = pf.ActivePieceForPlayer(e.playerIdx) != nil // RE-READ — see below
+if e.hadActivePiece && !hasActive && e.getMode() == ModePlayer {
+    if e.toppedByShrink {
+        // The zero-active edge was caused by a remote gated shrink whose txn
+        // register (delivered before these vacates — it's the batch's first
+        // message) listed us as pushed off the top: an elimination, not a
+        // lock-in.
+        e.toppedByShrink = false
+        e.handleTopOut(ctx, true)
+    } else {
+        e.handleLockIn(ctx) // completed-row check, scoring, pieceIdx++, spawn next
+        hasActive = pf.ActivePieceForPlayer(e.playerIdx) != nil // RE-READ — see below
+    }
 }
 e.hadActivePiece = hasActive
 ```
@@ -1632,25 +1891,57 @@ its own `pieceIdx` locally and never writes it to meta). In competitive mode it
 does a read-then-CAS update of `meta.PieceIdx`. This is fire-and-forget (called
 via `go`); errors are ignored rather than blocking the consumer goroutine.
 
-**Shrink event handling** (events consumer):
-```go
-case EventShrink:
-    if ev.PlayerID != e.playerID {
-        // Every line clear shrinks ALL other players, so the shrink is applied
-        // by any engine that didn't publish it (the GameEvent.TargetPlayer field
-        // exists but is unused for shrinks).
-        go e.applyOpponentShrink(ctx, ev.RowsRemoved, ev.PlayerIdx)
-    }
-```
+**Garbage handling** (`internal/engine/ledger.go` + `registers.go`) — an attack
+is never an event. Events on a `MaxMsgsPerSubject: 1` stream can be trimmed by
+later events before a slow consumer sees them — exactly the
+near-simultaneous-clears-at-high-RTT case that matters most. Instead the
+protocol is register-based, attacker side and victim side:
 
-`applyOpponentShrink(n, causerIdx)`: calls `e.playfield.ProjectShrink(n, causerIdx, e.playerIdx)`,
-which shifts the locked stack up by `n`, adds `n` permanent adversarial garbage rows at the
-bottom, holds our own falling piece in place (lifting it only as far as the rising stack/garbage
-forces it, 0..n rows), and returns a `topOut` flag. The cells the shift actually changed
-(`changedCells`, diffed under `e.mu`) are published NoCAS (authoritative, like line clears) —
-`orderedCellKeys` re-stamps the held piece's active cells first, applies the risen stack second,
-and vacates last, so the piece never transiently vanishes — followed by a full-board re-render.
-When `topOut` is true — the piece was squeezed off the top — it calls `handleTopOut`.
+- **Attacker** (`bumpVictimLedgers`, called from `handleLockIn` on a
+  goroutine): advances the garbage register of every victim board by the
+  cleared line count — competitive: every surviving opponent; teams: the
+  opposing team's board — one goroutine per victim, each an independent
+  CAS-add (`bumpLedger`): start from the cached register (`opponentGarbage`,
+  kept fresh by that board's consumer), publish
+  `GarbageRegister{Total: total+lines, By: e.playerIdx}` expecting the read
+  sequence; on a lost race refresh straight from the stream and re-add
+  (≤ `ledgerBumpMaxAttempts` = 20, per-player-offset backoff capped at 10 ms).
+  Simultaneous attackers serialize on the register's per-subject CAS and the
+  total converges to the exact SUM — nothing trimmed, nothing double-counted.
+- **Victim signal** (`handleGarbageRegisterEcho` / `handleTxnRegisterEcho`, fed
+  by the own-board consumer AND `captureRegisterSnapshot` on snapshot fetches):
+  fold the register into the `e.mu`-guarded mirrors
+  (`garbageOwed`/`garbageOwedSeq`/`garbageOwedBy`; `txnApplied`/`txnSeq`, each
+  behind a strictly-higher sequence guard), and whenever
+  `garbageOwed − txnApplied > 0` nudge `signalGarbageApply()` (non-blocking
+  send into the cap-1 `applyGarbage` channel; a signal sent before `runInput`
+  starts is retained — the late-join reconcile). The txn echo also carries the
+  remote elimination signals: `Topped` listing this player sets
+  `toppedByShrink` (the imminent zero-active edge is an elimination), and
+  `Full` — locked rows pushed past the top, our piece may still be stamped so
+  no zero-active edge would come — tops out directly from the echo. The
+  APPLIER never takes these paths off its own echo: its write-through already
+  advanced `txnSeq` to the commit sequence, so the echo fails the
+  strictly-higher guard — it handles its own elimination inline.
+- **Application** (`applyOwedGarbage`, run on `runInput` via the
+  `case <-e.applyGarbage` arm — the single gameplay-write goroutine, so a
+  raise never races the victim's own move/gravity publishes): one gated
+  transform (op `shrink`) whose projection computes
+  `deficit = owed.Total − txn.Applied`, no-ops if ≤ 0, and otherwise projects
+  `pf.ProjectShrinkCascade(deficit, owed.By)` with
+  `TxnRegister{Applied: owed.Total, Topped, Full}`. If the projection removes
+  our own piece (`Full` or `Topped` contains us) it clears `hadActivePiece`
+  BEFORE the publish so the batch's own vacate echoes cannot fire a spurious
+  lock-in (a rejected gate restores the flag on the next echo). After a
+  committed batch: full-board re-render, and `handleTopOut` if we were
+  squeezed off (or the board is full). Exactly-once across duplicate signals,
+  replays, teams applier races, and reconnects comes from the txn gate plus
+  the cumulative registers — a loser's recompute sees deficit 0 and no-ops. A
+  gravity-tick **backstop** in `runInput` re-signals whenever a deficit is
+  still outstanding (a signal was consumed by an attempt that lost its gate,
+  or arrived before `runInput` started). Application is structurally
+  impossible for spectators and eliminated players — they don't run
+  `runInput`.
 
 #### `rtt.go` — continuous publish→echo latency measurement
 
@@ -1697,9 +1988,17 @@ func (e *Engine) runInput(ctx context.Context) {
         case <-ctx.Done():
             return
         case move := <-e.moves:
+            e.popBufferedMove() // keep the under-board buffered strip in sync
             if e.mode != ModePlayer { continue }
             // Player input — drop+flash on CAS failure (internal=false).
             _ = e.attemptMove(ctx, move, false)
+        case <-e.applyGarbage:
+            if e.mode != ModePlayer { continue }
+            // Apply owed garbage on THIS goroutine: the raise then never races
+            // our own move/gravity publishes (they're serialized behind it),
+            // and its NoCAS cells override whatever in-flight move a remote
+            // writer had — the "raise overrides the move" rule.
+            e.applyOwedGarbage(ctx)
         case <-timer.C:
             if e.mode != ModePlayer { return } // became a spectator
             // internal=true: gravity is engine-driven, not player input. In coop
@@ -1708,8 +2007,20 @@ func (e *Engine) runInput(ctx context.Context) {
             // return value is ignored — lock-in is handled by the consumer's
             // lock-in detector, not here. Serialized with the moves arm above.
             _ = e.attemptMove(ctx, MoveDown, true)
-            // Recompute level from the running line total in cooperative mode.
-            if e.gameMode == config.ModeCooperative {
+            // A spawn deferred behind another player's active piece retries
+            // here, at the blocker's own cadence (doubles as the piece-less
+            // watchdog).
+            e.retrySpawnIfPending(ctx)
+            // Garbage backstop: if rows are still owed (a signal was consumed
+            // by an attempt that lost its gate, or arrived before runInput
+            // started), re-arm the application at gravity cadence.
+            if e.gameMode != config.ModeCooperative {
+                if deficit := e.garbageOwed - e.txnApplied; deficit > 0 { // under e.mu
+                    e.signalGarbageApply()
+                }
+            }
+            // Recompute level from the running line total on shared boards.
+            if e.sharedBoard() {
                 if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {
                     level = newLevel
                 }
@@ -1761,14 +2072,16 @@ the `Project*` methods, `diffCells` reduces them to the changed cells, and
 `[]natspkg.CellUpdate` with per-subject CAS expectations sourced from
 `e.playfield.CellLastSeq(row, col)`. Line-clear detection and the cleared-row shift live in
 `consumer.go`'s `handleLockIn` (fired by the cell consumer's lock-in detector),
-not on the move side. In competitive mode `handleLockIn` publishes an `EventShrink`
-(with `PlayerID`/`PlayerIdx` set to this player) for every line clear (1+ lines;
-rows added = lines cleared); all other players apply the shrink to their own
-playfields. In teams mode `handleLockIn` scores `teamSize × lines`, publishes an
-`EventLineClear{Team, Score, LinesCleared}` (teammates fold in BOTH the score and
-the line count, keeping level/gravity in sync across the team) and an
-`EventShrink{Team, TargetTeam: 1−teamIdx, RowsRemoved}` aimed at the OPPOSING
-team's shared board (see Phase 8). See `jetris-gameplays.md` for shrink rules.
+not on the move side. In competitive mode `handleLockIn` publishes the collapse
+as a gated transform and then CAS-adds `lines` to EVERY surviving opponent's
+garbage register (`go e.bumpVictimLedgers` — one row owed per cleared line;
+the victims apply their deficit themselves, see the garbage-handling section
+above). In teams mode `handleLockIn` scores `teamSize × lines`, publishes an
+`EventLineClear{Team, Score, LinesCleared, TotalScore, TotalLines}` on its
+per-kind subject (every engine folds the DELTA of the cumulative totals,
+keeping the per-team scoreboard and every teammate's level/gravity in sync)
+and bumps the OPPOSING team board's garbage register the same way (see
+Phase 8). See `jetris-gameplays.md` for the attack rules.
 
 Hard drops compute the destination ONCE (`HardDropDestination` /
 `HardDropDestinationCoop`) and project it with `ProjectHardDrop(...,
@@ -1787,28 +2100,35 @@ full-board re-render (`emitFullBoardRerender`) in addition to folding in the sha
 score delta. A *full* re-render (the UI repaints all visible rows in one update) is
 required because the bounded, non-blocking `Updates` channel can drop
 individual per-row triggers, which would otherwise leave stale rows on the other
-player's board. The same full-board re-render is emitted after a competitive
-shrink (`applyOpponentShrink`).
+player's board. The same full-board re-render is emitted after every gated
+transform commits (a clear or a garbage raise shifts most of the board), and
+teammates re-render off the `line_clear` event the same way coop does.
 
 Note the distinction between the **re-render** (whole board, UI only) and the
-**publish**: the clear/shrink publish only the cells that *actually changed*
+**publish**: the clear/raise publish only the cells that *actually changed*
 (`changedCells(cur, projected, fromRow, toRow)` diffs the projection against
-the live rows over the visible range), not the whole visible range. A low stack
-changes only a handful of cells, so on the shared coop board this sharply cuts
+the live rows), not whole rows. Every bulk transform — and the coop clear —
+diffs the FULL `0..Height-1` row range, headroom included: there is no
+`visibleRowStart` truncation anywhere (a truncated diff used to strand
+duplicated or orphaned cells in rows 0-3). A low stack still changes only a
+handful of cells, so on the shared coop board this sharply cuts
 the per-subject CAS contention that was otherwise failing the clear's
 merge-retry against the other player's moving piece — exhausting the retries
 and dropping the clear (uncleared line) and the follow-up spawn (stuck player).
-Competitive clear/shrink publish their changed cells NoCAS (per-player boards,
-single writer — authoritative); the coop clear stays CAS+merge-retry because a
-NoCAS shared-cell write from a stale snapshot could clobber the other player's
-mid-flight piece.
+Competitive/teams clears and raises publish their changed cells NoCAS behind
+the txn gate (the gate serializes bulk transforms against each other; the
+NoCAS cells override in-flight moves by design); the coop clear stays
+CAS+merge-retry because coop has no registers and a NoCAS shared-cell write
+from a stale snapshot could clobber the other player's mid-flight piece.
 
-#### Publish & CAS helpers (`engine.go` / `move.go`)
+#### Publish & CAS helpers (`engine.go` / `move.go` / `transform.go` / `ledger.go`)
 
 There is no separate CAS source file. There is no `Publish`, `PublishHardDrop`,
 `ErrMoveDropped`, or `ErrLockIn`, and there is no wait-on-`cellUpdated`-then-retry
-loop. All CAS logic lives in the publish helpers in `engine.go` and the hard-drop
-helpers in `move.go`. Every helper takes a `map[game.CellPos]game.Cell` (the
+loop. All CAS logic lives in the publish helpers in `engine.go`, the hard-drop
+helpers in `move.go`, the gated bulk transform in `transform.go`, and the
+garbage ledger in `ledger.go` (register types + echo folding in
+`registers.go`). Every helper takes a `map[game.CellPos]game.Cell` (the
 output of `diffCells`/`changedCells`) and orders the batch with
 `orderedCellKeys`:
 
@@ -1832,13 +2152,32 @@ output of `diffCells`/`changedCells`) and orders the batch with
   Used for ALL coop shared-cell writes (spawn, gravity, lock, hard drop,
   line clear).
 - `publishProjectedCellsNoCAS(ctx, cells, locked)` — atomic batch with no CAS,
-  for authoritative competitive writes (lock, hard-drop landing, line clear,
-  shrink) where the publisher owns the per-player subjects. Write-throughs on
+  for authoritative competitive writes (lock, hard-drop landing) where the
+  publisher owns the per-player subjects. Write-throughs on
   success. A batch above the server's atomic-batch limit (1000 messages — only
   reachable on degenerate many-player boards) is split into sequential atomic
   chunks along the already-ordered key list; the category order remains a
   correct total order across chunk boundaries, at the cost of a briefly visible
   intermediate board between chunks.
+- `publishGatedTransform(ctx, op, locked, project)` (`transform.go`) — the
+  bulk-transform driver: project (against the live replica on the first
+  attempt, against a fetched snapshot on retries) → `buildGatedItems` (the txn
+  register first with per-subject CAS at `txnSeq` — the gate — then the
+  changed cells in `orderedCellKeys` order, NoCAS except the teammate guards
+  and `ExpectForSubject` carriers on team boards) → `publishGatedItems`
+  (splitting oversized batches via `splitGatedItems`: the gate head keeps the
+  txn register + every expectation-carrying message) → on `ErrCASFailure`/
+  `ErrBatchTransient`, `fetchBoardSnapshot` and recompute (≤ 6 attempts).
+  Committed items write through via `applyGatedItems` (register mirror + cells
+  at the inferred consecutive sequences). Callers: `handleLockIn` (op
+  `clear`), `applyOwedGarbage` (op `shrink`), `handleTeamTopOut` (op
+  `vacate`).
+- `bumpVictimLedgers(ctx, lines)` / `bumpLedger(ctx, cacheKey, subject,
+  lines)` (`ledger.go`) — the attacker-side CAS-add on each victim board's
+  garbage register (one goroutine per victim, ≤ 20 refresh-and-re-add
+  attempts, warm-started from the `opponentGarbage` cache); and
+  `applyOwedGarbage(ctx)` — the victim-side application described in the
+  garbage-handling section above.
 - `applyPublishedCells(orderedKeys, get, commitSeq, locked)` — write-throughs a
   committed batch into `e.playfield`: each cell's content + the per-subject
   stream sequence inferred from the commit ack (`message i of N →
@@ -1857,7 +2196,8 @@ output of `diffCells`/`changedCells`) and orders the batch with
   lock, drop; ~4-8 messages per move). Call with `e.mu` held.
 - `changedCells(cur, projected []game.Row, fromRow, toRow)` — the changed cells
   of a full-board projection over a row range (`ProjectClearRows` /
-  `ProjectShrink`). Call with `e.mu` held.
+  `ProjectShrinkCascade`; every caller passes the full `0, Height` range).
+  Call with `e.mu` held.
 - Hard drops: `publishHardDrop` (competitive, NoCAS) and `publishHardDropCoop`
   (coop, merge-retry) in `move.go`.
 
@@ -1892,9 +2232,27 @@ per occupied cell of a row. The current suite is:
 - `TestCoopConcurrentPlayNoPieceCorruption` — concurrent coop play keeps both pieces intact.
 - `TestCoopHorizontalIFallsWithoutSpuriousLock` — the single-row horizontal I falls
   without firing a spurious lock-in.
+- Gated clears (`gatedclear_test.go`): `TestCompetitiveClearCollapsesHeadroom`
+  — a competitive hard-drop clear runs as a gated transform whose full-range
+  diff collapses the headroom correctly (txn register advanced, no stranded
+  cells); `TestGatedClearRejectsStaleGateAndRecomputes` — the
+  `testHookBeforeGatedCommit` seam interleaves a competing txn write between
+  projection and publish, asserting the stale gate atomically rejects the
+  whole batch and the recompute (from `fetchBoardSnapshot`) converges.
+- Garbage ledger (`garbage_test.go`): `TestCompetitiveRaiseLedgerFlow` — a
+  clear bumps the victim's garbage register and the victim's board rises by
+  the deficit (the competitive A→B row-shift path end to end);
+  `TestCompetitiveSimultaneousAttacksSum` — two attackers' near-simultaneous
+  CAS-adds serialize and the victim applies the exact sum;
+  `TestShrinkCascadeTopsOutSqueezedPlayer` — a raise whose cascade lift runs
+  the falling piece off the top eliminates its owner;
+  `TestLateJoinAppliesOwedGarbage` — an engine that starts against a board
+  with an outstanding deficit reconciles everything owed from the Start
+  snapshot; `TestSpectatorNeverAppliesGarbage` — spectators (no `runInput`)
+  structurally never apply.
 
-TODO (not yet implemented): a competitive shrink A→B row-shift test, a
-"CAS failure on MoveDown → lock-in" test, and a two-engine move-visibility test.
+TODO (not yet implemented): a "CAS failure on MoveDown → lock-in" test and a
+two-engine move-visibility test.
 
 ---
 
@@ -2239,7 +2597,7 @@ are grouped under color-matched TEAM A / TEAM B headers (the winning team's
 header and members in gold), and cooperative players list plainly (one shared
 board — no per-player color, no winner). A "Back to Lobby" `secondaryButton` returns. A centered
 branding banner spans the top of both the lobby and the archive screen: the nats.io "N"
-logo flanking "JETRIS: peer to peer blackboard system made with NATS.io" in the pixel face (the
+logo flanking "JETRIS: peer to peer blackboard system made with NATS.io JetStream" in the pixel face (the
 "NATS.io" text in the NATS-blue accent).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
@@ -2374,15 +2732,23 @@ their piece and spectates while their team plays on; a team loses when ALL of
 its members have topped out, and every member of the other team — eliminated
 members included — wins.
 
-**KEY design decision — shared-board shrinks never lift pieces.** On a shared
-team board NO active piece is lifted by a shrink: all active pieces are
-overlaid at their current positions, a piece overtaken by the risen stack
-locks where it is ("crushed"), and a shrink can never top a player out
-(top-out happens at spawn failure only — and spawn failure means LOCKED cells
-in the spawn area; a spawn covered only by a teammate's falling piece is
-deferred and retried, see Phase 3). This is what makes the multi-receiver
-shrink application safe — the shrink batch never touches piece cells, so it
-can neither corrupt a teammate's in-flight piece nor fire a spurious lock-in.
+**KEY design decision — one raise semantics for every board, made safe by the
+txn gate.** A garbage raise on the shared team board behaves exactly like the
+competitive one (`ProjectShrinkCascade` — teams "crush" is gone): every
+falling piece, whoever owns it, holds its position unless the risen stack or
+garbage overlaps it, lifts by the minimum, and lifts cascade bottom-most-first
+— a piece is never merged into the stack. A piece pushed off the top
+eliminates its owner (listed in the batch's txn record, delivered before the
+vacating cells so the owner's zero-active edge reads as an elimination), and
+locked rows pushed past the top (`Full`) take the whole board — every
+remaining player on it. What makes the multi-writer application safe is no
+longer "never touch pieces" but the txn-gated batch: the gate admits exactly
+one applier (a loser's ENTIRE batch is atomically rejected and its recompute
+finds the deficit closed), and the teammate guards — per-subject CAS on every
+rewritten foreign-piece/headroom cell plus one `ExpectForSubject` carrier per
+untouched foreign piece — reject any batch built from a snapshot a teammate's
+move/lock/spawn has since overtaken, so a stale projection can never bury or
+duplicate a mid-flight piece.
 
 ### 8.1 `internal/config`
 
@@ -2400,18 +2766,19 @@ index), scoped by team index so the two boards are disjoint.
 
 ### 8.2 `internal/game`
 
-Two additions to `playfield.go` (specified in §1.3 above), no collision or
-rotation changes:
+No teams-specific projection exists (and no collision or rotation changes):
 
-- `ProjectShrinkShared(rowsToAdd, causerIdx int) []Row` — the shared-board
-  shrink projection: shifts the locked stack up, appends adversarial bottom
-  rows tagged `causerIdx`, and overlays EVERY player's active cells in place
-  (no lift; an overtaken piece stays put to be crushed). No `topOut` return.
+- `ProjectShrinkCascade(rowsToAdd, causerIdx int) ([]Row, topped []int,
+  boardFull bool)` (specified in §1.3 above) serves BOTH board shapes — the
+  shared team board is just the many-piece case of the same cascade-lift
+  transform (pieces hold unless overlapped, lift minimally, cascade
+  bottom-most-first; off-top ⇒ `topped`, locked rows past row 0 ⇒
+  `boardFull`). There is no separate shared projection and no "crush".
 - `AdversarialRowCount() int` — contiguous bottom rows with **≥1** adversarial
-  cell. Monotonic (garbage is permanent and bottom-anchored), which makes it
-  the idempotency guard for the shrink application; "≥1" rather than "all
-  cells" because crushed pieces fill — and vacated active overlays hollow —
-  individual cells of a garbage row.
+  cell ("≥1" rather than "all cells" because a garbage row can permanently
+  keep the holes a skipped shared-board overlay left behind). Still monotonic,
+  but no longer a publish-path guard — exactly-once is the txn gate's job; the
+  agent and the tests remain its users.
 
 ### 8.3 `internal/lobby`
 
@@ -2428,11 +2795,14 @@ only after the CAS commit. Both-teams-full reuses the existing roster-full →
 ### 8.4 `internal/engine`
 
 **Fields and construction.** `Engine` gains `teamIdx`/`teamSlot`/`teamSize`,
-`eliminatedTeam map[string]int`, `teamOutcomeDone bool`, and `expectedGarbage
-int` (all specified in §3.1 above). `New(..., playerIdx, teamIdx, teamSlot)`
+`eliminatedTeam map[string]int`, `teamOutcomeDone bool`, and shares the
+competitive garbage machinery — the register mirrors
+(`garbageOwed`/`garbageOwedSeq`/`garbageOwedBy`, `txnApplied`/`txnSeq`),
+`toppedByShrink`, the `opponentGarbage` ledger cache, and the `applyGarbage`
+channel (all specified in §3.1 above). `New(..., playerIdx, teamIdx, teamSlot)`
 takes the `JoinResult` fields. The `sharedBoard()` helper (`coop || teams`)
 replaces most former `ModeCooperative` checks — move routing
-(`attemptMove` → `attemptMoveCoop`), lock/hard-drop/line-clear merge-retry,
+(`attemptMove` → `attemptMoveCoop`), lock/hard-drop merge-retry,
 anchor shifting on clears, shared level sync.
 
 **`Start()` teams branch.** Board dims
@@ -2453,19 +2823,26 @@ consumer is needed; spectators (teamIdx 0 by default) consume team 0 as their
 
 **Elimination (`handleTeamTopOut`).** `handleTopOut(ctx, locked bool)` routes
 teams to `handleTeamTopOut`, which implements per-player elimination while the
-team plays on:
+team plays on. A teams player tops out on a failed spawn (locked cells in the
+spawn area — a spawn covered only by a teammate's falling piece is deferred,
+not fatal), on being squeezed off the top by a raise (`Topped`), or with the
+whole board when a raise pushes locked rows past the top (`Full`):
 
 1. Under `e.mu`, set `hadActivePiece = false` BEFORE publishing the vacate —
    the vacate drives our active-cell count to zero and must not read as a
    lock-in (which would spawn a next piece for an eliminated player). The
    consumer-side guard (lock-in detection gated on `getMode() == ModePlayer`,
-   §3.1) catches the echo for the same reason.
-2. Project the removal of our own active cells (`ProjectMove(affected, nil,
-   e.playerIdx)` → `diffCells`) and mark ourselves in `eliminatedPlayers` /
-   `eliminatedTeam`.
-3. Publish the vacate via merge-retry (shared board — the skip rule protects
-   teammates' in-flight pieces), so teammates don't play around a dead piece.
-4. Publish `EventGameOver{PlayerID, Team, Score, PieceCount}`, transition to
+   §3.1) catches the echo for the same reason. Mark ourselves in
+   `eliminatedPlayers` / `eliminatedTeam`.
+2. If our piece is still on the board, vacate it as a GATED transform (op
+   `vacate`, projection: clone → `ClearActiveCellsForPlayer`; no-op if the
+   piece is already gone because a shrink topped us or a prior attempt
+   landed). The gate matters: a racing garbage application projecting our
+   piece from a stale snapshot would otherwise resurrect the dead piece —
+   racing bulk transforms serialize on the board's txn register and the loser
+   recomputes from converged state.
+3. Publish `EventGameOver{PlayerID, Team, Score, Level, PieceCount}` on the
+   player's per-kind event subject, transition to
    spectator with `Won=false` (interim — flips to won if the team prevails),
    and emit `UpdatePlayerEliminated{EliminatedPlayerID, Team}`. NO
    `transitionGameToFinished` here — the game only finishes when a whole team
@@ -2474,8 +2851,9 @@ team plays on:
 **Outcome (`handleTeamGameOverEvent`).** Every engine processes every
 elimination event (including the echo of its own): record the sender in the
 elimination maps, recount per-team eliminations, and decide the outcome
-exactly once (`teamOutcomeDone`, set under `e.mu`). The events subject is one
-ordered stream, so all engines see the same elimination order and reach the
+exactly once (`teamOutcomeDone`, set under `e.mu`). Events live on per-kind,
+per-player subjects, but the game stream still delivers them all in one total
+order, so all engines see the same elimination order and reach the
 same verdict. When the OTHER team is dead: every member of our team —
 including already-eliminated members — transitions with `Won=true`, and each
 winning `initialMode == ModePlayer` engine calls the CAS-deduped
@@ -2485,23 +2863,29 @@ way so an eliminated loser's interim message resolves. A defensive draw branch
 (both teams read as dead — shouldn't happen on an ordered stream) still makes
 SOMEONE finish the game so it archives.
 
-**Line clears (`handleLockIn` teams arm, `consumer.go`).** Score `teamSize ×
-lines` (coop scoring within the team); publish
-`EventLineClear{PlayerID, Team, Score, LinesCleared}` — teammates fold in the
-score AND the line count, keeping every teammate's level/gravity in sync —
-followed by `EventShrink{PlayerID, PlayerIdx, Team, TargetTeam: 1−teamIdx,
-RowsRemoved: lines}` aimed at the opposing team. `handleGameEvent` branches on
-teams for all three event kinds (`events.go` adds `GameEvent.Team` +
-`GameEvent.TargetTeam`, `LinesCleared` set on team clears, and
-`EngineUpdate.Team`).
+**Line clears (`handleLockIn` teams arm, `consumer.go`).** The collapse is a
+GATED transform (op `clear`, `shiftAnchors=true` for the shared board) whose
+recompute re-detects the completed rows if the gate is lost; score `teamSize ×
+lines` (coop scoring within the team) from the rows the COMMITTED transform
+actually cleared. Publish `EventLineClear{PlayerID, Team, Score, LinesCleared,
+TotalScore, TotalLines}` on the sender's per-kind subject — every engine folds
+the DELTA of the cumulative totals, keeping every teammate's level/gravity in
+sync — then bump the OPPOSING team board's garbage register
+(`go e.bumpVictimLedgers`: one CAS-added row owed per cleared line; there is
+no shrink event). `handleGameEvent` branches on teams for both event kinds
+(`events.go` carries `GameEvent.Team`, `LinesCleared`, and the cumulative
+`TotalScore`/`TotalLines`; `EngineUpdate.Team`).
 
 **Per-team scoreboard.** On top of the own-team `score`, every engine keeps
 `teamScores` and `teamLines` (both `[config.TeamCount]atomic.Int64`): the
 clearer folds its score delta and line count into its own team's slots in
 `handleLockIn`, and every OTHER engine — teammates, opposing-team players,
-eliminated players, and spectators — folds `EventLineClear.Score`/
-`LinesCleared` into `teamScores[ev.Team]`/`teamLines[ev.Team]` in
-`handleGameEvent` regardless of team. Each fold emits `UpdateTeamStats` (both
+eliminated players, and spectators — folds the DELTA between the event's
+cumulative `TotalScore`/`TotalLines` and the last totals seen from that sender
+(`eventTotals`) into `teamScores[ev.Team]`/`teamLines[ev.Team]` in
+`handleGameEvent` regardless of team — so a trimmed intermediate event is
+subsumed by the next, and a spectator joining mid-game reconstructs the full
+scoreboard from each sender's last retained event. Each fold emits `UpdateTeamStats` (both
 teams' scores and levels, per-team level = `game.Level(teamLines[t])`; also
 `Engine.TeamScores()`/`TeamLevels()`), and the HUD replaces the single SCORE
 stat with live TEAM A / TEAM B stats (own team accented; spectators see each
@@ -2509,44 +2893,61 @@ team's `score · lvl N` inline and no single SCORE/LEVEL stat) — without this,
 opposing players and spectators never saw a clearing team's score move (a
 spectator's default `teamIdx` 0 folded only team A's clears).
 
-**Shrink application (`applyTeamShrink`) — THE publish-path novelty.** Unlike
-competitive's `applyOpponentShrink` (single writer per board → authoritative
-NoCAS), every ALIVE member of the target team receives the same `EventShrink`
-and races to apply the identical transform to the same subjects
-(`ev.TargetTeam == e.teamIdx && getMode() == ModePlayer`; eliminated members
-skip it). Two mechanisms make the race safe:
+**Garbage application — THE publish-path novelty is the txn-gated transform +
+garbage ledger.** There is no `applyTeamShrink` (nor a competitive
+`applyOpponentShrink`): both modes share `applyOwedGarbage` (§3.1), and on a
+team board every ALIVE member may react to the same garbage-register echo and
+race to apply the identical deficit (eliminated players and spectators don't
+run `runInput`, so they structurally can't). The mechanisms that make the race
+safe:
 
-- **Idempotency guard:** `expectedGarbage` (under `e.mu`) accumulates the rows
-  owed to this board across all shrink events; the deficit is
-  `expectedGarbage − e.playfield.AdversarialRowCount()`. Garbage rows are
-  permanent and bottom-anchored, so the count converges monotonically toward
-  the target — `deficit <= 0` means the shift (ours or a teammate's) already
-  landed and the loop stops.
-- **Recompute-on-CAS-failure:** the projection (`ProjectShrinkShared(deficit,
-  causerIdx)` → `changedCells`, under `e.mu`) is published WITH per-subject
-  CAS (`PublishMoveAtomically`). On `ErrCASFailure` the projection is thrown
-  away ENTIRELY: wait on `e.cellUpdated` (capped per-player-offset backoff
-  desynchronizing teammates), re-check the guard, and RECOMPUTE from fresh
-  state. **Never merge-retry** — a blind merge would republish a stale shift
-  after a teammate's shift committed and double-shift the stack; recomputing
-  cannot. Any batch built from a stale board necessarily carries a stale
-  expectation on at least one garbage-row cell (the winning batch wrote the
-  full board width), so CAS rejects it.
+- **Exactly-once = the txn gate.** Each applier publishes one gated batch (op
+  `shrink`): the board's txn register first, with per-subject CAS at its last
+  sequence, restating `Applied = owed.Total`. Of several racing appliers the
+  server admits exactly one — a loser's ENTIRE batch is atomically rejected
+  (nothing stored), and its recompute from `fetchBoardSnapshot` finds
+  `owed.Total − txn.Applied == 0` and no-ops. No merge-retry, no double-shift;
+  the cumulative registers make the same math idempotent across duplicate
+  signals, replays, and reconnects.
+- **The cells are NoCAS — raises override moves.** A teammate's (or the
+  victim's own) in-flight move that raced the raise fails its own per-subject
+  CAS against the risen board and is dropped + flashed — the established
+  discipline for any lost move.
+- **Teammate guards protect mid-flight pieces.** The batch CAS-guards every
+  write to a cell of another player's snapshot piece and to the headroom rows
+  a fresh spawn could claim, and adds one `ExpectForSubject` carrier per
+  foreign piece it leaves untouched — so a teammate move/lock/spawn committed
+  since the snapshot rejects the whole batch and the recompute sees the
+  piece's new reality (never buried, never duplicated).
+- **Eliminations travel in-band.** `ProjectShrinkCascade` reports `topped`
+  (pieces pushed off the top — each owner is out) and `boardFull` (locked rows
+  past the top — the team board is lost, every remaining player on it is
+  out); the txn record carries both, delivered before the vacating cells, so
+  remote owners route the zero-active edge to `handleTopOut` (via
+  `toppedByShrink`) and `Full` tops out directly from the echo. The applier
+  handles its own elimination inline (its write-through already advanced the
+  register mirror, so its own echo is a no-op).
 
-Exactly one teammate's batch commits per deficit; the rest converge and stop.
-Bounded at 16 attempts; ends with a full-board re-render (the shift touches
-most of the board). Because the projection overlays active pieces in place,
-the batch never touches piece cells and no spurious lock-in can fire on any
-teammate.
+Exactly one teammate's batch commits per deficit; the rest converge and stop
+(bounded at 6 gate-rejection recomputes; the common case is one batch, zero
+retries). A committed raise ends with a full-board re-render (the shift
+touches most of the board).
 
 ### 8.5 `internal/archive`
 
 `playerTeams` maps playerID → team from the roster listing snapshot (the
 authoritative source), with `EventGameOver.Team` as the fallback for players
-missing from it. The losing team is the one whose members ALL sent
-`EventGameOver`; `WinningTeam` is the other index (`-1` if both or neither
-read as dead — draw). Every winning-team member gets `Winner: true` (the
-eliminated ones included) and every `PlayerResult` carries `Team`; the record
+missing from it. Per-player results come from the archiver's own engine plus
+an event drain over `EventsSubjectFilter`: events live on per-kind, per-player
+subjects, so each player's single game_over survives `MaxMsgsPerSubject: 1`
+retention and the drain recovers EVERY player's final score/level/piece-count.
+Verdicts still never come from the replay — near-simultaneous final top-outs
+put BOTH teams' last events on the stream, so no set-of-eliminated computation
+can pick the winner; `WinningTeam` comes from the archiving engine's own
+verdict (`GameOutcome()` + `TeamIdx()`: a won verdict names the archiver's
+team, a lost verdict here means a draw — `-1`). Every winning-team member gets
+`Winner: true` (the eliminated ones included) and every `PlayerResult` carries
+`Team`; the record
 carries `TeamSize`, `WinningTeam`, and the final per-team totals
 `TeamScores`/`TeamLevels` (from the archiving engine's converged per-team
 scoreboard — rendered in the history line, which previously showed no score
@@ -2596,20 +2997,26 @@ one per team (`TeamCellSubject`) — so the snapshot is complete for every mode.
 
 - `internal/config/config_test.go` — team subject builders and board-dimension
   helpers (see §1.1 test list).
-- `internal/game/teamshrink_test.go` — `ProjectShrinkShared` holds pieces in
-  place (no lift, overtaken piece left to crush); `AdversarialRowCount`
-  monotonic counting including partially-filled garbage rows.
+- `internal/game/cascadeshrink_test.go` — `ProjectShrinkCascade` cascade-lift
+  semantics (hold / minimum lift / chained cascade / topped / boardFull; see
+  the §1.3 test list) — one projection shared by competitive and team boards.
+- `internal/game/teamshrink_test.go` — `AdversarialRowCount`
+  monotonic counting including holed and stack-covered garbage rows.
 - `internal/lobby/teamjoin_test.go` — slot assignment in join order,
   `ErrTeamFull`, rejoin idempotence, both-teams-full → `starting`, and
   concurrent joins racing the CAS loop never over-fill a team.
 - `internal/engine/teams_test.go` — 2v2 integration against an embedded
-  server: a clear's garbage lands on the opposing board EXACTLY once with
-  both receivers racing `applyTeamShrink`, and never on the clearing team's
+  server: a clear bumps the opposing board's garbage register and the garbage
+  lands there EXACTLY once — the txn gate admits one of the racing teammate
+  appliers — and never on the clearing team's
   board; teammates fold the score; ALL four engines (opposing team included)
   converge on the per-team scoreboard (`TeamScores()`) while the opposing
   team's own score stays untouched; an elimination leaves the team playing on,
   the second elimination ends the game with `Won=true` on every winner
-  (eliminated winner included) and meta `finished`.
+  (eliminated winner included) and meta `finished`. (The competitive side of
+  the ledger — simultaneous attacks summing, cascade top-outs, late-join
+  reconcile, spectator gating, gate rejection/recompute — is covered by
+  `garbage_test.go` and `gatedclear_test.go`, §3.1 test list.)
 
 ---
 
@@ -3255,7 +3662,12 @@ These rules apply throughout all phases:
 
 4. **CAS is the only concurrency mechanism for shared stream state.** No mutexes
    protecting NATS-backed state. Only `sync.RWMutex` on the in-memory lobby maps
-   (which are derived state from NATS, not the source of truth).
+   (which are derived state from NATS, not the source of truth). This includes
+   the bulk-transform layer: exactly-once for whole-board transforms is the txn
+   register's per-subject CAS (the gate riding first in the atomic batch — a
+   stale gate atomically rejects the loser's entire batch), and garbage
+   attacks are per-subject CAS-adds on the victim board's cumulative garbage
+   register — never events, never locks.
 
 5. **Error handling.** Functions that can fail return errors. The entrypoint calls
    `log.Fatal` on startup errors. Running goroutines log errors and continue (or exit
@@ -3279,7 +3691,11 @@ These rules apply throughout all phases:
    server version as the first integration test you write for `internal/nats`. If
    it fails, check the NATS server version (requires 2.12+). Mind the two server
    limits: an atomic batch holds at most **1000 messages** (default
-   `max_batch_size`; the engine's NoCAS path chunks above it) and a multi-last
+   `max_batch_size`; the engine's NoCAS path chunks above it, and an oversized
+   GATED batch is split by `splitGatedItems` into a gate head — the txn
+   register plus EVERY expectation-carrying message, since a guard in a NoCAS
+   tail would be no guard at all — followed by NoCAS tail chunks) and a
+   multi-last
    direct get returns at most **1024 responses** (413, no pagination;
    `FetchPlayfieldState` chunks at 512 subjects, bounded by `GetLastMsgsUpToSeq`
    for a consistent snapshot). Note: the CAS merge-retry's batched refetch

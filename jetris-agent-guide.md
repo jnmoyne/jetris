@@ -212,10 +212,12 @@ and the real-time push fabric.
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
-| `jetris.game.<id>.events` | `GameEvent` JSON | line clears, garbage ("shrink"), game over — ONE subject, so only the last event is retained; consume live, never rely on replay |
+| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas), and each player publishes at most one `game_over`, so nothing meaningful is ever lost |
 | `jetris.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
 | `jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
 | `jetris.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
+| `…player.<player>.playfield.garbage` / `…team.<t>.playfield.garbage` | `{"total": N, "by": idx}` | the board's GARBAGE register: cumulative garbage rows OWED, CAS-added by attackers (§4.4) |
+| `…player.<player>.playfield.txn` / `…team.<t>.playfield.txn` | `{"applied": N, "op": …, "topped": […], "full": bool, "by": idx}` | the board's TXN register: rows APPLIED + the exactly-once gate every bulk transform CASes through (§4.4) |
 
 `Cell` JSON (empty cell marshals to `{}`, the vacate payload):
 
@@ -237,8 +239,9 @@ and the real-time push fabric.
 - **Player moves that lose CAS are dropped** — never retried. Re-observe, re-plan.
   On a dropped move, **broadcast a CAS-failure flash** so spectators can see it (see
   below).
-- **Authoritative writes** (your lock-in, hard-drop landing, line clear, applying
-  an opponent's garbage to your own board) publish **without CAS**.
+- **Authoritative writes** (your lock-in, hard-drop landing) publish **without
+  CAS**. Bulk transforms — your line-clear collapse and applying owed garbage —
+  are GATED batches: cells NoCAS, exactly-once through the txn register (§4.4).
 - **Write-through**: after a successful publish, apply the committed cells and
   their inferred sequences to your in-memory board immediately (batch messages get
   consecutive sequences ending at the commit ack); your own echo then no-ops via a
@@ -262,13 +265,52 @@ and the real-time push fabric.
   subscribe to or render other players' flashes (players see only their own). The
   Go `agent`/`engine` packages do this automatically.
 
-### 4.4 Reading state
+### 4.4 Garbage: the ledger and the gated transform
 
-Join mid-game by fetching the last message of every cell subject (batched direct
-get), then start **ordered consumers** from `max(seq)+1` over your board filter,
-opponent/team filters, `events`, `meta`, and `countdown`. Events arrive on one
-ordered stream — every peer sees the same order, which is how all peers agree on
-eliminations and outcomes without a coordinator.
+Garbage is **not an event**. An attack is recorded durably in the victim
+board's GARBAGE register and applied by the victim as a GATED transform:
+
+- **Attacking (you cleared N lines).** For every victim board (competitive:
+  each surviving opponent; teams: the opposing board), CAS-add the garbage
+  register: read its last message (`{"total": T}` at sequence S, or 0/0 if
+  never written), publish `{"total": T+N, "by": <yourPlayerIdx>}` with
+  `Nats-Expected-Last-Subject-Sequence: S`, and on a CAS rejection refresh
+  and re-add (bounded retries). Simultaneous attackers serialize on the
+  expectation and the register converges to the exact sum — an attack can
+  never be lost, trimmed, or double-counted.
+- **Applying (your register grew).** Your deficit is `garbage.total −
+  txn.applied`. Apply it as ONE atomic batch whose FIRST message is your txn
+  register — `{"applied": <new total>, "op": "shrink", "by": <you>}` with a
+  per-subject CAS expectation at the txn's last sequence (**the gate**) — and
+  whose remaining messages are the changed cells with NO expectations. A
+  stale gate atomically rejects the whole batch (nothing is stored): refetch,
+  recompute the deficit (now possibly zero), and retry. The same gated shape
+  is used for your line-clear collapse (`"op": "clear"`, `applied` restated
+  unchanged), which is what stops a clear and a raise on the same board from
+  clobbering each other.
+- **The transform itself (cascade rules, gameplays §4/§5):** the settled
+  stack shifts up N rows and N full-width permanent adversarial rows
+  (`{"o":true,"t":1,"g":true,"pi":<causer>}`) fill the bottom. Every falling
+  piece holds its position unless the risen stack overlaps it — then it lifts
+  the MINIMUM rows that clear the conflict, cascading through any piece above
+  it. A piece pushed off the top eliminates its owner (list it in the txn's
+  `topped`); settled rows pushed past the top mean the board is full
+  (`"full": true`) — competitive: you top out; teams: the whole board's
+  players are out.
+- **Raises override moves.** The gated batch's cells carry no expectations,
+  so an in-flight move loses to a committed raise (the move's own CAS then
+  fails against the risen board — drop it and re-plan, as with any lost CAS).
+
+### 4.5 Reading state
+
+Join mid-game by fetching the last message of every playfield subject —
+all cells PLUS the two registers (batched direct get) — then start **ordered
+consumers** from `max(seq)+1` over your board's `playfield.>` filter,
+opponent/team `playfield.>` filters, the `events.>` filter, `meta`, and
+`countdown`. If the fetched registers show `total − applied > 0`, apply the
+deficit before playing: owed garbage survives your downtime. Events arrive on
+one ordered stream — every peer sees the same order, which is how all peers
+agree on eliminations and outcomes without a coordinator.
 
 ## 5. Lifecycle responsibilities (every seat, agent or human)
 
@@ -321,6 +363,8 @@ eliminations and outcomes without a coordinator.
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried
 - [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
+- [ ] Attacks delivered by CAS-adding victims' garbage registers (never events)
+- [ ] Clears and garbage applied as txn-gated batches; deficit reconciled on join
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish
 - [ ] Presence deleted and seats freed on the way out

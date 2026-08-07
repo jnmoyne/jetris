@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"jetris/internal/config"
 	"jetris/internal/game"
 )
 
@@ -31,6 +32,15 @@ func (e *Engine) runInput(ctx context.Context) {
 			}
 			// Player input — drop+flash on CAS failure.
 			_ = e.attemptMove(ctx, move, false)
+		case <-e.applyGarbage:
+			if e.getMode() != ModePlayer {
+				continue
+			}
+			// Apply owed garbage on THIS goroutine: the raise then never
+			// races our own move/gravity publishes (they're serialized behind
+			// it), and its NoCAS cells override whatever in-flight move a
+			// remote writer had — the "raise overrides the move" rule.
+			e.applyOwedGarbage(ctx)
 		case <-timer.C:
 			if e.getMode() != ModePlayer {
 				return // became a spectator: stop gravity (and this loop)
@@ -46,6 +56,18 @@ func (e *Engine) runInput(ctx context.Context) {
 			// the spawn cells is retried here, on the same single-write
 			// goroutine and at the same cadence the blocker falls at.
 			e.retrySpawnIfPending(ctx)
+
+			// Garbage backstop: if rows are still owed (a signal was consumed
+			// by an attempt that lost its gate, or arrived before runInput
+			// started), re-arm the application at gravity cadence.
+			if e.gameMode != config.ModeCooperative {
+				e.mu.Lock()
+				deficit := e.garbageOwed - e.txnApplied
+				e.mu.Unlock()
+				if deficit > 0 {
+					e.signalGarbageApply()
+				}
+			}
 
 			if e.sharedBoard() {
 				if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {

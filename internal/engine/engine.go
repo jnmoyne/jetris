@@ -84,6 +84,8 @@ type Engine struct {
 	score             atomic.Int64
 	totalLines        atomic.Int64
 	level             atomic.Int64
+	ownClearScore     atomic.Int64 // cumulative score from OWN clears only — the line_clear event's TotalScore
+	ownClearLines     atomic.Int64 // cumulative lines from OWN clears only — the line_clear event's TotalLines
 	teamScores        [config.TeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (both teams' players and spectators)
 	teamLines         [config.TeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
 	hadActivePiece    bool                           // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
@@ -92,8 +94,30 @@ type Engine struct {
 	eliminatedPlayers map[string]bool                // players who have topped out (competitive/teams); guarded by e.mu
 	eliminatedTeam    map[string]int                 // teams: eliminated player → team; guarded by e.mu
 	teamOutcomeDone   bool                           // teams: win/loss/draw already decided; guarded by e.mu
-	expectedGarbage   int                            // teams: cumulative adversarial rows owed to this team's board; guarded by e.mu
 	visibleRowStart   int                            // first visible row index (varies per game mode/player count)
+
+	// Garbage ledger + txn gate mirrors (competitive/teams; guarded by e.mu).
+	// garbageOwed/garbageOwedSeq mirror the own board's garbage register (rows
+	// owed, written by attackers); txnApplied/txnSeq mirror its txn register
+	// (rows applied, advanced by gated transforms). toppedByShrink is set when
+	// a txn echo lists THIS player as topped (or the whole board as full), so
+	// the imminent zero-active edge in runConsumer routes to handleTopOut
+	// instead of handleLockIn. opponentGarbage caches each opponent/opposing-
+	// team board's garbage register (keyed like opponentPlayfields) so the
+	// attacker-side CAS-add bump starts from the replica.
+	garbageOwed     int
+	garbageOwedSeq  uint64
+	garbageOwedBy   int
+	txnApplied      int
+	txnSeq          uint64
+	toppedByShrink  bool
+	opponentGarbage map[string]opponentLedger
+
+	// eventTotals tracks, per sender, the last cumulative line_clear totals
+	// folded from the events stream, so handleGameEvent folds deltas even when
+	// per-subject retention trimmed intermediate events. Touched only by the
+	// events-consumer goroutine — no lock needed.
+	eventTotals map[string]struct{ score, lines int }
 
 	Updates        chan EngineUpdate
 	OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -111,6 +135,17 @@ type Engine struct {
 	cancelFn    context.CancelFunc
 	moves       chan MoveType
 	cellUpdated chan struct{}
+
+	// applyGarbage (cap 1) signals runInput to run one garbage-application
+	// attempt against the own board (competitive/teams). Signaled by the
+	// register echo handlers whenever owed > applied.
+	applyGarbage chan struct{}
+
+	// testHookBeforeGatedCommit, when set by a test, runs between a gated
+	// transform's projection and its batch publish — the seam deterministic
+	// race tests use to interleave a competing write and assert the gate
+	// rejects and the recompute converges. Nil in production.
+	testHookBeforeGatedCommit func(op string)
 
 	// Buffered-moves mirror of the e.moves channel, for the line under the
 	// board: dispatch appends on enqueue, runInput pops when it dequeues.
@@ -150,8 +185,11 @@ func New(
 		js:                 js,
 		moves:              make(chan MoveType, 8),
 		cellUpdated:        make(chan struct{}, 1),
+		applyGarbage:       make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
 		eliminatedTeam:     make(map[string]int),
+		opponentGarbage:    make(map[string]opponentLedger),
+		eventTotals:        make(map[string]struct{ score, lines int }),
 		rttPending:         make(map[uint64]time.Time),
 	}
 	e.setMode(mode)
@@ -219,20 +257,27 @@ func (e *Engine) Start() error {
 	}
 	e.metaSeq = metaSeq
 
-	// 2. Fetch playfield state (one message per cell; never-written cells are
-	// simply absent and stay empty)
-	cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.cellSubjects())
+	// 2. Fetch playfield state (one message per cell plus the board registers;
+	// never-written subjects are simply absent and stay empty)
+	cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.snapshotSubjects())
 	if err != nil {
 		cancel()
 		return err
 	}
 	var maxSeq uint64
 	for _, c := range cells {
-		data, _ := game.UnmarshalCell(c.Payload)
-		e.playfield.Apply(c.Row, c.Col, data, c.Seq)
 		if c.Seq > maxSeq {
 			maxSeq = c.Seq
 		}
+		if c.Row < 0 {
+			// A board register: fold it through the same path the live
+			// consumer uses. A positive deficit is retained on applyGarbage
+			// until runInput starts — the late-join/reconnect reconcile.
+			e.captureRegisterSnapshot(ctx, "", false, c.Subject, c.Payload, c.Seq)
+			continue
+		}
+		data, _ := game.UnmarshalCell(c.Payload)
+		e.playfield.Apply(c.Row, c.Col, data, c.Seq)
 	}
 
 	// Check if there's already an active piece for this player
@@ -376,12 +421,15 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 	e.opponentPlayfields[key] = pf
 	e.mu.Unlock()
 
-	subjects := make([]string, 0, pf.Height*pf.Width)
+	subjects := make([]string, 0, pf.Height*pf.Width+2)
 	for r := 0; r < pf.Height; r++ {
 		for c := 0; c < pf.Width; c++ {
 			subjects = append(subjects, config.TeamCellSubject(e.gameID, team, r, c))
 		}
 	}
+	subjects = append(subjects,
+		config.TeamGarbageSubject(e.gameID, team),
+		config.TeamTxnSubject(e.gameID, team))
 	cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, subjects)
 	if err != nil {
 		log.Printf("fetch team %d board state: %v", team, err)
@@ -389,16 +437,20 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 	}
 	var maxSeq uint64
 	for _, c := range cells {
+		if c.Seq > maxSeq {
+			maxSeq = c.Seq
+		}
+		if c.Row < 0 {
+			e.captureRegisterSnapshot(ctx, key, true, c.Subject, c.Payload, c.Seq)
+			continue
+		}
 		data, _ := game.UnmarshalCell(c.Payload)
 		e.mu.Lock()
 		pf.Apply(c.Row, c.Col, data, c.Seq)
 		e.mu.Unlock()
-		if c.Seq > maxSeq {
-			maxSeq = c.Seq
-		}
 	}
 
-	go e.runConsumer(ctx, pf, config.TeamCellSubjectFilter(e.gameID, team), key, maxSeq+1, true)
+	go e.runConsumer(ctx, pf, config.TeamPlayfieldFilter(e.gameID, team), key, maxSeq+1, true)
 }
 
 // startOpponentConsumer creates a playfield and consumer for a single opponent.
@@ -412,12 +464,15 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	e.opponentPlayfields[oppID] = pf
 	e.mu.Unlock()
 
-	oppSubjects := make([]string, 0, pf.Height*pf.Width)
+	oppSubjects := make([]string, 0, pf.Height*pf.Width+2)
 	for r := 0; r < pf.Height; r++ {
 		for c := 0; c < pf.Width; c++ {
 			oppSubjects = append(oppSubjects, config.CompetitiveCellSubject(e.gameID, oppID, r, c))
 		}
 	}
+	oppSubjects = append(oppSubjects,
+		config.CompetitiveGarbageSubject(e.gameID, oppID),
+		config.CompetitiveTxnSubject(e.gameID, oppID))
 	oppCells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppSubjects)
 	if err != nil {
 		log.Printf("fetch opponent %s state: %v", oppID, err)
@@ -425,16 +480,20 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	}
 	var oppMaxSeq uint64
 	for _, c := range oppCells {
+		if c.Seq > oppMaxSeq {
+			oppMaxSeq = c.Seq
+		}
+		if c.Row < 0 {
+			e.captureRegisterSnapshot(ctx, oppID, true, c.Subject, c.Payload, c.Seq)
+			continue
+		}
 		data, _ := game.UnmarshalCell(c.Payload)
 		e.mu.Lock()
 		pf.Apply(c.Row, c.Col, data, c.Seq)
 		e.mu.Unlock()
-		if c.Seq > oppMaxSeq {
-			oppMaxSeq = c.Seq
-		}
 	}
 
-	go e.runConsumer(ctx, pf, config.CompetitiveCellSubjectFilter(e.gameID, oppID), oppID, oppMaxSeq+1, true)
+	go e.runConsumer(ctx, pf, config.CompetitivePlayfieldFilter(e.gameID, oppID), oppID, oppMaxSeq+1, true)
 }
 
 func (e *Engine) GameID() string   { return e.gameID }
@@ -586,20 +645,40 @@ func (e *Engine) cellSubject(row, col int) string {
 	return config.CompetitiveCellSubject(e.gameID, e.playerID, row, col)
 }
 
-// cellFilterSubject returns the wildcard filter matching all of this engine's
-// own playfield cells.
+// cellFilterSubject returns the wildcard filter for this engine's own-board
+// consumer. Competitive and teams filter the whole playfield namespace
+// (cells + the garbage/txn registers); cooperative has no registers and
+// filters cells only.
 func (e *Engine) cellFilterSubject() string {
 	switch e.gameMode {
 	case config.ModeCooperative:
 		return config.CoopCellSubjectFilter(e.gameID)
 	case config.ModeTeams:
-		return config.TeamCellSubjectFilter(e.gameID, e.teamIdx)
+		return config.TeamPlayfieldFilter(e.gameID, e.teamIdx)
 	}
-	return config.CompetitiveCellSubjectFilter(e.gameID, e.playerID)
+	return config.CompetitivePlayfieldFilter(e.gameID, e.playerID)
+}
+
+// boardRegisterSubjects returns the garbage/txn register subjects for this
+// engine's own board (empty in coop — no garbage there).
+func (e *Engine) boardRegisterSubjects() []string {
+	switch e.gameMode {
+	case config.ModeCompetitive:
+		return []string{
+			config.CompetitiveGarbageSubject(e.gameID, e.playerID),
+			config.CompetitiveTxnSubject(e.gameID, e.playerID),
+		}
+	case config.ModeTeams:
+		return []string{
+			config.TeamGarbageSubject(e.gameID, e.teamIdx),
+			config.TeamTxnSubject(e.gameID, e.teamIdx),
+		}
+	}
+	return nil
 }
 
 // cellSubjects returns the subjects for every cell of this engine's own
-// playfield (row-major), used to fetch the full playfield snapshot.
+// playfield (row-major).
 func (e *Engine) cellSubjects() []string {
 	subjects := make([]string, 0, e.playfield.Height*e.playfield.Width)
 	for r := 0; r < e.playfield.Height; r++ {
@@ -608,6 +687,12 @@ func (e *Engine) cellSubjects() []string {
 		}
 	}
 	return subjects
+}
+
+// snapshotSubjects returns every subject of this engine's own board snapshot:
+// all cells plus the board registers.
+func (e *Engine) snapshotSubjects() []string {
+	return append(e.cellSubjects(), e.boardRegisterSubjects()...)
 }
 
 // cellCategory ranks a cell's NEW content for publish ordering: active cells
@@ -687,11 +772,12 @@ func diffCells(cur []game.Row, projected map[int]game.Row) map[game.CellPos]game
 }
 
 // changedCells returns the cells of projected[fromRow:toRow) whose content
-// differs from cur. Used so a line clear (coop/competitive) or competitive
-// shrink republishes only the cells that actually changed — a low stack
-// changes only a handful — instead of the whole visible range, which on the
-// shared coop board sharply cuts the per-subject CAS contention that was
-// exhausting the merge-retry. Call with e.mu held (it reads the live cur rows).
+// differs from cur. Bulk transforms (clear collapse, garbage application,
+// vacate) republish only the cells that actually changed — a low stack
+// changes only a handful — and always diff the FULL row range (fromRow 0):
+// truncating to the visible range used to discard the headroom rows'
+// projection, stranding duplicated or orphaned cells in rows 0-3. Callers
+// pass a snapshot or hold e.mu for the live rows.
 func changedCells(cur, projected []game.Row, fromRow, toRow int) map[game.CellPos]game.Cell {
 	out := make(map[game.CellPos]game.Cell)
 	for r := fromRow; r < toRow && r < len(projected) && r < len(cur); r++ {
@@ -974,10 +1060,12 @@ func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
 		return
 	}
 
-	// Publish game over event with score, achieved level and piece count
+	// Publish game over event with score, achieved level and piece count. The
+	// per-player subject means a player's one game_over can never be trimmed
+	// by other events — verdict ordering survives any consumer lag.
 	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), Level: e.AchievedLevel(), PieceCount: e.pieceIdx.Load()}
 	data, _ := json.Marshal(ev)
-	_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
+	_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
 	e.transitionToSpectator(false) // we topped out → we lost
 
 	// Transition game meta to finished:
@@ -1003,22 +1091,26 @@ func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
 	// active-cell count to zero and must not read as a lock-in (which would
 	// spawn a next piece for an eliminated player).
 	e.hadActivePiece = false
-	var cells map[game.CellPos]game.Cell
-	if p := e.playfield.ActivePieceForPlayer(e.playerIdx); p != nil {
-		affected := affectedRowsUnion(p, nil)
-		rows := e.playfield.ProjectMove(affected, nil, e.playerIdx)
-		cells = diffCells(e.playfield.Rows, rows)
-	}
+	hadPiece := e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
 	e.eliminatedPlayers[e.playerID] = true
 	e.eliminatedTeam[e.playerID] = e.teamIdx
 	if !locked {
 		e.mu.Unlock()
 	}
 
-	// Vacate our piece so teammates don't play around a dead piece. Shared
-	// board: merge-retry, whose skip rule protects teammates' in-flight pieces.
-	if len(cells) > 0 {
-		e.publishProjectedCellsWithMergeRetry(ctx, cells, nil, locked)
+	// Vacate our piece so teammates don't play around a dead piece. A gated
+	// transform: racing bulk transforms (a garbage application projecting our
+	// piece from a stale snapshot would resurrect it) are serialized by the
+	// board's txn gate, and the loser recomputes from converged state.
+	if hadPiece {
+		e.publishGatedTransform(ctx, txnOpVacate, locked, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
+			if pf.ActivePieceForPlayer(e.playerIdx) == nil {
+				return nil, TxnRegister{}, false // already gone (a shrink topped us, or a prior attempt landed)
+			}
+			clone := pf.Clone()
+			clone.ClearActiveCellsForPlayer(e.playerIdx)
+			return clone.Rows, TxnRegister{Applied: txn.Applied}, true
+		})
 	}
 
 	ev := GameEvent{
@@ -1030,7 +1122,7 @@ func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
 		PieceCount: e.pieceIdx.Load(),
 	}
 	data, _ := json.Marshal(ev)
-	_, _ = e.js.Publish(ctx, config.EventsSubject(e.gameID), data)
+	_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
 	e.transitionToSpectator(false) // out for now; flips to won if our team prevails
 	e.emitUpdate(EngineUpdate{
 		Kind:               UpdatePlayerEliminated,

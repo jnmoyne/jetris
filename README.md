@@ -133,7 +133,9 @@ Stream:  JETRIS_GAME_<id>          (subjects: jetris.game.<id>.>)
   …                                                    …
   ── and, in the SAME stream, the rest of the game state ──
   jetris.game.<id>.meta                        →     { status: in_progress, seed, … }
-  jetris.game.<id>.events                      →     append-only: line clears, top-outs
+  jetris.game.<id>.events.<kind>.<playerID>    →     line clears, top-outs (per kind & sender)
+  jetris.game.<id>.player.<id>.playfield.garbage →   { total: 3, by: 1 }  garbage rows OWED
+  jetris.game.<id>.player.<id>.playfield.txn   →     { applied: 3, op: shrink, … }  rows APPLIED + transform gate
   jetris.game.<id>.roster.<playerID>           →     { name, team, slot }
   jetris.game.<id>.countdown                   →     { seconds: 3 }
 ```
@@ -150,7 +152,7 @@ deleted), lobby messages under the reserved game ID `lobby`
 Two things to notice:
 
 1. The cell subjects are key/value-shaped, so "read the board" means "read the last message of each cell subject". A cell that was never written has no message and is simply empty.
-2. The `events` subject is flow-shaped rather than state-shaped: line clears and top-outs matter to the peers *watching live*, and the stream fans each one out the instant it is published. Retention is a different question — with one message kept per subject only the latest event remains for replay, which is exactly the trade chat can't accept: a conversation needs its full history for late joiners, which is why chat lives in the separate chat stream.
+2. Everything else is deliberately shaped so that one-message-per-subject retention loses nothing. Events are scoped per kind AND per sender (`events.line_clear.<player>`, `events.game_over.<player>`), so one player's event can never trim another's; a `line_clear` carries the sender's *cumulative* totals (a newer message subsumes any trimmed older one) and each player publishes exactly one `game_over`. Garbage attacks aren't events at all: each board's `…playfield.garbage` register holds the cumulative rows OWED (attackers CAS-add it, so simultaneous attacks sum) and its `…playfield.txn` register holds the rows APPLIED — both registers are running totals whose latest value is the whole truth, so a peer that lags, reconnects, or joins late reconciles perfectly from the last message. Chat is the one thing that genuinely needs history, which is why it lives in the separate chat stream.
 
 The three game modes use three cell-subject schemes, but the principle is identical:
 
@@ -174,7 +176,9 @@ Why it's necessary: The blackboard needs *addressable, overwritable state* — "
 
 What: Every gameplay write carries a `Nats-Expected-Last-Subject-Sequence` header. The server commits the message only if the named subject's current last sequence equals the expectation; otherwise it rejects the publish (and therefore if the messages is part of an atomic batch, the whole batch fails).
 
-Why it's necessary: This is what makes a *shared, contended* board safe with no central authority. Two players (or a player's own gravity tick and a line-clear) can target the same cell at the same time. Without CAS, the slower write would silently clobber the faster one and the boards would diverge. With per-subject CAS, a write that was computed from a stale view of a cell is *rejected by the server*, and the peer reacts — drop the move and flash the piece (player input), or refetch-merge-and-retry (engine-driven gravity, spawn, line-clear). Because the expectation is per cell subject, concurrent writes to *different* cells never falsely conflict — only genuine same-cell races do. This single mechanism replaces what would otherwise be a server holding locks.
+Why it's necessary: This is what makes a *shared, contended* board safe with no central authority. Two players (or a player's own gravity tick and a line-clear) can target the same cell at the same time. Without CAS, the slower write would silently clobber the faster one and the boards would diverge. With per-subject CAS, a write that was computed from a stale view of a cell is *rejected by the server*, and the peer reacts — drop the move and flash the piece (player input), or refetch-merge-and-retry (engine-driven gravity and spawn on shared boards). Because the expectation is per cell subject, concurrent writes to *different* cells never falsely conflict — only genuine same-cell races do. This single mechanism replaces what would otherwise be a server holding locks.
+
+Whole-board transforms — a line-clear collapse, a garbage raise, an elimination vacate — invert the pattern: their cells publish with NO expectations (the transform *overrides* in-flight moves; a raise must never lose to a keypress), and a single **txn register** message at the head of the batch carries the one CAS expectation that gates the whole thing. Two racing transforms — teammates applying the same garbage, a clear racing a raise — resolve atomically: the server rejects the loser's entire batch and it recomputes from fresh state. One expectation, exactly-once semantics, no locks.
 
 ### 5.3 Atomic batch publish (all-or-nothing multi-cell writes)
 
@@ -276,7 +280,8 @@ No lock, no leader — the server's per-subject sequence check is the entire con
     │ 1. multi-subject direct get: last message of every cell subject,
     │    all bounded to stream sequence S   →  rebuild the full board
     │
-    │ 2. ordered consumer, filter = …playfield.cell.>, start = S + 1
+    │ 2. ordered consumer, filter = …playfield.>, start = S + 1
+    │    (cells + the garbage/txn registers)
     │    every change after the snapshot streams in live
     ▼
   seq:  …  S-2   S-1    S  │  S+1   S+2   S+3  …
@@ -293,8 +298,10 @@ No update is missed and none is applied twice — the snapshot ends exactly wher
 All three are the same blackboard pattern with different subject schemes and collision rules (full rules: [`jetris-gameplays.md`](jetris-gameplays.md)).
 
 - Cooperative: 2+ players share one wide board (`playerCount × 10` columns), each controlling their own piece. Pieces can't overlap; the shared board uses per-cell CAS with merge-retry so neither player ever clobbers the other's in-flight piece. Score is shared.
-- Competitive: each player has a private board (their own subject namespace). Clearing lines sends "garbage" rows to opponents (an `events` message they each apply to their own board). Last player standing wins.
-- Teams: two teams, each on a shared per-team board (like a cooperative board per side). Line clears attack the opposing team's board; a team loses when all its members top out. The shared `events` stream gives every peer the same elimination order, so all peers agree on the winner without a coordinator.
+- Competitive: each player has a private board (their own subject namespace). Clearing lines owes "garbage" rows to every opponent, recorded by CAS-adding each victim board's durable garbage register — simultaneous attacks sum, and none is ever lost — which each victim applies to its own board as a txn-gated transform. A rising board pushes the falling piece up (minimally), and can eliminate the player. Last player standing wins.
+- Teams: two teams, each on a shared per-team board (like a cooperative board per side). Line clears attack the opposing team's board through the same garbage registers; pieces caught by the rising stack are pushed up (cascading through pieces above them), never buried; a team loses when all its members top out. Per-player `game_over` events give every peer the same elimination order, so all peers agree on the winner without a coordinator.
+
+> **Protocol compatibility:** the garbage-register/gated-transform protocol and the per-kind event subjects are a breaking wire change with no version negotiation — every participant of a game (GUI, `jetris-agent`, third-party agents) must run a build that speaks the same protocol.
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -313,6 +314,78 @@ func TeamCellSubjectFilter(gameID string, team int) string {
 	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.cell.>"
 }
 
+// Per-board registers. Every competitive/team board carries two single-subject
+// "registers" under its playfield prefix, so the board's consumers and snapshot
+// fetches cover them with one widened filter (…playfield.>):
+//
+//   - The GARBAGE register holds the cumulative number of garbage rows OWED to
+//     the board since game start. It is advanced by ATTACKERS (read-add-publish
+//     with per-subject CAS and a bounded retry), so simultaneous attacks
+//     serialize and converge to the exact sum. MaxMsgsPerSubject:1 keeps only
+//     the latest total, which is all anyone needs — the register is a monotonic
+//     counter, so a trimmed intermediate value is subsumed by the next, and a
+//     late joiner or reconnecting client recovers the full amount owed from the
+//     snapshot fetch.
+//   - The TXN register is the exactly-once gate for every bulk board transform
+//     (garbage application, line-clear collapse, teams elimination vacate): it
+//     rides as the FIRST message of the transform's atomic batch with a
+//     per-subject CAS expectation, so of several racing appliers exactly one
+//     commits — a stale gate atomically rejects the loser's entire batch. Its
+//     payload records the cumulative rows APPLIED; the board's deficit is
+//     garbage.Total − txn.Applied.
+//
+// Cooperative boards have no registers: coop has no garbage, and its clears
+// keep the merge-retry path.
+const (
+	garbageSubjectSuffix = ".playfield.garbage"
+	txnSubjectSuffix     = ".playfield.txn"
+)
+
+// CompetitiveGarbageSubject is one competitive player's garbage (rows-owed)
+// register subject.
+func CompetitiveGarbageSubject(gameID, playerID string) string {
+	return "jetris.game." + gameID + ".player." + playerID + garbageSubjectSuffix
+}
+
+// CompetitiveTxnSubject is one competitive player's txn (transform gate)
+// register subject.
+func CompetitiveTxnSubject(gameID, playerID string) string {
+	return "jetris.game." + gameID + ".player." + playerID + txnSubjectSuffix
+}
+
+// CompetitivePlayfieldFilter matches one competitive player's whole playfield
+// namespace: every cell plus the garbage/txn registers.
+func CompetitivePlayfieldFilter(gameID, playerID string) string {
+	return "jetris.game." + gameID + ".player." + playerID + ".playfield.>"
+}
+
+// TeamGarbageSubject is one team board's garbage (rows-owed) register subject.
+func TeamGarbageSubject(gameID string, team int) string {
+	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + garbageSubjectSuffix
+}
+
+// TeamTxnSubject is one team board's txn (transform gate) register subject.
+func TeamTxnSubject(gameID string, team int) string {
+	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + txnSubjectSuffix
+}
+
+// TeamPlayfieldFilter matches one team board's whole playfield namespace:
+// every cell plus the garbage/txn registers.
+func TeamPlayfieldFilter(gameID string, team int) string {
+	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.>"
+}
+
+// IsGarbageSubject reports whether a delivered subject is a board's garbage
+// register. Consumers branch on the register helpers BEFORE the cell parse.
+func IsGarbageSubject(subject string) bool {
+	return strings.HasSuffix(subject, garbageSubjectSuffix)
+}
+
+// IsTxnSubject reports whether a delivered subject is a board's txn register.
+func IsTxnSubject(subject string) bool {
+	return strings.HasSuffix(subject, txnSubjectSuffix)
+}
+
 func MetaSubject(gameID string) string {
 	return "jetris.game." + gameID + ".meta"
 }
@@ -321,8 +394,23 @@ func RosterSubject(gameID, playerID string) string {
 	return "jetris.game." + gameID + ".roster." + playerID
 }
 
-func EventsSubject(gameID string) string {
-	return "jetris.game." + gameID + ".events"
+// Game events are published to PER-KIND, PER-PLAYER subjects. The game stream
+// keeps only the last message per subject (MaxMsgsPerSubject: 1), so events
+// sharing one subject would trim each other — near-simultaneous events from
+// different players, or a game_over overwritten by a later event, would simply
+// vanish for any consumer that wasn't perfectly live. Scoping the subject by
+// kind AND sender bounds the loss to "an older event of the same kind from
+// the same player", which the payloads are designed to tolerate: line_clear
+// carries the sender's CUMULATIVE totals (a newer total subsumes a trimmed
+// older one) and each player publishes at most one game_over. Stream order
+// across subjects is still total, so every engine sees the same verdict order.
+func EventKindSubject(gameID, kind, playerID string) string {
+	return "jetris.game." + gameID + ".events." + kind + "." + playerID
+}
+
+// EventsSubjectFilter matches every event of a game, all kinds and senders.
+func EventsSubjectFilter(gameID string) string {
+	return "jetris.game." + gameID + ".events.>"
 }
 
 func CountdownSubject(gameID string) string {

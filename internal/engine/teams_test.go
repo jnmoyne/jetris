@@ -195,10 +195,13 @@ func topOutTeamPlayer(t *testing.T, js jetstream.JetStream, gameID string, e *En
 	}, "piece to descend below the spawn area")
 
 	// Wall off the player's spawn rows (anchor row 2, lowest cells row 3)
-	// across their whole 10-column section.
+	// across their 10-column section, leaving the section's first column open:
+	// once BOTH teammates' walls are up the rows would otherwise be complete,
+	// and the engine's clear (correctly covering headroom rows) would collapse
+	// the walls instead of blocking the spawn.
 	for _, row := range []int{2, 3} {
 		cells := make([]game.Cell, e.Playfield().Width)
-		for c := colOffset; c < colOffset+10; c++ {
+		for c := colOffset + 1; c < colOffset+10; c++ {
 			cells[c] = game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: playerIdx}
 		}
 		publishTeamRowCells(t, js, gameID, 1, row, cells)

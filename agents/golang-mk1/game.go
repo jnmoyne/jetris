@@ -29,13 +29,28 @@ type Game struct {
 	id  string
 	idx int
 
-	mu       sync.Mutex
-	locked   map[cell]wireCell // settled cells (stack + garbage)
-	seqs     map[cell]uint64   // per-cell CAS expectation (last stream seq)
-	piece    *active
-	pieceIdx int
-	score    int
-	lines    int
+	mode     int // modeCooperative / modeCompetitive / modeTeams
+	team     int // teams: 0 = A, 1 = B
+	teamSlot int // teams: section index on the team board
+	w        int // board width (competitive 10, coop playerCount×10, teams teamSize×10)
+	spawnC   int // our spawn column (section-centered on shared boards)
+	runCtx   context.Context
+
+	mu          sync.Mutex
+	locked      map[cell]wireCell // settled cells (stack + garbage)
+	seqs        map[cell]uint64   // per-cell CAS expectation (last stream seq)
+	piece       *active
+	othersAct   map[cell]int   // shared boards: other players' active cells → owner idx
+	othersPiece map[int]active // shared boards: other players' pieces by owner idx
+	pieceIdx    int
+	score       int // OWN cumulative score (line_clear events carry it)
+	lines       int // OWN cumulative cleared lines
+
+	sharedScore  int               // coop: the one shared score (all senders folded)
+	totalLines   int               // coop: all cleared lines (level source)
+	teamScores   [2]int            // teams: per-team scoreboard
+	teamLines    [2]int            // teams: per-team line totals (level source)
+	senderTotals map[string][2]int // last cumulative {score,lines} folded per sender
 
 	eliminated map[string]bool
 	results    map[string]event
@@ -63,6 +78,7 @@ func newGame(a *Agent, id string, idx int) *Game {
 	return &Game{
 		a: a, id: id, idx: idx,
 		locked: map[cell]wireCell{}, seqs: map[cell]uint64{},
+		othersAct: map[cell]int{}, othersPiece: map[int]active{}, senderTotals: map[string][2]int{},
 		eliminated: map[string]bool{}, results: map[string]event{},
 		started: make(chan struct{}), ended: make(chan struct{}),
 	}
@@ -79,24 +95,55 @@ func (g *Game) isEnded() bool {
 	}
 }
 
-func (g *Game) height() int { return 28 + g.playerCount } // 4 headroom + 24 + P
+// height: 4 headroom + 24 visible + garbage room (one row per player feeding
+// the board: playerCount in competitive, teamSize in teams; none in coop).
+func (g *Game) height() int {
+	switch g.mode {
+	case modeCooperative:
+		return 28
+	case modeTeams:
+		return 28 + g.playerCount/2
+	default:
+		return 28 + g.playerCount
+	}
+}
 
 // ---- subjects ------------------------------------------------------------
 
 func (g *Game) cellSubject(c cell) string {
-	return fmt.Sprintf("jetris.game.%s.player.%s.playfield.cell.%d.%d", g.id, g.a.name, c.r, c.c)
+	switch g.mode {
+	case modeCooperative:
+		return fmt.Sprintf("jetris.game.%s.playfield.cell.%d.%d", g.id, c.r, c.c)
+	case modeTeams:
+		return fmt.Sprintf("jetris.game.%s.team.%d.playfield.cell.%d.%d", g.id, g.team, c.r, c.c)
+	default:
+		return fmt.Sprintf("jetris.game.%s.player.%s.playfield.cell.%d.%d", g.id, g.a.name, c.r, c.c)
+	}
 }
+
+// garbageSubject is a victim board's garbage register: per-player in
+// competitive, per-team in teams (pid ignored there; t is the team).
 func (g *Game) garbageSubject(pid string) string {
 	return fmt.Sprintf("jetris.game.%s.player.%s.playfield.garbage", g.id, pid)
 }
+func (g *Game) teamGarbageSubject(t int) string {
+	return fmt.Sprintf("jetris.game.%s.team.%d.playfield.garbage", g.id, t)
+}
 func (g *Game) txnSubject() string {
+	if g.mode == modeTeams {
+		return fmt.Sprintf("jetris.game.%s.team.%d.playfield.txn", g.id, g.team)
+	}
 	return fmt.Sprintf("jetris.game.%s.player.%s.playfield.txn", g.id, g.a.name)
 }
 
 // ---- cell payloads -------------------------------------------------------
 
-func activePayload(a active) *wireCell {
-	return &wireCell{T: a.pt, A: true, R: a.orient, Ar: a.row, Ac: a.col}
+func (g *Game) activePayload(a active) *wireCell {
+	c := &wireCell{T: a.pt, A: true, R: a.orient, Ar: a.row, Ac: a.col}
+	if g.idx != 0 {
+		c.Pi = g.idx
+	}
+	return c
 }
 func (g *Game) lockedPayload(pt int) wireCell {
 	c := wireCell{O: true, T: pt}
@@ -131,7 +178,7 @@ func cellSet(cs [4]cell) map[cell]bool {
 func (g *Game) canPlace(cs [4]cell) bool {
 	h := g.height()
 	for _, c := range cs {
-		if c.r < 0 || c.r >= h || c.c < 0 || c.c >= width {
+		if c.r < 0 || c.r >= h || c.c < 0 || c.c >= g.w {
 			return false
 		}
 		if _, ok := g.locked[c]; ok {
@@ -152,8 +199,9 @@ func (g *Game) dropRowLocked(a active) int {
 // ---- atomic CAS batch publishing (guide §4.3) ----------------------------
 
 type cellUpd struct {
-	at cell
-	c  *wireCell // nil vacates
+	at    cell
+	c     *wireCell // nil vacates
+	guard bool      // gated batches: carry this cell's CAS expectation anyway (teams teammate-piece guard)
 }
 
 func category(c *wireCell) int {
@@ -272,6 +320,9 @@ func (g *Game) publishGatedBatch(ctx context.Context, txn txnReg, cells []cellUp
 	commitSeq := seq
 	for i, u := range cells {
 		hh := nats.Header{hBatchID: []string{batchID}, hBatchSeq: []string{fmt.Sprint(i + 2)}}
+		if u.guard {
+			hh.Set(hExpectLast, fmt.Sprint(g.seqs[u.at]))
+		}
 		last := i == len(cells)-1
 		if last {
 			hh.Set(hBatchCommit, "1")
@@ -308,12 +359,16 @@ func (g *Game) flash(cells []cell) {
 
 // resync refetches our own board from the stream after a dropped write.
 func (g *Game) resync(ctx context.Context) {
+	if g.shared() {
+		g.resyncShared(ctx)
+		return
+	}
 	g.locked = map[cell]wireCell{}
 	g.seqs = map[cell]uint64{}
 	g.piece = nil
 	h := g.height()
 	for r := 0; r < h; r++ {
-		for c := 0; c < width; c++ {
+		for c := 0; c < g.w; c++ {
 			at := cell{r, c}
 			raw, err := g.stream.GetLastMsgForSubject(ctx, g.cellSubject(at))
 			if err != nil {
@@ -335,6 +390,9 @@ func (g *Game) resync(ctx context.Context) {
 }
 
 func (g *Game) refreshRegisters(ctx context.Context) {
+	if g.mode == modeCooperative {
+		return
+	}
 	if raw, err := g.stream.GetLastMsgForSubject(ctx, g.txnSubject()); err == nil {
 		g.txnSeq = raw.Sequence
 		var t txnReg
@@ -345,7 +403,11 @@ func (g *Game) refreshRegisters(ctx context.Context) {
 	} else {
 		g.txnSeq, g.txnApplied = 0, 0
 	}
-	if raw, err := g.stream.GetLastMsgForSubject(ctx, g.garbageSubject(g.a.name)); err == nil {
+	ownGarbage := g.garbageSubject(g.a.name)
+	if g.mode == modeTeams {
+		ownGarbage = g.teamGarbageSubject(g.team)
+	}
+	if raw, err := g.stream.GetLastMsgForSubject(ctx, ownGarbage); err == nil {
 		var reg garbageReg
 		if len(raw.Data) > 0 {
 			_ = json.Unmarshal(raw.Data, &reg)
@@ -370,11 +432,11 @@ func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
 	newSet := cellSet(newCells)
 	var cells []cellUpd
 	for _, c := range newCells {
-		cells = append(cells, cellUpd{c, activePayload(to)})
+		cells = append(cells, cellUpd{at: c, c: g.activePayload(to)})
 	}
 	for _, c := range old {
 		if !newSet[c] {
-			cells = append(cells, cellUpd{c, nil})
+			cells = append(cells, cellUpd{at: c})
 		}
 	}
 	if err := g.publishBatch(ctx, cells, true); err != nil {
@@ -399,18 +461,23 @@ func (g *Game) activeCells() []cell {
 	return cs[:]
 }
 
-// spawn publishes a fresh piece. Returns the spawn time and whether it topped
-// out (spawn blocked by settled cells).
-func (g *Game) spawn(ctx context.Context) (time.Time, bool) {
+// spawn publishes a fresh piece. Returns the spawn time, whether the piece is
+// on the board, and whether we topped out. A spawn covered by LOCKED cells is
+// the top-out; covered only by another player's falling piece it is DEFERRED —
+// placed=false, topped=false — and the caller retries (gameplays §3).
+func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool) {
 	pt := pieceAt(g.metaSeed, g.pieceIdx)
-	n := active{pt, 0, spawnRow, spawnCol}
-	cs := pieceCells(pt, 0, spawnRow, spawnCol)
+	n := active{pt, 0, spawnRow, g.spawnC}
+	cs := pieceCells(pt, 0, spawnRow, g.spawnC)
 	if !g.canPlace(cs) {
-		return time.Time{}, true
+		return time.Time{}, false, true
+	}
+	if g.sharedBlocked(cs) {
+		return time.Time{}, false, false // a transient piece is crossing our spawn
 	}
 	var cells []cellUpd
 	for _, c := range cs {
-		cells = append(cells, cellUpd{c, activePayload(n)})
+		cells = append(cells, cellUpd{at: c, c: g.activePayload(n)})
 	}
 	if err := g.publishBatch(ctx, cells, true); err != nil {
 		if errors.Is(err, errCAS) {
@@ -419,11 +486,11 @@ func (g *Game) spawn(ctx context.Context) (time.Time, bool) {
 			log.Printf("spawn: %v", err)
 		}
 		g.resync(ctx)
-	} else {
-		p := n
-		g.piece = &p
+		return time.Now(), g.piece != nil, false
 	}
-	return time.Now(), false
+	p := n
+	g.piece = &p
+	return time.Now(), true, false
 }
 
 // lockPiece settles the piece at dest (authoritative NoCAS), runs line clears,
@@ -436,11 +503,11 @@ func (g *Game) lockPiece(ctx context.Context, dest active) {
 	var cells []cellUpd
 	for _, c := range destCells {
 		cc := lp
-		cells = append(cells, cellUpd{c, &cc})
+		cells = append(cells, cellUpd{at: c, c: &cc})
 	}
 	for _, c := range old {
 		if !destSet[c] {
-			cells = append(cells, cellUpd{c, nil})
+			cells = append(cells, cellUpd{at: c})
 		}
 	}
 	if err := g.publishBatch(ctx, cells, false); err != nil {
@@ -450,11 +517,17 @@ func (g *Game) lockPiece(ctx context.Context, dest active) {
 		g.locked[c] = lp
 	}
 	g.piece = nil
-	if done := g.completedRows(); len(done) > 0 {
+	done := g.completedRows()
+	if g.shared() {
+		done = g.completedRowsShared()
+	}
+	if len(done) > 0 {
 		g.clearRows(ctx, done)
 	}
 	g.pieceIdx++
-	g.bumpMetaPieceIdx(ctx)
+	if g.mode == modeCompetitive {
+		g.bumpMetaPieceIdx(ctx) // shared modes: every seat has its own index; the meta field stays the creator's
+	}
 }
 
 func (g *Game) completedRows() []int {
@@ -462,7 +535,7 @@ func (g *Game) completedRows() []int {
 	h := g.height()
 	for r := 0; r < h; r++ {
 		full, garbage := true, false
-		for c := 0; c < width; c++ {
+		for c := 0; c < g.w; c++ {
 			cc, ok := g.locked[cell{r, c}]
 			if !ok {
 				full = false
@@ -479,56 +552,148 @@ func (g *Game) completedRows() []int {
 	return out
 }
 
-// clearRows collapses completed rows as a GATED transform, then attacks every
-// surviving opponent's garbage register.
+// clearRows collapses completed rows: competitive and teams as a GATED
+// transform (teams also shifting teammates' pieces down with the stack), coop
+// as a CAS merge-retry batch; then scores the clear, announces it, and routes
+// the attack (competitive: every surviving opponent; teams: the opposing
+// board; coop: nobody).
 func (g *Game) clearRows(ctx context.Context, rows []int) {
+	clearedRows := append([]int(nil), rows...)
 	cleared := 0
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			g.refreshRegisters(ctx)
-			g.resync(ctx)
-			rows = g.completedRows()
-			if len(rows) == 0 {
-				return
-			}
-		}
-		removed := make(map[int]bool, len(rows))
-		for _, r := range rows {
-			removed[r] = true
-		}
-		newLocked := map[cell]wireCell{}
-		shift := 0
-		for r := g.height() - 1; r >= 0; r-- {
-			if removed[r] {
-				shift++
-				continue
-			}
-			for c := 0; c < width; c++ {
-				if cc, ok := g.locked[cell{r, c}]; ok {
-					newLocked[cell{r + shift, c}] = cc
+	if g.mode == modeCooperative {
+		cleared = g.clearRowsCoop(ctx, rows)
+	} else {
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				g.refreshRegisters(ctx)
+				g.resync(ctx)
+				rows = g.completedRows()
+				if g.shared() {
+					rows = g.completedRowsShared()
+				}
+				if len(rows) == 0 {
+					return
 				}
 			}
-		}
-		diff := g.diffCells(newLocked)
-		txn := txnReg{Applied: g.txnApplied, Op: "clear", By: g.idx}
-		if err := g.publishGatedBatch(ctx, txn, diff); err != nil {
-			if errors.Is(err, errCAS) {
-				continue
+			var diff []cellUpd
+			if g.mode == modeTeams {
+				newLocked, moved := g.clearProjection(rows)
+				diff = g.diffCells(newLocked)
+				for pi, np := range moved {
+					op := g.othersPiece[pi]
+					oldCells := cellSet(pieceCells(op.pt, op.orient, op.row, op.col))
+					newSet := cellSet(pieceCells(np.pt, np.orient, np.row, np.col))
+					pl := wireCell{T: np.pt, A: true, R: np.orient, Ar: np.row, Ac: np.col, Pi: pi}
+					// guard: a teammate locking or moving mid-shift must
+					// atomically reject this batch (the recompute sees their
+					// new reality) — never strand a ghost at the shifted spot.
+					for c := range newSet {
+						cc := pl
+						diff = append(diff, cellUpd{at: c, c: &cc, guard: true})
+					}
+					for c := range oldCells {
+						if !newSet[c] {
+							if _, isLocked := newLocked[c]; !isLocked {
+								diff = append(diff, cellUpd{at: c, guard: true})
+							}
+						}
+					}
+				}
+				txn := txnReg{Applied: g.txnApplied, Op: "clear", By: g.idx}
+				if err := g.publishGatedBatch(ctx, txn, diff); err != nil {
+					if errors.Is(err, errCAS) {
+						continue
+					}
+					log.Printf("clear: %v", err)
+					return
+				}
+				g.locked = newLocked
+				for pi, np := range moved {
+					g.othersPiece[pi] = np
+				}
+				g.reindexOthers()
+			} else {
+				removed := make(map[int]bool, len(rows))
+				for _, r := range rows {
+					removed[r] = true
+				}
+				newLocked := map[cell]wireCell{}
+				shift := 0
+				for r := g.height() - 1; r >= 0; r-- {
+					if removed[r] {
+						shift++
+						continue
+					}
+					for c := 0; c < g.w; c++ {
+						if cc, ok := g.locked[cell{r, c}]; ok {
+							newLocked[cell{r + shift, c}] = cc
+						}
+					}
+				}
+				diff = g.diffCells(newLocked)
+				txn := txnReg{Applied: g.txnApplied, Op: "clear", By: g.idx}
+				if err := g.publishGatedBatch(ctx, txn, diff); err != nil {
+					if errors.Is(err, errCAS) {
+						continue
+					}
+					log.Printf("clear: %v", err)
+					return
+				}
+				g.locked = newLocked
 			}
-			log.Printf("clear: %v", err)
-			return
+			cleared = len(rows)
+			break
 		}
-		g.locked = newLocked
-		cleared = len(rows)
-		break
 	}
 	if cleared == 0 {
 		return
 	}
-	g.score += cleared
+	scoreDelta := cleared // competitive: one point per line
+	switch g.mode {
+	case modeCooperative:
+		scoreDelta = g.playerCount * cleared
+		g.sharedScore += scoreDelta
+		g.totalLines += cleared
+	case modeTeams:
+		scoreDelta = (g.playerCount / 2) * cleared
+		g.teamScores[g.team] += scoreDelta
+		g.teamLines[g.team] += cleared
+	}
+	g.score += scoreDelta
 	g.lines += cleared
+	g.publishLineClear(ctx, cleared, scoreDelta, clearedRows)
 	log.Printf("cleared %d line(s), score %d", cleared, g.score)
-	g.bumpVictimLedgers(ctx, cleared)
+	switch g.mode {
+	case modeCompetitive:
+		g.bumpVictimLedgers(ctx, cleared)
+	case modeTeams:
+		g.bumpTeamLedger(ctx, cleared)
+	}
+}
+
+// bumpTeamLedger CAS-adds `lines` to the OPPOSING team's garbage register.
+func (g *Game) bumpTeamLedger(ctx context.Context, lines int) {
+	subject := g.teamGarbageSubject(1 - g.team)
+	for i := 0; i < 20; i++ {
+		var total int
+		var seq uint64
+		if raw, err := g.stream.GetLastMsgForSubject(ctx, subject); err == nil {
+			var reg garbageReg
+			if len(raw.Data) > 0 {
+				_ = json.Unmarshal(raw.Data, &reg)
+			}
+			total, seq = reg.Total, raw.Sequence
+		}
+		payload, _ := json.Marshal(garbageReg{Total: total + lines, By: g.idx})
+		_, conflict, err := g.a.casRequest(ctx, subject, payload, nats.Header{hExpectLast: []string{fmt.Sprint(seq)}})
+		if err != nil {
+			log.Printf("team ledger bump: %v", err)
+			return
+		}
+		if !conflict {
+			return
+		}
+	}
 }
 
 // diffCells returns the cell updates that turn g.locked into newLocked.
@@ -536,16 +701,16 @@ func (g *Game) diffCells(newLocked map[cell]wireCell) []cellUpd {
 	var diff []cellUpd
 	h := g.height()
 	for r := 0; r < h; r++ {
-		for c := 0; c < width; c++ {
+		for c := 0; c < g.w; c++ {
 			at := cell{r, c}
 			nv, nok := newLocked[at]
 			ov, ook := g.locked[at]
 			if nok != ook || nv != ov {
 				if nok {
 					cc := nv
-					diff = append(diff, cellUpd{at, &cc})
+					diff = append(diff, cellUpd{at: at, c: &cc})
 				} else {
-					diff = append(diff, cellUpd{at, nil})
+					diff = append(diff, cellUpd{at: at})
 				}
 			}
 		}
@@ -624,17 +789,49 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 			}
 		}
 		for r := h - n; r < h; r++ {
-			for c := 0; c < width; c++ {
+			for c := 0; c < g.w; c++ {
 				newLocked[cell{r, c}] = gp
 			}
 		}
-		// Lift the falling piece the minimum amount that clears the risen stack.
-		var newPiece *active
-		squeezed := false
+		// Lift EVERY falling piece — ours and, in teams, every teammate's —
+		// the minimum rows that clear the risen stack. Lifts cascade: a
+		// lifted piece is an obstacle for pieces above it (gameplays §5). A
+		// piece pushed off the top eliminates its owner (txn.topped).
+		type lifted struct {
+			owner    int
+			from, to active
+			squeezed bool
+		}
+		var pieces []lifted
 		if g.piece != nil {
-			squeezed = true
+			pieces = append(pieces, lifted{owner: g.idx, from: *g.piece})
+		}
+		for pi, p := range g.othersPiece {
+			pieces = append(pieces, lifted{owner: pi, from: p})
+		}
+		// Lowest piece first, so a rising column of pieces cascades upward.
+		sort.Slice(pieces, func(i, j int) bool { return pieces[i].from.row > pieces[j].from.row })
+		obstacles := func(cs [4]cell, settled map[cell]wireCell, placedSoFar map[cell]bool) bool {
+			for _, c := range cs {
+				if c.c < 0 || c.c >= g.w || c.r >= g.height() {
+					return false
+				}
+				if _, ok := settled[c]; ok {
+					return false
+				}
+				if placedSoFar[c] {
+					return false
+				}
+			}
+			return true
+		}
+		placedCells := map[cell]bool{}
+		var toppedOwners []int
+		for i := range pieces {
+			pc := &pieces[i]
+			pc.squeezed = true
 			for k := 0; ; k++ {
-				cand := active{g.piece.pt, g.piece.orient, g.piece.row - k, g.piece.col}
+				cand := active{pc.from.pt, pc.from.orient, pc.from.row - k, pc.from.col}
 				cs := pieceCells(cand.pt, cand.orient, cand.row, cand.col)
 				minR := cs[0].r
 				for _, c := range cs[1:] {
@@ -645,40 +842,60 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 				if minR < 0 {
 					break // off the top: squeezed out
 				}
-				if g.canPlaceIn(newLocked, cs) {
-					p := cand
-					newPiece, squeezed = &p, false
+				if obstacles(cs, newLocked, placedCells) {
+					pc.to, pc.squeezed = cand, false
+					for _, c := range cs {
+						placedCells[c] = true
+					}
 					break
 				}
 			}
+			if pc.squeezed {
+				toppedOwners = append(toppedOwners, pc.owner)
+			}
 		}
 		diff := g.diffCells(newLocked)
-		if g.piece != nil {
-			oldActive := g.activeCells()
-			if squeezed {
-				for _, c := range oldActive {
+		for _, pc := range pieces {
+			oldCells := cellSet(pieceCells(pc.from.pt, pc.from.orient, pc.from.row, pc.from.col))
+			if pc.squeezed {
+				for c := range oldCells {
 					if _, in := newLocked[c]; !in {
-						diff = append(diff, cellUpd{c, nil})
+						diff = append(diff, cellUpd{at: c, guard: pc.owner != g.idx})
 					}
 				}
-			} else if newPiece != nil && *newPiece != *g.piece {
-				newCells := cellSet(pieceCells(newPiece.pt, newPiece.orient, newPiece.row, newPiece.col))
-				for c := range newCells {
-					diff = append(diff, cellUpd{c, activePayload(*newPiece)})
+				continue
+			}
+			if pc.to == pc.from {
+				// Untouched teammate piece: guard it with expectation
+				// carriers so a concurrent move rejects this whole batch
+				// instead of being buried under a stale projection.
+				if pc.owner != g.idx {
+					for c := range oldCells {
+						pl := wireCell{T: pc.from.pt, A: true, R: pc.from.orient, Ar: pc.from.row, Ac: pc.from.col, Pi: pc.owner}
+						diff = append(diff, cellUpd{at: c, c: &pl, guard: true})
+					}
 				}
-				for _, c := range oldActive {
-					if !newCells[c] {
-						if _, in := newLocked[c]; !in {
-							diff = append(diff, cellUpd{c, nil})
-						}
+				continue
+			}
+			newSet := cellSet(pieceCells(pc.to.pt, pc.to.orient, pc.to.row, pc.to.col))
+			pl := wireCell{T: pc.to.pt, A: true, R: pc.to.orient, Ar: pc.to.row, Ac: pc.to.col}
+			if pc.owner != 0 {
+				pl.Pi = pc.owner
+			}
+			for c := range newSet {
+				cc := pl
+				diff = append(diff, cellUpd{at: c, c: &cc, guard: pc.owner != g.idx})
+			}
+			for c := range oldCells {
+				if !newSet[c] {
+					if _, in := newLocked[c]; !in {
+						diff = append(diff, cellUpd{at: c, guard: pc.owner != g.idx})
 					}
 				}
 			}
 		}
 		txn := txnReg{Applied: g.garbageOwed, Op: "shrink", By: g.idx}
-		if squeezed {
-			txn.Topped = []int{g.idx}
-		}
+		txn.Topped = toppedOwners
 		if boardFull {
 			txn.Full = true
 		}
@@ -692,13 +909,26 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 			return
 		}
 		g.locked = newLocked
-		if squeezed {
-			g.piece = nil
-		} else if newPiece != nil {
-			g.piece = newPiece
+		mySqueezed := false
+		for _, pc := range pieces {
+			if pc.owner == g.idx {
+				if pc.squeezed {
+					g.piece, mySqueezed = nil, true
+				} else if pc.to != pc.from {
+					p := pc.to
+					g.piece = &p
+				}
+			} else {
+				if pc.squeezed {
+					delete(g.othersPiece, pc.owner)
+				} else if pc.to != pc.from {
+					g.othersPiece[pc.owner] = pc.to
+				}
+			}
 		}
+		g.reindexOthers()
 		log.Printf("garbage: +%d row(s) from player %d", n, causer)
-		if squeezed || boardFull {
+		if mySqueezed || boardFull {
 			g.dead = true
 		}
 		return
@@ -709,7 +939,7 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 func (g *Game) canPlaceIn(locked map[cell]wireCell, cs [4]cell) bool {
 	h := g.height()
 	for _, c := range cs {
-		if c.r < 0 || c.r >= h || c.c < 0 || c.c >= width {
+		if c.r < 0 || c.r >= h || c.c < 0 || c.c >= g.w {
 			return false
 		}
 		if _, ok := locked[c]; ok {
@@ -740,39 +970,60 @@ func (g *Game) startConsumers(ctx context.Context) error {
 		if json.Unmarshal(m.Data(), &ev) != nil {
 			return
 		}
-		if ev.Kind != "game_over" {
-			return
+		switch ev.Kind {
+		case "line_clear":
+			g.foldLineClear(ev)
+		case "game_over":
+			g.mu.Lock()
+			g.eliminated[ev.PlayerID] = true
+			if ev.PlayerID != g.a.name {
+				g.results[ev.PlayerID] = ev
+			}
+			enemyDead := g.mode == modeTeams && g.teamDead(1-g.team)
+			g.mu.Unlock()
+			if g.mode == modeCooperative || enemyDead {
+				// Coop: anyone's top-out ends the game for everyone. Teams:
+				// the verdict is EVENT-driven, not piece-cadence-driven — the
+				// enemy team's last elimination must end our play loop even
+				// if our current piece never reaches a lock-in.
+				g.markEnded()
+			}
 		}
-		g.mu.Lock()
-		g.eliminated[ev.PlayerID] = true
-		if ev.PlayerID != g.a.name {
-			g.results[ev.PlayerID] = ev
-		}
-		g.mu.Unlock()
 	}, true)
 	if err != nil {
 		return err
 	}
-	garbageCons, err := g.consume(ctx, g.garbageSubject(g.a.name), func(m jetstream.Msg) {
-		var reg garbageReg
-		if len(m.Data()) > 0 {
-			_ = json.Unmarshal(m.Data(), &reg)
+	g.consumeCtxts = []jetstream.ConsumeContext{metaCons, eventsCons}
+	if g.shared() {
+		// The shared board's cells (and, in teams, its garbage/txn registers)
+		// arrive on one board consumer.
+		boardCons, err := g.consume(ctx, g.boardFilter(), g.handleBoardMsg, true)
+		if err != nil {
+			return err
 		}
-		g.mu.Lock()
-		if reg.Total > g.garbageOwed {
-			g.garbageOwed = reg.Total
+		g.consumeCtxts = append(g.consumeCtxts, boardCons)
+	} else {
+		garbageCons, err := g.consume(ctx, g.garbageSubject(g.a.name), func(m jetstream.Msg) {
+			var reg garbageReg
+			if len(m.Data()) > 0 {
+				_ = json.Unmarshal(m.Data(), &reg)
+			}
+			g.mu.Lock()
+			if reg.Total > g.garbageOwed {
+				g.garbageOwed = reg.Total
+			}
+			g.garbageBy = reg.By
+			need := g.garbageOwed > g.txnApplied && !g.dead
+			g.mu.Unlock()
+			if need {
+				g.applyOwedGarbage(ctx)
+			}
+		}, false)
+		if err != nil {
+			return err
 		}
-		g.garbageBy = reg.By
-		need := g.garbageOwed > g.txnApplied && !g.dead
-		g.mu.Unlock()
-		if need {
-			g.applyOwedGarbage(ctx)
-		}
-	}, false)
-	if err != nil {
-		return err
+		g.consumeCtxts = append(g.consumeCtxts, garbageCons)
 	}
-	g.consumeCtxts = []jetstream.ConsumeContext{metaCons, eventsCons, garbageCons}
 	return nil
 }
 
@@ -807,12 +1058,32 @@ func (g *Game) run(ctx context.Context) bool {
 		return false
 	}
 	g.metaSeed = meta.u64("seed")
+	g.mode = meta.int("mode")
 	g.playerCount = meta.int("player_count")
 	g.nextCount = meta.int("next_count")
-	g.pieceIdx = meta.int("piece_idx")
 	g.a.mu.Lock()
 	g.roster = g.a.listings[g.id].players()
 	g.a.mu.Unlock()
+	// Board geometry and our spawn section (gameplays §2/§3/§5). Every seat
+	// tracks its own piece index on shared boards; competitive keeps the
+	// legacy meta counter.
+	g.w, g.spawnC = width, spawnCol
+	switch g.mode {
+	case modeCooperative:
+		g.w = g.playerCount * width
+		g.spawnC = g.idx*width + spawnCol
+	case modeTeams:
+		for _, p := range g.roster {
+			if p.PlayerID == g.a.name {
+				g.team, g.teamSlot = p.Team, p.TeamSlot
+			}
+		}
+		g.w = (g.playerCount / 2) * width
+		g.spawnC = g.teamSlot*width + spawnCol
+	default:
+		g.pieceIdx = meta.int("piece_idx")
+	}
+	g.runCtx = ctx
 	if g.stream, err = g.a.stream(ctx, g.id); err != nil {
 		log.Printf("stream: %v", err)
 		return false
@@ -862,6 +1133,7 @@ func (g *Game) run(ctx context.Context) bool {
 }
 
 func (g *Game) playPieces(ctx context.Context) bool {
+	deferrals := 0
 	for !g.isEnded() {
 		g.mu.Lock()
 		dead := g.dead
@@ -870,11 +1142,29 @@ func (g *Game) playPieces(ctx context.Context) bool {
 			return g.topOut(ctx)
 		}
 		g.mu.Lock()
-		spawnT, over := g.spawn(ctx)
+		spawnT, placed, over := g.spawn(ctx)
 		g.mu.Unlock()
 		if over {
 			return g.topOut(ctx)
 		}
+		if !placed {
+			// Deferred spawn: a teammate's falling piece is crossing our spawn
+			// cells (or our spawn batch lost its CAS). Retry shortly — the
+			// blocker falls away within a tick (gameplays §3). A blocker that
+			// never falls away is a stale ghost (a lock we mis-tracked):
+			// rebuild from the stream rather than wedge forever.
+			deferrals++
+			if deferrals%30 == 0 {
+				g.mu.Lock()
+				g.resyncShared(ctx)
+				g.mu.Unlock()
+			}
+			if !g.wait(ctx, 100*time.Millisecond) {
+				break
+			}
+			continue
+		}
+		deferrals = 0
 		if !g.wait(ctx, g.a.tn.pieceDelay) {
 			break
 		}
@@ -916,15 +1206,18 @@ func (g *Game) plan(p active) (placement, bool) {
 	for i := 1; i <= k; i++ {
 		upcoming = append(upcoming, pieceAt(g.metaSeed, pieceIdx+i))
 	}
-	ranked := planPlacements(gr, p.pt, p.row, p.col, upcoming)
+	ranked := planPlacements(gr, p.pt, p.row, p.col, g.spawnC, upcoming)
 	return choose(ranked, g.a.tn, g.a.rng)
 }
 
-// toGrid snapshots the settled board for the planner (caller holds mu).
+// toGrid snapshots the settled board for the planner (caller holds mu). Other
+// players' falling pieces are marked like garbage: solid for placement and
+// every feature, but never completing a row — the planner routes around the
+// transient obstacle without fantasizing a clear through it.
 func (g *Game) toGrid() *grid {
-	gr := newGrid(g.height())
+	gr := newGrid(g.height(), g.w)
 	for c, v := range g.locked {
-		if c.r < 0 || c.r >= gr.h || c.c < 0 || c.c >= width {
+		if c.r < 0 || c.r >= gr.h || c.c < 0 || c.c >= gr.w {
 			continue
 		}
 		if v.G {
@@ -933,12 +1226,28 @@ func (g *Game) toGrid() *grid {
 			gr.set(c.r, c.c, 1)
 		}
 	}
+	for c := range g.othersAct {
+		if c.r >= 0 && c.r < gr.h && c.c >= 0 && c.c < gr.w {
+			gr.set(c.r, c.c, 2)
+		}
+	}
 	return gr
 }
 
 // execute drives the piece to (orient, col) honoring gravity, then hard-drops.
+// On shared boards another player's falling piece is a TRANSIENT obstacle:
+// blocked by it we wait (it falls away), never lock against it, and never top
+// out on it (gameplays §3).
 func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
-	nextGravity := spawnT.Add(gravity)
+	g.mu.Lock()
+	step := gravity
+	if g.shared() {
+		step = g.gravityNow()
+	}
+	g.mu.Unlock()
+	nextGravity := spawnT.Add(step)
+	lastProgress := time.Now()
+	var lastPos active
 	for {
 		g.mu.Lock()
 		if g.dead || g.isEnded() {
@@ -950,39 +1259,74 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return // a shrink squeezed the piece away
 		}
 		p := *g.piece
+		if p != lastPos {
+			lastPos, lastProgress = p, time.Now()
+		} else if g.shared() && time.Since(lastProgress) > 3*time.Second {
+			// Parked behind an obstacle that never moves: a live teammate
+			// piece falls away in well under a second, so this is a stale
+			// ghost. Rebuild from the stream and re-plan.
+			g.resyncShared(ctx)
+			g.mu.Unlock()
+			return
+		}
 		locked := false
 		if !time.Now().Before(nextGravity) {
 			down := active{p.pt, p.orient, p.row + 1, p.col}
-			if g.canPlace(pieceCells(down.pt, down.orient, down.row, down.col)) {
+			dcs := pieceCells(down.pt, down.orient, down.row, down.col)
+			switch {
+			case g.canMove(dcs):
 				g.publishPieceMove(ctx, down)
-				nextGravity = nextGravity.Add(gravity)
-			} else {
+			case g.canPlace(dcs):
+				// blocked only by another falling piece: wait, don't lock
+			default:
 				g.lockPiece(ctx, p)
 				locked = true
 			}
+			if g.shared() {
+				step = g.gravityNow()
+			}
+			nextGravity = nextGravity.Add(step)
 		} else if p.orient != plan.orient {
-			step := active{p.pt, (p.orient + 1) & 3, p.row, p.col}
-			if !g.canPlace(pieceCells(step.pt, step.orient, step.row, step.col)) {
-				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowLocked(p), p.col})
+			st := active{p.pt, (p.orient + 1) & 3, p.row, p.col}
+			scs := pieceCells(st.pt, st.orient, st.row, st.col)
+			switch {
+			case g.canMove(scs):
+				g.publishPieceMove(ctx, st)
+			case g.canPlace(scs):
+				// a transient piece is in the way: wait it out
+			default:
+				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowShared(p), p.col})
 				locked = true
-			} else {
-				g.publishPieceMove(ctx, step)
 			}
 		} else if p.col != plan.col {
 			d := 1
 			if plan.col < p.col {
 				d = -1
 			}
-			step := active{p.pt, p.orient, p.row, p.col + d}
-			if !g.canPlace(pieceCells(step.pt, step.orient, step.row, step.col)) {
-				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowLocked(p), p.col})
+			st := active{p.pt, p.orient, p.row, p.col + d}
+			scs := pieceCells(st.pt, st.orient, st.row, st.col)
+			switch {
+			case g.canMove(scs):
+				g.publishPieceMove(ctx, st)
+			case g.canPlace(scs):
+				// wait for the crossing piece to fall away
+			default:
+				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowShared(p), p.col})
 				locked = true
-			} else {
-				g.publishPieceMove(ctx, step)
 			}
 		} else {
-			g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowLocked(p), p.col})
-			locked = true
+			dr := g.dropRowShared(p)
+			below := pieceCells(p.pt, p.orient, dr+1, p.col)
+			if g.canPlace(below) && g.sharedBlocked(below) {
+				// The drop rests on another FALLING piece: move there but
+				// stay active — gravity resumes once the obstacle falls.
+				if dr != p.row {
+					g.publishPieceMove(ctx, active{p.pt, p.orient, dr, p.col})
+				}
+			} else {
+				g.lockPiece(ctx, active{p.pt, p.orient, dr, p.col})
+				locked = true
+			}
 		}
 		g.mu.Unlock()
 		if locked {
@@ -997,6 +1341,12 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 func (g *Game) winCheck() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	switch g.mode {
+	case modeCooperative:
+		return false // no winner: the game ends when anyone tops out
+	case modeTeams:
+		return g.teamDead(1-g.team) && !g.dead
+	}
 	others := 0
 	for _, p := range g.roster {
 		if p.PlayerID == g.a.name {
@@ -1011,6 +1361,31 @@ func (g *Game) winCheck() bool {
 }
 
 func (g *Game) topOut(ctx context.Context) bool {
+	switch g.mode {
+	case modeCooperative:
+		// Any top-out ends the game for everyone; the topper finishes and
+		// archives it (gameplays §3).
+		g.mu.Lock()
+		g.dead = true
+		g.eliminated[g.a.name] = true
+		g.mu.Unlock()
+		g.publishGameOver(ctx)
+		log.Printf("topped out — cooperative game over (shared score %d)", g.sharedScore)
+		g.transitionFinishedAndArchive(ctx)
+		return false
+	case modeTeams:
+		// A player out is not a team out: vacate our dead piece (gated, so a
+		// racing garbage cascade can't resurrect it), announce, and stay for
+		// the verdict — our team plays on (gameplays §5).
+		g.mu.Lock()
+		g.dead = true
+		g.vacateOwnPiece(ctx)
+		g.eliminated[g.a.name] = true
+		g.mu.Unlock()
+		g.publishGameOver(ctx)
+		log.Printf("topped out — team %s plays on", map[int]string{0: "A", 1: "B"}[g.team])
+		return g.waitForVerdict(ctx)
+	}
 	g.mu.Lock()
 	g.dead = true
 	elim := len(g.eliminated)
@@ -1028,7 +1403,8 @@ func (g *Game) topOut(ctx context.Context) bool {
 }
 
 func (g *Game) publishGameOver(ctx context.Context) {
-	ev := event{Kind: "game_over", PlayerID: g.a.name, Score: g.score, Level: min(g.lines/10, 19), PieceCount: g.pieceIdx}
+	ev := event{Kind: "game_over", PlayerID: g.a.name, PlayerIdx: g.idx, Team: g.team,
+		Score: g.score, Level: min(g.lines/10, 19), PieceCount: g.pieceIdx}
 	b, _ := json.Marshal(ev)
 	_, _ = g.a.js.Publish(ctx, "jetris.game."+g.id+".events.game_over."+g.a.name, b)
 }
@@ -1079,12 +1455,33 @@ func (g *Game) archive(ctx context.Context) {
 		return // someone else won the archive CAS
 	}
 	record := map[string]any{
-		"game_id": g.id, "mode": modeCompetitive, "player_count": meta.int("player_count"),
+		"game_id": g.id, "mode": g.mode, "player_count": meta.int("player_count"),
 		"players":      g.playerResults(),
 		"started_at":   firstNonEmpty(meta.str("started_at"), meta.str("created_at")),
 		"finished_at":  firstNonEmpty(meta.str("finished_at"), nowRFC()),
 		"winning_team": -1,
 		"boards":       g.boardPictures(ctx),
+	}
+	switch g.mode {
+	case modeCooperative:
+		g.mu.Lock()
+		record["total_score"] = g.sharedScore
+		record["final_level"] = min(g.totalLines/10, 19)
+		g.mu.Unlock()
+	case modeTeams:
+		g.mu.Lock()
+		wt := -1
+		switch {
+		case g.teamDead(1) && !g.teamDead(0):
+			wt = 0
+		case g.teamDead(0) && !g.teamDead(1):
+			wt = 1
+		}
+		record["team_size"] = g.playerCount / 2
+		record["winning_team"] = wt
+		record["team_scores"] = []int{g.teamScores[0], g.teamScores[1]}
+		record["team_levels"] = []int{min(g.teamLines[0]/10, 19), min(g.teamLines[1]/10, 19)}
+		g.mu.Unlock()
 	}
 	b, _ := json.Marshal(record)
 	if _, err := g.a.js.Publish(ctx, archiveSubject, b); err != nil {
@@ -1108,6 +1505,15 @@ func firstNonEmpty(a, b string) string {
 func (g *Game) playerResults() []map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	winningTeam := -1
+	if g.mode == modeTeams {
+		switch {
+		case g.teamDead(1) && !g.teamDead(0):
+			winningTeam = 0
+		case g.teamDead(0) && !g.teamDead(1):
+			winningTeam = 1
+		}
+	}
 	out := make([]map[string]any, 0, len(g.roster))
 	for _, p := range g.roster {
 		var score, level, pieces int
@@ -1115,13 +1521,27 @@ func (g *Game) playerResults() []map[string]any {
 			score, level, pieces = g.score, min(g.lines/10, 19), g.pieceIdx
 		} else if ev, ok := g.results[p.PlayerID]; ok {
 			score, level, pieces = ev.Score, ev.Level, ev.PieceCount
+		} else if tot, ok := g.senderTotals[p.PlayerID]; ok {
+			// Never topped out (a coop survivor, an alive teams winner):
+			// their cumulative line-clear totals are the best record we have.
+			score, level = tot[0], min(tot[1]/10, 19)
 		}
 		r := map[string]any{"player_id": p.PlayerID, "score": score, "piece_count": pieces}
 		if level != 0 {
 			r["level"] = level
 		}
-		if !g.eliminated[p.PlayerID] {
-			r["winner"] = true
+		switch g.mode {
+		case modeCooperative:
+			// no winners in coop
+		case modeTeams:
+			r["team"] = p.Team
+			if p.Team == winningTeam {
+				r["winner"] = true
+			}
+		default:
+			if !g.eliminated[p.PlayerID] {
+				r["winner"] = true
+			}
 		}
 		if p.Agent {
 			r["agent"] = true
@@ -1131,24 +1551,17 @@ func (g *Game) playerResults() []map[string]any {
 	return out
 }
 
-// boardPictures fetches each player's visible region from the stream before it
-// is deleted (row 0 = first visible row, headroom stripped).
+// boardPictures fetches the finished boards' visible regions from the stream
+// before it is deleted (row 0 = first visible row, headroom stripped): one
+// picture per player in competitive, ONE shared board in coop, one per team
+// in teams.
 func (g *Game) boardPictures(ctx context.Context) []map[string]any {
-	g.mu.Lock()
-	ids := make([]string, 0, len(g.roster))
-	for _, p := range g.roster {
-		ids = append(ids, p.PlayerID)
-	}
-	g.mu.Unlock()
-	sort.Strings(ids)
 	h := g.height()
-	pics := make([]map[string]any, 0, len(ids))
-	for i, pid := range ids {
+	snap := func(label string, idx int, subj func(r, c int) string) map[string]any {
 		var cells []map[string]any
 		for r := headroom; r < h; r++ {
-			for c := 0; c < width; c++ {
-				subj := fmt.Sprintf("jetris.game.%s.player.%s.playfield.cell.%d.%d", g.id, pid, r, c)
-				raw, err := g.stream.GetLastMsgForSubject(ctx, subj)
+			for c := 0; c < g.w; c++ {
+				raw, err := g.stream.GetLastMsgForSubject(ctx, subj(r, c))
 				if err != nil || len(raw.Data) == 0 || string(raw.Data) == "{}" {
 					continue
 				}
@@ -1157,7 +1570,36 @@ func (g *Game) boardPictures(ctx context.Context) []map[string]any {
 				cells = append(cells, map[string]any{"r": r - headroom, "c": c, "d": d})
 			}
 		}
-		pics = append(pics, map[string]any{"label": pid, "idx": i, "w": width, "h": h - headroom, "cells": cells})
+		return map[string]any{"label": label, "idx": idx, "w": g.w, "h": h - headroom, "cells": cells}
+	}
+	switch g.mode {
+	case modeCooperative:
+		return []map[string]any{snap("", -1, func(r, c int) string {
+			return fmt.Sprintf("jetris.game.%s.playfield.cell.%d.%d", g.id, r, c)
+		})}
+	case modeTeams:
+		pics := make([]map[string]any, 0, 2)
+		for t := 0; t < 2; t++ {
+			t := t
+			pics = append(pics, snap(map[int]string{0: "Team A", 1: "Team B"}[t], t, func(r, c int) string {
+				return fmt.Sprintf("jetris.game.%s.team.%d.playfield.cell.%d.%d", g.id, t, r, c)
+			}))
+		}
+		return pics
+	}
+	g.mu.Lock()
+	ids := make([]string, 0, len(g.roster))
+	for _, p := range g.roster {
+		ids = append(ids, p.PlayerID)
+	}
+	g.mu.Unlock()
+	sort.Strings(ids)
+	pics := make([]map[string]any, 0, len(ids))
+	for i, pid := range ids {
+		pid := pid
+		pics = append(pics, snap(pid, i, func(r, c int) string {
+			return fmt.Sprintf("jetris.game.%s.player.%s.playfield.cell.%d.%d", g.id, pid, r, c)
+		}))
 	}
 	return pics
 }

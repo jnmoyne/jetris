@@ -104,12 +104,16 @@ func (a pubAck) isCASConflict() bool {
 	return a.Error != nil && (a.Error.ErrCode == 10071 || a.Error.ErrCode == 10164)
 }
 
-// event is a per-player game event (only game_over matters to this agent).
+// event is a per-player game event: game_over (elimination/outcome data) and
+// line_clear (the sender's CUMULATIVE totals, folded as deltas by receivers).
 type event struct {
 	Kind       string `json:"kind"`
 	PlayerID   string `json:"player_id"`
+	PlayerIdx  int    `json:"player_idx"`
 	Score      int    `json:"score"`
 	Level      int    `json:"level"`
 	PieceCount int    `json:"piece_count"`
 	Team       int    `json:"team"`
+	TotalScore int    `json:"total_score"`
+	TotalLines int    `json:"total_lines"`
 }

@@ -5,18 +5,18 @@ package main
 // adversarial garbage (counts as filled for every feature but can never
 // complete a row). It is a cheap value the planner clones per candidate.
 type grid struct {
-	h     int
-	cells []int8 // row-major, width columns per row
+	h, w  int
+	cells []int8 // row-major, w columns per row
 }
 
-func newGrid(h int) *grid { return &grid{h: h, cells: make([]int8, h*width)} }
+func newGrid(h, w int) *grid { return &grid{h: h, w: w, cells: make([]int8, h*w)} }
 
-func (g *grid) at(r, c int) int8     { return g.cells[r*width+c] }
-func (g *grid) set(r, c int, v int8) { g.cells[r*width+c] = v }
-func (g *grid) filled(r, c int) bool { return g.cells[r*width+c] != 0 }
+func (g *grid) at(r, c int) int8     { return g.cells[r*g.w+c] }
+func (g *grid) set(r, c int, v int8) { g.cells[r*g.w+c] = v }
+func (g *grid) filled(r, c int) bool { return g.cells[r*g.w+c] != 0 }
 
 func (g *grid) clone() *grid {
-	c := &grid{h: g.h, cells: make([]int8, len(g.cells))}
+	c := &grid{h: g.h, w: g.w, cells: make([]int8, len(g.cells))}
 	copy(c.cells, g.cells)
 	return c
 }
@@ -24,7 +24,7 @@ func (g *grid) clone() *grid {
 // canPlace reports whether the four cells are all in bounds and empty.
 func (g *grid) canPlace(cs [4]cell) bool {
 	for _, c := range cs {
-		if c.r < 0 || c.r >= g.h || c.c < 0 || c.c >= width {
+		if c.r < 0 || c.r >= g.h || c.c < 0 || c.c >= g.w {
 			return false
 		}
 		if g.filled(c.r, c.c) {
@@ -49,7 +49,7 @@ func (g *grid) completedRows() []int {
 	var out []int
 	for r := 0; r < g.h; r++ {
 		full, garbage := true, false
-		for c := 0; c < width; c++ {
+		for c := 0; c < g.w; c++ {
 			switch g.at(r, c) {
 			case 0:
 				full = false
@@ -74,13 +74,13 @@ func (g *grid) clearRows(rows []int) *grid {
 	for _, r := range rows {
 		removed[r] = true
 	}
-	out := newGrid(g.h)
+	out := newGrid(g.h, g.w)
 	dst := g.h - 1
 	for r := g.h - 1; r >= 0; r-- {
 		if removed[r] {
 			continue
 		}
-		for c := 0; c < width; c++ {
+		for c := 0; c < g.w; c++ {
 			out.set(dst, c, g.at(r, c))
 		}
 		dst--

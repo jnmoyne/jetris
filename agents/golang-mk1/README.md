@@ -12,10 +12,13 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
 
 ## What it does
 
-- Plays **competitive** mode. It sits in the lobby as a resident, accepts invitations to
-  competitive games (declining modes it can't play), and with `--auto-join` also joins
-  open competitive games that allow agents. With `--create` it **hosts**: it creates the
-  game stream + meta + lobby listing itself (agent seats open by default), joins its own
+- Plays **all three modes** — cooperative (one shared wide board, deferred spawns,
+  merge-retry clears, shared score), competitive (private boards, the garbage ledger),
+  and teams (a coop-style board per team, team-vs-team garbage with cascading piece
+  lifts, team verdicts). It sits in the lobby as a resident, accepts invitations
+  (teams invitations join the invited team), and with `--auto-join` also joins open
+  games that allow agents. With `--create` it **hosts** any mode: it creates the game
+  stream + meta + lobby listing itself (agent seats open by default), joins its own
   game, and waits for opponents.
 - Carries every peer responsibility itself: presence heartbeat, the join CAS on the lobby
   KV, the roster announcement, the ready toggle and (when its toggle completes the set) the
@@ -46,7 +49,7 @@ revealed preview is ever consulted.
 # build (a normal Go module — NOT part of the main repo's `go build ./...`)
 go build -o golang-mk1 .
 
-# resident: waits for invitations to competitive games
+# resident: waits for invitations (any mode)
 ./golang-mk1 --server nats://localhost:4222
 
 # ...or connect like the nats CLI: a named NATS context, or (bare) the selected one
@@ -60,8 +63,10 @@ go build -o golang-mk1 .
 ./golang-mk1 --once
 ./golang-mk1 --join <gameID>
 
-# host a competitive game (agent seats open by default), play it, exit
+# host a game (agent seats open by default), play it, exit
 ./golang-mk1 --create --players 2 --once
+./golang-mk1 --create --mode cooperative --players 2 --once
+./golang-mk1 --create --mode teams --players 2 --once     # 2v2 (--players is per team)
 
 # offline conformance checks (RNG parity with the game, planner sanity)
 ./golang-mk1 --selftest
@@ -70,10 +75,11 @@ go build -o golang-mk1 .
 Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--context`
 (a NATS context; default: the selected one), `--name` (version stem, default
 `golang-mk1`), `--difficulty` (`easy`/`medium`/`hard`), `--join`, `--create` (with
-`--players`, `--max-agents`, `--next`), `--auto-join`, `--wait`, `--once`, `--selftest`.
+`--mode`, `--players`, `--max-agents`, `--next`), `--auto-join`, `--wait`, `--once`,
+`--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the
-GUI and create a competitive game with agents allowed — or let one instance host for another:
+GUI and create a game with agents allowed — or let one instance host for another:
 
 ```sh
 ./golang-mk1 --create --players 2 --once &
@@ -90,6 +96,8 @@ GUI and create a competitive game with agents allowed — or let one instance ho
 - `types.go` — wire payloads and the CAS-safe lobby/meta read-modify-write helpers.
 - `agent.go` — the lobby: presence, watching, select/join/ready/countdown, CAS publishing.
 - `game.go` — one game: the engine, consumers, garbage, line clears, outcome, archive.
+- `shared.go` — shared boards: the coop/teams board consumer, merge-retry clears,
+  deferred spawns, cascading garbage lifts, team verdicts.
 - `main.go` — flags, signals, the selftest.
 
 Every protocol interaction cites the section of the agent guide it implements.

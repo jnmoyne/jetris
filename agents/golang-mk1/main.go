@@ -12,6 +12,7 @@
 //	golang-mk1 --auto-join                                    # also join open agent-allowed games
 //	golang-mk1 --join <gameID>                                # join one specific game
 //	golang-mk1 --create --players 2 --once                    # host a game, play it, exit
+//	golang-mk1 --create --mode teams --players 2              # host a 2v2 teams game
 //	golang-mk1 --difficulty hard --once                       # play a single game, then exit
 //	golang-mk1 --selftest                                     # offline conformance checks
 package main
@@ -37,8 +38,9 @@ func main() {
 	name := flag.String("name", codename, "agent VERSION stem of the player name (default: the codename)")
 	difficulty := flag.String("difficulty", "hard", "play strength: easy, medium, or hard")
 	join := flag.String("join", "", "join this specific game id instead of scanning the lobby")
-	create := flag.Bool("create", false, "create a competitive game and wait for opponents")
-	players := flag.Int("players", 2, "player count when creating a game (with --create)")
+	create := flag.Bool("create", false, "create a game and wait for opponents")
+	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
+	players := flag.Int("players", 2, "player count when creating a game (with --create; teams: players per team)")
 	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
 	next := flag.Int("next", 1, "upcoming pieces the game reveals when creating a game (0-4, 0 = none)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
@@ -63,7 +65,18 @@ func main() {
 	}
 	var host *hosting
 	if *create {
-		host = &hosting{players: *players, maxAgents: *maxAgents, next: *next}
+		mode := modeCompetitive
+		switch *modeStr {
+		case "cooperative", "coop":
+			mode = modeCooperative
+		case "competitive":
+		case "teams":
+			mode = modeTeams
+		default:
+			fmt.Fprintf(os.Stderr, "unknown mode %q (want cooperative, competitive or teams)\n", *modeStr)
+			os.Exit(2)
+		}
+		host = &hosting{mode: mode, players: *players, maxAgents: *maxAgents, next: *next}
 	}
 
 	a, err := newAgent(connChoice{server: *server, context: *natsCtx, user: *user, password: *password},
@@ -107,13 +120,13 @@ func runSelftest() {
 	}
 	// A board one cell short of a full bottom row: dropping an I flat into the
 	// gap must clear it, which the planner should prefer.
-	g := newGrid(24)
+	g := newGrid(24, width)
 	for c := 0; c < width; c++ {
 		if c < 3 || c > 6 {
 			g.set(23, c, 1)
 		}
 	}
-	ranked := planPlacements(g, 0 /*I*/, spawnRow, spawnCol, nil)
+	ranked := planPlacements(g, 0 /*I*/, spawnRow, spawnCol, spawnCol, nil)
 	if len(ranked) == 0 || ranked[0].lines == 0 {
 		log.Fatalf("planner did not find the line clear")
 	}

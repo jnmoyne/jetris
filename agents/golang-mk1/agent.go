@@ -51,23 +51,25 @@ type connChoice struct {
 	password string // used with server
 }
 
-// hosting is the --create configuration: how big a competitive game to host
-// and how agent-friendly it is. nil on an Agent means "never host".
+// hosting is the --create configuration: what kind of game to host, how big,
+// and how agent-friendly. nil on an Agent means "never host".
 type hosting struct {
-	players   int // total seats (min 2)
+	mode      int // modeCooperative / modeCompetitive / modeTeams
+	players   int // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
 	maxAgents int // agent seats, this agent included (<=0 = all seats)
 	next      int // revealed upcoming pieces (clamped 0..4)
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
-// it joins. It plays COMPETITIVE games only (declining invitations to other
-// modes), exactly like the example-python reference.
+// it joins. It plays all three modes — cooperative, competitive, and teams —
+// as an ordinary peer over the wire protocol.
 type Agent struct {
 	conn       connChoice
 	name       string
 	difficulty string
 	tn         tuning
 	joinID     string
+	inviteTeam int           // teams: the team the current invitation names (-1 = none)
 	host       *hosting      // non-nil: create one game first, then play it
 	wait       time.Duration // max wait for a joined game to fill and start before un-joining
 	once       bool
@@ -342,7 +344,8 @@ func (a *Agent) declineInvite(ctx context.Context, gameID string) {
 	_, _ = a.kv.Put(ctx, "invites."+a.name+"."+gameID, o.bytes())
 }
 
-// joinable reports an open competitive game with a free seat this agent may take.
+// joinable reports an open game (any mode) with a free seat this agent may
+// take — in teams, a free seat on at least one team.
 func joinable(g obj) bool {
 	players := g.players()
 	agents := 0
@@ -351,11 +354,43 @@ func joinable(g obj) bool {
 			agents++
 		}
 	}
-	return g.int("mode") == modeCompetitive &&
-		g.str("status") == "created" &&
-		!g.boolv("invite_only") &&
-		len(players) < g.int("player_count") &&
-		g.int("max_agents") > agents
+	if g.str("status") != "created" || g.boolv("invite_only") ||
+		len(players) >= g.int("player_count") || g.int("max_agents") <= agents {
+		return false
+	}
+	if g.int("mode") == modeTeams {
+		return pickTeam(g, -1) >= 0
+	}
+	return true
+}
+
+// pickTeam returns the team an agent should join: the invited team when the
+// invitation names one (want >= 0), else the least-populated team with room.
+// Returns -1 when no team has a free seat.
+func pickTeam(g obj, want int) int {
+	teamSize := g.int("team_size")
+	if teamSize <= 0 {
+		teamSize = g.int("player_count") / 2
+	}
+	var counts [2]int
+	for _, p := range g.players() {
+		if p.Team >= 0 && p.Team < 2 {
+			counts[p.Team]++
+		}
+	}
+	if want >= 0 && want < 2 {
+		if counts[want] < teamSize {
+			return want
+		}
+		return -1
+	}
+	best, bestCount := -1, teamSize
+	for t := 0; t < 2; t++ {
+		if counts[t] < bestCount {
+			best, bestCount = t, counts[t]
+		}
+	}
+	return best
 }
 
 // selectGame picks the next game: an explicit --join, a --create host, a fresh
@@ -384,15 +419,14 @@ func (a *Agent) selectGame(ctx context.Context) (string, bool) {
 			a.mu.Lock()
 			_, known := a.listings[gid]
 			a.mu.Unlock()
-			if o.int("mode") == modeCompetitive && known {
+			if known {
+				a.inviteTeam = -1
+				if o.has("team") {
+					a.inviteTeam = o.int("team")
+				}
 				return gid, true
 			}
-			if !known {
-				a.consumeInvite(ctx, gid) // game gone: drop the stale invite
-			} else {
-				log.Printf("declining invitation from %s (can't play that game)", o.str("from_name"))
-				a.declineInvite(ctx, gid)
-			}
+			a.consumeInvite(ctx, gid) // game gone: drop the stale invite
 			handled = true
 		}
 		if handled {
@@ -467,6 +501,23 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 			return -1
 		}
 		summary := playerSummary{PlayerID: a.name, Name: a.name, Agent: true}
+		if g.int("mode") == modeTeams {
+			want := -1
+			if invited {
+				want = a.inviteTeam
+			}
+			team := pickTeam(g, want)
+			if team < 0 {
+				return -1 // the invited (or every) team is full
+			}
+			slot := 0
+			for _, p := range players {
+				if p.Team == team {
+					slot++
+				}
+			}
+			summary.Team, summary.TeamSlot = team, slot
+		}
 		players = append(players, summary)
 		g.set("players", players)
 		full := len(players) >= g.int("player_count")
@@ -501,8 +552,15 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 // The caller then joins its own game like any other player. Returns the new
 // game id.
 func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
-	players := h.players
-	if players < 2 {
+	players, teamSize := h.players, 0
+	if h.mode == modeTeams {
+		// The count is players PER TEAM, like the GUI's editor.
+		if players < 1 {
+			players = 1
+		}
+		teamSize = players
+		players = 2 * teamSize
+	} else if players < 2 {
 		players = 2
 	}
 	maxAgents := h.maxAgents
@@ -530,8 +588,11 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 
 	meta := obj{}
 	meta.set("game_id", gameID)
-	meta.set("mode", modeCompetitive)
+	meta.set("mode", h.mode)
 	meta.set("player_count", players)
+	if teamSize > 0 {
+		meta.set("team_size", teamSize)
+	}
 	meta.set("next_count", next)
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
@@ -546,9 +607,12 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 
 	listing := obj{}
 	listing.set("game_id", gameID)
-	listing.set("mode", modeCompetitive)
+	listing.set("mode", h.mode)
 	listing.set("status", "created")
 	listing.set("player_count", players)
+	if teamSize > 0 {
+		listing.set("team_size", teamSize)
+	}
 	listing.set("max_agents", maxAgents)
 	listing.set("next_count", next)
 	listing.set("creator_id", a.name)
@@ -565,7 +629,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	})
 	_ = a.nc.Publish("jetris.lobby.event.game.created", ev)
 
-	log.Printf("created competitive game %s for %d players (max %d agents, next %d) — waiting for opponents", gameID, players, maxAgents, next)
+	log.Printf("created %s game %s for %d players (max %d agents, next %d) — waiting for opponents",
+		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
+		gameID, players, maxAgents, next)
 	return gameID, nil
 }
 

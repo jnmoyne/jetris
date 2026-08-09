@@ -38,15 +38,15 @@ type placement struct {
 // planPlacements enumerates every placement reachable with kick-free rotations
 // at the piece's current position (sRow, sCol) plus sideways slides plus a hard
 // drop (a legal subset of the game's moves), scores each with Dellacherie + the
-// lookahead over `upcoming` (which spawn fresh at the standard spawn), and
-// returns them best first.
-func planPlacements(g *grid, pt, sRow, sCol int, upcoming []int) []placement {
+// lookahead over `upcoming` (which spawn fresh at spawnC — the caller's own
+// section spawn on shared boards), and returns them best first.
+func planPlacements(g *grid, pt, sRow, sCol, spawnC int, upcoming []int) []placement {
 	cands := enumerate(g, pt, sRow, sCol)
 	out := make([]placement, 0, len(cands))
 	for _, cand := range cands {
 		after, lines, eroded := simulateLock(g, cand.dest)
 		cand.lines = lines
-		cand.score = evaluateBoard(after, cand.dest, lines, eroded) + lookahead(after, upcoming)
+		cand.score = evaluateBoard(after, cand.dest, lines, eroded) + lookahead(after, spawnC, upcoming)
 		out = append(out, cand)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
@@ -92,7 +92,7 @@ func enumerate(g *grid, pt, sRow, sCol int) []placement {
 func simulateLock(g *grid, dest [4]cell) (*grid, int, int) {
 	sim := g.clone()
 	for _, c := range dest {
-		if c.r >= 0 && c.r < sim.h && c.c >= 0 && c.c < width {
+		if c.r >= 0 && c.r < sim.h && c.c >= 0 && c.c < sim.w {
 			sim.set(c.r, c.c, 1)
 		}
 	}
@@ -135,7 +135,7 @@ func rowTransitions(g *grid) int {
 	n := 0
 	for r := 0; r < g.h; r++ {
 		prev := true // left wall
-		for c := 0; c < width; c++ {
+		for c := 0; c < g.w; c++ {
 			cur := g.filled(r, c)
 			if cur != prev {
 				n++
@@ -151,7 +151,7 @@ func rowTransitions(g *grid) int {
 
 func colTransitions(g *grid) int {
 	n := 0
-	for c := 0; c < width; c++ {
+	for c := 0; c < g.w; c++ {
 		prev := false // above the board
 		for r := 0; r < g.h; r++ {
 			cur := g.filled(r, c)
@@ -169,7 +169,7 @@ func colTransitions(g *grid) int {
 
 func holes(g *grid) int {
 	n := 0
-	for c := 0; c < width; c++ {
+	for c := 0; c < g.w; c++ {
 		covered := false
 		for r := 0; r < g.h; r++ {
 			if g.filled(r, c) {
@@ -185,13 +185,13 @@ func holes(g *grid) int {
 // wells is Dellacherie's cumulative well depth: 1+2+…+d for a well of depth d.
 func wells(g *grid) int {
 	n := 0
-	for c := 0; c < width; c++ {
+	for c := 0; c < g.w; c++ {
 		for r := 0; r < g.h; r++ {
 			if g.filled(r, c) {
 				continue
 			}
 			leftFilled := c == 0 || g.filled(r, c-1)
-			rightFilled := c == width-1 || g.filled(r, c+1)
+			rightFilled := c == g.w-1 || g.filled(r, c+1)
 			if !leftFilled || !rightFilled {
 				continue
 			}
@@ -212,15 +212,15 @@ const (
 // (the revealed preview pieces, in order) on board g: at each level only the
 // lookaheadBeam best placements are expanded further. A piece that cannot spawn
 // is an imminent top-out and scores the penalty.
-func lookahead(g *grid, upcoming []int) float64 {
+func lookahead(g *grid, spawnC int, upcoming []int) float64 {
 	if len(upcoming) == 0 {
 		return 0
 	}
 	pt := upcoming[0]
-	if !g.canPlace(pieceCells(pt, 0, spawnRow, spawnCol)) {
+	if !g.canPlace(pieceCells(pt, 0, spawnRow, spawnC)) {
 		return lookaheadTopOutPenalty
 	}
-	cands := enumerate(g, pt, spawnRow, spawnCol)
+	cands := enumerate(g, pt, spawnRow, spawnC)
 	if len(cands) == 0 {
 		return lookaheadTopOutPenalty
 	}
@@ -240,9 +240,9 @@ func lookahead(g *grid, upcoming []int) float64 {
 	if len(xs) > lookaheadBeam {
 		xs = xs[:lookaheadBeam]
 	}
-	best := xs[0].score + lookahead(xs[0].board, upcoming[1:])
+	best := xs[0].score + lookahead(xs[0].board, spawnC, upcoming[1:])
 	for _, e := range xs[1:] {
-		if s := e.score + lookahead(e.board, upcoming[1:]); s > best {
+		if s := e.score + lookahead(e.board, spawnC, upcoming[1:]); s > best {
 			best = s
 		}
 	}

@@ -48,6 +48,15 @@ every mode and to **everyone in the game equally — humans and agents**:
   with it, so the preview reads exactly like the pieces on the board at any
   window size. The lobby row advertises the setting as a `next N` tag.
 
+**The hard-drop ghost is a per-game attribute on the same wizard step**: "Show
+ghost piece" (on by default) decides whether every player sees the translucent
+landing preview of their falling piece — where it would hard-drop right now,
+derived from committed board state, never published. Stored inverted in the meta
+(`GameMeta.NoGhost`), so games created before the attribute — and agent-hosted
+games — show the ghost. Off means everyone eyeballs their drops; like the piece
+preview it is one rule for every eye (agents already compute their drop
+destinations, so the ghost only levels the field for humans either way).
+
 Because the 7-bag sequence is seekable, the preview is a pure read
 (`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
 
@@ -374,7 +383,8 @@ embossed bevel and a diagonal glint sweeping across it every few seconds, so
 the lobby's main call to action can't be missed) that opens a modal walking the creator through the
 game's attributes one step at a time — **1. game type & players** (co-op /
 competitive / teams radios and the seat count, per-team in teams mode),
-**2. piece preview** (the next-piece count, 0-4, default 1 — see §1b),
+**2. piece preview & ghost** (the next-piece count, 0-4, default 1, and the
+"Show ghost piece" checkbox, on by default — see §1b),
 **3. who can join** (**open game** or **invite only**), and — open games only —
 **4. agents** (the agent policy below). Each step has Next/Back plus a Cancel
 that closes the wizard without creating anything, and the previous run's choices

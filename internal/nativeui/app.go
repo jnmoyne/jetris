@@ -283,11 +283,11 @@ type App struct {
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable
 	showMsgs widget.Bool // "Show NATS messages" checkbox
-	// ghostCb is the "Show ghost piece" game setting: a client-local view
-	// toggle (like showMsgs), ON by default — the hard-drop landing preview
-	// that levels the field with agents, which already compute their drop
-	// destinations. Never sent over NATS and never decided by the game
-	// creator: each human keeps the aid unless they opt out themselves.
+	// ghostCb is the create wizard's "Show ghost piece" checkbox, ON by
+	// default: whether the game being created renders the hard-drop landing
+	// preview. A per-GAME rule stored in the meta (GameMeta.NoGhost,
+	// inverted), not a per-player view toggle — the creator decides once and
+	// every player gets the same aid, like the piece preview.
 	ghostCb widget.Bool
 	msgList widget.List
 	// NATS-panel resize handle: msgDrag is the divider's drag gesture,

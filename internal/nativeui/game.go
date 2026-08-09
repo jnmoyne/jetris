@@ -429,16 +429,6 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			cb.IconColor = colAccent
 			return cb.Layout(gtx)
 		}),
-		layout.Rigid(spacer(6)),
-		layout.Rigid(func(gtx C) D {
-			// Game setting, on by default: the hard-drop ghost preview.
-			// Client-local — agents already compute their drop destinations,
-			// so the ghost just levels the field for humans.
-			cb := material.CheckBox(a.th, &a.ghostCb, "Show ghost piece")
-			cb.Color = colFg
-			cb.IconColor = colAccent
-			return cb.Layout(gtx)
-		}),
 		layout.Rigid(spacer(18)),
 		layout.Rigid(func(gtx C) D {
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
@@ -602,9 +592,11 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// Hard-drop ghost: where the falling piece would land if dropped right
 	// now, derived from the very snapshot being drawn — never published.
 	// Agents already plan with HardDropDestination, so the ghost only levels
-	// the field for humans; the checkbox (on by default) is each player's own.
+	// the field for humans. Whether it shows is the game's own rule, chosen
+	// at creation (GameMeta.NoGhost, on by default) — one setting for every
+	// player, like the piece preview.
 	var ghost map[[2]int]game.PieceType
-	if a.ghostCb.Value && mode == engine.ModePlayer && started && !view.gameOver {
+	if eng.ShowGhost() && mode == engine.ModePlayer && started && !view.gameOver {
 		ghost = ghostCells(snap, localIdx, gmode)
 	}
 	// Players with a piece preview get the NEXT well beside the playfield —

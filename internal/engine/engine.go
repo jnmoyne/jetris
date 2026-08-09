@@ -44,6 +44,7 @@ type Engine struct {
 	playerIdx   int  // 0 for creator, 1 for joiner; used on shared boards for Cell.PlayerIdx
 	playerCount int  // number of players in the game
 	nextCount   int  // how many upcoming pieces this game reveals (from meta at Start; 0 = none)
+	noGhost     bool // this game hides the hard-drop ghost preview (GameMeta.NoGhost at Start)
 	teamIdx     int  // teams mode: which team this player is on (0 = A, 1 = B)
 	teamSlot    int  // teams mode: section index within the team board (spawn column offset)
 	teamSize    int  // teams mode: players per team (from meta at Start)
@@ -212,6 +213,7 @@ func (e *Engine) Start() error {
 	e.playerCount = meta.PlayerCount
 	e.teamSize = meta.TeamSize
 	e.nextCount = meta.NextCount
+	e.noGhost = meta.NoGhost
 
 	// Set visible row start based on mode
 	switch e.gameMode {
@@ -1034,6 +1036,11 @@ func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
 // NextCount reports how many upcoming pieces this game reveals
 // (GameMeta.NextCount, fixed at game creation; 0 = no preview).
 func (e *Engine) NextCount() int { return e.nextCount }
+
+// ShowGhost reports whether this game renders the hard-drop ghost preview
+// (GameMeta.NoGhost inverted — a creation-time rule shared by every player,
+// like the piece preview).
+func (e *Engine) ShowGhost() bool { return !e.noGhost }
 
 // NextPieces returns the upcoming piece types this game reveals, in play
 // order: element 0 is the piece that will spawn after the current one. The

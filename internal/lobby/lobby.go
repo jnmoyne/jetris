@@ -496,7 +496,10 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // the invitation being explicit permission. nextCount is how many upcoming
 // pieces the game reveals (clamped to 0..config.MaxNextCount); it is stored in
 // GameMeta so every peer — human UI and agent alike — sees the same lookahead.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount int, inviteOnly bool) (string, error) {
+// ghost is whether the game renders the hard-drop ghost preview (on by
+// default in the UI); stored inverted as GameMeta.NoGhost so pre-field metas
+// keep the ghost shown.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount int, ghost, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	if maxAgents < 0 {
 		maxAgents = 0
@@ -521,6 +524,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		PlayerCount: playerCount,
 		TeamSize:    teamSize,
 		NextCount:   nextCount,
+		NoGhost:     !ghost,
 		Seed:        uint64(time.Now().UnixNano()),
 		Status:      config.GameStatusCreated,
 		CreatorID:   l.playerID,

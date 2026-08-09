@@ -89,9 +89,12 @@ func (a *App) finishCreateWizard() {
 	if nextCount > config.MaxNextCount {
 		nextCount = config.MaxNextCount
 	}
+	// The hard-drop ghost is a per-game rule like the preview: the creator's
+	// checkbox (on by default) decides it for every player.
+	ghost := a.ghostCb.Value
 	a.createWizStep = 0
 	if a.createJoinEnum.Value == "invite" {
-		go a.openInvitePicker(mode, count, nextCount)
+		go a.openInvitePicker(mode, count, nextCount, ghost)
 		return
 	}
 	// Agent policy: how many seats idle agent players may take.
@@ -111,7 +114,7 @@ func (a *App) finishCreateWizard() {
 			maxAgents = total
 		}
 	}
-	go func() { a.createGame(mode, count, maxAgents, nextCount, false) }()
+	go func() { a.createGame(mode, count, maxAgents, nextCount, ghost, false) }()
 }
 
 // createWizardOverlay renders the modal create-game wizard. All actions are
@@ -136,7 +139,7 @@ func (a *App) createWizardOverlay(gtx C) D {
 		stepTitle = "GAME TYPE & PLAYERS"
 		body = a.wizardModeStep
 	case wizStepNext:
-		stepTitle = "PIECE PREVIEW"
+		stepTitle = "PIECE PREVIEW & GHOST"
 		body = a.wizardNextStep
 	case wizStepJoin:
 		stepTitle = "WHO CAN JOIN"
@@ -233,7 +236,9 @@ func (a *App) wizardModeStep(gtx C) D {
 	)
 }
 
-// wizardNextStep is step 2: how many upcoming pieces the game reveals.
+// wizardNextStep is step 2: how much help the game gives every player — the
+// upcoming-piece preview count and whether the hard-drop ghost shows. Both
+// are game rules fixed at creation, one setting for every eye.
 func (a *App) wizardNextStep(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.body("How many upcoming pieces the game reveals — the NEXT panel every player sees, and exactly how far agents may look ahead.", colMuted)),
@@ -251,6 +256,15 @@ func (a *App) wizardNextStep(gtx C) D {
 		}),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(a.body("0 hides the preview entirely — nobody (human or agent) sees what's coming.", colMuted)),
+		layout.Rigid(spacer(14)),
+		layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.ghostCb, "Show ghost piece")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
+		layout.Rigid(spacer(8)),
+		layout.Rigid(a.body("The ghost previews where each player's piece would hard-drop. Off makes everyone eyeball their drops.", colMuted)),
 	)
 }
 

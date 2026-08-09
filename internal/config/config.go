@@ -88,6 +88,7 @@ type GameMeta struct {
 	PlayerCount int        `json:"player_count"`
 	TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
 	NextCount   int        `json:"next_count"`          // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
+	NoGhost     bool       `json:"no_ghost,omitempty"`  // hard-drop ghost preview disabled for this game; inverted so the zero value — and metas written before the field — keep the ghost SHOWN (the default). Meta, not listing: like NextCount it is one rule for every player
 	Seed        uint64     `json:"seed"`
 	Status      GameStatus `json:"status"`
 	CreatorID   string     `json:"creator_id"`

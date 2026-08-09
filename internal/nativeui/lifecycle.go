@@ -272,10 +272,11 @@ func (a *App) initLobby(name string) error {
 // number of players PER TEAM; for the other modes it is the total player
 // count. maxAgents is the agent policy — how many seats idle agent
 // players may take (0 = agents may not join). nextCount is how many upcoming
-// pieces the game reveals (0..config.MaxNextCount). inviteOnly restricts
+// pieces the game reveals (0..config.MaxNextCount); ghost is whether the game
+// draws the hard-drop ghost preview. inviteOnly restricts
 // joining to invited players (the invite flow sets it and then sends the
 // invitations).
-func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount int, inviteOnly bool) string {
+func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount int, ghost, inviteOnly bool) string {
 	lb := a.getLobby()
 	if lb == nil {
 		return ""
@@ -285,7 +286,7 @@ func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount int, 
 		teamSize = count
 		playerCount = config.TeamCount * count
 	}
-	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, nextCount, inviteOnly)
+	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, nextCount, ghost, inviteOnly)
 	if err != nil {
 		log.Printf("create game: %v", err)
 		return ""

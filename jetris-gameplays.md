@@ -452,7 +452,7 @@ dismiss it), deleted by the inviter = retracted.
   invitation as the strongest join signal and joins the invited game (and team) at
   once. Inviting an agent is how you bring a *specific* agent into an invite-only
   game — and it is the DEFAULT way agents get into games at all: a resident
-  `jetris-agent` only joins games it is invited to unless started with
+  agent (e.g. `golang-mk1`) only joins games it is invited to unless started with
   `--auto-join`, which restores active scanning for open agent-allowed games. If
   the join can't be honored (the invited team was already filled by other
   invitees, or the game filled without it), the agent **declines** the invitation and
@@ -831,7 +831,7 @@ build — the same value `jetris --version` prints.
 
 ---
 
-## 11. Agents and the reference agent (`mk1`)
+## 11. Agents and the reference agent (`golang-mk1`)
 
 An agent is any standalone program that plays Jetris by speaking the game's NATS
 protocol — there is no plugin interface; the contract is the wire protocol and the
@@ -841,22 +841,22 @@ written in any language and contributed to the repo under `agents/<name>/`
 `<agent-name>-<instance>-<difficulty>` so rosters and history record exactly which agent,
 which running copy, and how strong.
 
-Jetris ships one reference agent, **`mk1`** (`jetris-agent`), written in Go, that plays
-**all three modes** — cooperative, competitive, and teams. It is deliberately an ordinary
-peer — the same `lobby` join handshake, the same `engine` (all six moves: left, right,
-down, rotate CW/CCW, hard drop), the same consumers and CAS discipline — with a planner
-where the GUI has a keyboard. Nothing in the blackboard needed to change to admit a
-software agent: the agent demonstrates that a NATS-coordinated peer-to-peer game is
-equally playable by humans and programs. `mk1` reuses the game's own engine code because it
-lives in the repo; a third-party agent implements the same behavior over the wire —
-`agents/example-python/` is a worked example: a minimal Python agent (competitive mode)
-that implements the whole protocol, engine included, with no repo dependency.
+Jetris ships one reference agent, **`golang-mk1`** (`agents/golang-mk1/`), written in Go,
+that plays **competitive** mode. It is deliberately an ordinary peer — the same lobby
+join handshake, the same move vocabulary a human has (left, right, down, rotate CW/CCW,
+hard drop), the same consumers and CAS discipline — with a planner where the GUI has a
+keyboard. Nothing in the blackboard needed to change to admit a software agent: the agent
+demonstrates that a NATS-coordinated peer-to-peer game is equally playable by humans and
+programs. It is a **self-contained module** with no dependency on the game's code — it
+implements the whole protocol, engine included, straight from the agent guide, exactly as
+a third-party agent would; `agents/example-python/` is the same proof in miniature, a
+minimal Python agent with no repo dependency.
 
 ### How it plays
 
-- **Perception:** the agent plans only against **committed** state (`engine.Playfield()`),
-  never against predictions — the same no-client-side-prediction rule every player
-  lives under.
+- **Perception:** the agent plans only against **committed** state — its board as the
+  stream has echoed it back, never against predictions — the same
+  no-client-side-prediction rule every player lives under.
 - **Planning:** for each piece it enumerates every placement reachable with its move
   vocabulary (SRS rotations in place, one-column slides, hard drop), simulates the lock
   and line clear on a board copy, and scores the result with Pierre Dellacherie's
@@ -868,19 +868,13 @@ that implements the whole protocol, engine included, with no repo dependency.
   `next_count` would violate the fair-visibility contract — in a no-preview game
   the agent plans one piece at a time, exactly like its human opponents.
 - **Execution:** moves are issued one at a time — observe the piece, dispatch the one
-  move that advances it toward the target, wait for the effect to appear on the
-  committed board, repeat, hard drop. A move that never takes effect (collision
-  rejection, or a CAS loss against incoming garbage) or garbage rows arriving mid-plan
-  trigger a re-plan from live state; after three re-plans on one piece the agent just
-  hard-drops rather than stall the game.
+  move that advances it toward the target (honoring gravity on the way), wait for the
+  effect to appear on the committed board, repeat, hard drop. A move that loses a CAS
+  race (against incoming garbage, say) is dropped, not retried: the agent flashes,
+  resyncs its board from the stream, and re-plans from the converged state.
 - **Garbage awareness:** adversarial shrink rows are priced in naturally — they count
   as locked stack for every feature and the clear simulation refuses to complete them,
-  exactly like the engine's `Row.IsFull`.
-- **Shared boards (cooperative, teams):** planning switches to the same collision
-  variant the engine uses — another player's mid-flight piece is a temporary obstacle
-  (`CanPlaceCoop`/`RotateCoop`/`HardDropDestinationCoop`). The agent plans over the
-  whole wide board; teammates fighting for the same cells resolve through the normal
-  CAS discipline — a dropped move stalls, the agent re-plans from the converged board.
+  exactly like the game's own full-row rule.
 
 ### Fair visibility: agents see only what humans see
 
@@ -895,18 +889,13 @@ see `jetris-agent-guide.md`.
 
 ### Per-mode outcomes
 
-- **Cooperative:** the agent plays for the shared score; when anyone tops out the game
-  ends for everyone and the agent reports `OVER` with the shared score (there is no
-  winner). If the agent itself is the topper, its engine finishes the game and it
-  archives before leaving, like any GUI topper.
-- **Competitive:** last standing wins; the agent reports WON/LOST as before.
-- **Teams:** the agent picks the team with the most free seats when auto-joining (and
-  retries the other team if it loses that race). Its own top-out is not the outcome —
-  the team plays on — so an eliminated agent stays connected until the verdict: the
-  engine's authoritative game-over update, backed by polling the roster's
-  eliminations (one team fully dead) in case the lossy update channel dropped it. A
-  winning-team agent archives the game (every winner's engine fires the archive hook;
-  the transition is CAS-protected so duplicates are safe).
+`golang-mk1` plays competitive: last standing wins, the agent reports WON/LOST, and —
+like any winning player — the winner archives the game before moving on. A losing agent
+stays connected briefly for the verdict rather than vanishing mid-game. Agents that play
+the other modes (any conformant third-party agent may) carry those modes' outcome duties
+too: a cooperative topper finishes and archives the shared game, and on a team an
+eliminated agent's top-out is not the outcome — the team plays on, and any
+winning-team member archives (the transition is CAS-protected so duplicates are safe).
 
 ### Difficulty levels
 
@@ -937,10 +926,10 @@ enforces the policy **atomically inside its CAS loop**: an agent joining a no-ag
 gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats are held by agents further agent
 joins get `ErrAgentSlotsFull` — so several idle agents racing for the last agent seat can
 never over-fill it. Agents are first-class but visible: an agent's player name has
-**three parts** — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-hard`**. The
-version stem names the agent's CODE generation (`mk1` uses its `Codename`,
-currently `mk1`, bumped whenever its play logic changes; third-party agents use
-their own stem via `--name`/`Config.Name`); the instance id is 4 random hex chars
+**three parts** — `<version>-<instance>-<difficulty>`, e.g. **`golang-mk1-3f7a-hard`**. The
+version stem names the agent's CODE generation (`golang-mk1` uses its codename,
+bumped whenever its play logic changes; third-party agents use
+their own stem via `--name`); the instance id is 4 random hex chars
 minted fresh for every connection, so several copies of one agent version can play
 at once and each connection is distinguishable; the difficulty labels its strength.
 The name doubles as the NATS player ID, which appears in subject tokens AND in the
@@ -957,29 +946,27 @@ With no `--join`/`--create`, an agent is a **lobby resident**: it idles in the l
 **waiting to be invited** — invitations are accepted immediately — plays the game to
 the end, returns to the lobby, and repeats until interrupted (`--once` restores
 play-one-game-and-exit). Passing **`--auto-join`** widens the resident's appetite: it
-then also actively joins the oldest open game of any mode that allows agents and has a
-free seat (in teams, a free seat on some team) and a free agent seat. An "agent that is
-not currently playing" is simply one sitting in the lobby waiting (or, with
+then also actively joins the oldest open game it can play (for `golang-mk1`,
+competitive) that allows agents and has a free seat and a free agent seat. An "agent
+that is not currently playing" is simply one sitting in the lobby waiting (or, with
 `--auto-join`, scanning) — a playing agent can't join anything else. If a joined game
 never starts (nobody shows up or readies), the agent **un-joins** after its wait
-timeout — `lobby.UnjoinGame` removes it from the roster (reverting a full `starting`
-game to `created`) and purges its roster announcement so it never lingers as a ghost
-seat — then goes back to waiting.
+timeout (`--wait`, 10 minutes by default): a CAS roster removal (reverting a full
+`starting` game to `created` so the freed seat is joinable again) plus a purge of its
+roster announcement so it never lingers as a ghost seat — then goes back to waiting.
 
 In every seat it takes, the agent carries the same lifecycle responsibilities as a GUI
 player:
 
-- It joins via `lobby.JoinGame` (guarding first that the game is not yet
+- It joins via the listing's CAS join (guarding first that the game is not yet
   running, has a free seat, and allows agents), toggles READY, and — if its toggle is
   the one that completes the ready set — **it runs the 5..0 countdown and transitions
   the game to in_progress**, exactly like the GUI client in that seat.
-- If it wins, its engine drives the finished transition, so **it archives the game**
-  (`ArchiveAndCleanup`) before moving on, like any winning player.
-- On losing it moves on after a short grace (or lingers until the game finishes with
-  `--linger`).
+- If it wins, it CAS-transitions the meta to finished and **archives the game**
+  (record, stream deletion, listing cleanup) before moving on, like any winning player.
+- On losing it stays connected briefly for the verdict, then moves on.
 
 One-shot game selection remains CLI-driven: `--join <gameID>` for a specific game
-(still subject to that game's agent policy), or `--create --mode
-cooperative|competitive|teams --players N [--max-agents M]` to host one (`--players`
-is per team in teams mode, like the GUI's count) — agent-hosted games allow agents in
-all seats by default, since the host itself takes one.
+(still subject to that game's agent policy), or `--create --players N
+[--max-agents M] [--next K]` to host a competitive game — agent-hosted games allow
+agents in all seats by default, since the host itself takes one.

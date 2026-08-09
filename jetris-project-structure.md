@@ -30,7 +30,7 @@
 18. [Testing Strategy](#18-testing-strategy)
 19. [Design Decision Log](#19-design-decision-log)
 20. [Release Pipeline](#20-release-pipeline)
-21. [internal/agent and cmd/jetris-agent](#21-internalagent-and-cmdjetris-agent)
+21. [Agents: the golang-mk1 reference and the agents/ home](#21-agents-the-golang-mk1-reference-and-the-agents-home)
 
 ---
 
@@ -42,10 +42,12 @@ jetris/
 │   └── workflows/
 │       └── release.yml
 ├── cmd/
-│   ├── jetris/
-│   │   └── main.go
-│   └── jetris-agent/
+│   └── jetris/
 │       └── main.go
+├── agents/
+│   ├── example-python/              ← minimal Python agent (no repo dependency)
+│   └── golang-mk1/                  ← the Go reference agent: its own module (own go.mod,
+│                                      only dependency nats.go), NOT part of go build ./...
 ├── internal/
 │   ├── config/
 │   │   └── config.go
@@ -135,9 +137,9 @@ cmd/jetris
     ├── internal/render            ← depends on: game (cell/board appearance)
     └── internal/nativeui          ← depends on: engine, lobby, render, config (the front end)
 
-cmd/jetris-agent
-    └── internal/agent               ← depends on: engine, lobby, game, rng, nats, config,
-                                     archive, cleanup (headless player; no UI packages)
+agents/golang-mk1                  ← separate module: depends only on nats.go (the headless
+                                     reference player; speaks the wire protocol, uses no
+                                     internal/ packages)
 
 Leaf packages (no internal deps):
     internal/config
@@ -2418,7 +2420,7 @@ Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps t
 
 ---
 
-## 21. Agents: the `mk1` reference and the `agents/` home
+## 21. Agents: the `golang-mk1` reference and the `agents/` home
 
 **The agent model.** An agent is a standalone program that plays Jetris by speaking the
 game's NATS/JetStream protocol — there is no plugin interface or shared SDK to implement.
@@ -2437,75 +2439,58 @@ flashes, and the finish→archive→cleanup sequence when it wins (its ArchiveRe
 byte-compatible with the Go structs). `agent.py --selftest` runs offline conformance checks (RNG parity
 fixtures generated from `internal/rng`).
 
-**The reference agent `mk1`.** The repository ships one Go agent — `mk1`, source in
-`internal/agent`, binary `cmd/jetris-agent`. It is a *privileged* example: because it
-lives in the repo it reuses the game's own Go engine (`engine`, `lobby`, `game`, `rng`,
-`nats`, `config`, `archive`, `cleanup`) instead of re-implementing the protocol, so it
-builds without cgo/Gio on every platform and its player name reads `mk1-<instance>-<difficulty>`.
-It uses only the exported engine/lobby API (the six move methods and the state accessors),
-never engine internals or direct cell publishes — the same discipline a wire-level agent
-follows. Everything below describes that reference implementation.
+**The reference agent `golang-mk1`.** The repository ships one Go agent — `golang-mk1`,
+in `agents/golang-mk1/`. It is an **independent module** (its own `go.mod`; the only
+dependency is the `nats.go` client), NOT part of the main module's `go build ./...`: it
+implements the wire protocol straight from `jetris-agent-guide.md` with no access to the
+game's packages, exactly as a third-party agent would — every protocol interaction in its
+source cites the guide section it implements, so it also serves as a worked reading of
+the contract. It plays **competitive** mode with the Dellacherie/El-Tetris heuristic at
+`easy`/`medium`/`hard` difficulties, hosts games with `--create`, and its player name
+reads `golang-mk1-<instance>-<difficulty>`. It builds without cgo/Gio on every platform.
+Everything below describes that reference implementation.
 
-### internal/agent files
+### agents/golang-mk1 files
 
 | File | Contents |
 |------|----------|
-| `difficulty.go` | `Difficulty` (easy/medium/hard), `ParseDifficulty`, and `Tuning` — the knob set (per-piece think pause, per-move pause, blunder rate/depth, lookahead, executor timeouts). `Lookahead` (easy 0, medium 1, hard `config.MaxNextCount`) is the max preview pieces used in planning, always further capped by what the game itself reveals — the planner is only ever handed `Engine.NextPieces()`, so every difficulty decides on exactly what a human can see (nothing, in a no-preview game). Each difficulty maps to a `Tuning`; tests override knobs directly. |
-| `eval.go` | Pure board evaluation: Dellacherie's six features (landing height, eroded cells, row transitions, column transitions, holes, cumulative wells) with the El-Tetris weights. Cells count as filled iff `Occupied && !Active`, which prices adversarial garbage in automatically. |
-| `planner.go` / `rules.go` | Pure placement search over `game.Playfield` copies. `Rules{Shared, PlayerIdx, SectionIdx}` selects the board's collision variant — private boards use `CanPlace`/`Rotate`/`HardDropDestination`; shared (coop/teams) boards use the `*Coop` variants, where other players' mid-flight pieces block. `PlanPlacements` enumerates every placement reachable with the executor's move vocabulary by simulating the exact script (SRS rotations with kicks, one-column collision-gated slides, hard drop), simulates the lock/clear (`Row.IsFull` keeps garbage rows uncompletable), scores with `eval.go`, and returns placements best-first. Its variadic `upcoming` tail is the game's piece preview (callers pass `Engine.NextPieces()`, never more — the fair-visibility contract), truncated to `Tuning.Lookahead`: each candidate's score adds `lookaheadScore`, the best play-out of the revealed pieces on the simulated board — recursive, expanding only the `lookaheadBeam` (3) best placements per level, spawning each future piece at its section-offset spawn (`Rules.SectionIdx`, mirroring `engine.spawnPiece`) and scoring a blocked spawn as `lookaheadTopOutPenalty`. `ChoosePlacement` applies the blunder model. |
-| `executor.go` | `Mover` — the slice of `*engine.Engine` the executor needs (six moves + `Playfield`, `PieceIdx`, `PlayerIdx`, `Mode`; the engine satisfies it, tests use a synchronous fake). `Execute` runs a sense–act loop: dispatch exactly one move toward the target, poll the committed playfield for its effect, repeat, hard drop. Errors are typed: `ErrStalled` (move never took effect), `ErrBoardChanged` (garbage landed mid-plan, detected via `AdversarialRowCount`), `ErrGameOver`. |
-| `agent.go` | `Run(ctx, Config) (Result, error)` — setup (Bootstrap → name-collision check → lobby bring-up with `SetAgent(true)`, `WaitForInitialLoad`, best-effort `cleanup.Run`), then a game loop around `playOne`. The default is **resident**: wait in the lobby → play → back to the lobby, until ctx is cancelled — joining only games this agent is INVITED to unless `Config.AutoJoin` also enables scanning for open agent-allowed games (`Config.Once` restores one-shot; `--join`/`--create` are always one-shot). Stale invitations (game gone) are dropped via `DismissInvite`; a failed invited join is answered with `DeclineInvite` (the inviter sees the refusal). `playOne` mirrors `nativeui/lifecycle.go` for a single game of ANY mode: joinability guard (created/starting, free seat — a free team seat in teams — free **agent seat** per the game's `MaxAgents` policy) → `JoinGame` (teams: least-populated team, one retry on a lost `ErrTeamFull` race) → engine construction with the listing's mode/team/slot and `OnGameFinished = ArchiveAndCleanup` → `ToggleReady` (running the 5..0 countdown + `StartGame` when its toggle completes the ready set) → per-piece play loop under the mode's `Rules` → per-mode outcome: competitive polls `IsEliminated`; cooperative has no winner (shared score, `OVER`); teams waits for the team verdict (authoritative Won update, with a roster-eliminations poll as the lossy-channel fallback) → `waitArchived` (archiveDone when OUR engine archives — gated by `archiveStarted`, since `ArchiveAndCleanup` flips the meta to archived before the record publish — else meta/stream) or grace/linger (competitive loser) → teardown. A joined game that never starts within `WaitTimeout` is abandoned via `lobby.UnjoinGame` (frees the seat) before the agent rescans. `Result` carries per-run `Games`/`Wins` totals alongside the last game's stats. |
+| `pieces.go` | Tetromino geometry: spawn shapes and SRS rotations. |
+| `rng.go` | Bit-exact port of the game's piece RNG (Go `math/rand/v2` PCG + 7-bag), so the agent's own piece sequence matches every peer's view of it (`rng_test.go` locks parity fixtures generated from `internal/rng`). |
+| `engine.go` | The settled-board model: collision, drop row, completed rows, collapse. |
+| `planner.go` | The brain: Dellacherie's six features with the El-Tetris weights, placement enumeration over the move vocabulary, beam-pruned lookahead over the game's revealed preview (never past `next_count` — the fair-visibility contract), and the blunder model. |
+| `difficulty.go` | The `easy`/`medium`/`hard` knob sets: think/move pacing, blunder rate/depth, lookahead cap. |
+| `types.go` | Wire payloads and the `obj` raw-field map that keeps unknown fields — and the 64-bit seed's exact digits — intact across CAS read-modify-writes of the lobby KV and meta. |
+| `agent.go` | The lobby: presence heartbeat, the KV mirror (listings + invitations), invitation accept/decline, select/join/ready CAS flows, the 5..0 countdown when its ready toggle completes the set, `--create` hosting (game stream + meta + listing + `game.created` event), and the pre-start un-join. |
+| `game.go` | One game: consumers, its own engine loop (spawn/gravity/lock-in/clears/top-out), atomic CAS cell batches with write-through, the garbage ledger (CAS-adds on victims' registers + txn-gated application), per-player `game_over` events, CAS-failure flashes, outcome, and the finish→archive→cleanup sequence when it wins. |
+| `main.go` | Flags, signal handling, and `--selftest` (offline RNG-parity and planner sanity checks). |
 
-### Poll-not-events rule
-
-`engine.Updates` is a bounded, lossy channel (drops when full), so the agent treats it as
-a logging/wake-up hint only. Everything authoritative is polled from race-free
-accessors: game over is `Mode() != ModePlayer`, win/loss prefers the pump-captured
-`UpdateGameOver.Won` and falls back to `!IsEliminated(name)`, lock detection is
-`PieceIdx()` advancing, and mid-plan garbage is `AdversarialRowCount()` growing. The
-agent never reads the game seed beyond the game's own piece preview: the sequence is
-deterministic, but the UI shows humans exactly `GameMeta.NextCount` upcoming pieces,
-so the agent's lookahead is fed from the same `Engine.NextPieces()` accessor and
-stops at the same horizon — seed-derived lookahead past it would violate the
-fair-visibility contract (agents decide only on what a human can see —
-`jetris-agent-guide.md`).
-
-### cmd/jetris-agent flags
+### golang-mk1 flags
 
 | Flag | Meaning |
 |------|---------|
-| `--server` / `--context` / `--user` / `--password` | Connection choice, same semantics as `cmd/jetris` (URL wins over context) |
-| `--name` | The agent VERSION stem (default: `mk1`, the reference agent's `agent.Codename`, bumped when the agent's play logic changes). `Run` composes the full player name `<stem>-<instance>-<difficulty>` (`composeName` in agent.go) with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole passes `config.ValidatePlayerName` |
+| `--server` | NATS server URL (default `nats://localhost:4222`) |
+| `--name` | The agent VERSION stem (default `golang-mk1`, its codename, bumped when the play logic changes). The full player name is `<stem>-<instance>-<difficulty>` with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole fits the 32-character cap |
 | `--difficulty` | `easy` \| `medium` \| `hard` (default `hard`) |
 | `--join <gameID>` | Join a specific game (still subject to that game's agent policy) |
-| `--create` + `--mode` + `--players N` + `--max-agents M` + `--next K` | Create a game (cooperative/competitive/teams; `--players` is per team in teams mode) and wait for opponents; `M` agent seats including this agent (0/default = all seats — an agent-hosted game is agent-friendly); `K` upcoming pieces the game reveals (0-4, default 1) |
+| `--create` + `--players N` + `--max-agents M` + `--next K` | Host a competitive game and wait for opponents; `M` agent seats including this agent (0/default = all seats — an agent-hosted game is agent-friendly); `K` upcoming pieces the game reveals (0-4, default 1) |
 | *(neither)* | **Resident mode**: wait in the lobby and play invited games, game after game, until interrupted |
-| `--auto-join` | Residents also actively join the oldest open game of any mode that allows agents (default: invited games only) |
+| `--auto-join` | Residents also actively join the oldest open agent-allowed competitive game with a free (agent) seat (default: invited games only) |
+| `--wait` | Max wait for a joined game to fill and start before un-joining it (default 10m) |
 | `--once` | Exit after one game instead of staying resident |
-| `--wait` | Max wait for a joined game to fill and start (default 10m; one-shot discovery too — resident discovery waits indefinitely) |
-| `--linger` | After losing, stay connected until the game finishes |
-| `--seed` | Blunder RNG seed for reproducible easy/medium play |
-| `--version` | Print version and exit |
+| `--selftest` | Run the offline conformance checks and exit |
 
-SIGINT/SIGTERM cancel the run context; the agent leaves the game, stops the lobby
-(deleting its presence), and drains the connection on the way out. Exit status 0 covers
-both winning and losing; non-zero means a setup or runtime error.
+SIGINT/SIGTERM stop the agent; it deletes its presence and drains the connection on the
+way out. Exit status 0 covers both winning and losing; non-zero means a setup or runtime
+error.
 
 ### Testing
 
-`planner_test.go`/`eval_test.go` cover the pure search (placement enumeration counts,
-script replay, clear-beats-hole ordering, garbage-row invariants, blunder
-distribution). `executor_test.go` drives `Execute` against a
-synchronous fake `Mover`. `bot_integration_test.go` plays a full agent-vs-agent game on an
-embedded server (strong creator vs. rigged-bad auto-joiner, zero delays) and asserts
-exactly one winner, the archive record, and stream/KV cleanup.
-`resident_integration_test.go` exercises the resident lifecycle: two resident agents
-appear (flagged) in the lobby presence list, skip a no-agents game, fill and play two
-consecutive agent-allowed games created by a "human" lobby client, and exit cleanly on
-interrupt reporting two games each. `modes_integration_test.go` plays a full
-cooperative game (shared board, no winner, topper archives) and a 1v1 teams game
-(auto team selection, garbage between team boards, exactly one winning team) end to
-end.
+`rng_test.go` locks the RNG-parity fixtures and `--selftest` replays them offline along
+with a planner line-clear sanity check — both need no server. Live conformance is
+verified by playing it: against the GUI (create an agent-allowed competitive game on a
+local `nats-server -js`), or agent-vs-agent (`--create --once` on one instance,
+`--auto-join --once` on another) — the winner's archive record then shows up in the
+lobby's game history like any other game's.
 
 ### Agent policy (who may join)
 

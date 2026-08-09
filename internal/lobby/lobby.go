@@ -723,8 +723,9 @@ var ErrGameStarted = errors.New("game has already started")
 // corrupted roster). If the departure makes a full "starting" roster
 // not-full again, the status reverts to created. The player's roster
 // announcement is purged from the game stream so late joiners don't discover
-// a ghost opponent. Used by resident agents that give up on a game that never
-// starts; unlike LeaveGame it frees the seat for someone else.
+// a ghost opponent. Used by the GUI's pre-start leave flow — and, over the
+// wire, by resident agents that give up on a game that never starts; unlike
+// LeaveGame it frees the seat for someone else.
 func (l *Lobby) UnjoinGame(ctx context.Context, gameID string) error {
 	for {
 		entry, err := l.kv.Get(ctx, config.LobbyGameKey(gameID))

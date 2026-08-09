@@ -17,9 +17,10 @@ blackboard, and the fair-play rules below.** There is no framework to plug into 
 interface to implement: your agent is a standalone program, in **any language**, that
 connects to NATS and plays by these rules. This guide plus `jetris-gameplays.md` are
 the complete contract — read them and you can build a conformant agent depending on
-nothing in this repository. The repo ships one Go agent, **`mk1`**, purely as a
-reference/opponent; §3 explains how it (uniquely, because it lives in the repo) reuses
-the game's own engine code, while §4 is the real contract every other agent implements.
+nothing in this repository. The repo ships one Go agent, **`golang-mk1`**
+(`agents/golang-mk1/`), itself built purely from this contract as a self-contained
+module; §3 introduces it as a reference and sparring partner, and §4 is the contract
+every agent — `golang-mk1` included — implements.
 To contribute an agent, see [`agents/README.md`](agents/README.md).
 
 Companion documents (all at the repo root):
@@ -59,8 +60,8 @@ An agent may NOT use:
 - **`GameMeta.Seed` or the piece RNG beyond the game's preview.** The piece
   sequence is deterministic and any client can compute every future piece — but
   the UI shows a human exactly `NextCount` upcoming pieces (none when it is 0),
-  so an agent's lookahead stops at the same horizon. (`mk1`'s planner reads its
-  allowance from the meta it already fetches and caps its lookahead there.)
+  so an agent's lookahead stops at the same horizon. (`golang-mk1`'s planner reads
+  its allowance from the meta it already fetches and caps its lookahead there.)
 - Stream internals the UI does not render: raw sequence numbers as game
   information, other players' in-flight publish timing, headers, or anything else
   observable only at the protocol layer.
@@ -104,10 +105,10 @@ Agents are first-class but visible:
     before acting on one.
   **If the join fails** (the invited team was full, the game filled first —
   `ErrTeamFull`/`ErrGameFull`), decline the invitation rather than retrying it,
-  or you'll re-accept the same unsatisfiable invite forever. The Go `agent`
-  package does all of this automatically.
+  or you'll re-accept the same unsatisfiable invite forever. `golang-mk1`'s
+  `agent.go` is a worked implementation of all of this.
 - **Wait to be invited by default.** The reference resident agent
-  (`jetris-agent`) only joins games it is invited to unless started with
+  (`golang-mk1`) only joins games it is invited to unless started with
   `--auto-join`, which restores active scanning for open agent-allowed games.
   Third-party resident agents should offer the same choice (the Python example's
   `--auto-join` mirrors it) so a lobby full of idle agents stays quiet until
@@ -120,63 +121,48 @@ Agents are first-class but visible:
   the KV; the events are low-latency pings that let you react (e.g. to a fresh
   invitation or a seat opening up) without polling.
 - **Structured names: `<version>-<instance>-<difficulty>`.** An agent's player
-  name has three parts, e.g. `mk1-3f7a-hard`:
+  name has three parts, e.g. `golang-mk1-3f7a-hard`:
   - **version** — a stem naming your agent's CODE generation; bump it whenever
     your play logic changes, so rosters and game history record which version
-    played (`mk1` uses its `Codename`).
-  - **instance** — a short unique id (`mk1` mints 4 random hex chars)
+    played (`golang-mk1` uses its codename).
+  - **instance** — a short unique id (`golang-mk1` mints 4 random hex chars)
     generated fresh for every connection, so several copies of the same agent
     version can play at once and each connection is distinguishable.
-  - **difficulty** — your strength label (`easy`/`medium`/`hard` for `mk1`'s
-    tunings, or your own).
+  - **difficulty** — your strength label (`easy`/`medium`/`hard` for
+    `golang-mk1`'s tunings, or your own).
   The name doubles as the NATS player ID and the presence KV key, so every
   component must use only `[-/_=.a-zA-Z0-9]` (no spaces, no parentheses) and
   the whole must fit 32 characters (`config.ValidatePlayerName`).
 
-## 3. The reference agent `mk1` (in-repo Go only)
+## 3. The reference agent `golang-mk1`
 
-The repository's own agent, `mk1` (`cmd/jetris-agent`, source in `internal/agent`),
-is a **privileged example, not a framework**. Because it lives inside the repo it can
-reuse the game's own Go engine packages (`internal/engine`, `internal/lobby`, …) instead
-of re-implementing the protocol — a convenience no third-party agent gets. Your agent —
-in any language — implements the wire protocol in §4 instead. This section is here only
-so you can read how the reference does it and run it as an opponent.
+The repository's own agent, **`golang-mk1`** ([`agents/golang-mk1/`](agents/golang-mk1/)),
+is exactly what this guide asks you to build: an independent module (its own `go.mod`,
+whose only dependency is the `nats.go` client — nothing from the game's packages) that
+implements the §4 wire contract directly. It has **no privileged access** — everything
+it does over the wire, your agent in any language can do too, and every protocol
+interaction in its source cites the section of this guide it implements, so it doubles
+as a worked, conformant reading of the contract.
 
-For an **in-repo Go** agent, the entire lifecycle — connect, lobby, policy-aware join,
-ready/countdown, play, archive, teardown — is one call:
+What it covers, beyond the minimal Python example (`agents/example-python/`): the El-Tetris
+**Dellacherie** placement heuristic with beam-pruned lookahead over the game's revealed
+preview, `easy`/`medium`/`hard` difficulty tunings (think/move pacing, a blunder model,
+lookahead depth), resident/invitation behavior with `--auto-join`, and hosting — with
+`--create` it creates the game stream, meta, and lobby listing itself and waits for
+opponents. It plays **competitive** mode, declining invitations to modes it can't play.
 
-```go
-import (
-    "context"
-    "jetris/internal/agent"
-    "jetris/internal/config"
-)
-
-res, err := agent.Run(ctx, agent.Config{
-    NATS:       config.Config{NATSURL: "nats://localhost:4222"},
-    Name:       "mybrain",              // version stem → plays as "mybrain-<instance>-hard"
-    Difficulty: agent.DifficultyHard,
-})
+```sh
+cd agents/golang-mk1 && go build .
+./golang-mk1 --server nats://localhost:4222 --difficulty medium --auto-join
 ```
 
-To keep the plumbing but replace the brain, use the layers directly:
+Its reading order (see its [README](agents/golang-mk1/README.md)): `pieces.go` →
+`rng.go` (the bit-exact PCG + 7-bag port) → `engine.go` → `planner.go` →
+`difficulty.go` → `types.go` → `agent.go` (the lobby) → `game.go` (one game).
 
-- **Perception** — `engine.Playfield()` (deep copy; `ActivePieceForPlayer(idx)`),
-  `OpponentSnapshots()`, `Score()`, `Level()`, `PieceIdx()`, `Mode()`,
-  `IsEliminated(id)`, `GameOutcome()`; the lossy `Updates` channel for wake-ups.
-- **Action** — exactly six moves: `MoveLeft`, `MoveRight`, `MoveDown`, `RotateCW`,
-  `RotateCCW`, `HardDrop`. That is a human's entire vocabulary, and yours.
-- **Planning helpers** — `agent.PlanPlacements` (placement enumeration honoring the
-  board's collision rules via `agent.Rules`), `agent.ChoosePlacement` (blunder
-  model), `agent.Execute` (sense–act move execution that survives CAS-dropped
-  moves and mid-plan garbage).
-- **Lobby** — `lobby.New` + `SetAgent(true)` + `Start`, `CreateGame`, `JoinGame`,
-  `ToggleReady`, `UnjoinGame`, `StartGame`.
-
-Two behaviors of the pipeline your brain must tolerate: moves are **dropped, not
-retried**, when they lose a CAS race (re-observe and re-plan — `agent.Execute`
-already does), and the engine's input buffer is 8 deep with silent overflow (pace
-your dispatches; don't spam).
+One behavior of its move pipeline worth copying: moves that lose a CAS race are
+**dropped, not retried** — it re-observes committed state, resyncs, and re-plans
+(§4.3), which is what keeps a contended board consistent.
 
 ## 4. The contract: play the protocol (any language)
 
@@ -252,7 +238,7 @@ and the real-time push fabric.
   apply incoming garbage, spawn its next piece (including the deferred-spawn rule
   when another player's falling piece covers your spawn cells), and detect
   top-out. This is the bulk of the work; `jetris-gameplays.md` is the spec for
-  all of it, and the `mk1` reference (§3) is a working implementation to compare against.
+  all of it, and the `golang-mk1` reference (§3) is a working implementation to compare against.
 - **Broadcast CAS-failure flashes.** When one of your writes loses its per-subject
   CAS and you drop the move, publish a **core NATS** message (NOT JetStream — this
   is transient UI feedback that must never be persisted or replayed) to
@@ -342,16 +328,17 @@ agree on eliminations and outcomes without a coordinator.
 
 - **Local server**: `nats-server -js`, or the GUI's LAN mode (it prints the URL to
   share).
-- **Against the reference agent**: run `mk1` residents at any difficulty and create
-  agent-allowed games — `go run ./cmd/jetris-agent --server nats://localhost:4222
-  --difficulty medium` — or `... --create --mode teams --players 2` to host. `mk1`
-  implements everything in this guide, so it is a conformant sparring partner.
+- **Against the reference agent**: run `golang-mk1` residents at any difficulty and
+  create agent-allowed games — `cd agents/golang-mk1 && go build . && ./golang-mk1
+  --server nats://localhost:4222 --difficulty medium --auto-join` — or `./golang-mk1
+  --create --players 2` to host a competitive game. `golang-mk1` implements everything
+  in this guide, so it is a conformant sparring partner.
 - **Against humans**: run the GUI and either create an invite-only game and invite
   the agent by name (it accepts immediately), or create a game with "Allow agents"
   checked and a max-agents count for an `--auto-join` resident to find, or `--join`
   it in directly.
-- **In Go**: `internal/testutil.StartServer` gives an embedded JetStream server;
-  `internal/agent`'s integration tests show full agent-vs-agent games in ~15s.
+- **In Go**: `internal/testutil.StartServer` gives an embedded JetStream server
+  for protocol experiments and tests.
 
 ## 7. Checklist
 

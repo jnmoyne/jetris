@@ -63,21 +63,25 @@ depends on nothing in this repository — a single file implementing the wire pr
 NATS. It is the proof of the "any language, only NATS" contract and a good starting
 point to copy: see its [README](example-python/README.md).
 
-## The reference agent: `mk1`
+## The reference agent: `golang-mk1`
 
-The repository ships one agent, **`mk1`** (`cmd/jetris-agent`, source in
-`internal/agent`), written in Go. Because it lives in the repo it reuses the game's own
-engine code instead of re-implementing the protocol, so it is a *privileged* example, not a
-template you must follow — but everything it does over the wire, your agent can do too. Use
-it to play against while you develop:
+[`golang-mk1/`](golang-mk1/) is the repo's own agent and the same idea in Go: an
+independent module (its own `go.mod`, depending only on the `nats.go` client — **not** on
+this repository) that implements the wire protocol straight against NATS/JetStream. It
+goes beyond the minimal example by playing with the El-Tetris **Dellacherie** heuristic
+and `easy`/`medium`/`hard` difficulties, so it is both a template for a "real language"
+agent and a strong opponent. Use it to play against while you develop:
 
 ```sh
+cd golang-mk1 && go build .
+
 # a resident opponent that joins agent-allowed games as they appear
-go run ./cmd/jetris-agent --server nats://localhost:4222 --difficulty medium
+./golang-mk1 --server nats://localhost:4222 --difficulty medium --auto-join
 
 # or have it host a game and wait for you
-go run ./cmd/jetris-agent --server nats://localhost:4222 --create --players 2
+./golang-mk1 --server nats://localhost:4222 --create --players 2
 ```
 
-It reads the same guide your agent does; see `jetris-agent-guide.md` §3 for how it is
-built and §4 for the protocol your agent implements instead.
+It is built solely from the same two documents your agent uses — every protocol
+interaction in its source cites the guide section it implements — so it doubles as a
+worked, conformant reading of the contract: see its [README](golang-mk1/README.md).

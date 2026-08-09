@@ -3,4 +3,4 @@ jetstream-data/
 .DS_Store
 .idea/
 /jetris
-/jetris-agent
+agents/golang-mk1/golang-mk1

@@ -301,7 +301,7 @@ All three are the same blackboard pattern with different subject schemes and col
 - Competitive: each player has a private board (their own subject namespace). Clearing lines owes "garbage" rows to every opponent, recorded by CAS-adding each victim board's durable garbage register — simultaneous attacks sum, and none is ever lost — which each victim applies to its own board as a txn-gated transform. A rising board pushes the falling piece up (minimally), and can eliminate the player. Last player standing wins.
 - Teams: two teams, each on a shared per-team board (like a cooperative board per side). Line clears attack the opposing team's board through the same garbage registers; pieces caught by the rising stack are pushed up (cascading through pieces above them), never buried; a team loses when all its members top out. Per-player `game_over` events give every peer the same elimination order, so all peers agree on the winner without a coordinator.
 
-> **Protocol compatibility:** the garbage-register/gated-transform protocol and the per-kind event subjects are a breaking wire change with no version negotiation — every participant of a game (GUI, `jetris-agent`, third-party agents) must run a build that speaks the same protocol.
+> **Protocol compatibility:** the garbage-register/gated-transform protocol and the per-kind event subjects are a breaking wire change with no version negotiation — every participant of a game (GUI and agents alike) must run a build that speaks the same protocol.
 
 ---
 
@@ -317,7 +317,7 @@ All three are the same blackboard pattern with different subject schemes and col
 
 ```sh
 go build -o jetris ./cmd/jetris
-go build -o jetris-agent ./cmd/jetris-agent   # optional: the headless computer player
+(cd agents/golang-mk1 && go build .)          # optional: the headless computer player (its own module)
 ```
 
 Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`.
@@ -349,37 +349,33 @@ To play multiplayer, **run more instances pointed at the same NATS server** — 
 
 ### Playing with (and against) agents
 
-`jetris-agent` is a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team — using the same engine as the GUI, driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
+The repo's agent is **`golang-mk1`** ([`agents/golang-mk1/`](agents/golang-mk1/)): a headless computer player for **competitive** games. It is a self-contained Go module that depends on nothing else in this repository — it speaks the same NATS wire protocol as every other peer (the contract in [`jetris-agent-guide.md`](jetris-agent-guide.md)), driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately, declining game modes it can't play), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
 
 ```sh
+cd agents/golang-mk1 && go build .
+
 # A resident agent: waits in the lobby to be invited, forever
-./jetris-agent --server nats://localhost:4222 --name HAL --difficulty medium
+./golang-mk1 --server nats://localhost:4222 --name HAL --difficulty medium
 
 # Also join any open agent-allowed game as it appears (the pre-invitations behavior)
-./jetris-agent --server nats://localhost:4222 --auto-join
+./golang-mk1 --server nats://localhost:4222 --auto-join
 ```
 
-Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.
+Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`golang-mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.
 
 **You decide per game whether agents may join.** The GUI's competitive create row has an **"Allow agents" checkbox and a max-agents count** (off by default — human-only unless you opt in). Check it, set how many seats agents may take, create the game, and idle `--auto-join` agents fill in up to that max (invited agents join regardless — the invitation is the permission); the game row shows `agents 1/2`-style occupancy and agent players are tagged `[agent]` everywhere. The max is enforced atomically, so a crowd of agents can never grab more seats than you allowed.
 
 ```sh
 # Exit after a single game instead of staying resident
-./jetris-agent --server nats://localhost:4222 --once
+./golang-mk1 --server nats://localhost:4222 --once
 
 # Or have an agent host the game (agent-hosted games allow agents in all seats by default)
-./jetris-agent --server nats://localhost:4222 --create --players 2
-
-# Host a cooperative game and play alongside an agent teammate, or a 2v2 teams game
-./jetris-agent --server nats://localhost:4222 --create --mode cooperative --players 2 --max-agents 1
-./jetris-agent --server nats://localhost:4222 --create --mode teams --players 2
+./golang-mk1 --server nats://localhost:4222 --create --players 2
 ```
 
-In cooperative games agents play for the shared score and treat your falling piece as an obstacle to work around; in teams they take a seat on the emptier team and attack the other board like any teammate would.
+`--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score, and at most the game's revealed piece preview — never the RNG seed. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create an agents-only game to spectate an agent-vs-agent match. See `golang-mk1 -h` for the full flag list and [`jetris-gameplays.md`](jetris-gameplays.md) §11 for how it plays.
 
-`--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score — never the RNG seed or upcoming pieces. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create a agents-only game to spectate an agent-vs-agent match. See `jetris-agent -h` for the full flag list and [`jetris-gameplays.md`](jetris-gameplays.md) §11 for how it plays.
-
-**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. There is no framework to plug into: an agent is any program that speaks the game's NATS protocol and follows the fair-play rules, in **any language**. [`jetris-agent-guide.md`](jetris-agent-guide.md) is the complete wire contract, and [`agents/README.md`](agents/README.md) is where you submit your own. The shipped `jetris-agent` (`mk1`) is the Go reference implementation you can play against.
+**Want to build your own agent?** The playfield is a blackboard and agents are just peers — humans included. There is no framework to plug into: an agent is any program that speaks the game's NATS protocol and follows the fair-play rules, in **any language**. [`jetris-agent-guide.md`](jetris-agent-guide.md) is the complete wire contract, and [`agents/README.md`](agents/README.md) is where you submit your own. The shipped `golang-mk1` is the Go reference implementation you can play against — itself a self-contained module built only from that guide.
 
 ### Clean up
 
@@ -402,7 +398,7 @@ In a game, toggle "Show NATS messages" to open a panel that prints, in real time
 
 ```
 cmd/jetris/          entry point: connect to NATS, ensure lobby streams/KV, launch UI
-cmd/jetris-agent/      headless computer player for competitive mode (CLI, no UI)
+agents/              agents: the repo's golang-mk1 + contributed ones (self-contained modules)
 internal/
   nats/                the JetStream layer — streams, KV, CAS publish, atomic batches,
                        ordered consumers, multi-subject direct get  ← start here
@@ -414,8 +410,6 @@ internal/
   rng/                 seedable 7-bag piece randomizer (deterministic across peers)
   archive/             record a finished game, seal/delete its stream
   cleanup/             startup reconciliation of orphaned/abandoned game streams
-  agent/                 the computer player: placement planner (Dellacherie
-                       heuristic), sense–act move executor, lobby orchestration
   nativeui/            native Gio desktop UI (board, lobby, live NATS-message panel)
 ```
 

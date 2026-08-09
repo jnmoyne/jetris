@@ -94,7 +94,7 @@ func (a *App) finishCreateWizard() {
 		go a.openInvitePicker(mode, count, nextCount)
 		return
 	}
-	// Agent policy: how many seats idle jetris-agent players may take.
+	// Agent policy: how many seats idle agent players may take.
 	// Unchecked = 0 = agents may not join. Clamped to the game's total
 	// player count (the count editor is per-team in teams mode).
 	maxAgents := 0
@@ -268,7 +268,7 @@ func (a *App) wizardJoinStep(gtx C) D {
 	)
 }
 
-// wizardAgentsStep is step 4 (open games only): whether idle jetris-agent
+// wizardAgentsStep is step 4 (open games only): whether idle agent
 // players may take seats, and at most how many.
 func (a *App) wizardAgentsStep(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -296,7 +296,7 @@ func (a *App) wizardAgentsStep(gtx C) D {
 					)
 				}),
 				layout.Rigid(spacer(8)),
-				layout.Rigid(a.body("Idle jetris-agent players may take up to this many seats (capped at the game's seat count).", colMuted)),
+				layout.Rigid(a.body("Idle agent players may take up to this many seats (capped at the game's seat count).", colMuted)),
 			)
 		}),
 	)

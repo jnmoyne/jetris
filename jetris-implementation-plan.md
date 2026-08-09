@@ -3319,7 +3319,14 @@ empty-state panel).
 
 ---
 
-## Phase 12 — Headless Agent (the `mk1` reference)
+## Phase 12 — Headless Agent (the `mk1` reference — since retired, see Phase 17)
+
+> **Retired.** The in-repo `mk1` (`internal/agent` + `cmd/jetris-agent`) described in
+> this phase has been **removed from the repository** and replaced by the
+> self-contained **`agents/golang-mk1`** module (Phase 17), which carries forward its
+> planner, difficulties, and resident behavior over the pure wire protocol. This
+> section is kept as the historical record of the original design; the lobby-side
+> machinery it introduced (agent policy, `UnjoinGame`, cleanup grace) is still live.
 
 A headless computer player, `mk1`: `internal/agent` (logic) + `cmd/jetris-agent` (CLI).
 The agent is an ordinary peer built entirely on the exported engine/lobby API — no engine
@@ -3641,6 +3648,38 @@ the previous game's choices.
 - **Tests:** `layout_test.go` "create-wizard" renders every step and branch
   (teams labels, agents editor shown, invite-only relabel) plus the wizard as
   the lobby's live overlay.
+
+## Phase 17 — The self-contained reference agent (`golang-mk1`), retiring `mk1`
+
+The in-repo `mk1` agent (Phase 12) proved the agent model but was *privileged*: it
+reused the game's own engine/lobby packages, so it never exercised the wire contract
+third-party agents live by. **`agents/golang-mk1`** replaces it: an independent Go
+module (own `go.mod`; only dependency `nats.go`, nothing from `internal/`) that
+implements the whole protocol from `jetris-agent-guide.md` — lobby KV CAS flows,
+presence, invitations, a bit-exact PCG + 7-bag RNG port, its own engine, atomic CAS
+cell batches, the garbage ledger, events, flashes, finish→archive→cleanup — with the
+`mk1` planner brain carried over (Dellacherie/El-Tetris evaluation, beam-pruned
+preview lookahead, the easy/medium/hard tunings and blunder model). It plays
+competitive mode; source citations in every protocol interaction make it a worked
+reading of the guide. `cmd/jetris-agent` and `internal/agent` were **deleted**; the
+lobby/GUI machinery Phase 12 added (agent policy + `[agent]` tagging, `UnjoinGame` +
+`PurgeRosterEntry`, the cleanup grace period) survives unchanged, exercised by the GUI
+and by agents over the wire.
+
+Hosting and residency carried over at the wire level: `--create` writes the per-game
+stream (last-value-per-subject, atomic publish, direct get), the initial meta (CAS
+"subject empty"), the KV listing (agent-friendly `max_agents` by default), and the
+`game.created` event, then joins its own game; residents accept invitations (declining
+modes they can't play), scan open agent-allowed competitive games oldest-first with
+`--auto-join`, and un-join a game that hasn't started within `--wait` (default 10m).
+Offline conformance stays a first-class feature: `--selftest` replays RNG-parity
+fixtures and a planner sanity check; `rng_test.go` runs them under `go test` in the
+agent's own module (it is not part of the main module's `go build ./...` / `go test
+./...`). Docs updated in the same stroke: `README.md`, `agents/README.md`,
+`jetris-agent-guide.md` (§3 now describes `golang-mk1`), `jetris-gameplays.md` §11,
+`jetris-project-structure.md` §21.
+
+---
 
 ## Cross-Cutting Implementation Rules
 

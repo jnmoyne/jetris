@@ -29,7 +29,7 @@ type PlayerPresence struct {
 	Name     string         `json:"name"`
 	Status   PresenceStatus `json:"status"`
 	GameID   string         `json:"game_id,omitempty"`
-	Agent    bool           `json:"agent,omitempty"` // this peer is an agent player (jetris-agent)
+	Agent    bool           `json:"agent,omitempty"` // this peer is an agent player (e.g. golang-mk1)
 	LastSeen time.Time      `json:"last_seen"`
 }
 

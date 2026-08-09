@@ -270,7 +270,7 @@ func (a *App) initLobby(name string) error {
 
 // createGame creates a game and returns its ID. For teams mode, count is the
 // number of players PER TEAM; for the other modes it is the total player
-// count. maxAgents is the agent policy — how many seats idle jetris-agent
+// count. maxAgents is the agent policy — how many seats idle agent
 // players may take (0 = agents may not join). nextCount is how many upcoming
 // pieces the game reveals (0..config.MaxNextCount). inviteOnly restricts
 // joining to invited players (the invite flow sets it and then sends the

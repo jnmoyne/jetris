@@ -1,0 +1,762 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	mrand "math/rand/v2"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// Protocol constants (jetris-agent-guide.md §4, gameplays §2/§7).
+const (
+	codename        = "golang-mk1"
+	lobbyBucket     = "JETRIS_LOBBY"
+	archiveStream   = "JETRIS_ARCHIVE"
+	archiveSubject  = "jetris.archive"
+	chatStream      = "JETRIS_CHAT"
+	modeCompetitive = 1
+	headroom        = 4 // hidden spawn rows 0..3
+	presenceEvery   = 5 * time.Second
+	inviteTTL       = 120 * time.Second
+	gravity         = 800 * time.Millisecond // fixed level-0 competitive gravity
+)
+
+// Atomic-batch publish headers (guide §4.3).
+const (
+	hBatchID     = "Nats-Batch-Id"
+	hBatchSeq    = "Nats-Batch-Sequence"
+	hBatchCommit = "Nats-Batch-Commit"
+	hExpectLast  = "Nats-Expected-Last-Subject-Sequence"
+)
+
+// hosting is the --create configuration: how big a competitive game to host
+// and how agent-friendly it is. nil on an Agent means "never host".
+type hosting struct {
+	players   int // total seats (min 2)
+	maxAgents int // agent seats, this agent included (<=0 = all seats)
+	next      int // revealed upcoming pieces (clamped 0..4)
+}
+
+// Agent is one connected peer: lobby plumbing plus the game loop it runs when
+// it joins. It plays COMPETITIVE games only (declining invitations to other
+// modes), exactly like the example-python reference.
+type Agent struct {
+	server     string
+	name       string
+	difficulty string
+	tn         tuning
+	joinID     string
+	host       *hosting      // non-nil: create one game first, then play it
+	wait       time.Duration // max wait for a joined game to fill and start before un-joining
+	once       bool
+	autoJoin   bool
+
+	nc *nats.Conn
+	js jetstream.JetStream
+	kv jetstream.KeyValue
+
+	mu       sync.Mutex
+	listings map[string]obj // gameID -> listing
+	invites  map[string]obj // gameID -> our invitation
+	streams  map[string]jetstream.Stream
+
+	stateMu        sync.Mutex
+	presenceStatus int
+	currentGame    string
+
+	rng      *mrand.Rand
+	stopCh   chan struct{}
+	stopOnce sync.Once
+}
+
+// newAgent builds an agent with a fresh instance id and per-difficulty tuning.
+func newAgent(server, stem, difficulty, joinID string, once, autoJoin bool, host *hosting, wait time.Duration) (*Agent, error) {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, err
+	}
+	name := fmt.Sprintf("%s-%s-%s", stem, hex.EncodeToString(b[:]), difficulty)
+	if len(name) > 32 {
+		return nil, fmt.Errorf("agent name %q exceeds 32 characters", name)
+	}
+	var seed [32]byte
+	_, _ = rand.Read(seed[:])
+	src := mrand.NewChaCha8(seed)
+	return &Agent{
+		server: server, name: name, difficulty: difficulty, tn: difficultyTuning(difficulty),
+		joinID: joinID, host: host, wait: wait, once: once, autoJoin: autoJoin,
+		listings: map[string]obj{}, invites: map[string]obj{}, streams: map[string]jetstream.Stream{},
+		rng:    mrand.New(src),
+		stopCh: make(chan struct{}),
+	}, nil
+}
+
+func (a *Agent) stop()          { a.stopOnce.Do(func() { close(a.stopCh) }) }
+func (a *Agent) stopping() bool { select { case <-a.stopCh: return true; default: return false } }
+
+func nowRFC() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+// gameStreamName is the per-game stream all its subjects live under.
+func gameStreamName(id string) string { return "JETRIS_GAME_" + id }
+func metaSubject(id string) string    { return "jetris.game." + id + ".meta" }
+
+// stream returns a cached handle to a game's stream.
+func (a *Agent) stream(ctx context.Context, gameID string) (jetstream.Stream, error) {
+	a.mu.Lock()
+	s := a.streams[gameID]
+	a.mu.Unlock()
+	if s != nil {
+		return s, nil
+	}
+	s, err := a.js.Stream(ctx, gameStreamName(gameID))
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.streams[gameID] = s
+	a.mu.Unlock()
+	return s, nil
+}
+
+// ---- connection & lobby --------------------------------------------------
+
+func (a *Agent) connect(ctx context.Context) error {
+	nc, err := nats.Connect(a.server, nats.Name(a.name))
+	if err != nil {
+		return err
+	}
+	a.nc = nc
+	if a.js, err = jetstream.New(nc); err != nil {
+		return err
+	}
+	if a.kv, err = a.js.KeyValue(ctx, lobbyBucket); err != nil {
+		a.kv, err = a.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: lobbyBucket, Storage: jetstream.FileStorage})
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := a.js.Stream(ctx, archiveStream); err != nil {
+		if _, err := a.js.CreateStream(ctx, jetstream.StreamConfig{
+			Name: archiveStream, Subjects: []string{archiveSubject}, Storage: jetstream.FileStorage}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Agent) publishPresence(ctx context.Context) error {
+	a.stateMu.Lock()
+	status, game := a.presenceStatus, a.currentGame
+	a.stateMu.Unlock()
+	p := map[string]any{"player_id": a.name, "name": a.name, "status": status, "agent": true, "last_seen": nowRFC()}
+	if game != "" {
+		p["game_id"] = game
+	}
+	b, _ := json.Marshal(p)
+	_, err := a.kv.Put(ctx, "players."+a.name, b)
+	return err
+}
+
+func (a *Agent) setPresence(status int, game string) {
+	a.stateMu.Lock()
+	a.presenceStatus, a.currentGame = status, game
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) presenceLoop(ctx context.Context) {
+	t := time.NewTicker(presenceEvery)
+	defer t.Stop()
+	for {
+		if err := a.publishPresence(ctx); err != nil {
+			log.Printf("presence: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// lobbyWatch mirrors the lobby KV into memory: game listings and our invitations.
+func (a *Agent) lobbyWatch(ctx context.Context) {
+	w, err := a.kv.WatchAll(ctx)
+	if err != nil {
+		log.Printf("lobby watch: %v", err)
+		return
+	}
+	defer w.Stop()
+	invitePrefix := "invites." + a.name + "."
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case e := <-w.Updates():
+			if e == nil {
+				continue // end-of-initial-data marker
+			}
+			key := e.Key()
+			deleted := e.Operation() == jetstream.KeyValueDelete || e.Operation() == jetstream.KeyValuePurge
+			switch {
+			case len(key) > 6 && key[:6] == "games.":
+				gid := key[6:]
+				a.mu.Lock()
+				if deleted {
+					delete(a.listings, gid)
+				} else {
+					a.listings[gid] = toObj(e.Value())
+				}
+				a.mu.Unlock()
+			case len(key) > len(invitePrefix) && key[:len(invitePrefix)] == invitePrefix:
+				gid := key[len(invitePrefix):]
+				a.mu.Lock()
+				if deleted {
+					delete(a.invites, gid)
+				} else {
+					a.invites[gid] = toObj(e.Value())
+				}
+				a.mu.Unlock()
+			}
+		}
+	}
+}
+
+// freshInvites returns pending (not declined, not stale) invitations, oldest
+// first — one KV key per game.
+func (a *Agent) freshInvites() [][2]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	type inv struct {
+		created string
+		gid     string
+		o       obj
+	}
+	var out []inv
+	for gid, o := range a.invites {
+		if o.boolv("declined") {
+			continue
+		}
+		created := o.str("created_at")
+		if t, err := time.Parse(time.RFC3339Nano, created); err == nil {
+			if time.Since(t) > inviteTTL {
+				continue
+			}
+		} else {
+			continue
+		}
+		out = append(out, inv{created, gid, o})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].created < out[j].created })
+	res := make([][2]any, len(out))
+	for i, v := range out {
+		res[i] = [2]any{v.gid, v.o}
+	}
+	return res
+}
+
+// consumeInvite deletes an invitation key (accept or drop-stale): the deletion
+// is what tells the inviter it was handled.
+func (a *Agent) consumeInvite(ctx context.Context, gameID string) {
+	a.mu.Lock()
+	delete(a.invites, gameID)
+	a.mu.Unlock()
+	_ = a.kv.Delete(ctx, "invites."+a.name+"."+gameID)
+}
+
+// declineInvite rewrites the key with declined=true so the inviter sees the
+// refusal until they dismiss it.
+func (a *Agent) declineInvite(ctx context.Context, gameID string) {
+	a.mu.Lock()
+	o := a.invites[gameID]
+	delete(a.invites, gameID)
+	a.mu.Unlock()
+	if o == nil {
+		return
+	}
+	o.set("declined", true)
+	_, _ = a.kv.Put(ctx, "invites."+a.name+"."+gameID, o.bytes())
+}
+
+// joinable reports an open competitive game with a free seat this agent may take.
+func joinable(g obj) bool {
+	players := g.players()
+	agents := 0
+	for _, p := range players {
+		if p.Agent {
+			agents++
+		}
+	}
+	return g.int("mode") == modeCompetitive &&
+		g.str("status") == "created" &&
+		!g.boolv("invite_only") &&
+		len(players) < g.int("player_count") &&
+		g.int("max_agents") > agents
+}
+
+// selectGame picks the next game: an explicit --join, a --create host, a fresh
+// invitation, or the first joinable open game. Returns (gameID, invited) or
+// ("", false) when stopping.
+func (a *Agent) selectGame(ctx context.Context) (string, bool) {
+	if a.joinID != "" {
+		gid := a.joinID
+		a.joinID = ""
+		return gid, false
+	}
+	if a.host != nil {
+		host := a.host
+		a.host = nil // host once; afterwards fall back to resident selection
+		gid, err := a.createGame(ctx, host)
+		if err != nil {
+			log.Printf("create game: %v", err)
+			return "", false
+		}
+		return gid, false
+	}
+	for !a.stopping() {
+		handled := false
+		for _, e := range a.freshInvites() {
+			gid, o := e[0].(string), e[1].(obj)
+			a.mu.Lock()
+			_, known := a.listings[gid]
+			a.mu.Unlock()
+			if o.int("mode") == modeCompetitive && known {
+				return gid, true
+			}
+			if !known {
+				a.consumeInvite(ctx, gid) // game gone: drop the stale invite
+			} else {
+				log.Printf("declining invitation from %s (can't play that game)", o.str("from_name"))
+				a.declineInvite(ctx, gid)
+			}
+			handled = true
+		}
+		if handled {
+			continue
+		}
+		if a.autoJoin {
+			a.mu.Lock()
+			ids := make([]string, 0, len(a.listings))
+			for id := range a.listings {
+				ids = append(ids, id)
+			}
+			listings := make(map[string]obj, len(a.listings))
+			for id, g := range a.listings {
+				listings[id] = g
+			}
+			a.mu.Unlock()
+			// Oldest first (id as the tiebreak), so waiting games fill in
+			// creation order and every scanning agent converges on the same one.
+			sort.Slice(ids, func(i, j int) bool {
+				ci, cj := listings[ids[i]].str("created_at"), listings[ids[j]].str("created_at")
+				if ci != cj {
+					return ci < cj
+				}
+				return ids[i] < ids[j]
+			})
+			for _, id := range ids {
+				if joinable(listings[id]) {
+					return id, false
+				}
+			}
+		}
+		select {
+		case <-a.stopCh:
+		case <-ctx.Done():
+			return "", false
+		case <-time.After(time.Second):
+		}
+	}
+	return "", false
+}
+
+// joinGame CAS-appends us to the KV listing and announces our roster seat
+// (guide §5.2). Returns our player index, or -1 if the game can't be joined.
+func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
+	for {
+		entry, err := a.kv.Get(ctx, "games."+gameID)
+		if err != nil {
+			return -1
+		}
+		g := toObj(entry.Value())
+		players := g.players()
+		for i, p := range players {
+			if p.PlayerID == a.name {
+				return i // already joined
+			}
+		}
+		if g.boolv("invite_only") && !invited && g.str("creator_id") != a.name {
+			return -1
+		}
+		if !invited { // an invitation IS the permission (bypasses the policy)
+			agents := 0
+			for _, p := range players {
+				if p.Agent {
+					agents++
+				}
+			}
+			if g.int("max_agents") <= 0 || agents >= g.int("max_agents") {
+				return -1
+			}
+		}
+		if len(players) >= g.int("player_count") {
+			return -1
+		}
+		summary := playerSummary{PlayerID: a.name, Name: a.name, Agent: true}
+		players = append(players, summary)
+		g.set("players", players)
+		full := len(players) >= g.int("player_count")
+		if full {
+			g.set("status", "starting")
+		}
+		if _, err := a.kv.Update(ctx, "games."+gameID, g.bytes(), entry.Revision()); err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue // CAS conflict: retry from a fresh read
+		}
+		sb, _ := json.Marshal(summary)
+		if _, err := a.js.Publish(ctx, "jetris.game."+gameID+".roster."+a.name, sb); err != nil {
+			log.Printf("roster publish: %v", err)
+		}
+		if full {
+			a.transitionMeta(ctx, gameID, "starting")
+		}
+		a.setPresence(1, gameID)
+		_ = a.publishPresence(ctx)
+		if invited {
+			a.consumeInvite(ctx, gameID)
+		}
+		return len(players) - 1
+	}
+}
+
+// createGame hosts a new competitive game — the creator's side of the
+// lifecycle (guide §5), mirroring what the GUI's create row writes: the
+// per-game stream (last-value-per-subject, atomic batches enabled), the
+// initial meta (CAS "subject must be empty", so a colliding id fails loudly),
+// the lobby KV listing others discover, and the transient game.created event.
+// The caller then joins its own game like any other player. Returns the new
+// game id.
+func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
+	players := h.players
+	if players < 2 {
+		players = 2
+	}
+	maxAgents := h.maxAgents
+	if maxAgents <= 0 || maxAgents > players {
+		maxAgents = players // agent-hosted games are agent-friendly by default
+	}
+	next := min(max(h.next, 0), maxNextCount)
+
+	gameID := uuidV4()
+	// The stream config every game runs on (guide §4.1): one retained message
+	// per subject (each subject IS one cell/register's current value), kept in
+	// memory, with atomic publishes for the CAS batches and direct gets for
+	// last-per-subject reads.
+	if _, err := a.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:               gameStreamName(gameID),
+		Subjects:           []string{"jetris.game." + gameID + ".>"},
+		AllowAtomicPublish: true,
+		AllowDirect:        true,
+		MaxMsgsPerSubject:  1,
+		Storage:            jetstream.MemoryStorage,
+		Retention:          jetstream.LimitsPolicy,
+	}); err != nil {
+		return "", fmt.Errorf("create stream: %w", err)
+	}
+
+	meta := obj{}
+	meta.set("game_id", gameID)
+	meta.set("mode", modeCompetitive)
+	meta.set("player_count", players)
+	meta.set("next_count", next)
+	meta.set("seed", uint64(time.Now().UnixNano()))
+	meta.set("status", "created")
+	meta.set("creator_id", a.name)
+	meta.set("created_at", nowRFC())
+	meta.set("piece_idx", 0)
+	if _, conflict, err := a.metaPublish(ctx, gameID, meta.bytes(), 0); err != nil {
+		return "", fmt.Errorf("publish meta: %w", err)
+	} else if conflict {
+		return "", fmt.Errorf("game id %s already has a meta", gameID)
+	}
+
+	listing := obj{}
+	listing.set("game_id", gameID)
+	listing.set("mode", modeCompetitive)
+	listing.set("status", "created")
+	listing.set("player_count", players)
+	listing.set("max_agents", maxAgents)
+	listing.set("next_count", next)
+	listing.set("creator_id", a.name)
+	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included
+	listing.set("created_at", nowRFC())
+	if _, err := a.kv.Put(ctx, "games."+gameID, listing.bytes()); err != nil {
+		return "", fmt.Errorf("write listing: %w", err)
+	}
+
+	// Transient courtesy event (core NATS, no stream): lobbies beep/refresh on
+	// it but discover the game from the KV either way.
+	ev, _ := json.Marshal(map[string]any{
+		"kind": "game.created", "game_id": gameID, "player_id": a.name, "time": nowRFC(),
+	})
+	_ = a.nc.Publish("jetris.lobby.event.game.created", ev)
+
+	log.Printf("created competitive game %s for %d players (max %d agents, next %d) — waiting for opponents", gameID, players, maxAgents, next)
+	return gameID, nil
+}
+
+// uuidV4 returns a random RFC-4122 v4 UUID string — the game-id format every
+// other client uses.
+func uuidV4() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// unjoinGame walks away from a game that never started (guide §5.6): CAS-remove
+// our seat from the listing (reverting a full "starting" roster to "created" so
+// the freed seat is joinable again), then purge our roster announcement so late
+// joiners don't discover a ghost opponent. Pre-start only — the meta is the
+// authoritative started check, and once play begins the roster is frozen.
+func (a *Agent) unjoinGame(ctx context.Context, gameID string) {
+	for {
+		entry, err := a.kv.Get(ctx, "games."+gameID)
+		if err != nil {
+			break
+		}
+		g := toObj(entry.Value())
+		if s := g.str("status"); s != "created" && s != "starting" {
+			return
+		}
+		if meta, _, err := a.fetchMeta(ctx, gameID); err == nil {
+			if s := meta.str("status"); s != "created" && s != "starting" {
+				return
+			}
+		}
+		players := g.players()
+		kept := make([]playerSummary, 0, len(players))
+		for _, p := range players {
+			if p.PlayerID != a.name {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == len(players) {
+			break // not on the roster; nothing to remove
+		}
+		g.set("players", kept)
+		if g.str("status") == "starting" && len(kept) < g.int("player_count") {
+			g.set("status", "created")
+		}
+		if _, err := a.kv.Update(ctx, "games."+gameID, g.bytes(), entry.Revision()); err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue // CAS conflict: retry from a fresh read
+		}
+		if s, err := a.stream(ctx, gameID); err == nil {
+			_ = s.Purge(ctx, jetstream.WithPurgeSubject("jetris.game."+gameID+".roster."+a.name))
+		}
+		ev, _ := json.Marshal(map[string]any{
+			"kind": "game.left", "game_id": gameID, "player_id": a.name, "time": nowRFC(),
+		})
+		_ = a.nc.Publish("jetris.lobby.event.game.left", ev)
+		break
+	}
+	a.setPresence(0, "")
+	_ = a.publishPresence(ctx)
+}
+
+// toggleReady CAS-sets our ready flag; returns true if our toggle completed the
+// set (all seats filled, everyone ready) — then WE run the countdown.
+func (a *Agent) toggleReady(ctx context.Context, gameID string) bool {
+	for {
+		entry, err := a.kv.Get(ctx, "games."+gameID)
+		if err != nil {
+			return false
+		}
+		g := toObj(entry.Value())
+		if g.str("status") == "in_progress" {
+			return false
+		}
+		players := g.players()
+		for i := range players {
+			if players[i].PlayerID == a.name {
+				players[i].Ready = true
+			}
+		}
+		allReady := len(players) > 0
+		for _, p := range players {
+			if !p.Ready {
+				allReady = false
+			}
+		}
+		g.set("players", players)
+		if _, err := a.kv.Update(ctx, "games."+gameID, g.bytes(), entry.Revision()); err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		return allReady && len(players) >= g.int("player_count")
+	}
+}
+
+func (a *Agent) fetchMeta(ctx context.Context, gameID string) (obj, uint64, error) {
+	s, err := a.stream(ctx, gameID)
+	if err != nil {
+		return nil, 0, err
+	}
+	raw, err := s.GetLastMsgForSubject(ctx, metaSubject(gameID))
+	if err != nil {
+		return nil, 0, err
+	}
+	return toObj(raw.Data), raw.Sequence, nil
+}
+
+// transitionMeta CAS-advances the meta to a new status; never regresses a
+// completed game.
+func (a *Agent) transitionMeta(ctx context.Context, gameID, status string) bool {
+	for i := 0; i < 5; i++ {
+		meta, seq, err := a.fetchMeta(ctx, gameID)
+		if err != nil {
+			return false
+		}
+		cur := meta.str("status")
+		if (cur == "finished" || cur == "archived" || cur == "cancelled") && status != "archived" {
+			return false
+		}
+		if cur == status {
+			return true
+		}
+		meta.set("status", status)
+		if status == "in_progress" {
+			meta.set("started_at", nowRFC())
+		}
+		if status == "finished" {
+			meta.set("finished_at", nowRFC())
+		}
+		_, conflict, err := a.metaPublish(ctx, gameID, meta.bytes(), seq)
+		if err == nil && !conflict {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// metaPublish publishes the meta with an expected-last-subject-sequence CAS.
+func (a *Agent) metaPublish(ctx context.Context, gameID string, payload []byte, expectLast uint64) (uint64, bool, error) {
+	return a.casRequest(ctx, metaSubject(gameID), payload, nats.Header{hExpectLast: []string{fmt.Sprint(expectLast)}})
+}
+
+// casRequest publishes one message as a JetStream request (headers may carry a
+// CAS expectation or batch markers) and interprets the ack: (seq, casConflict,
+// err).
+func (a *Agent) casRequest(ctx context.Context, subject string, payload []byte, headers nats.Header) (uint64, bool, error) {
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := a.nc.RequestMsgWithContext(rctx, &nats.Msg{Subject: subject, Data: payload, Header: headers})
+	if err != nil {
+		return 0, false, err
+	}
+	var ack pubAck
+	if len(resp.Data) > 0 {
+		_ = json.Unmarshal(resp.Data, &ack)
+	}
+	if ack.Error != nil {
+		if ack.isCASConflict() {
+			return 0, true, nil
+		}
+		return 0, false, fmt.Errorf("publish %s: %s", subject, ack.Error.Description)
+	}
+	return ack.Seq, false, nil
+}
+
+// runCountdown publishes the 5→0 countdown, then transitions the meta to
+// in_progress.
+func (a *Agent) runCountdown(ctx context.Context, gameID string) {
+	subject := "jetris.game." + gameID + ".countdown"
+	for i := 5; i > 0; i-- {
+		b, _ := json.Marshal(map[string]int{"seconds": i})
+		_, _ = a.js.Publish(ctx, subject, b)
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-time.After(time.Second):
+		}
+	}
+	b, _ := json.Marshal(map[string]int{"seconds": 0})
+	_, _ = a.js.Publish(ctx, subject, b)
+	time.Sleep(700 * time.Millisecond)
+	a.transitionMeta(ctx, gameID, "in_progress")
+}
+
+// randID returns n random hex chars (batch ids).
+func randID(n int) string {
+	b := make([]byte, (n+1)/2)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)[:n]
+}
+
+// run is the agent's main loop: connect, keep presence + lobby mirror alive,
+// and play games as they are selected.
+func (a *Agent) run(ctx context.Context) error {
+	if err := a.connect(ctx); err != nil {
+		return err
+	}
+	log.Printf("%s connected to %s", a.name, a.server)
+	_ = a.publishPresence(ctx)
+	go a.presenceLoop(ctx)
+	go a.lobbyWatch(ctx)
+	defer func() {
+		dctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = a.kv.Delete(dctx, "players."+a.name)
+		_ = a.nc.Drain()
+	}()
+	for !a.stopping() {
+		gameID, invited := a.selectGame(ctx)
+		if gameID == "" {
+			break
+		}
+		idx := a.joinGame(ctx, gameID, invited)
+		if idx < 0 {
+			if invited {
+				a.declineInvite(ctx, gameID)
+			}
+			select {
+			case <-a.stopCh:
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		log.Printf("joined game %s as player %d", gameID, idx)
+		won := a.playGame(ctx, gameID, idx)
+		log.Printf("game %s over: %s", gameID, map[bool]string{true: "won", false: "lost"}[won])
+		if a.once {
+			break
+		}
+	}
+	return nil
+}
+
+// playGame runs one game and restores lobby presence afterward.
+func (a *Agent) playGame(ctx context.Context, gameID string, idx int) bool {
+	g := newGame(a, gameID, idx)
+	won := g.run(ctx)
+	a.setPresence(0, "")
+	_ = a.publishPresence(ctx)
+	return won
+}

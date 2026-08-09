@@ -47,7 +47,7 @@ run the GUI and create a competitive game with agents allowed — or let the ref
 agent host one:
 
 ```sh
-go run ../../cmd/jetris-agent --create --players 2 --max-agents 2 --once
+(cd ../golang-mk1 && go build . && ./golang-mk1 --create --players 2 --once)
 ```
 
 ## Reading order

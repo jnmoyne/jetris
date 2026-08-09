@@ -148,6 +148,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	// Score, events, and the attack are derived from the rows the committed
 	// transform ACTUALLY cleared, not the pre-race detection.
 	clearedLines := 0
+	var clearedRows []int // the rows the committed transform actually cleared (pre-collapse indices)
 	if completed := game.CompletedRows(e.playfield); len(completed) > 0 {
 		if e.gameMode == config.ModeCooperative {
 			// Compute the cleared/shifted projection without mutating
@@ -165,6 +166,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			// zero and no spurious lock + respawn fires on their engine.
 			e.publishProjectedCellsWithMergeRetry(ctx, changed, nil, true)
 			clearedLines = len(completed)
+			clearedRows = completed
 		} else {
 			shiftAnchors := e.sharedBoard()
 			var cleared []int
@@ -178,6 +180,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			})
 			if committed {
 				clearedLines = len(cleared)
+				clearedRows = cleared
 			}
 		}
 	}
@@ -210,6 +213,10 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		// re-renders from e.playfield as the published rows echo back. A single
 		// full-board update is robust against dropped per-row triggers.
 		e.emitFullBoardRerender()
+		// Arcade feedback: tell the UI WHICH rows this player's lock completed
+		// (their pre-collapse positions) so it can strobe them. Local-only —
+		// the clearer's own celebration, never round-tripped through NATS.
+		e.emitUpdate(EngineUpdate{Kind: UpdateRowsCleared, ChangedRows: clearedRows})
 		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 		if e.gameMode == config.ModeTeams {
 			// Fold our own clear into the per-team scoreboard; everyone else

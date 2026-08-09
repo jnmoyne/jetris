@@ -79,6 +79,7 @@ var (
 	colWarn      = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
 	colOrange    = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
 	colLobby     = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
+	colStrobe    = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // line-clear row strobe (pure white)
 )
 
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
@@ -165,6 +166,18 @@ type App struct {
 	// board flash lives in `flash`, not here.
 	specFlash map[int]map[[2]int]time.Time
 	fireworks *fireworksShow // victory fireworks show; nil until a competitive/teams win
+	// rowStrobes holds the own board's arcade row strobes (competitive/teams):
+	// rows this player just cleared blink white, garbage rows that just landed
+	// blink in the attacker's color. Written by pumpEngine (clears) and by the
+	// layout's garbage-arrival detection (detectGarbage).
+	rowStrobes map[int]rowStrobe
+	// garbageRows/garbageSeen track the adversarial-row count last observed on
+	// the own-board snapshot; a frame that sees the count grow strobes exactly
+	// the new rows and kicks the shake. garbageSeen gates the first
+	// observation so a rejoin never strobes the whole pre-existing stack.
+	garbageRows int
+	garbageSeen bool
+	shakeStart  time.Time // garbage impact-shake epoch (zero = idle)
 
 	// chat log (written by pumpLobby)
 	chatLog []lobby.ChatMessage
@@ -270,7 +283,13 @@ type App struct {
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable
 	showMsgs widget.Bool // "Show NATS messages" checkbox
-	msgList  widget.List
+	// ghostCb is the "Show ghost piece" game setting: a client-local view
+	// toggle (like showMsgs), ON by default — the hard-drop landing preview
+	// that levels the field with agents, which already compute their drop
+	// destinations. Never sent over NATS and never decided by the game
+	// creator: each human keeps the aid unless they opt out themselves.
+	ghostCb widget.Bool
+	msgList widget.List
 	// NATS-panel resize handle: msgDrag is the divider's drag gesture,
 	// msgPanelDp the user-chosen panel height in dp (0 = the window-reactive
 	// default) and msgGrabY the press offset inside the divider, so the panel
@@ -315,10 +334,12 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		countdown:    -1,
 		flash:        map[[2]int]time.Time{},
 		specFlash:    map[int]map[[2]int]time.Time{},
+		rowStrobes:   map[int]rowStrobe{},
 		gameBtns:     map[string]*gameRowBtns{},
 		uninviteBtns: map[string]*widget.Clickable{},
 		msgGroupOf:   map[string]int{},
 	}
+	a.ghostCb.Value = true // hard-drop ghost preview on by default
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
 	a.chatEd.SingleLine = true

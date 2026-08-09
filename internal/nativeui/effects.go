@@ -1,0 +1,102 @@
+package nativeui
+
+import (
+	"math"
+	"time"
+
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	"jetris/internal/render"
+)
+
+// Client-local arcade effects: the hard-drop ghost, the landed-garbage
+// detection behind the attacker-colored row strobes, and the impact shake.
+// Everything here is derived on the UI side from committed board state —
+// nothing is published and nothing changes gameplay.
+
+// shakeDur/shakeCycles shape the garbage impact judder: a horizontal sine
+// wobble that decays to rest over shakeDur.
+const (
+	shakeDur    = 420 * time.Millisecond
+	shakeCycles = 4
+)
+
+// boardShakeOffset is the impact-shake X offset (px) at `since` past the shake
+// epoch: an amplitude of a third of a cell decaying linearly to zero across
+// shakeCycles full wobbles. Zero outside the window — including the idle
+// zero-epoch state, whose `since` is enormous.
+func boardShakeOffset(cellPx int, since time.Duration) int {
+	if since < 0 || since >= shakeDur {
+		return 0
+	}
+	t := float64(since) / float64(shakeDur)
+	amp := float64(cellPx) / 3 * (1 - t)
+	return int(amp * math.Sin(2*math.Pi*shakeCycles*t))
+}
+
+// ghostCells returns the hard-drop ghost for the local player's falling piece:
+// the cells of its landing position keyed by (row, col), or nil when there is
+// no falling piece or it already rests on its destination. Shared boards
+// (coop/teams) drop through HardDropDestinationCoop — exactly the collision
+// rules the real hard drop uses, other players' active pieces included.
+func ghostCells(snap engine.BoardSnapshot, playerIdx int, gmode config.GameMode) map[[2]int]game.PieceType {
+	pf := &game.Playfield{Width: snap.Width, Height: snap.Height, Rows: snap.Rows}
+	p := pf.ActivePieceForPlayer(playerIdx)
+	if p == nil {
+		return nil
+	}
+	var dest game.Piece
+	if gmode == config.ModeCompetitive {
+		dest = game.HardDropDestination(*p, pf)
+	} else {
+		dest = game.HardDropDestinationCoop(*p, pf, playerIdx)
+	}
+	if dest.Row == p.Row {
+		return nil // already resting on the stack: nothing to preview
+	}
+	cells := make(map[[2]int]game.PieceType, 4)
+	for _, rc := range dest.Cells() {
+		cells[[2]int{rc[0], rc[1]}] = p.Type
+	}
+	return cells
+}
+
+// detectGarbage compares the snapshot's adversarial-row count against the last
+// one observed and, when it grew, strobes the newly landed rows in their
+// attacker's color and kicks the impact shake. New garbage always fills the
+// BOTTOM rows (the shrink shifts older garbage up with the stack), so the new
+// arrivals are the bottom cur−prev rows. The first observation of a game only
+// seeds the count — a rejoin must not celebrate the stack it finds. Runs on
+// the UI goroutine each frame; the strobes land next frame (hence the
+// invalidate), which at frame cadence is imperceptible.
+func (a *App) detectGarbage(snap engine.BoardSnapshot) {
+	pf := game.Playfield{Width: snap.Width, Height: snap.Height, Rows: snap.Rows}
+	cur := pf.AdversarialRowCount()
+	a.mu.Lock()
+	prev, seen := a.garbageRows, a.garbageSeen
+	a.garbageRows, a.garbageSeen = cur, true
+	if !seen || cur <= prev {
+		a.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	for r := snap.Height - (cur - prev); r < snap.Height; r++ {
+		a.rowStrobes[r] = rowStrobe{start: now, col: render.PlayerColorRGBA(garbageAttacker(snap.Rows[r]))}
+	}
+	a.shakeStart = now
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// garbageAttacker returns the PlayerIdx stamped on the row's adversarial cells
+// — the attacker whose clear sent it. Rows from different attackers strobe in
+// different colors.
+func garbageAttacker(row game.Row) int {
+	for _, c := range row.Cells {
+		if c.Adversarial {
+			return c.PlayerIdx
+		}
+	}
+	return 0
+}

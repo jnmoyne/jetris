@@ -12,8 +12,51 @@ import (
 	"gioui.org/unit"
 
 	"jetris/internal/engine"
+	"jetris/internal/game"
 	"jetris/internal/render"
 )
+
+// boardFX bundles the client-local overlays drawn over ONE board: rainbow
+// borders on CAS-rejected cells, full-row strobes (line clears and arriving
+// garbage), and the hard-drop ghost. Every field may be nil, and a nil
+// *boardFX draws no overlays at all (opponent thumbnails, archived boards).
+// None of it is ever published — pure local decoration over committed state.
+type boardFX struct {
+	flash map[[2]int]time.Time      // CAS-rejected cells → rainbow border
+	rows  map[int]rowStrobe         // absolute row index → strobe state
+	ghost map[[2]int]game.PieceType // hard-drop ghost cells (drawn on empty squares only)
+}
+
+// rowStrobe is one flashing row of 80's arcade feedback: the row blinks hard
+// on/off in a solid color — white for rows the local player just cleared, the
+// attacker's player color for a garbage row that just landed.
+type rowStrobe struct {
+	start time.Time
+	col   color.NRGBA
+}
+
+// Row-strobe timing: rowStrobeDur total, lit for the first half of every
+// rowStrobeBlink cycle — four square-wave blinks, no easing, exactly the
+// classic arcade line-clear flash. rowStrobeAlpha is the lit band's opacity
+// over the cells beneath it.
+const (
+	rowStrobeDur   = 640 * time.Millisecond
+	rowStrobeBlink = 160 * time.Millisecond
+	rowStrobeAlpha = 0.7
+)
+
+// active reports whether any overlay in fx still needs animation frames.
+func (fx *boardFX) rowsActive(now time.Time) bool {
+	if fx == nil {
+		return false
+	}
+	for _, rs := range fx.rows {
+		if now.Sub(rs.start) < rowStrobeDur {
+			return true
+		}
+	}
+	return false
+}
 
 // fillRect paints r with c in absolute widget coordinates.
 func fillRect(ops *op.Ops, r image.Rectangle, c color.NRGBA) {
@@ -114,10 +157,11 @@ func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW i
 
 // drawBoard renders a playfield snapshot at the current transform origin and
 // returns its pixel dimensions (cells plus the surrounding "well" frame).
-// localIdx is the viewer's player index (-1 for spectators). flash (may be
-// nil) overlays a rainbow border on recently CAS-rejected cells, keyed by
-// absolute (row, col).
-func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, flash map[[2]int]time.Time, now time.Time) D {
+// localIdx is the viewer's player index (-1 for spectators). fx (may be nil)
+// carries the client-local overlays: CAS-rejection rainbow borders, the
+// hard-drop ghost (empty squares only — real cells always win), and the
+// clear/garbage row strobes painted over the finished cells.
+func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time) D {
 	fw := cellPx / 8 // chunky arcade-well frame around the playfield
 	if fw < 2 {
 		fw = 2
@@ -135,16 +179,37 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 		row := snap.Rows[r]
 		y := fw + (r-snap.VisibleStart)*cellPx
 		for c := 0; c < snap.Width && c < len(row.Cells); c++ {
-			ap := render.CellStyle(row.Cells[c], localIdx, showOutline)
+			cell := row.Cells[c]
+			ap := render.CellStyle(cell, localIdx, showOutline)
+			if fx != nil && !cell.Occupied && !cell.Active {
+				if pt, ok := fx.ghost[[2]int{r, c}]; ok {
+					ap = render.GhostStyle(pt)
+				}
+			}
 			outline, outlineW := ap.Outline, ap.OutlineW
-			if flash != nil {
-				if start, ok := flash[[2]int{r, c}]; ok {
+			if fx != nil && fx.flash != nil {
+				if start, ok := fx.flash[[2]int{r, c}]; ok {
 					if el := now.Sub(start); el < flashDur {
 						outline, outlineW = rainbow(el), 2
 					}
 				}
 			}
 			drawCell(gtx.Ops, fw+c*cellPx, y, cellPx, ap.Fill, outline, outlineW, ap.Bevel)
+		}
+	}
+	// Row strobes paint LAST, a translucent solid band across the row during
+	// the lit half of each blink cycle — hard on/off, the arcade way.
+	if fx != nil {
+		for r, rs := range fx.rows {
+			if r < snap.VisibleStart || r >= snap.Height {
+				continue
+			}
+			el := now.Sub(rs.start)
+			if el < 0 || el >= rowStrobeDur || el%rowStrobeBlink >= rowStrobeBlink/2 {
+				continue
+			}
+			y := fw + (r-snap.VisibleStart)*cellPx
+			fillRect(gtx.Ops, image.Rect(fw, y, w-fw, y+cellPx), withAlpha(rs.col, rowStrobeAlpha))
 		}
 	}
 	return D{Size: image.Pt(w, h)}
@@ -201,8 +266,8 @@ func fitCellPx(gtx C, cols, rows, boards, reservedX, reservedY int, minDp, maxDp
 }
 
 // boardWidget wraps drawBoard as a layout.Widget for placement in a Flex/Stack.
-func (a *App) boardWidget(snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, flash map[[2]int]time.Time, now time.Time) layout.Widget {
+func (a *App) boardWidget(snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time) layout.Widget {
 	return func(gtx C) D {
-		return drawBoard(gtx, snap, localIdx, cellPx, showOutline, flash, now)
+		return drawBoard(gtx, snap, localIdx, cellPx, showOutline, fx, now)
 	}
 }

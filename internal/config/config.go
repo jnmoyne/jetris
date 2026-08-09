@@ -156,6 +156,37 @@ func (r ArchiveRecord) HasAgents() bool {
 	return false
 }
 
+// Agent-composition classes for the history's primary sort order, most
+// "interesting" first: a pure agent-vs-agent match, then a mixed human/agent
+// game, then an all-human game.
+const (
+	AgentClassAgentsOnly    = iota // every seat an agent
+	AgentClassMixed                // at least one agent and at least one human
+	AgentClassHumansOnly           // no agent seats (also empty/legacy rosters)
+)
+
+// AgentClass buckets the game by who played it (AgentClassAgentsOnly <
+// AgentClassMixed < AgentClassHumansOnly) so the history can group agent
+// showcases ahead of mixed games ahead of all-human games.
+func (r ArchiveRecord) AgentClass() int {
+	agents, humans := 0, 0
+	for _, p := range r.Players {
+		if p.Agent {
+			agents++
+		} else {
+			humans++
+		}
+	}
+	switch {
+	case agents > 0 && humans == 0:
+		return AgentClassAgentsOnly
+	case agents > 0:
+		return AgentClassMixed
+	default:
+		return AgentClassHumansOnly
+	}
+}
+
 // BoardPicture is a saved snapshot of one board as it stood when the game
 // ended: the latest cell messages from the (now-deleted) game stream for the
 // board's visible region. It is embedded in an ArchiveRecord so the lobby can

@@ -284,8 +284,10 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 }
 
 // archivesForDisplay applies the history controls: drop games with agent
-// seats when the "Agent games" box is unchecked, then order by the selected
-// key — headline score (default) or finish time, most recent first.
+// seats when the "Agent games" box is unchecked, then order the survivors.
+// Both sort modes group by agent composition first — agents-only games, then
+// mixed human/agent games, then all-human games — and rank within each group
+// by the selected key: headline score (default) or finish time, newest first.
 func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	if !a.histAgentsCb.Value {
 		humanOnly := recs[:0:0]
@@ -365,10 +367,14 @@ func (a *App) teamStandingsLine(gtx C, archives []config.ArchiveRecord) D {
 	})
 }
 
-// sortedArchivesByDate orders the history list by finish time, most recent
-// first (score as the tie-break).
+// sortedArchivesByDate groups the history by agent composition (agents-only,
+// then mixed, then all-human) and, within each group, orders by finish time,
+// most recent first (score as the tie-break).
 func sortedArchivesByDate(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	sort.SliceStable(recs, func(i, j int) bool {
+		if ci, cj := recs[i].AgentClass(), recs[j].AgentClass(); ci != cj {
+			return ci < cj
+		}
 		if !recs[i].FinishedAt.Equal(recs[j].FinishedAt) {
 			return recs[i].FinishedAt.After(recs[j].FinishedAt)
 		}
@@ -377,11 +383,15 @@ func sortedArchivesByDate(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	return recs
 }
 
-// sortedArchives orders the history list by headline score (highest first);
-// between two games with the same score the shorter game ranks higher, and
-// remaining ties show the most recently finished game first.
+// sortedArchives groups the history by agent composition (agents-only, then
+// mixed, then all-human) and orders within each group by headline score
+// (highest first); between two games with the same score the shorter game
+// ranks higher, and remaining ties show the most recently finished game first.
 func sortedArchives(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	sort.SliceStable(recs, func(i, j int) bool {
+		if ci, cj := recs[i].AgentClass(), recs[j].AgentClass(); ci != cj {
+			return ci < cj
+		}
 		si, sj := archiveScore(recs[i]), archiveScore(recs[j])
 		if si != sj {
 			return si > sj

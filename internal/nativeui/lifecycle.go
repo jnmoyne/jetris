@@ -461,12 +461,22 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 			}
 		}
 	}
-	a.flash = map[[2]int]time.Time{}
-	a.specFlash = map[int]map[[2]int]time.Time{}
+	a.resetBoardFX()
 	a.msgLog = nil
 	a.resetMsgGroups()
 	a.screen = screenGame
 	a.mu.Unlock()
+}
+
+// resetBoardFX clears every client-local board overlay (CAS flashes, row
+// strobes, garbage tracking, shake) for a fresh game screen. Caller holds a.mu.
+func (a *App) resetBoardFX() {
+	a.flash = map[[2]int]time.Time{}
+	a.specFlash = map[int]map[[2]int]time.Time{}
+	a.rowStrobes = map[int]rowStrobe{}
+	a.garbageRows = 0
+	a.garbageSeen = false
+	a.shakeStart = time.Time{}
 }
 
 func (a *App) toggleReady() {
@@ -576,8 +586,7 @@ func (a *App) returnToLobby() {
 	a.teamLevels = [config.TeamCount]int{}
 	a.rtt = 0
 	a.gameStatus = ""
-	a.flash = map[[2]int]time.Time{}
-	a.specFlash = map[int]map[[2]int]time.Time{}
+	a.resetBoardFX()
 	a.msgLog = nil
 	a.resetMsgGroups()
 	if a.lobby != nil {

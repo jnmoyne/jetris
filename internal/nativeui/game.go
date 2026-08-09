@@ -38,7 +38,9 @@ type gameView struct {
 	flash                map[[2]int]time.Time
 	specFlash            map[int]map[[2]int]time.Time // spectator: per-board (playerIdx or team) flashes
 	flashActive          bool
-	fireworks            *fireworksShow // nil unless this player/team won (competitive/teams)
+	rowStrobes           map[int]rowStrobe // own board: arcade row strobes (clears + landed garbage)
+	shakeStart           time.Time         // own board: garbage impact-shake epoch (zero = idle)
+	fireworks            *fireworksShow    // nil unless this player/team won (competitive/teams)
 }
 
 func (a *App) snapshotGame(now time.Time) gameView {
@@ -71,6 +73,15 @@ func (a *App) snapshotGame(now time.Time) gameView {
 			delete(a.specFlash, board)
 		}
 	}
+	// Own-board row strobes (clears + landed garbage): prune expired rows.
+	rs := make(map[int]rowStrobe)
+	for r, s := range a.rowStrobes {
+		if now.Sub(s.start) < rowStrobeDur {
+			rs[r] = s
+		} else {
+			delete(a.rowStrobes, r)
+		}
+	}
 	return gameView{
 		score:       a.score,
 		level:       a.level,
@@ -88,6 +99,8 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		flash:       fc,
 		specFlash:   sf,
 		flashActive: len(fc) > 0 || specActive,
+		rowStrobes:  rs,
+		shakeStart:  a.shakeStart,
 		fireworks:   a.fireworks,
 	}
 }
@@ -144,6 +157,9 @@ func (a *App) layoutGame(gtx C) D {
 	a.handleGameChatSubmit(gtx, eng, canType)
 	if view.flashActive {
 		a.invalidate() // keep animating the flash until it expires
+	}
+	if len(view.rowStrobes) > 0 || gtx.Now.Sub(view.shakeStart) < shakeDur {
+		a.invalidate() // keep the row strobes / garbage impact shake animating
 	}
 	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
 		a.invalidate() // keep animating the countdown pop until it settles
@@ -413,6 +429,16 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			cb.IconColor = colAccent
 			return cb.Layout(gtx)
 		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D {
+			// Game setting, on by default: the hard-drop ghost preview.
+			// Client-local — agents already compute their drop destinations,
+			// so the ghost just levels the field for humans.
+			cb := material.CheckBox(a.th, &a.ghostCb, "Show ghost piece")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
 		layout.Rigid(spacer(18)),
 		layout.Rigid(func(gtx C) D {
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
@@ -567,6 +593,20 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if mode == engine.ModeSpectator {
 		localIdx = -1
 	}
+	started := view.status == string(config.GameStatusInProgress)
+	if mode == engine.ModePlayer && (gmode == config.ModeCompetitive || gmode == config.ModeTeams) {
+		// Garbage that landed since the last frame strobes in the attacker's
+		// color and judders the board (competitive modes' arcade impact).
+		a.detectGarbage(snap)
+	}
+	// Hard-drop ghost: where the falling piece would land if dropped right
+	// now, derived from the very snapshot being drawn — never published.
+	// Agents already plan with HardDropDestination, so the ghost only levels
+	// the field for humans; the checkbox (on by default) is each player's own.
+	var ghost map[[2]int]game.PieceType
+	if a.ghostCb.Value && mode == engine.ModePlayer && started && !view.gameOver {
+		ghost = ghostCells(snap, localIdx, gmode)
+	}
 	// Players with a piece preview get the NEXT well beside the playfield —
 	// per-seat queue, so spectators (no seat) never have one. Read the live
 	// queue (not just NextCount) so the space is only reserved once the
@@ -597,7 +637,17 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		boardCol := func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
-					bw := a.boardWidget(snap, localIdx, cell, true, view.flash, gtx.Now)
+					fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost}
+					bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
+					if dx := boardShakeOffset(cell, gtx.Now.Sub(view.shakeStart)); dx != 0 {
+						// Garbage impact: judder the whole well sideways for a
+						// few decaying wobbles — pure paint offset, no layout.
+						inner := bw
+						bw = func(gtx C) D {
+							defer op.Offset(image.Pt(dx, 0)).Push(gtx.Ops).Pop()
+							return inner(gtx)
+						}
+					}
 					if !countdownVisible(view, mode) {
 						return bw(gtx)
 					}
@@ -738,7 +788,7 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						board := a.boardWidget(snap, i, cell, true, view.specFlash[i], gtx.Now)
+						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i]}, gtx.Now)
 						switch {
 						case out:
 							return a.boardOverlay(board, "OUT", colErr)(gtx)
@@ -885,7 +935,7 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !b.ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						board := a.boardWidget(b.snap, -1, cell, true, view.specFlash[b.team], gtx.Now)
+						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team]}, gtx.Now)
 						switch {
 						case teamOut(b.team):
 							return a.boardOverlay(board, "OUT", colErr)(gtx)

@@ -17,6 +17,17 @@ const (
 	BoardBgHex    = "#111111"
 	GridLineHex   = "#1a1a1a"
 	OwnOutlineHex = "#ffffff"
+	// garbageGreyHex is what adversarial garbage fills are desaturated toward:
+	// half sender color, half this grey, then dimmed over the board.
+	garbageGreyHex = "#808080"
+)
+
+// Ghost-preview alphas. The hard-drop ghost is deliberately far dimmer than
+// any real cell (active 0.9, locked 0.7, garbage ≈0.6) so it can never be
+// mistaken for a committed cell — a faint fill inside a half-bright frame.
+const (
+	ghostFillAlpha    = 0.18
+	ghostOutlineAlpha = 0.5
 )
 
 // playerColors are the per-player outline colors (cycled modulo length).
@@ -115,7 +126,15 @@ func appearanceHex(c game.Cell, localPlayerIdx int, showOutline bool) (fill, out
 			// ownership outline (grid line) — preserves the seamless board.
 		}
 	case c.Adversarial:
-		fill = blendHex(PlayerColorHex(c.PlayerIdx%10), BoardBgHex, 0.8)
+		// Garbage row sent by another player's line clear: the sender's color
+		// desaturated toward grey and dimmed — clearly "dead" rows no piece
+		// palette can be confused with — framed half-bright in the sender's
+		// color so the victim can read who sent every row at a glance.
+		pc := PlayerColorHex(c.PlayerIdx)
+		fill = blendHex(blendHex(pc, garbageGreyHex, 0.5), BoardBgHex, 0.6)
+		if showOutline {
+			outline, outlineW = blendHex(pc, BoardBgHex, 0.5), 2
+		}
 	case c.Occupied:
 		fill = blendHex(pieceColorHex(c.PieceType), BoardBgHex, 0.7)
 		if showOutline {
@@ -146,6 +165,20 @@ func CellStyle(c game.Cell, localPlayerIdx int, showOutline bool) CellAppearance
 		Outline:  nrgbaFromHex(outline),
 		OutlineW: outlineW,
 		Bevel:    c.Active || c.Occupied || c.Adversarial,
+	}
+}
+
+// GhostStyle is the appearance of one cell of the hard-drop ghost preview —
+// the falling piece's landing position, drawn only over empty squares: a faint
+// fill of the piece color inside a half-bright piece-color frame, no bevel (the
+// 8-bit shading marks real cells; the ghost stays flat, a hollow shadow).
+func GhostStyle(pt game.PieceType) CellAppearance {
+	pc := pieceColorHex(pt)
+	return CellAppearance{
+		Fill:     nrgbaFromHex(blendHex(pc, BoardBgHex, ghostFillAlpha)),
+		Outline:  nrgbaFromHex(blendHex(pc, BoardBgHex, ghostOutlineAlpha)),
+		OutlineW: 2,
+		Bevel:    false,
 	}
 }
 

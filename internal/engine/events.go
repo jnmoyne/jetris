@@ -25,6 +25,7 @@ const (
 	UpdateRTT              // a new publish→echo round-trip measurement
 	UpdateBufferedMoves    // the buffered-input queue changed (read via Engine.BufferedMoves)
 	UpdateTeamStats        // teams: a team's score or level changed (both teams' totals in TeamScores/TeamLevels)
+	UpdateRowsCleared      // the LOCAL player's lock completed ChangedRows (pre-collapse indices) — arcade feedback hook
 )
 
 // EngineUpdate is the event sent from engine to UI.

@@ -34,8 +34,14 @@ func TestCellStyleDecisions(t *testing.T) {
 		{"occupied-outline", game.Cell{Occupied: true, PieceType: game.PieceZ, PlayerIdx: 1}, 0, true, blendHex(pieceColorHex(game.PieceZ), BoardBgHex, 0.7), PlayerColorHex(1), 2},
 		// Compact opponent boards suppress ownership outlines.
 		{"occupied-no-outline", game.Cell{Occupied: true, PieceType: game.PieceZ, PlayerIdx: 1}, 0, false, blendHex(pieceColorHex(game.PieceZ), BoardBgHex, 0.7), GridLineHex, 1},
-		// Adversarial garbage: 80% sender color, plain grid line.
-		{"adversarial", game.Cell{Adversarial: true, Occupied: true, PlayerIdx: 3}, 0, true, blendHex(PlayerColorHex(3), BoardBgHex, 0.8), GridLineHex, 1},
+		// Adversarial garbage: sender color greyed (half toward grey, then 60%
+		// over the board) with a half-bright sender-color frame — reads as
+		// "dead rows from player 3", distinct from every piece fill.
+		{"adversarial", game.Cell{Adversarial: true, Occupied: true, PlayerIdx: 3}, 0, true,
+			blendHex(blendHex(PlayerColorHex(3), garbageGreyHex, 0.5), BoardBgHex, 0.6), blendHex(PlayerColorHex(3), BoardBgHex, 0.5), 2},
+		// Compact boards suppress the garbage attribution outline too.
+		{"adversarial-no-outline", game.Cell{Adversarial: true, Occupied: true, PlayerIdx: 3}, 0, false,
+			blendHex(blendHex(PlayerColorHex(3), garbageGreyHex, 0.5), BoardBgHex, 0.6), GridLineHex, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,5 +56,26 @@ func TestCellStyleDecisions(t *testing.T) {
 				t.Errorf("outline width = %d, want %d", app.OutlineW, tc.wantW)
 			}
 		})
+	}
+}
+
+// TestGhostStyle pins the hard-drop ghost appearance: a faint piece-color fill
+// inside a half-bright piece-color 2px frame, flat (no bevel) — dimmer than
+// every committed-cell alpha so the preview can't be mistaken for a real cell.
+func TestGhostStyle(t *testing.T) {
+	for pt := game.PieceI; pt <= game.PieceL; pt++ {
+		app := GhostStyle(pt)
+		if got, want := hex(app.Fill), blendHex(pieceColorHex(pt), BoardBgHex, ghostFillAlpha); got != want {
+			t.Errorf("piece %v: fill = %s, want %s", pt, got, want)
+		}
+		if got, want := hex(app.Outline), blendHex(pieceColorHex(pt), BoardBgHex, ghostOutlineAlpha); got != want {
+			t.Errorf("piece %v: outline = %s, want %s", pt, got, want)
+		}
+		if app.OutlineW != 2 {
+			t.Errorf("piece %v: outline width = %d, want 2", pt, app.OutlineW)
+		}
+		if app.Bevel {
+			t.Errorf("piece %v: ghost must not bevel", pt)
+		}
 	}
 }

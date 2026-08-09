@@ -3660,9 +3660,12 @@ implements the whole protocol from `jetris-agent-guide.md` — lobby KV CAS flow
 presence, invitations, a bit-exact PCG + 7-bag RNG port, its own engine, atomic CAS
 cell batches, the garbage ledger, events, flashes, finish→archive→cleanup — with the
 `mk1` planner brain carried over (Dellacherie/El-Tetris evaluation, beam-pruned
-preview lookahead, the easy/medium/hard tunings and blunder model). It plays
-competitive mode; source citations in every protocol interaction make it a worked
-reading of the guide. `cmd/jetris-agent` and `internal/agent` were **deleted**; the
+preview lookahead, the easy/medium/hard tunings and blunder model). It plays all
+three modes — the cooperative and teams shared boards were ported wire-level in a
+follow-up (`shared.go`: the board consumer with own-piece adoption, deferred spawns,
+merge-retry clears that shift other pieces with the stack, cascading garbage lifts
+with teammate-piece guards, vacate-on-elimination, team verdicts); source citations
+in every protocol interaction make it a worked reading of the guide. `cmd/jetris-agent` and `internal/agent` were **deleted**; the
 lobby/GUI machinery Phase 12 added (agent policy + `[agent]` tagging, `UnjoinGame` +
 `PurgeRosterEntry`, the cleanup grace period) survives unchanged, exercised by the GUI
 and by agents over the wire.

@@ -2446,8 +2446,8 @@ the main module's `go build ./...`: it
 implements the wire protocol straight from `jetris-agent-guide.md` with no access to the
 game's packages, exactly as a third-party agent would — every protocol interaction in its
 source cites the guide section it implements, so it also serves as a worked reading of
-the contract. It plays **competitive** mode with the Dellacherie/El-Tetris heuristic at
-`easy`/`medium`/`hard` difficulties, hosts games with `--create`, and its player name
+the contract. It plays **all three modes** with the Dellacherie/El-Tetris heuristic at
+`easy`/`medium`/`hard` difficulties, hosts games with `--create --mode …`, and its player name
 reads `golang-mk1-<instance>-<difficulty>`. It builds without cgo/Gio on every platform.
 Everything below describes that reference implementation.
 
@@ -2463,6 +2463,7 @@ Everything below describes that reference implementation.
 | `types.go` | Wire payloads and the `obj` raw-field map that keeps unknown fields — and the 64-bit seed's exact digits — intact across CAS read-modify-writes of the lobby KV and meta. |
 | `agent.go` | The lobby: presence heartbeat, the KV mirror (listings + invitations), invitation accept/decline, select/join/ready CAS flows, the 5..0 countdown when its ready toggle completes the set, `--create` hosting (game stream + meta + listing + `game.created` event), and the pre-start un-join. |
 | `game.go` | One game: consumers, its own engine loop (spawn/gravity/lock-in/clears/top-out), atomic CAS cell batches with write-through, the garbage ledger (CAS-adds on victims' registers + txn-gated application), per-player `game_over` events, CAS-failure flashes, outcome, and the finish→archive→cleanup sequence when it wins. |
+| `shared.go` | Shared boards (coop/teams): the board consumer (teammates' pieces, adopted shifts of our own, register echoes), deferred spawns, coop merge-retry clears that shift other pieces with the stack, cascading garbage lifts with teammate-piece guards, the vacate-on-elimination transform, and team verdicts. |
 | `main.go` | Flags, signal handling, and `--selftest` (offline RNG-parity and planner sanity checks). |
 
 ### golang-mk1 flags
@@ -2473,9 +2474,9 @@ Everything below describes that reference implementation.
 | `--name` | The agent VERSION stem (default `golang-mk1`, its codename, bumped when the play logic changes). The full player name is `<stem>-<instance>-<difficulty>` with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole fits the 32-character cap |
 | `--difficulty` | `easy` \| `medium` \| `hard` (default `hard`) |
 | `--join <gameID>` | Join a specific game (still subject to that game's agent policy) |
-| `--create` + `--players N` + `--max-agents M` + `--next K` | Host a competitive game and wait for opponents; `M` agent seats including this agent (0/default = all seats — an agent-hosted game is agent-friendly); `K` upcoming pieces the game reveals (0-4, default 1) |
+| `--create` + `--mode` + `--players N` + `--max-agents M` + `--next K` | Host a game (cooperative/competitive/teams; `--players` is per team in teams mode) and wait for opponents; `M` agent seats including this agent (0/default = all seats — an agent-hosted game is agent-friendly); `K` upcoming pieces the game reveals (0-4, default 1) |
 | *(neither)* | **Resident mode**: wait in the lobby and play invited games, game after game, until interrupted |
-| `--auto-join` | Residents also actively join the oldest open agent-allowed competitive game with a free (agent) seat (default: invited games only) |
+| `--auto-join` | Residents also actively join the oldest open agent-allowed game of any mode with a free (agent, and in teams team) seat (default: invited games only) |
 | `--wait` | Max wait for a joined game to fill and start before un-joining it (default 10m) |
 | `--once` | Exit after one game instead of staying resident |
 | `--selftest` | Run the offline conformance checks and exit |

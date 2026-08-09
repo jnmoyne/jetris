@@ -335,7 +335,7 @@ agree on eliminations and outcomes without a coordinator.
 - **Against the reference agent**: run `golang-mk1` residents at any difficulty and
   create agent-allowed games — `cd agents/golang-mk1 && go build . && ./golang-mk1
   --server nats://localhost:4222 --difficulty medium --auto-join` — or `./golang-mk1
-  --create --players 2` to host a competitive game. `golang-mk1` implements everything
+  --create --mode teams --players 2` to host. `golang-mk1` implements everything
   in this guide, so it is a conformant sparring partner.
 - **Against humans**: run the GUI and either create an invite-only game and invite
   the agent by name (it accepts immediately), or create a game with "Allow agents"

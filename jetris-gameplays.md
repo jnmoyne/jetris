@@ -852,7 +852,7 @@ written in any language and contributed to the repo under `agents/<name>/`
 which running copy, and how strong.
 
 Jetris ships one reference agent, **`golang-mk1`** (`agents/golang-mk1/`), written in Go,
-that plays **competitive** mode. It is deliberately an ordinary peer — the same lobby
+that plays **all three modes** — cooperative, competitive, and teams. It is deliberately an ordinary peer — the same lobby
 join handshake, the same move vocabulary a human has (left, right, down, rotate CW/CCW,
 hard drop), the same consumers and CAS discipline — with a planner where the GUI has a
 keyboard. Nothing in the blackboard needed to change to admit a software agent: the agent
@@ -899,13 +899,15 @@ see `jetris-agent-guide.md`.
 
 ### Per-mode outcomes
 
-`golang-mk1` plays competitive: last standing wins, the agent reports WON/LOST, and —
-like any winning player — the winner archives the game before moving on. A losing agent
-stays connected briefly for the verdict rather than vanishing mid-game. Agents that play
-the other modes (any conformant third-party agent may) carry those modes' outcome duties
-too: a cooperative topper finishes and archives the shared game, and on a team an
-eliminated agent's top-out is not the outcome — the team plays on, and any
-winning-team member archives (the transition is CAS-protected so duplicates are safe).
+- **Cooperative:** the agent plays for the shared score; anyone's top-out ends the game
+  for everyone, and if the agent is the topper it finishes and archives the shared game.
+- **Competitive:** last standing wins; the agent reports WON/LOST, and — like any
+  winning player — the winner archives before moving on. A loser stays connected
+  briefly for the verdict rather than vanishing mid-game.
+- **Teams:** the agent joins the invited team (or the emptier one when scanning); its
+  own top-out is not the outcome — it vacates its dead piece (a gated transform) and
+  stays connected until one team is fully out; a winning-team agent archives (the
+  transition is CAS-protected so duplicates are safe).
 
 ### Difficulty levels
 
@@ -956,8 +958,7 @@ With no `--join`/`--create`, an agent is a **lobby resident**: it idles in the l
 **waiting to be invited** — invitations are accepted immediately — plays the game to
 the end, returns to the lobby, and repeats until interrupted (`--once` restores
 play-one-game-and-exit). Passing **`--auto-join`** widens the resident's appetite: it
-then also actively joins the oldest open game it can play (for `golang-mk1`,
-competitive) that allows agents and has a free seat and a free agent seat. An "agent
+then also actively joins the oldest open game that allows agents and has a free seat and a free agent seat. An "agent
 that is not currently playing" is simply one sitting in the lobby waiting (or, with
 `--auto-join`, scanning) — a playing agent can't join anything else. If a joined game
 never starts (nobody shows up or readies), the agent **un-joins** after its wait
@@ -977,6 +978,7 @@ player:
 - On losing it stays connected briefly for the verdict, then moves on.
 
 One-shot game selection remains CLI-driven: `--join <gameID>` for a specific game
-(still subject to that game's agent policy), or `--create --players N
-[--max-agents M] [--next K]` to host a competitive game — agent-hosted games allow
-agents in all seats by default, since the host itself takes one.
+(still subject to that game's agent policy), or `--create --mode
+cooperative|competitive|teams --players N [--max-agents M] [--next K]` to host one
+(`--players` is per team in teams mode, like the GUI's count) — agent-hosted games
+allow agents in all seats by default, since the host itself takes one.

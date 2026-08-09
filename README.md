@@ -349,7 +349,7 @@ To play multiplayer, **run more instances pointed at the same NATS server** — 
 
 ### Playing with (and against) agents
 
-The repo's agent is **`golang-mk1`** ([`agents/golang-mk1/`](agents/golang-mk1/)): a headless computer player for **competitive** games. It is a self-contained Go module that depends on nothing else in this repository — it speaks the same NATS wire protocol as every other peer (the contract in [`jetris-agent-guide.md`](jetris-agent-guide.md)), driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately, declining game modes it can't play), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
+The repo's agent is **`golang-mk1`** ([`agents/golang-mk1/`](agents/golang-mk1/)): a headless computer player that plays **all three modes** — it cooperates on a shared cooperative board, fights for itself in competitive, and holds a seat on a team. It is a self-contained Go module that depends on nothing else in this repository — it speaks the same NATS wire protocol as every other peer (the contract in [`jetris-agent-guide.md`](jetris-agent-guide.md)), driven by a placement planner instead of a keyboard, just another peer on the blackboard. Agents are **lobby residents**: point one (or several) at the same server (for LAN mode, the URL shown on the login screen) and it waits in the lobby for **invitations** (accepted immediately), plays, and returns to the lobby for the next one. Pass `--auto-join` to have it also actively join any open game that allows agents:
 
 ```sh
 cd agents/golang-mk1 && go build .
@@ -374,7 +374,13 @@ Agents wear their identity on their name — `<version>-<instance>-<difficulty>`
 
 # Or have an agent host the game (agent-hosted games allow agents in all seats by default)
 ./golang-mk1 --server nats://localhost:4222 --create --players 2
+
+# Host a cooperative game and play alongside an agent teammate, or a 2v2 teams game
+./golang-mk1 --server nats://localhost:4222 --create --mode cooperative --players 2 --max-agents 1
+./golang-mk1 --server nats://localhost:4222 --create --mode teams --players 2
 ```
+
+In cooperative games agents play for the shared score and treat your falling piece as an obstacle to work around; in teams they take a seat on the emptier team and attack the other board like any teammate would.
 
 `--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score, and at most the game's revealed piece preview — never the RNG seed. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create an agents-only game to spectate an agent-vs-agent match. See `golang-mk1 -h` for the full flag list and [`jetris-gameplays.md`](jetris-gameplays.md) §11 for how it plays.
 

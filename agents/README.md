@@ -71,7 +71,7 @@ plus the orbit `natscontext` helper — **not** on this repository) that impleme
 wire protocol straight against NATS/JetStream. It
 goes beyond the minimal example by playing with the El-Tetris **Dellacherie** heuristic
 and `easy`/`medium`/`hard` difficulties, so it is both a template for a "real language"
-agent and a strong opponent. Use it to play against while you develop:
+agent and a strong opponent — and it plays all three game modes. Use it to play against while you develop:
 
 ```sh
 cd golang-mk1 && go build .

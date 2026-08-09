@@ -27,6 +27,7 @@ const (
 	modeCompetitive = 1
 	headroom        = 4 // hidden spawn rows 0..3
 	presenceEvery   = 5 * time.Second
+	presenceTTL     = 5 * time.Minute // per-message TTL on presence writes: a crashed peer's entry self-deletes (config.PresenceTTL)
 	inviteTTL       = 120 * time.Second
 	gravity         = 800 * time.Millisecond // fixed level-0 competitive gravity
 )
@@ -182,11 +183,14 @@ func (a *Agent) connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if a.kv, err = a.js.KeyValue(ctx, lobbyBucket); err != nil {
-		a.kv, err = a.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: lobbyBucket, Storage: jetstream.FileStorage})
-		if err != nil {
-			return err
-		}
+	// Create-or-update the lobby bucket exactly as the game does:
+	// LimitMarkerTTL enables the per-message-TTL presence writes below AND
+	// makes expiries emit watchable delete markers, so every lobby learns a
+	// vanished player is gone without polling. Update (not bind) also
+	// converges a plain bucket some earlier client may have left behind.
+	if a.kv, err = a.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket: lobbyBucket, Storage: jetstream.FileStorage, LimitMarkerTTL: presenceTTL}); err != nil {
+		return err
 	}
 	if _, err := a.js.Stream(ctx, archiveStream); err != nil {
 		if _, err := a.js.CreateStream(ctx, jetstream.StreamConfig{
@@ -206,7 +210,11 @@ func (a *Agent) publishPresence(ctx context.Context) error {
 		p["game_id"] = game
 	}
 	b, _ := json.Marshal(p)
-	_, err := a.kv.Put(ctx, "players."+a.name, b)
+	// A presence write is a plain KV put carrying a per-message TTL, exactly
+	// like the game's: if this agent dies without its clean exit, the entry
+	// self-deletes after presenceTTL instead of haunting the lobby. The KV
+	// client's Put drops TTL headers, so publish straight to the KV subject.
+	_, err := a.js.Publish(ctx, "$KV."+lobbyBucket+".players."+a.name, b, jetstream.WithMsgTTL(presenceTTL))
 	return err
 }
 

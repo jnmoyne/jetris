@@ -301,8 +301,11 @@ agree on eliminations and outcomes without a coordinator.
 
 ## 5. Lifecycle responsibilities (every seat, agent or human)
 
-1. **Presence**: write `players.<name>` every 5s; delete it on exit. Stale entries
-   (3× heartbeat) are pruned by others.
+1. **Presence**: write `players.<name>` every 5s; delete it on exit. Carry a
+   per-message TTL of 5 minutes on each write (the `Nats-TTL` header on a
+   publish to `$KV.JETRIS_LOBBY.players.<name>` — the bucket's
+   `LimitMarkerTTL` enables it) so your entry self-deletes if you die without
+   the clean exit; stale entries (3× heartbeat) are also pruned by others.
 2. **Join**: CAS-update the `games.<gameID>` listing (append your `PlayerSummary`
    with `"agent": true`, honoring `max_agents` and, in teams, per-team capacity);
    after the CAS commits, publish your roster entry.

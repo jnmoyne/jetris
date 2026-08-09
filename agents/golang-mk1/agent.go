@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/natscontext"
 )
 
 // Protocol constants (jetris-agent-guide.md §4, gameplays §2/§7).
@@ -38,6 +39,17 @@ const (
 	hExpectLast  = "Nats-Expected-Last-Subject-Sequence"
 )
 
+// connChoice is how to reach the NATS server, with the same precedence as the
+// game and the nats CLI: an explicit --server URL (with optional --user /
+// --password) wins over --context, and an empty context name means the
+// currently selected one.
+type connChoice struct {
+	server   string // NATS URL; "" = connect via context instead
+	context  string // NATS context name; "" = the selected context
+	user     string // used with server
+	password string // used with server
+}
+
 // hosting is the --create configuration: how big a competitive game to host
 // and how agent-friendly it is. nil on an Agent means "never host".
 type hosting struct {
@@ -50,7 +62,7 @@ type hosting struct {
 // it joins. It plays COMPETITIVE games only (declining invitations to other
 // modes), exactly like the example-python reference.
 type Agent struct {
-	server     string
+	conn       connChoice
 	name       string
 	difficulty string
 	tn         tuning
@@ -79,7 +91,7 @@ type Agent struct {
 }
 
 // newAgent builds an agent with a fresh instance id and per-difficulty tuning.
-func newAgent(server, stem, difficulty, joinID string, once, autoJoin bool, host *hosting, wait time.Duration) (*Agent, error) {
+func newAgent(conn connChoice, stem, difficulty, joinID string, once, autoJoin bool, host *hosting, wait time.Duration) (*Agent, error) {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return nil, err
@@ -92,7 +104,7 @@ func newAgent(server, stem, difficulty, joinID string, once, autoJoin bool, host
 	_, _ = rand.Read(seed[:])
 	src := mrand.NewChaCha8(seed)
 	return &Agent{
-		server: server, name: name, difficulty: difficulty, tn: difficultyTuning(difficulty),
+		conn: conn, name: name, difficulty: difficulty, tn: difficultyTuning(difficulty),
 		joinID: joinID, host: host, wait: wait, once: once, autoJoin: autoJoin,
 		listings: map[string]obj{}, invites: map[string]obj{}, streams: map[string]jetstream.Stream{},
 		rng:    mrand.New(src),
@@ -100,8 +112,15 @@ func newAgent(server, stem, difficulty, joinID string, once, autoJoin bool, host
 	}, nil
 }
 
-func (a *Agent) stop()          { a.stopOnce.Do(func() { close(a.stopCh) }) }
-func (a *Agent) stopping() bool { select { case <-a.stopCh: return true; default: return false } }
+func (a *Agent) stop() { a.stopOnce.Do(func() { close(a.stopCh) }) }
+func (a *Agent) stopping() bool {
+	select {
+	case <-a.stopCh:
+		return true
+	default:
+		return false
+	}
+}
 
 func nowRFC() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
@@ -130,12 +149,37 @@ func (a *Agent) stream(ctx context.Context, gameID string) (jetstream.Stream, er
 // ---- connection & lobby --------------------------------------------------
 
 func (a *Agent) connect(ctx context.Context) error {
-	nc, err := nats.Connect(a.server, nats.Name(a.name))
+	var (
+		nc       *nats.Conn
+		jsDomain string
+		err      error
+	)
+	if a.conn.server != "" {
+		opts := []nats.Option{nats.Name(a.name)}
+		if a.conn.user != "" {
+			opts = append(opts, nats.UserInfo(a.conn.user, a.conn.password))
+		}
+		nc, err = nats.Connect(a.conn.server, opts...)
+	} else {
+		// NATS-CLI-compatible contexts (credentials, TLS, JS domain included);
+		// an empty name is the currently selected context.
+		var settings natscontext.Settings
+		nc, settings, err = natscontext.Connect(a.conn.context, nats.Name(a.name))
+		jsDomain = settings.JSDomain
+	}
 	if err != nil {
+		if a.conn.server == "" {
+			return fmt.Errorf("connect via NATS context %q: %w (pass --server or --context)", a.conn.context, err)
+		}
 		return err
 	}
 	a.nc = nc
-	if a.js, err = jetstream.New(nc); err != nil {
+	if jsDomain != "" {
+		a.js, err = jetstream.NewWithDomain(nc, jsDomain)
+	} else {
+		a.js, err = jetstream.New(nc)
+	}
+	if err != nil {
 		return err
 	}
 	if a.kv, err = a.js.KeyValue(ctx, lobbyBucket); err != nil {
@@ -716,7 +760,7 @@ func (a *Agent) run(ctx context.Context) error {
 	if err := a.connect(ctx); err != nil {
 		return err
 	}
-	log.Printf("%s connected to %s", a.name, a.server)
+	log.Printf("%s connected to %s", a.name, a.nc.ConnectedUrl())
 	_ = a.publishPresence(ctx)
 	go a.presenceLoop(ctx)
 	go a.lobbyWatch(ctx)

@@ -359,6 +359,9 @@ cd agents/golang-mk1 && go build .
 
 # Also join any open agent-allowed game as it appears (the pre-invitations behavior)
 ./golang-mk1 --server nats://localhost:4222 --auto-join
+
+# Connect like the nats CLI instead of by URL: a named NATS context, or (bare) the selected one
+./golang-mk1 --context my-context
 ```
 
 Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`golang-mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.

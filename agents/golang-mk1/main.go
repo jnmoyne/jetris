@@ -7,6 +7,8 @@
 // Usage:
 //
 //	golang-mk1 --server nats://localhost:4222                 # resident: waits for invitations
+//	golang-mk1 --context my-context                           # connect via a NATS context
+//	golang-mk1                                                # ...or the currently selected one
 //	golang-mk1 --auto-join                                    # also join open agent-allowed games
 //	golang-mk1 --join <gameID>                                # join one specific game
 //	golang-mk1 --create --players 2 --once                    # host a game, play it, exit
@@ -28,7 +30,10 @@ import (
 func main() {
 	log.SetFlags(log.Ltime)
 
-	server := flag.String("server", "nats://localhost:4222", "NATS server URL")
+	server := flag.String("server", "", "NATS server URL (overrides --context)")
+	natsCtx := flag.String("context", "", "NATS context to connect with (default: the selected context)")
+	user := flag.String("user", "", "NATS username (used with --server)")
+	password := flag.String("password", "", "NATS password (used with --server)")
 	name := flag.String("name", codename, "agent VERSION stem of the player name (default: the codename)")
 	difficulty := flag.String("difficulty", "hard", "play strength: easy, medium, or hard")
 	join := flag.String("join", "", "join this specific game id instead of scanning the lobby")
@@ -61,7 +66,8 @@ func main() {
 		host = &hosting{players: *players, maxAgents: *maxAgents, next: *next}
 	}
 
-	a, err := newAgent(*server, *name, diff, *join, *once, *autoJoin, host, *wait)
+	a, err := newAgent(connChoice{server: *server, context: *natsCtx, user: *user, password: *password},
+		*name, diff, *join, *once, *autoJoin, host, *wait)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

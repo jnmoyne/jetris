@@ -3654,7 +3654,8 @@ the previous game's choices.
 The in-repo `mk1` agent (Phase 12) proved the agent model but was *privileged*: it
 reused the game's own engine/lobby packages, so it never exercised the wire contract
 third-party agents live by. **`agents/golang-mk1`** replaces it: an independent Go
-module (own `go.mod`; only dependency `nats.go`, nothing from `internal/`) that
+module (own `go.mod`; depending only on `nats.go` + the orbit `natscontext` helper,
+nothing from `internal/`) that
 implements the whole protocol from `jetris-agent-guide.md` — lobby KV CAS flows,
 presence, invitations, a bit-exact PCG + 7-bag RNG port, its own engine, atomic CAS
 cell batches, the garbage ledger, events, flashes, finish→archive→cleanup — with the

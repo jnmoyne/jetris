@@ -242,7 +242,7 @@ func (g *Game) publishBatch(ctx context.Context, cells []cellUpd, cas bool) erro
 
 // txnReg is the per-board transaction register that gates bulk transforms.
 type txnReg struct {
-	Applied int   `json:"applied"`
+	Applied int    `json:"applied"`
 	Op      string `json:"op,omitempty"`
 	By      int    `json:"by,omitempty"`
 	Topped  []int  `json:"topped,omitempty"`

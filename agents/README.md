@@ -66,8 +66,9 @@ point to copy: see its [README](example-python/README.md).
 ## The reference agent: `golang-mk1`
 
 [`golang-mk1/`](golang-mk1/) is the repo's own agent and the same idea in Go: an
-independent module (its own `go.mod`, depending only on the `nats.go` client — **not** on
-this repository) that implements the wire protocol straight against NATS/JetStream. It
+independent module (its own `go.mod`, depending only on NATS client libraries — `nats.go`
+plus the orbit `natscontext` helper — **not** on this repository) that implements the
+wire protocol straight against NATS/JetStream. It
 goes beyond the minimal example by playing with the El-Tetris **Dellacherie** heuristic
 and `easy`/`medium`/`hard` difficulties, so it is both a template for a "real language"
 agent and a strong opponent. Use it to play against while you develop:

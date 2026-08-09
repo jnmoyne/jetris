@@ -47,7 +47,7 @@ jetris/
 ├── agents/
 │   ├── example-python/              ← minimal Python agent (no repo dependency)
 │   └── golang-mk1/                  ← the Go reference agent: its own module (own go.mod,
-│                                      only dependency nats.go), NOT part of go build ./...
+│                                      deps: nats.go + orbit natscontext), NOT part of go build ./...
 ├── internal/
 │   ├── config/
 │   │   └── config.go
@@ -137,9 +137,9 @@ cmd/jetris
     ├── internal/render            ← depends on: game (cell/board appearance)
     └── internal/nativeui          ← depends on: engine, lobby, render, config (the front end)
 
-agents/golang-mk1                  ← separate module: depends only on nats.go (the headless
-                                     reference player; speaks the wire protocol, uses no
-                                     internal/ packages)
+agents/golang-mk1                  ← separate module: depends only on nats.go + orbit
+                                     natscontext (the headless reference player; speaks
+                                     the wire protocol, uses no internal/ packages)
 
 Leaf packages (no internal deps):
     internal/config
@@ -2440,8 +2440,9 @@ byte-compatible with the Go structs). `agent.py --selftest` runs offline conform
 fixtures generated from `internal/rng`).
 
 **The reference agent `golang-mk1`.** The repository ships one Go agent — `golang-mk1`,
-in `agents/golang-mk1/`. It is an **independent module** (its own `go.mod`; the only
-dependency is the `nats.go` client), NOT part of the main module's `go build ./...`: it
+in `agents/golang-mk1/`. It is an **independent module** (its own `go.mod`; its only
+dependencies are the `nats.go` client and the orbit `natscontext` helper), NOT part of
+the main module's `go build ./...`: it
 implements the wire protocol straight from `jetris-agent-guide.md` with no access to the
 game's packages, exactly as a third-party agent would — every protocol interaction in its
 source cites the guide section it implements, so it also serves as a worked reading of
@@ -2468,7 +2469,7 @@ Everything below describes that reference implementation.
 
 | Flag | Meaning |
 |------|---------|
-| `--server` | NATS server URL (default `nats://localhost:4222`) |
+| `--server` / `--context` / `--user` / `--password` | Connection choice, same semantics as `cmd/jetris` and the `nats` CLI: an explicit URL (with optional user/password) wins over `--context`; with neither, the currently selected NATS context connects (falling back to the client default `nats://127.0.0.1:4222` when no context exists). Contexts are the NATS-CLI-compatible kind (credentials, TLS, JetStream domain honored) via the orbit `natscontext` package |
 | `--name` | The agent VERSION stem (default `golang-mk1`, its codename, bumped when the play logic changes). The full player name is `<stem>-<instance>-<difficulty>` with a fresh 4-hex instance id per connection; every component sticks to the presence-KV charset and the whole fits the 32-character cap |
 | `--difficulty` | `easy` \| `medium` \| `hard` (default `hard`) |
 | `--join <gameID>` | Join a specific game (still subject to that game's agent policy) |

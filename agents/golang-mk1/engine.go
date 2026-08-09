@@ -11,7 +11,7 @@ type grid struct {
 
 func newGrid(h int) *grid { return &grid{h: h, cells: make([]int8, h*width)} }
 
-func (g *grid) at(r, c int) int8  { return g.cells[r*width+c] }
+func (g *grid) at(r, c int) int8     { return g.cells[r*width+c] }
 func (g *grid) set(r, c int, v int8) { g.cells[r*width+c] = v }
 func (g *grid) filled(r, c int) bool { return g.cells[r*width+c] != 0 }
 

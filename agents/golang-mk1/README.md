@@ -1,8 +1,10 @@
 # golang-mk1 — a self-contained Jetris agent in Go
 
 A Go sibling of [`example-python`](../example-python/): it depends on **nothing in the
-jetris repository** (its own `go.mod`, the only dependency is the
-[`nats.go`](https://github.com/nats-io/nats.go) client) and implements the wire protocol
+jetris repository** (its own `go.mod`; its only dependencies are the
+[`nats.go`](https://github.com/nats-io/nats.go) client and the orbit
+[`natscontext`](https://github.com/synadia-io/orbit.go) helper for NATS-CLI-compatible
+contexts) and implements the wire protocol
 from [`../../jetris-agent-guide.md`](../../jetris-agent-guide.md) — game rules from
 [`../../jetris-gameplays.md`](../../jetris-gameplays.md) — directly against NATS/JetStream,
 following the guide's fair-play rules. Unlike the example, it plays with the repo agent's
@@ -47,6 +49,10 @@ go build -o golang-mk1 .
 # resident: waits for invitations to competitive games
 ./golang-mk1 --server nats://localhost:4222
 
+# ...or connect like the nats CLI: a named NATS context, or (bare) the selected one
+./golang-mk1 --context my-context
+./golang-mk1
+
 # also auto-join open agent-allowed games; pick a strength
 ./golang-mk1 --auto-join --difficulty hard
 
@@ -61,9 +67,10 @@ go build -o golang-mk1 .
 ./golang-mk1 --selftest
 ```
 
-Flags: `--server`, `--name` (version stem, default `golang-mk1`), `--difficulty`
-(`easy`/`medium`/`hard`), `--join`, `--create` (with `--players`, `--max-agents`,
-`--next`), `--auto-join`, `--once`, `--selftest`.
+Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--context`
+(a NATS context; default: the selected one), `--name` (version stem, default
+`golang-mk1`), `--difficulty` (`easy`/`medium`/`hard`), `--join`, `--create` (with
+`--players`, `--max-agents`, `--next`), `--auto-join`, `--wait`, `--once`, `--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the
 GUI and create a competitive game with agents allowed — or let one instance host for another:

@@ -312,6 +312,8 @@ All three are the same blackboard pattern with different subject schemes and col
 - Go 1.25+
 - A NATS server with JetStream enabled (e.g. run `nats-server -js` locally, or try demo.nats.io). Native desktop UI builds use [Gio](https://gioui.org); on Linux you'll need its system dependencies (see `.github/workflows/release.yml`).
 - Optional: the [`nats` CLI](https://github.com/nats-io/natscli) for managing contexts and inspecting streams.
+  
+- Linux builds need X11/Wayland/EGL/Vulkan dev headers: e.g. `sudo pacman -S vulkan-headers`
 
 ### Build
 

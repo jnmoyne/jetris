@@ -287,8 +287,16 @@ func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount int, 
 		playerCount = config.TeamCount * count
 	}
 	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, nextCount, ghost, inviteOnly)
+	a.mu.Lock()
+	if err != nil {
+		a.lobbyErr = "Couldn't create the game: " + err.Error()
+	} else {
+		a.lobbyErr = ""
+	}
+	a.mu.Unlock()
 	if err != nil {
 		log.Printf("create game: %v", err)
+		a.invalidate()
 		return ""
 	}
 	return gameID

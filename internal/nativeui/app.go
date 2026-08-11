@@ -254,6 +254,13 @@ type App struct {
 	leaveYesBtn  widget.Clickable
 	leaveNoBtn   widget.Clickable
 
+	// lobbyErr surfaces a failed game creation as a red strip under the lobby
+	// banner (guarded by a.mu — createGame runs off the UI goroutine).
+	// Without it the wizard silently drops back to the lobby with the reason
+	// buried in the log (e.g. a server that refuses new streams). Cleared when
+	// the wizard reopens or a create succeeds.
+	lobbyErr string
+
 	// Invite-only create flow, entered from the create wizard's "Invite only"
 	// choice. While invitePickerGameID is non-empty the invitee-picker overlay
 	// is open for that just-created game; invitePicker holds one row of widget

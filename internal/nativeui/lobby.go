@@ -44,6 +44,9 @@ func (a *App) layoutLobby(gtx C) D {
 	// stick around as this run's defaults.
 	if a.createBtn.Clicked(gtx) && !wizOpen && !pickerOpen && !inviteOpen {
 		a.createWizStep = wizStepMode
+		a.mu.Lock()
+		a.lobbyErr = "" // a fresh attempt clears the previous failure strip
+		a.mu.Unlock()
 		wizOpen = true
 	}
 	a.handleChatSubmit(gtx)
@@ -104,6 +107,17 @@ func (a *App) layoutLobby(gtx C) D {
 	// --- render ---
 	base := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.lobbyBanner),
+		layout.Rigid(func(gtx C) D {
+			a.mu.Lock()
+			msg := a.lobbyErr
+			a.mu.Unlock()
+			if msg == "" {
+				return D{}
+			}
+			return layout.Center.Layout(gtx, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(6)).Layout(gtx, a.pixel(unit.Sp(9), msg, colErr).Layout)
+			})
+		}),
 		layout.Flexed(1, func(gtx C) D {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D {

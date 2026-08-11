@@ -60,11 +60,28 @@ const (
 	// gated batch above it is split into a gate head plus NoCAS tail chunks
 	// (see publishGatedItems) — only reachable on the largest team boards.
 	gatedBatchLimit = 1000
-	// gatedTransformMaxAttempts bounds gate-rejection recomputes. Rejections
-	// need another writer's transform to have landed in the race window, so
-	// contention is self-limiting; the bound only guards pathology.
-	gatedTransformMaxAttempts = 6
+	// gatedTransformMaxAttempts bounds gate-rejection recomputes. Contention
+	// is NOT rare: on a busy team board, teammate moves keep bumping the
+	// guarded cells and the server can reject batches under inflight-batch
+	// pressure, so a transform must ride out several seconds of noise (with
+	// the capped backoff below) before quitting. Giving up is not free —
+	// an abandoned CLEAR loses the score/attack until someone's next lock
+	// re-detects the rows, and an abandoned VACATE strands a dead player's
+	// active cells as a ghost obstacle every falling piece then hovers on
+	// (the "frozen piece" bug).
+	gatedTransformMaxAttempts = 24
 )
+
+// gatedRetryBackoff returns the pause before retry `attempt` (1-based):
+// quadratic growth capped at 300ms — quick for one-off races, patient under
+// sustained contention. Total across all attempts ≈ 5s.
+func gatedRetryBackoff(attempt int) time.Duration {
+	d := time.Duration(attempt*attempt) * 2 * time.Millisecond
+	if d > 300*time.Millisecond {
+		d = 300 * time.Millisecond
+	}
+	return d
+}
 
 // txnSubject returns the own board's txn register subject.
 func (e *Engine) txnSubject() string {
@@ -85,11 +102,13 @@ func (e *Engine) txnSubject() string {
 // under the consumer's lock). Returns true when a batch committed; the
 // caller reads the outcome from whatever its last project call captured.
 func (e *Engine) publishGatedTransform(ctx context.Context, op string, locked bool, project gatedProjection) bool {
+	var lastErr error
 	for attempt := 0; attempt < gatedTransformMaxAttempts; attempt++ {
 		if attempt > 0 {
-			// Let the winning transform's echo settle before recomputing.
+			// Let the winning transform's echo settle (and any server-side
+			// batch pressure drain) before recomputing.
 			select {
-			case <-time.After(time.Duration(attempt) * 2 * time.Millisecond):
+			case <-time.After(gatedRetryBackoff(attempt)):
 			case <-ctx.Done():
 				return false
 			}
@@ -142,15 +161,16 @@ func (e *Engine) publishGatedTransform(ctx context.Context, op string, locked bo
 			hook(op)
 		}
 
-		committed, retry := e.publishGatedItems(ctx, op, items, changed, newTxn, locked)
+		committed, retryErr := e.publishGatedItems(ctx, op, items, changed, newTxn, locked)
 		if committed {
 			return true
 		}
-		if !retry {
+		if retryErr == nil {
 			return false
 		}
+		lastErr = retryErr
 	}
-	log.Printf("gated %s: gave up after %d attempts", op, gatedTransformMaxAttempts)
+	log.Printf("gated %s: gave up after %d attempts (last: %v)", op, gatedTransformMaxAttempts, lastErr)
 	return false
 }
 
@@ -304,9 +324,10 @@ func (e *Engine) buildGatedItems(snap *game.Playfield, cells map[game.CellPos]ga
 // expectation-carrying message, and as many leading plain cells as fit) and
 // NoCAS tail chunks — winning the gate excludes concurrent bulk transforms,
 // and racing moves are still caught by their own per-subject CAS, so the tail
-// stays consistent. Returns (committed, retry): retry is true on a CAS-class
-// or transient rejection, false on a hard error.
-func (e *Engine) publishGatedItems(ctx context.Context, op string, items []gatedUpdate, cells map[game.CellPos]game.Cell, newTxn TxnRegister, locked bool) (bool, bool) {
+// stays consistent. Returns (committed, retryErr): retryErr is non-nil on a
+// CAS-class or transient rejection (retry with a recompute), nil on success or
+// a hard error (already logged).
+func (e *Engine) publishGatedItems(ctx context.Context, op string, items []gatedUpdate, cells map[game.CellPos]game.Cell, newTxn TxnRegister, locked bool) (bool, error) {
 	head, tail := splitGatedItems(items)
 	updates := make([]natspkg.CellUpdate, len(head))
 	for i, it := range head {
@@ -316,10 +337,10 @@ func (e *Engine) publishGatedItems(ctx context.Context, op string, items []gated
 	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
 	if err != nil {
 		if errors.Is(err, natspkg.ErrCASFailure) || errors.Is(err, natspkg.ErrBatchTransient) {
-			return false, true
+			return false, err
 		}
 		log.Printf("gated %s: publish: %v", op, err)
-		return false, false
+		return false, nil
 	}
 	e.trackRTT(t0, seq, len(head))
 	e.applyGatedItems(head, cells, newTxn, seq, locked)
@@ -336,12 +357,12 @@ func (e *Engine) publishGatedItems(ctx context.Context, op string, items []gated
 		chunkSeq, chunkErr := natspkg.PublishCellsAtomicallyNoCAS(ctx, e.js, chunkUpdates)
 		if chunkErr != nil {
 			log.Printf("gated %s: tail chunk: %v", op, chunkErr)
-			return true, false // the gate batch committed; the transform stands partially — the next transform recomputes from converged state
+			return true, nil // the gate batch committed; the transform stands partially — the next transform recomputes from converged state
 		}
 		e.trackRTT(t0, chunkSeq, len(chunk))
 		e.applyGatedItems(chunk, cells, newTxn, chunkSeq, locked)
 	}
-	return true, false
+	return true, nil
 }
 
 // splitGatedItems returns the transform's gate head and NoCAS tail. Batches

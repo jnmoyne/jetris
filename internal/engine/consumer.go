@@ -297,6 +297,15 @@ func (e *Engine) runCountdownConsumer(ctx context.Context) {
 			if err := json.Unmarshal(msg.Data(), &cd); err != nil {
 				continue
 			}
+			// The stream retains full history, so an engine joining or
+			// spectating mid-game replays the pre-game countdown here — drop
+			// it rather than flash 3-2-1-GO over a running game. gameStarted
+			// is set from the meta fetch before any consumer delivers, so the
+			// guard is deterministic for mid-game joins; during a live
+			// countdown it is still false and the numbers pass through.
+			if e.gameStarted.Load() {
+				continue
+			}
 			e.emitUpdate(EngineUpdate{Kind: UpdateCountdown, Countdown: cd.Seconds})
 		}
 	}
@@ -391,9 +400,10 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 	switch ev.Kind {
 	case EventLineClear:
 		// Fold the DELTA between the sender's cumulative totals and the last
-		// totals we saw from them. Per-subject retention keeps only a
-		// sender's LAST line_clear event: if an intermediate one was trimmed
-		// (or we joined late), the delta absorbs everything missed at once.
+		// totals we saw from them. Deltas make the fold replay-proof: an
+		// engine replaying the full event history (a mid-game spectator)
+		// converges to the same totals, and anything missed is absorbed by
+		// the next event's cumulative numbers at once.
 		seen := e.eventTotals[ev.PlayerID]
 		deltaScore := ev.TotalScore - seen.score
 		deltaLines := ev.TotalLines - seen.lines

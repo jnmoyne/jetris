@@ -353,11 +353,10 @@ func TeamCellSubjectFilter(gameID string, team int) string {
 //   - The GARBAGE register holds the cumulative number of garbage rows OWED to
 //     the board since game start. It is advanced by ATTACKERS (read-add-publish
 //     with per-subject CAS and a bounded retry), so simultaneous attacks
-//     serialize and converge to the exact sum. MaxMsgsPerSubject:1 keeps only
-//     the latest total, which is all anyone needs — the register is a monotonic
-//     counter, so a trimmed intermediate value is subsumed by the next, and a
-//     late joiner or reconnecting client recovers the full amount owed from the
-//     snapshot fetch.
+//     serialize and converge to the exact sum. Only the latest total matters —
+//     the register is a monotonic counter, so a newer value subsumes every
+//     older one, and a late joiner or reconnecting client recovers the full
+//     amount owed from the last-per-subject snapshot fetch.
 //   - The TXN register is the exactly-once gate for every bulk board transform
 //     (garbage application, line-clear collapse, teams elimination vacate): it
 //     rides as the FIRST message of the transform's atomic batch with a
@@ -426,16 +425,13 @@ func RosterSubject(gameID, playerID string) string {
 	return "jetris.game." + gameID + ".roster." + playerID
 }
 
-// Game events are published to PER-KIND, PER-PLAYER subjects. The game stream
-// keeps only the last message per subject (MaxMsgsPerSubject: 1), so events
-// sharing one subject would trim each other — near-simultaneous events from
-// different players, or a game_over overwritten by a later event, would simply
-// vanish for any consumer that wasn't perfectly live. Scoping the subject by
-// kind AND sender bounds the loss to "an older event of the same kind from
-// the same player", which the payloads are designed to tolerate: line_clear
-// carries the sender's CUMULATIVE totals (a newer total subsumes a trimmed
-// older one) and each player publishes at most one game_over. Stream order
-// across subjects is still total, so every engine sees the same verdict order.
+// Game events are published to PER-KIND, PER-PLAYER subjects, so no event can
+// ever overwrite an unrelated one, and the payloads stay correct under any
+// retention or replay: line_clear carries the sender's CUMULATIVE totals (a
+// newer total subsumes any older one, and a full-history replay — e.g. a
+// spectator joining mid-game — folds to the same numbers) and each player
+// publishes at most one game_over. Stream order across subjects is total, so
+// every engine sees the same verdict order.
 func EventKindSubject(gameID, kind, playerID string) string {
 	return "jetris.game." + gameID + ".events." + kind + "." + playerID
 }

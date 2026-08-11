@@ -22,12 +22,16 @@ func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 		// briefly behind; if that ever causes useless retries we'd switch the
 		// merge-retry refetch to a consistent read.)
 		AllowDirect: true,
-		// The game stream only needs the latest message per subject (the current
-		// state for each key), so cap it at one message per subject and keep it in
-		// memory rather than on disk.
-		MaxMsgsPerSubject: 1,
-		Storage:           jetstream.MemoryStorage,
-		Retention:         jetstream.LimitsPolicy,
+		// The stream retains the FULL game history (no per-subject cap): an
+		// ordered consumer then delivers every write in order, so a lagging
+		// viewer can never miss a cell's vacate because a later write to the
+		// same subject trimmed it (which used to leave stale piece cells on
+		// replicas), and spectators joining mid-game replay the whole game
+		// from the start. Current state is still read as the last message per
+		// subject (AllowDirect above). Growth is bounded by the game's length
+		// and the stream is deleted once the game is archived.
+		Storage:   jetstream.MemoryStorage,
+		Retention: jetstream.LimitsPolicy,
 	})
 	return err
 }

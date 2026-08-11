@@ -16,10 +16,10 @@ import (
 // Attacker side of the garbage protocol. A line clear OWES garbage rows to
 // every victim board; the debt is recorded durably in the victim board's
 // garbage register (cumulative total) rather than as a fire-and-forget event.
-// Registers survive MaxMsgsPerSubject:1 trimming (the latest total subsumes
-// every earlier one), so a slow or momentarily disconnected victim can never
-// lose an attack — it reconciles the deficit from the register whenever it
-// catches up. Simultaneous attackers serialize through per-subject CAS on the
+// Only the register's latest total matters (it subsumes every earlier one),
+// so a slow or momentarily disconnected victim can never lose an attack — it
+// reconciles the deficit from the register whenever it catches up.
+// Simultaneous attackers serialize through per-subject CAS on the
 // register and converge to the exact sum.
 
 // ledgerBumpMaxAttempts bounds the attacker's CAS-add loop. Conflicts only

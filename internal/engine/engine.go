@@ -59,10 +59,10 @@ type Engine struct {
 	// wonGame records the engine's game-over verdict (0 = not over, 1 = won,
 	// 2 = lost) as set by transitionToSpectator; in teams an eliminated
 	// member's "lost" flips to "won" when their team prevails (last write
-	// wins). Exported via GameOutcome for the archiver: the events subject
-	// retains only its LAST message (MaxMsgsPerSubject: 1), so a post-game
-	// replay cannot reconstruct who was eliminated — the engine that lived
-	// through the game is the authoritative record.
+	// wins). Exported via GameOutcome for the archiver: a post-game event
+	// replay recovers per-player stats but would mis-score near-simultaneous
+	// final top-outs — the engine that lived through the game is the
+	// authoritative record of who was eliminated.
 	wonGame atomic.Int32
 
 	// mode/score/level/totalLines/pieceIdx are read and written from several
@@ -115,9 +115,10 @@ type Engine struct {
 	opponentGarbage map[string]opponentLedger
 
 	// eventTotals tracks, per sender, the last cumulative line_clear totals
-	// folded from the events stream, so handleGameEvent folds deltas even when
-	// per-subject retention trimmed intermediate events. Touched only by the
-	// events-consumer goroutine — no lock needed.
+	// folded from the events stream, so handleGameEvent folds deltas — a
+	// full-history replay (mid-game spectator) or a missed intermediate event
+	// converges to the same totals. Touched only by the events-consumer
+	// goroutine — no lock needed.
 	eventTotals map[string]struct{ score, lines int }
 
 	Updates        chan EngineUpdate
@@ -259,34 +260,44 @@ func (e *Engine) Start() error {
 	}
 	e.metaSeq = metaSeq
 
-	// 2. Fetch playfield state (one message per cell plus the board registers;
-	// never-written subjects are simply absent and stay empty)
-	cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.snapshotSubjects())
-	if err != nil {
-		cancel()
-		return err
-	}
-	var maxSeq uint64
-	for _, c := range cells {
-		if c.Seq > maxSeq {
-			maxSeq = c.Seq
+	// 2+3. Board state and its consumer. A PLAYER fetches a last-per-subject
+	// snapshot and tails the stream from just past it — the snapshot seeds the
+	// per-cell CAS expectations and the garbage/txn late-join reconcile. A
+	// SPECTATOR skips the snapshot and consumes from the START of the stream
+	// (startSeq 0 → DeliverAll): the full retained history replays the game
+	// quickly from its first move and then tracks live play. The register
+	// mirrors rebuild from the replayed register echoes, and every gameplay
+	// side effect in the consumer is gated on ModePlayer, so a replay drives
+	// rendering only.
+	var startSeq uint64
+	if e.initialMode != ModeSpectator {
+		cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.snapshotSubjects())
+		if err != nil {
+			cancel()
+			return err
 		}
-		if c.Row < 0 {
-			// A board register: fold it through the same path the live
-			// consumer uses. A positive deficit is retained on applyGarbage
-			// until runInput starts — the late-join/reconnect reconcile.
-			e.captureRegisterSnapshot(ctx, "", false, c.Subject, c.Payload, c.Seq)
-			continue
+		var maxSeq uint64
+		for _, c := range cells {
+			if c.Seq > maxSeq {
+				maxSeq = c.Seq
+			}
+			if c.Row < 0 {
+				// A board register: fold it through the same path the live
+				// consumer uses. A positive deficit is retained on applyGarbage
+				// until runInput starts — the late-join/reconnect reconcile.
+				e.captureRegisterSnapshot(ctx, "", false, c.Subject, c.Payload, c.Seq)
+				continue
+			}
+			data, _ := game.UnmarshalCell(c.Payload)
+			e.playfield.Apply(c.Row, c.Col, data, c.Seq)
 		}
-		data, _ := game.UnmarshalCell(c.Payload)
-		e.playfield.Apply(c.Row, c.Col, data, c.Seq)
+
+		// Check if there's already an active piece for this player
+		e.hadActivePiece = e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
+		startSeq = maxSeq + 1
 	}
 
-	// Check if there's already an active piece for this player
-	e.hadActivePiece = e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
-
-	// 3. Start cell consumer
-	go e.runConsumer(ctx, e.playfield, e.cellFilterSubject(), "", maxSeq+1, false)
+	go e.runConsumer(ctx, e.playfield, e.cellFilterSubject(), "", startSeq, false)
 
 	// 4. Competitive: set up known opponent and discover others via roster
 	if e.gameMode == config.ModeCompetitive {
@@ -423,36 +434,42 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 	e.opponentPlayfields[key] = pf
 	e.mu.Unlock()
 
-	subjects := make([]string, 0, pf.Height*pf.Width+2)
-	for r := 0; r < pf.Height; r++ {
-		for c := 0; c < pf.Width; c++ {
-			subjects = append(subjects, config.TeamCellSubject(e.gameID, team, r, c))
+	// Spectators consume from the stream start instead of snapshot+tail: the
+	// replayed history animates the game so far, then tracks live (see Start).
+	var startSeq uint64
+	if e.initialMode != ModeSpectator {
+		subjects := make([]string, 0, pf.Height*pf.Width+2)
+		for r := 0; r < pf.Height; r++ {
+			for c := 0; c < pf.Width; c++ {
+				subjects = append(subjects, config.TeamCellSubject(e.gameID, team, r, c))
+			}
 		}
-	}
-	subjects = append(subjects,
-		config.TeamGarbageSubject(e.gameID, team),
-		config.TeamTxnSubject(e.gameID, team))
-	cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, subjects)
-	if err != nil {
-		log.Printf("fetch team %d board state: %v", team, err)
-		return
-	}
-	var maxSeq uint64
-	for _, c := range cells {
-		if c.Seq > maxSeq {
-			maxSeq = c.Seq
+		subjects = append(subjects,
+			config.TeamGarbageSubject(e.gameID, team),
+			config.TeamTxnSubject(e.gameID, team))
+		cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, subjects)
+		if err != nil {
+			log.Printf("fetch team %d board state: %v", team, err)
+			return
 		}
-		if c.Row < 0 {
-			e.captureRegisterSnapshot(ctx, key, true, c.Subject, c.Payload, c.Seq)
-			continue
+		var maxSeq uint64
+		for _, c := range cells {
+			if c.Seq > maxSeq {
+				maxSeq = c.Seq
+			}
+			if c.Row < 0 {
+				e.captureRegisterSnapshot(ctx, key, true, c.Subject, c.Payload, c.Seq)
+				continue
+			}
+			data, _ := game.UnmarshalCell(c.Payload)
+			e.mu.Lock()
+			pf.Apply(c.Row, c.Col, data, c.Seq)
+			e.mu.Unlock()
 		}
-		data, _ := game.UnmarshalCell(c.Payload)
-		e.mu.Lock()
-		pf.Apply(c.Row, c.Col, data, c.Seq)
-		e.mu.Unlock()
+		startSeq = maxSeq + 1
 	}
 
-	go e.runConsumer(ctx, pf, config.TeamPlayfieldFilter(e.gameID, team), key, maxSeq+1, true)
+	go e.runConsumer(ctx, pf, config.TeamPlayfieldFilter(e.gameID, team), key, startSeq, true)
 }
 
 // startOpponentConsumer creates a playfield and consumer for a single opponent.
@@ -466,36 +483,42 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 	e.opponentPlayfields[oppID] = pf
 	e.mu.Unlock()
 
-	oppSubjects := make([]string, 0, pf.Height*pf.Width+2)
-	for r := 0; r < pf.Height; r++ {
-		for c := 0; c < pf.Width; c++ {
-			oppSubjects = append(oppSubjects, config.CompetitiveCellSubject(e.gameID, oppID, r, c))
+	// Spectators consume from the stream start instead of snapshot+tail: the
+	// replayed history animates the game so far, then tracks live (see Start).
+	var oppStartSeq uint64
+	if e.initialMode != ModeSpectator {
+		oppSubjects := make([]string, 0, pf.Height*pf.Width+2)
+		for r := 0; r < pf.Height; r++ {
+			for c := 0; c < pf.Width; c++ {
+				oppSubjects = append(oppSubjects, config.CompetitiveCellSubject(e.gameID, oppID, r, c))
+			}
 		}
-	}
-	oppSubjects = append(oppSubjects,
-		config.CompetitiveGarbageSubject(e.gameID, oppID),
-		config.CompetitiveTxnSubject(e.gameID, oppID))
-	oppCells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppSubjects)
-	if err != nil {
-		log.Printf("fetch opponent %s state: %v", oppID, err)
-		return
-	}
-	var oppMaxSeq uint64
-	for _, c := range oppCells {
-		if c.Seq > oppMaxSeq {
-			oppMaxSeq = c.Seq
+		oppSubjects = append(oppSubjects,
+			config.CompetitiveGarbageSubject(e.gameID, oppID),
+			config.CompetitiveTxnSubject(e.gameID, oppID))
+		oppCells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, oppSubjects)
+		if err != nil {
+			log.Printf("fetch opponent %s state: %v", oppID, err)
+			return
 		}
-		if c.Row < 0 {
-			e.captureRegisterSnapshot(ctx, oppID, true, c.Subject, c.Payload, c.Seq)
-			continue
+		var oppMaxSeq uint64
+		for _, c := range oppCells {
+			if c.Seq > oppMaxSeq {
+				oppMaxSeq = c.Seq
+			}
+			if c.Row < 0 {
+				e.captureRegisterSnapshot(ctx, oppID, true, c.Subject, c.Payload, c.Seq)
+				continue
+			}
+			data, _ := game.UnmarshalCell(c.Payload)
+			e.mu.Lock()
+			pf.Apply(c.Row, c.Col, data, c.Seq)
+			e.mu.Unlock()
 		}
-		data, _ := game.UnmarshalCell(c.Payload)
-		e.mu.Lock()
-		pf.Apply(c.Row, c.Col, data, c.Seq)
-		e.mu.Unlock()
+		oppStartSeq = oppMaxSeq + 1
 	}
 
-	go e.runConsumer(ctx, pf, config.CompetitivePlayfieldFilter(e.gameID, oppID), oppID, oppMaxSeq+1, true)
+	go e.runConsumer(ctx, pf, config.CompetitivePlayfieldFilter(e.gameID, oppID), oppID, oppStartSeq, true)
 }
 
 func (e *Engine) GameID() string   { return e.gameID }

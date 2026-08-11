@@ -43,10 +43,10 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		return
 	}
 
-	// Collect players' results. Events live on per-kind, per-player subjects
-	// (the whole game stream is MaxMsgsPerSubject: 1), so each player's single
-	// game_over survives retention and the replay below recovers EVERY
-	// player's final score/level. Verdicts still never come from the replay:
+	// Collect players' results. Events live on per-kind, per-player subjects,
+	// so each player's single game_over can never be overwritten by other
+	// traffic and the replay below recovers EVERY player's final score/level.
+	// Verdicts still never come from the replay:
 	// the archiving ENGINE lived through the game and its elimination set /
 	// GameOutcome remain the authoritative record.
 	playerResults := make(map[string]config.PlayerResult)

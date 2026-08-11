@@ -63,8 +63,10 @@ const (
 // local engine's Updates channel only and never round-trips through NATS.
 // Garbage attacks are NOT events either: they are recorded durably in the
 // victim board's garbage register (see GarbageRegister), which simultaneous
-// attackers CAS-add and victims reconcile against — an event on the trimming
-// events subject could be lost, a cumulative register cannot.
+// attackers CAS-add and victims reconcile against — fire-and-forget events
+// from simultaneous attackers could race each other, a cumulative register
+// serializes and sums them, and the amount owed is recoverable from any
+// snapshot (late join, reconnect).
 type GameEvent struct {
 	Kind         EventKind `json:"kind"`
 	PlayerID     string    `json:"player_id"`
@@ -78,9 +80,9 @@ type GameEvent struct {
 
 	// line_clear only: the sender's CUMULATIVE totals from its OWN clears.
 	// Receivers fold the DELTA against the last total they saw from that
-	// sender, so a trimmed intermediate event (per-subject retention keeps
-	// only the last) is subsumed by the next — and a late joiner replaying
-	// each sender's last event reconstructs the full scoreboard.
+	// sender, so any missed intermediate event is subsumed by the next, and
+	// an engine replaying the full event history (a mid-game spectator, the
+	// archiver) converges to the same scoreboard.
 	TotalScore int `json:"total_score,omitempty"`
 	TotalLines int `json:"total_lines,omitempty"`
 }

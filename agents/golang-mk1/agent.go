@@ -570,16 +570,16 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	next := min(max(h.next, 0), maxNextCount)
 
 	gameID := uuidV4()
-	// The stream config every game runs on (guide §4.1): one retained message
-	// per subject (each subject IS one cell/register's current value), kept in
-	// memory, with atomic publishes for the CAS batches and direct gets for
+	// The stream config every game runs on (guide §4.1): full game history
+	// retained in memory (no per-subject cap — ordered consumers then never
+	// skip a trimmed write, and spectators replay the game from the start),
+	// with atomic publishes for the CAS batches and direct gets for
 	// last-per-subject reads.
 	if _, err := a.js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:               gameStreamName(gameID),
 		Subjects:           []string{"jetris.game." + gameID + ".>"},
 		AllowAtomicPublish: true,
 		AllowDirect:        true,
-		MaxMsgsPerSubject:  1,
 		Storage:            jetstream.MemoryStorage,
 		Retention:          jetstream.LimitsPolicy,
 	}); err != nil {

@@ -167,6 +167,75 @@ func TestCompetitiveRaiseLedgerFlow(t *testing.T) {
 	}
 }
 
+// TestMultiLineClearSendsAllGarbage: one drop that completes TWO rows must
+// clear both rows from the attacker's board and owe the victim two garbage
+// rows — the attack strength is the full clear count, not one row per lock.
+func TestMultiLineClearSendsAllGarbage(t *testing.T) {
+	gameID := "garbage-multiline"
+	js, engines := setupCompetitiveGame(t, gameID, 2)
+	a, b := engines[0], engines[1]
+	bottom := config.CompetitiveTotalRows(2) - 1
+
+	// Fill the bottom TWO rows except column 5 — the column the seed-5 I
+	// occupies after one clockwise rotation (spawn col 3 + vertical offset 2).
+	for _, r := range []int{bottom - 1, bottom} {
+		for c := 0; c < config.StandardWidth; c++ {
+			if c == 5 {
+				continue
+			}
+			publishCompetitiveCell(t, js, gameID, "p1", r, c,
+				game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: 0})
+		}
+	}
+	waitUntil(t, 3*time.Second, func() bool {
+		return a.Playfield().Rows[bottom].Cells[0].Occupied &&
+			a.Playfield().Rows[bottom-1].Cells[0].Occupied
+	}, "two-row pre-fill to apply on a's replica")
+
+	a.RotateCW()
+	waitUntil(t, 3*time.Second, func() bool {
+		p := a.Playfield().ActivePieceForPlayer(0)
+		return p != nil && p.Orientation == 1
+	}, "a's I to rotate vertical")
+
+	a.HardDrop()
+	// Competitive score = lines cleared, so a double is worth exactly 2.
+	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 2 }, "a's double clear to score 2")
+
+	// Both rows are gone from a's board: the pre-fill vanished and only the
+	// I's two leftover cells (column 5) shifted down into the bottom rows.
+	pf := a.Playfield()
+	for _, r := range []int{bottom - 1, bottom} {
+		for c := 0; c < config.StandardWidth; c++ {
+			cell := pf.Rows[r].Cells[c]
+			if c == 5 {
+				if !cell.Occupied || cell.PieceType != game.PieceI {
+					t.Fatalf("row %d col 5 should hold the I remnant, got %+v", r, cell)
+				}
+			} else if cell.Occupied {
+				t.Fatalf("row %d col %d still occupied after the double clear: %+v", r, c, cell)
+			}
+		}
+	}
+
+	// The victim owes and applies BOTH rows, exactly once.
+	waitUntil(t, 5*time.Second, func() bool {
+		return b.Playfield().AdversarialRowCount() == 2
+	}, "b's board to gain both garbage rows")
+	time.Sleep(500 * time.Millisecond)
+	if got := b.Playfield().AdversarialRowCount(); got != 2 {
+		t.Fatalf("b has %d adversarial rows, want exactly 2", got)
+	}
+	reg, _ := fetchGarbageRegister(t, js, gameID, config.CompetitiveGarbageSubject(gameID, "p2"))
+	if reg.Total != 2 || reg.By != 0 {
+		t.Fatalf("b's garbage register = %+v, want total 2 by 0", reg)
+	}
+	txn := fetchTxnRegister(t, js, gameID, config.CompetitiveTxnSubject(gameID, "p2"))
+	if txn.Applied != 2 || txn.Op != "shrink" {
+		t.Fatalf("b's txn register = %+v, want applied 2 op shrink", txn)
+	}
+}
+
 // TestCompetitiveSimultaneousAttacksSum is the high-RTT double-clear scenario:
 // two players clear at nearly the same instant, and every victim's register
 // must converge to the SUM of the attacks — the CAS-add serializes the bumps,

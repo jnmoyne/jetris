@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +36,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 		// 127.0.0.1:4222-specific bind would intercept a loopback dial even
 		// though our 0.0.0.0 bind succeeded — a real setup on NATS developer
 		// machines.)
-		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedPort)
+		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedHost, cfg.EmbeddedPort)
 		if err != nil {
 			a.mu.Lock()
 			a.loginErr = err.Error()
@@ -98,14 +99,21 @@ func embeddedPortOrDefault(port int) int {
 
 // ensureEmbeddedServer starts the in-process JetStream-enabled nats-server on
 // the given port (0 = config.DefaultEmbeddedPort) on all interfaces, storage
-// in ./config.EmbeddedStoreDir, and records its shareable "<lan-ip>:<port>"
+// in ./config.EmbeddedStoreDir, and records its shareable "<ip>:<port>"
 // address. Reused by later login attempts; it runs until the window closes so
 // friends stay connected across the host's lobby exits — unless the player
 // picked a DIFFERENT port on a fresh login, which restarts it there. Returns
 // that address — which is also the one the app connects through (see
 // doConnectAndLogin on why not loopback).
-func (a *App) ensureEmbeddedServer(wantPort int) (string, error) {
+//
+// wantHost is the picker's IP field: it changes only the address advertised
+// and dialed, never the bind (which stays every interface), so overriding a
+// mis-detected LAN IP costs nothing and needs no restart. Empty re-detects.
+func (a *App) ensureEmbeddedServer(wantHost string, wantPort int) (string, error) {
 	wantPort = embeddedPortOrDefault(wantPort)
+	if wantHost == "" {
+		wantHost = natspkg.LanIP()
+	}
 	a.mu.Lock()
 	srv := a.embSrv
 	a.mu.Unlock()
@@ -133,7 +141,7 @@ func (a *App) ensureEmbeddedServer(wantPort int) (string, error) {
 	if tcp, ok := srv.Addr().(*net.TCPAddr); ok {
 		port = tcp.Port
 	}
-	addr := fmt.Sprintf("%s:%d", natspkg.LanIP(), port)
+	addr := net.JoinHostPort(wantHost, strconv.Itoa(port))
 	a.mu.Lock()
 	a.embAddr = addr
 	a.mu.Unlock()
@@ -141,43 +149,52 @@ func (a *App) ensureEmbeddedServer(wantPort int) (string, error) {
 	return addr, nil
 }
 
-// doCheckConn validates a connection-picker choice without committing to it:
-// dial, measure the server ping (flush round trip), close. Runs off the UI
-// goroutine; connChecking was already set by the click handler. The outcome
-// lands in connCheckMsg (rendered green/red next to the button).
+// doCheckConn validates a connection-picker choice without committing to it,
+// and publishes the outcome to the check row. Runs off the UI goroutine;
+// connChecking was already set by the click handler.
 func (a *App) doCheckConn(cfg config.Config) {
-	if cfg.RunEmbedded {
-		// Nothing to dial: report where the embedded server serves (or would).
-		a.mu.Lock()
-		running := a.embSrv != nil
-		addr := a.embAddr
-		a.mu.Unlock()
-		verb := "will serve"
-		if running {
-			verb = "serving"
-		} else {
-			addr = fmt.Sprintf("%s:%d", natspkg.LanIP(), embeddedPortOrDefault(cfg.EmbeddedPort))
-		}
-		a.mu.Lock()
-		a.connChecking = false
-		a.connCheckOK = true
-		a.connCheckMsg = fmt.Sprintf("✓ %s on nats://%s · data in ./%s", verb, addr, config.EmbeddedStoreDir)
-		a.mu.Unlock()
-		a.invalidate()
-		return
-	}
-	url, rtt, err := natspkg.CheckConnection(cfg)
+	msg, ok := a.checkConn(cfg)
 	a.mu.Lock()
 	a.connChecking = false
-	if err != nil {
-		a.connCheckOK = false
-		a.connCheckMsg = "✗ " + err.Error()
-	} else {
-		a.connCheckOK = true
-		a.connCheckMsg = "✓ " + url + " · ping " + formatRTT(rtt)
-	}
+	a.connCheckOK = ok
+	a.connCheckMsg = msg
 	a.mu.Unlock()
 	a.invalidate()
+}
+
+// checkConn performs the actual probe and returns the line to show (already
+// prefixed ✓/✗) plus whether it succeeded. Every choice — context, URL and LAN
+// mode alike — really dials NATS and really measures a core NATS ping, so the
+// check exercises the same path Play will take; the probe connection is closed
+// again and provisions nothing. LAN mode additionally starts the embedded
+// server first (that IS what it is checking), then dials it over its LAN
+// address exactly as doConnectAndLogin does, including the "is this actually
+// OUR server on that port?" identity check.
+func (a *App) checkConn(cfg config.Config) (string, bool) {
+	embedded := cfg.RunEmbedded
+	if embedded {
+		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedHost, cfg.EmbeddedPort)
+		if err != nil {
+			return "✗ " + err.Error(), false
+		}
+		cfg.NATSURL = "nats://" + addr
+	}
+	res, err := natspkg.CheckConnection(cfg)
+	if err != nil {
+		return "✗ " + err.Error(), false
+	}
+	if !embedded {
+		return "✓ " + res.ServerURL + " · Core NATS ping " + formatRTT(res.RTT), true
+	}
+	a.mu.Lock()
+	srv := a.embSrv
+	a.mu.Unlock()
+	if srv != nil && res.ServerID != srv.ID() {
+		return fmt.Sprintf("✗ another NATS server is already using port %d — connect to it via the URL option instead, or stop it", embeddedPortOrDefault(cfg.EmbeddedPort)), false
+	}
+	// No data-directory note here: the port row right above the button already
+	// carries it, and the extra clause pushes this line into a second row.
+	return fmt.Sprintf("✓ serving on %s · Core NATS ping %s", res.ServerURL, formatRTT(res.RTT)), true
 }
 
 // disconnect drops the app-owned NATS connection and clears the handles.

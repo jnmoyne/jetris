@@ -13,8 +13,9 @@ type Config struct {
 	NATSURL      string
 	NATSUser     string
 	NATSPassword string
-	RunEmbedded  bool // run an in-process JetStream-enabled nats-server and connect to it
-	EmbeddedPort int  // port for the embedded server (0 = DefaultEmbeddedPort)
+	RunEmbedded  bool   // run an in-process JetStream-enabled nats-server and connect to it
+	EmbeddedHost string // address the embedded server is advertised and dialed on ("" = auto-detected LAN IP); it always LISTENS on every interface, so this only overrides a wrong auto-detection
+	EmbeddedPort int    // port for the embedded server (0 = DefaultEmbeddedPort)
 }
 
 // Embedded-server settings for the login screen's "LAN mode (embedded NATS

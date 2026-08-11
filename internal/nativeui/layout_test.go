@@ -125,8 +125,8 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("login-picker-embedded", func(t *testing.T) {
 		// The "LAN mode (embedded NATS server)" option resolves to the
-		// embedded mark with the default port, no URL or context, and its
-		// rows (port entry + shareable-URL line) render.
+		// embedded mark with the detected IP and the default port, no URL or
+		// context, and its rows (IP + port entry, shareable-URL line) render.
 		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
 		a.th = newTestApp().th
 		a.connEnum.Value = "embedded"
@@ -140,7 +140,55 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		if cfg.EmbeddedPort != config.DefaultEmbeddedPort {
 			t.Fatalf("EmbeddedPort = %d, want the %d default", cfg.EmbeddedPort, config.DefaultEmbeddedPort)
 		}
+		if cfg.EmbeddedHost != a.lanIP {
+			t.Fatalf("EmbeddedHost = %q, want the pre-filled detected IP %q", cfg.EmbeddedHost, a.lanIP)
+		}
 		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-embedded-ip", func(t *testing.T) {
+		// The IP field overrides the auto-detected address; clearing it goes
+		// back to auto-detection ("" — resolved at connect time); a URL pasted
+		// into it errors instead of producing a bogus address.
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
+		a.th = newTestApp().th
+		a.connEnum.Value = "embedded"
+		a.connHostEd.SetText("192.168.7.9")
+		a.connPortEd.SetText("14222")
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.EmbeddedHost != "192.168.7.9" {
+			t.Fatalf("EmbeddedHost = %q, want the entered 192.168.7.9", cfg.EmbeddedHost)
+		}
+		if got := a.pickerAddr(); got != "192.168.7.9:14222" {
+			t.Fatalf("advertised address = %q, want 192.168.7.9:14222", got)
+		}
+		renderOnce(t, a)
+
+		a.connHostEd.SetText("")
+		cfg, err = a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.EmbeddedHost != "" {
+			t.Fatalf("EmbeddedHost = %q, want empty (auto-detect) for an empty field", cfg.EmbeddedHost)
+		}
+		if got := a.pickerAddr(); got != a.lanIP+":14222" {
+			t.Fatalf("advertised address = %q, want the detected %s:14222", got, a.lanIP)
+		}
+
+		// An IPv6 literal is accepted and bracketed in the address.
+		a.connHostEd.SetText("fd00::1")
+		if got := a.pickerAddr(); got != "[fd00::1]:14222" {
+			t.Fatalf("advertised address = %q, want the bracketed IPv6 literal", got)
+		}
+
+		a.connHostEd.SetText("nats://192.168.7.9:4222")
+		if _, err := a.pickerConfig(); err == nil {
+			t.Fatal("pickerConfig accepted a whole URL in the IP field")
+		}
 	})
 
 	t.Run("login-picker-embedded-port", func(t *testing.T) {

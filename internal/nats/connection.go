@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -84,26 +85,70 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*nats.Conn, jetstream.Je
 	return nc, js, kv, nil
 }
 
+// CheckResult reports what a CheckConnection probe found: the server it
+// actually reached (a URL list or a context may resolve to any of several),
+// that server's ID (so callers can tell an embedded server from a stranger
+// squatting the same port), and the measured core NATS round trip.
+type CheckResult struct {
+	ServerURL string
+	ServerID  string
+	RTT       time.Duration
+}
+
 // CheckConnection dials per cfg (NATSURL wins over NATSContext, like
-// Bootstrap), measures the server round-trip time with a flush ping, and
-// closes the connection. It provisions nothing — used by the login screen's
-// "Check connection" button to validate a picker choice before playing.
-func CheckConnection(cfg config.Config) (serverURL string, rtt time.Duration, err error) {
-	var nc *nats.Conn
+// Bootstrap), measures the core NATS round-trip time, and closes the
+// connection. It provisions nothing — used by the login screen's "Check
+// connection" button to validate a picker choice before playing.
+func CheckConnection(cfg config.Config) (CheckResult, error) {
+	var (
+		nc  *nats.Conn
+		err error
+	)
 	if cfg.NATSURL != "" {
 		nc, _, err = ConnectURL(cfg.NATSURL, cfg.NATSUser, cfg.NATSPassword, nats.Timeout(5*time.Second))
 	} else {
-		nc, _, _, err = Connect(cfg.NATSContext)
+		nc, _, _, err = Connect(cfg.NATSContext, nats.Timeout(5*time.Second))
 	}
 	if err != nil {
-		return "", 0, err
+		return CheckResult{}, err
 	}
 	defer nc.Close()
-	rtt, err = nc.RTT()
+	rtt, err := CoreNATSPing(nc, 5*time.Second)
 	if err != nil {
-		return "", 0, err
+		return CheckResult{}, err
 	}
-	return nc.ConnectedUrl(), rtt, nil
+	return CheckResult{ServerURL: nc.ConnectedUrl(), ServerID: nc.ConnectedServerId(), RTT: rtt}, nil
+}
+
+// CoreNATSPing measures a core NATS round trip the way the game itself uses
+// the connection: subscribe to a fresh inbox, publish a message carrying the
+// send timestamp to it, and wait for the server to deliver it back. That is a
+// full publish → server → subscription path, unlike (*nats.Conn).RTT, which
+// times the client's protocol-level PING/PONG instead.
+func CoreNATSPing(nc *nats.Conn, timeout time.Duration) (time.Duration, error) {
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	// Land the SUB (and any connection-setup writes still buffered) before
+	// starting the clock, so the measurement covers only the publish leg.
+	if err := nc.FlushTimeout(timeout); err != nil {
+		return 0, err
+	}
+	if err := nc.Publish(inbox, []byte(strconv.FormatInt(time.Now().UnixNano(), 10))); err != nil {
+		return 0, err
+	}
+	msg, err := sub.NextMsg(timeout)
+	if err != nil {
+		return 0, fmt.Errorf("core NATS ping: %w", err)
+	}
+	sentNanos, err := strconv.ParseInt(string(msg.Data), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("core NATS ping: malformed payload %q", msg.Data)
+	}
+	return time.Since(time.Unix(0, sentNanos)), nil
 }
 
 func newJetStream(nc *nats.Conn, domain string) (jetstream.JetStream, error) {

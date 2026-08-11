@@ -2,7 +2,7 @@ package nativeui
 
 import (
 	"errors"
-	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -64,6 +64,23 @@ func (a *App) layoutLogin(gtx C) D {
 			}
 		}
 	}
+	for {
+		ev, ok := a.connHostEd.Update(gtx)
+		if !ok {
+			break
+		}
+		switch ev.(type) {
+		case widget.SubmitEvent:
+			submitted = true
+		case widget.ChangeEvent:
+			// Editing the address implies choosing LAN mode, same swallow.
+			if a.connHostSeeded {
+				a.connHostSeeded = false
+			} else {
+				a.connEnum.Value = "embedded"
+			}
+		}
+	}
 
 	a.mu.Lock()
 	collision := a.loginCollision
@@ -101,6 +118,7 @@ func (a *App) layoutLogin(gtx C) D {
 				a.mu.Lock()
 				a.connChecking = true
 				a.connCheckMsg = ""
+				a.connCheckFor = a.connEnum.Value
 				a.mu.Unlock()
 				go a.doCheckConn(cfg)
 			}
@@ -180,7 +198,8 @@ func (a *App) submitLogin() {
 // goroutine (reads widgets).
 func (a *App) pickerConfig() (config.Config, error) {
 	cfg := a.connCfg
-	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded, cfg.EmbeddedPort = "", "", false, 0
+	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
+	cfg.EmbeddedHost, cfg.EmbeddedPort = "", 0
 	switch a.connEnum.Value {
 	case "url":
 		cfg.NATSURL = strings.TrimSpace(a.connURLEd.Text())
@@ -189,6 +208,11 @@ func (a *App) pickerConfig() (config.Config, error) {
 		}
 	case "embedded":
 		cfg.RunEmbedded = true
+		host, err := a.pickerHost()
+		if err != nil {
+			return cfg, err
+		}
+		cfg.EmbeddedHost = host
 		port, err := a.pickerPort()
 		if err != nil {
 			return cfg, err
@@ -203,6 +227,24 @@ func (a *App) pickerConfig() (config.Config, error) {
 	return cfg, nil
 }
 
+// pickerHost parses the LAN-mode IP field: empty means "detect the LAN
+// address again at connect time", anything else is the address Jetris
+// advertises and dials (the server itself still listens on every interface, so
+// any address that actually reaches this machine works — including a host name
+// or an IPv6 literal). Runs on the UI goroutine (reads the widget).
+func (a *App) pickerHost() (string, error) {
+	host := strings.TrimSpace(a.connHostEd.Text())
+	if host == "" {
+		return "", nil
+	}
+	// Colons are legal in an IPv6 literal and nowhere else here; the rest are
+	// the classic paste-the-whole-URL mistakes ("nats://host:4222").
+	if net.ParseIP(host) == nil && strings.ContainsAny(host, " \t/:@") {
+		return "", errors.New("enter a valid IP address or host name (no scheme or port)")
+	}
+	return host, nil
+}
+
 // pickerPort parses the LAN-mode port field: empty means the default, anything
 // else must be a valid TCP port. Runs on the UI goroutine (reads the widget).
 func (a *App) pickerPort() (int, error) {
@@ -215,6 +257,22 @@ func (a *App) pickerPort() (int, error) {
 		return 0, errors.New("enter a valid port number (1-65535)")
 	}
 	return port, nil
+}
+
+// pickerAddr is the "<ip>:<port>" the LAN-mode rows advertise: the entered
+// address and port, each falling back to its auto-detected/default value while
+// its field is empty or not (yet) valid — the line keeps showing a usable
+// address while the player is mid-edit. Runs on the UI goroutine.
+func (a *App) pickerAddr() string {
+	host, err := a.pickerHost()
+	if err != nil || host == "" {
+		host = a.lanIP
+	}
+	port, err := a.pickerPort()
+	if err != nil {
+		port = config.DefaultEmbeddedPort
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // setLoginErr sets (or clears) the login screen's error line.
@@ -303,7 +361,7 @@ func (a *App) connSection(gtx C) D {
 	}
 
 	children := []layout.FlexChild{
-		layout.Rigid(a.header("CONNECT TO")),
+		layout.Rigid(a.header("CONNECT TO NATS.io SERVERS")),
 		layout.Rigid(spacer(4)),
 	}
 	if len(a.connContexts) > 0 {
@@ -351,39 +409,44 @@ func (a *App) connSection(gtx C) D {
 			return rb.Layout(gtx)
 		}),
 		layout.Rigid(func(gtx C) D {
-			// Port entry plus storage hint, indented under the LAN-mode radio.
+			// IP + port entry, indented under the LAN-mode radio. Both are
+			// editable: the IP is only auto-DETECTED, and on a multi-homed or
+			// VPN'd machine the detected one may not be the address friends
+			// can reach.
 			return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(26)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.body("Port:", colFg)),
-					layout.Rigid(func(gtx C) D {
-						return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+					layout.Rigid(a.body("IP:", colFg)),
+					layout.Rigid(hSpacer(6)),
+					layout.Flexed(1, func(gtx C) D {
+						return a.editorBox(gtx, &a.connHostEd, a.lanIP)
 					}),
+					layout.Rigid(hSpacer(10)),
+					layout.Rigid(a.body("Port:", colFg)),
+					layout.Rigid(hSpacer(6)),
 					layout.Rigid(func(gtx C) D {
 						gtx.Constraints.Max.X = gtx.Dp(70)
 						gtx.Constraints.Min.X = gtx.Constraints.Max.X
 						return a.editorBox(gtx, &a.connPortEd, strconv.Itoa(config.DefaultEmbeddedPort))
 					}),
-					layout.Rigid(func(gtx C) D {
-						return layout.Spacer{Width: unit.Dp(8)}.Layout(gtx)
-					}),
-					layout.Flexed(1, a.body("data in ./"+config.EmbeddedStoreDir, colMuted)),
 				)
 			})
 		}),
 		layout.Rigid(func(gtx C) D {
-			// With LAN mode chosen, show the URL other players dial so the
-			// host can share it before even hitting Play.
+			// With LAN mode chosen, show the URL other players dial — built
+			// from the fields above — so the host can share it before even
+			// hitting Play, plus where the server keeps its data.
 			if a.connEnum.Value != "embedded" {
 				return D{}
 			}
-			port, err := a.pickerPort()
-			if err != nil {
-				port = config.DefaultEmbeddedPort
-			}
 			return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(26)}.Layout(gtx, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-					layout.Rigid(a.body("Your server's URL is ", colMuted)),
-					layout.Rigid(a.body(fmt.Sprintf("nats://%s:%d", a.lanIP, port), colNATSGreen)),
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+							layout.Rigid(a.body("Your server's URL is ", colMuted)),
+							layout.Rigid(a.body("nats://"+a.pickerAddr(), colNATSGreen)),
+						)
+					}),
+					layout.Rigid(a.body("data in ./"+config.EmbeddedStoreDir, colMuted)),
 				)
 			})
 		}),
@@ -441,27 +504,42 @@ func (a *App) connDropList(gtx C) D {
 	})
 }
 
-// connCheckRow renders the "Check connection" button and, next to it, the last
-// check's outcome: "✓ <server> · ping <rtt>" in green or "✗ <error>" in red.
+// connCheckRow renders the check button and, next to it, the last check's
+// outcome: "✓ <server> · Core NATS ping <rtt>" in green or "✗ <error>" in red.
+// With LAN mode selected the button reads "Check embedded server" — that check
+// starts the server rather than merely dialing one. A result from a different
+// picker option is hidden: it no longer describes what the button would check.
 func (a *App) connCheckRow(gtx C) D {
 	a.mu.Lock()
 	checking := a.connChecking
 	ok := a.connCheckOK
 	msg := a.connCheckMsg
+	if a.connCheckFor != a.connEnum.Value {
+		msg = ""
+	}
 	a.mu.Unlock()
 
 	label := "Check connection"
+	if a.connEnum.Value == "embedded" {
+		label = "Check embedded server"
+	}
 	if checking {
 		label = "Checking…"
 	}
-	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+	// The outcome goes UNDER the button, on the card's full width: these lines
+	// carry a server URL, a ping and (in LAN mode) the data directory, and
+	// would wrap to a ragged column in the strip left beside the button.
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
-			return a.secondaryButton(gtx, &a.connCheckBtn, label)
+			// Nested row so the button keeps its content width instead of
+			// stretching to the card like Play does.
+			return layout.Flex{}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return a.secondaryButton(gtx, &a.connCheckBtn, label)
+				}),
+			)
 		}),
 		layout.Rigid(func(gtx C) D {
-			return layout.Spacer{Width: unit.Dp(10)}.Layout(gtx)
-		}),
-		layout.Flexed(1, func(gtx C) D {
 			if msg == "" {
 				return D{}
 			}
@@ -471,7 +549,7 @@ func (a *App) connCheckRow(gtx C) D {
 			}
 			l := material.Body2(a.th, msg)
 			l.Color = col
-			return l.Layout(gtx)
+			return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, l.Layout)
 		}),
 	)
 }

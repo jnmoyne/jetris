@@ -110,10 +110,13 @@ type App struct {
 	connSelected string
 	connCfg      config.Config
 
-	// "Check connection" result state (written by doCheckConn; guarded by mu)
+	// "Check connection" result state (written by doCheckConn; guarded by mu).
+	// connCheckFor is the picker option the result belongs to, so switching
+	// options hides a result that no longer describes the current choice.
 	connChecking bool
 	connCheckOK  bool
 	connCheckMsg string
+	connCheckFor string
 
 	// Embedded server ("LAN mode (embedded NATS server)" option; guarded by
 	// mu). The server starts on the first embedded login and runs until the
@@ -206,9 +209,11 @@ type App struct {
 	connOptBtns    []widget.Clickable // one per context row in the expanded pull-down
 	connURLEd      widget.Editor      // NATS URL entry (pre-set to the demo server or --server)
 	connURLSeeded  bool               // swallow the ChangeEvent queued by the constructor's SetText (it isn't a user edit)
+	connHostEd     widget.Editor      // LAN-mode IP entry (pre-set to the detected lanIP; empty = auto-detect again)
+	connHostSeeded bool               // same SetText-ChangeEvent swallow as connURLSeeded
 	connPortEd     widget.Editor      // LAN-mode port entry (pre-set to config.DefaultEmbeddedPort)
 	connPortSeeded bool               // same SetText-ChangeEvent swallow as connURLSeeded
-	lanIP          string             // this machine's LAN address, resolved once for the shareable-URL lines
+	lanIP          string             // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
 	connList       widget.List        // scrollable pull-down option list
 	connCheckBtn   widget.Clickable   // "Check connection" (connect + ping, no side effects)
 
@@ -410,6 +415,13 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	a.connPortEd.SetText(strconv.Itoa(config.DefaultEmbeddedPort))
 	a.connPortSeeded = true // same swallow as connURLSeeded
 	a.lanIP = natspkg.LanIP()
+	a.connHostEd.SingleLine = true
+	a.connHostEd.Submit = true
+	// Pre-filled with the auto-detected address so the player sees what will
+	// be shared and can correct it (multi-homed hosts, VPNs, containers where
+	// the detected interface is not the one friends can reach).
+	a.connHostEd.SetText(a.lanIP)
+	a.connHostSeeded = true // same swallow as connURLSeeded
 	a.connList.Axis = layout.Vertical
 
 	// Default choice precedence: --server, then --context, then the CLI's

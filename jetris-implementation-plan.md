@@ -3076,8 +3076,12 @@ returns to this same screen.
   (invoked from `doConnectAndLogin`): `ConnectURL` when `cfg.NATSURL` set
   (with a 5 s dial timeout), else context `Connect`; then the three `Ensure*`
   calls, closing `nc` on any post-connect failure.
-- `CheckConnection(cfg)` (`connection.go`) — dial, flush-ping RTT, close;
-  provisions nothing (backs the "Check connection" button).
+- `CheckConnection(cfg)` (`connection.go`) — dial, `CoreNATSPing` RTT, close;
+  provisions nothing (backs the "Check connection" button). Returns a
+  `CheckResult{ServerURL, ServerID, RTT}`.
+- `CoreNATSPing(nc, timeout)` (`connection.go`) — inbox subscribe, publish the
+  send timestamp to it, wait for the message back; a real publish→subscribe
+  round trip rather than the protocol PING/PONG of `(*nats.Conn).RTT`.
 
 **cmd/jetris/main.go:** never connects — `ListContexts` +
 `nativeui.NewWithPicker(cfg, names, selected)`; `runNative(ctx, cancel, a)`;
@@ -3094,34 +3098,42 @@ chooser (a "Context:" radio + pull-down button `connDropButton` that expands
 row — the constructor's `SetText` ChangeEvent is swallowed once via
 `connURLSeeded` so it can't steal the default; a "LAN mode (embedded NATS
 server)" radio row — `connEnum` value "embedded" — followed by an indented
+"IP:" editor `connHostEd` pre-filled with the detected `App.lanIP` and a
 "Port:" digits-only editor `connPortEd` pre-filled with
-`config.DefaultEmbeddedPort` = 4222 (editing it auto-selects the option;
-seeded-ChangeEvent swallow via `connPortSeeded`), a muted `data in
-./jetstream-data` hint, and — while the option is selected — a `Your
-server's URL is nats://<lan-ip>:<port>` line built from `App.lanIP`
-(resolved once in `NewWithPicker`); and the Check connection row);
+`config.DefaultEmbeddedPort` = 4222 (editing either auto-selects the option;
+seeded-ChangeEvent swallow via `connHostSeeded`/`connPortSeeded`), and —
+while the option is selected — a `Your server's URL is nats://<ip>:<port>`
+line (`pickerAddr`, from those two fields) plus a muted `data in
+./jetstream-data` hint; and the Check connection row);
 `pickerConfig` resolves the choice; `doConnectAndLogin` (lifecycle.go) first `disconnect()`s any
 connection left from a previous attempt, then runs `Bootstrap` (15 s cap) off
 the UI goroutine — failure lands on `loginErr` for retry, success stores
 `a.nc/js/kv` (App-owned; `teardown`/`DrainConn` drain it) and falls into the
 normal `doLogin` flow. `quit()` also `disconnect()`s, returning the player to
-the same combined screen to pick another server. `doCheckConn` runs
-`CheckConnection` and renders `✓ <server> · ping <rtt>` (green, `formatRTT`)
-or `✗ <error>` (red) next to the button.
+the same combined screen to pick another server. `doCheckConn`/`checkConn` run
+`CheckConnection` and render `✓ <server> · Core NATS ping <rtt>` (green,
+`formatRTT`) or `✗ <error>` (red) under the button; in LAN mode the button
+reads "Check embedded server" and the check starts the embedded server
+(`ensureEmbeddedServer`) before dialing and pinging it.
 
 **Embedded server option** ("LAN mode (embedded NATS server)").
 `pickerConfig` maps the third radio to `cfg.RunEmbedded` plus the parsed
+`cfg.EmbeddedHost` (`pickerHost`, login.go: empty field → "" = auto-detect at
+connect time, otherwise an IP/host name — a pasted scheme or port errors) and
 `cfg.EmbeddedPort` (`pickerPort`, login.go: empty field →
 `config.DefaultEmbeddedPort`, otherwise a valid 1–65535 port or a login
-error); `doConnectAndLogin` then calls `ensureEmbeddedServer(cfg.EmbeddedPort)`
+error); `doConnectAndLogin` then calls
+`ensureEmbeddedServer(cfg.EmbeddedHost, cfg.EmbeddedPort)`
 (lifecycle.go), which starts
 `nats.StartEmbeddedServer(config.EmbeddedStoreDir, port)` — an in-process
 JetStream-enabled `nats-server` (default account, no auth) on
 `0.0.0.0:<port>` storing its data in `./jetstream-data` — records the
-shareable `<lan-ip>:<port>` (`nats.LanIP`, an outbound-route probe with an
-interface-scan fallback) in `embAddr`, and rewrites the config to
-`nats://<lan-ip>:<port>` so the normal Bootstrap path connects through the
-same address other players dial. A running server is reused when the
+shareable `<ip>:<port>` (the picker's IP, else `nats.LanIP`, an outbound-route
+probe with an interface-scan fallback) in `embAddr`, and rewrites the config to
+`nats://<ip>:<port>` so the normal Bootstrap path connects through the
+same address other players dial. The IP override only picks the advertised and
+dialed address — the bind stays every interface — so it needs no restart and
+any address that really reaches the machine works. A running server is reused when the
 requested port matches (`embeddedPortOrDefault` maps 0 to the default); a
 different port shuts it down and restarts it there. NOT loopback: a foreign
 nats-server holding a `127.0.0.1:<port>`-specific bind would intercept a
@@ -3142,14 +3154,20 @@ dials nothing and reports `✓ will serve/serving on nats://<addr> · data in
 up JetStream-enabled on a random port, accepts a client and a stream create;
 `LanIP` yields a parseable IPv4) and `layout_test.go` subtests for the
 embedded radio's `pickerConfig` resolution (default port, custom port,
-out-of-range port error, empty-field fallback) and the lobby's YOUR SERVER'S
+out-of-range port error, empty-field fallback; IP override, empty-field
+auto-detect, bracketed IPv6, pasted-URL error) and the lobby's YOUR SERVER'S
 URL IS line.
 
 **Tests:** `internal/nats/contexts_test.go` (XDG temp-dir lister cases:
 missing dir, filtering/sorting, selected, stale selection),
 `internal/nats/bootstrap_test.go` (Bootstrap provisions all three resources
 against the embedded server; bad URL errors without leaking; CheckConnection
-returns a positive RTT and errors on an unroutable URL), and
+returns a positive RTT and errors on an unroutable URL; CoreNATSPing times a
+real round trip and fails once the server is gone),
+`internal/nativeui/checkconn_test.go` (the URL check reports a measured Core
+NATS ping, an unroutable URL reports ✗, the LAN-mode check starts the
+embedded server, pings it, and reuses it on a second check, and an overridden
+IP is the one advertised and dialed — an unreachable one failing the check), and
 `layout_test.go` picker render subtests (contexts + selected default, none →
 URL default, `--server` seeds the URL field and choice, `--context`
 preselects and appends an undiscovered context).

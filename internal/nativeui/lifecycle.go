@@ -545,13 +545,19 @@ func rosterHas(g lobby.GameListing, playerID string) bool {
 // if the game is over or gone, then return to the lobby screen. The roster
 // seat is KEPT while the game is alive — the lobby row shows it as
 // joined/playing and its Rejoin button comes back in.
+//
+// Gates on InitialMode, not Mode: a topped-out player's engine has already
+// transitioned to spectating, but they still hold a seat (and a presence
+// status) that leaving must settle — Mode would skip them and strand their
+// presence on "in game" forever.
 func (a *App) leaveCurrentGame() {
 	lb := a.getLobby()
 	eng := a.getEngine()
-	if lb != nil && eng != nil && eng.Mode() != engine.ModeSpectator {
+	if lb != nil && eng != nil && eng.InitialMode() != engine.ModeSpectator {
 		gameID := eng.GameID()
 		a.mu.Lock()
 		wasReady := a.myReady
+		metaStatus := config.GameStatus(a.gameStatus)
 		a.mu.Unlock()
 		if wasReady {
 			if err := lb.SetReady(context.Background(), gameID, false); err != nil {
@@ -561,11 +567,27 @@ func (a *App) leaveCurrentGame() {
 		// Presence: while we still hold a seat in a live game we stay marked
 		// in-game (and thus un-invitable); once the game is done or gone we are
 		// back to a plain lobby player.
-		if g, ok := lb.Games()[gameID]; !ok || !gameAlive(g.Status) || !rosterHas(g, lb.PlayerID()) {
+		g, ok := lb.Games()[gameID]
+		if releaseSeatOnLeave(g, ok, metaStatus, lb.PlayerID()) {
 			_ = lb.LeaveGame(context.Background(), gameID)
 		}
 	}
 	a.returnToLobby()
+}
+
+// releaseSeatOnLeave decides whether leaving the game screen releases lobby
+// presence (back to "in lobby") rather than keeping the in-game seat marker.
+// The KV listing alone cannot answer it: its status never advances past
+// created/starting (the game meta carries the live status), so a just-finished
+// game still looks alive there until the archiver deletes the listing seconds
+// later. The engine-reported meta status closes that gap — every client's meta
+// consumer sees "finished" the moment the finish transition lands.
+func releaseSeatOnLeave(g lobby.GameListing, found bool, metaStatus config.GameStatus, playerID string) bool {
+	switch metaStatus {
+	case config.GameStatusFinished, config.GameStatusArchived, config.GameStatusCancelled:
+		return true
+	}
+	return !found || !gameAlive(g.Status) || !rosterHas(g, playerID)
 }
 
 // returnToLobby stops the active engine and returns to the lobby screen. Safe to

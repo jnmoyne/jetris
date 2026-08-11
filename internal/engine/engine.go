@@ -576,6 +576,11 @@ func (e *Engine) emitTeamStats() {
 func (e *Engine) Mode() Mode                { return e.getMode() }
 func (e *Engine) GameMode() config.GameMode { return e.gameMode }
 
+// InitialMode reports the mode the engine was created with. Unlike Mode it is
+// never rewritten by transitionToSpectator, so it distinguishes "joined as a
+// player" (even one who has since topped out) from "joined as a spectator".
+func (e *Engine) InitialMode() Mode { return e.initialMode }
+
 // getMode/setMode read and write the atomic mode field.
 func (e *Engine) getMode() Mode  { return Mode(e.mode.Load()) }
 func (e *Engine) setMode(m Mode) { e.mode.Store(int32(m)) }

@@ -254,9 +254,17 @@ func (pf *Playfield) ProjectHardDrop(affectedRows []int, dest Piece, playerIdx i
 
 // ProjectClearRows returns the full set of rows after removing `completed`
 // rows and shifting non-cleared rows down (empty rows prepended to top).
-// If shiftAnchors is true, all active cells in the returned rows have
-// AnchorRow incremented by len(completed) (used in cooperative mode where
-// other players' active pieces need anchor adjustment after the shift).
+// If shiftAnchors is true, active cells in the returned rows have AnchorRow
+// incremented by the number of cleared rows BELOW that cell — exactly how far
+// the collapse moves it — so on shared boards other players' pieces keep an
+// anchor that agrees with their cells. The shift is per cell, NOT a blanket
+// len(completed): a piece trapped below (or between) the cleared rows moves
+// less than the rows above them, and over-shifting its anchor hands its owner
+// a phantom origin — the owner then moves/vacates the wrong cells and its
+// real piece freezes on every client's board. Per-cell is per-piece safe: a
+// full row can never contain an active cell and no tetromino has a vertical
+// gap, so all cells of one piece sit on the same side of every cleared row
+// and receive the same shift.
 func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row {
 	cleared := make(map[int]bool, len(completed))
 	for _, r := range completed {
@@ -264,23 +272,30 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row 
 	}
 	var newRows []Row
 	for i := 0; i < pf.Height; i++ {
-		if !cleared[i] {
-			cells := make([]Cell, pf.Width)
-			copy(cells, pf.Rows[i].Cells)
-			newRows = append(newRows, Row{Cells: cells})
+		if cleared[i] {
+			continue
 		}
-	}
-	for len(newRows) < pf.Height {
-		newRows = append([]Row{NewRow(pf.Width)}, newRows...)
-	}
-	if shiftAnchors {
-		for i := range newRows {
-			for j := range newRows[i].Cells {
-				if newRows[i].Cells[j].Active {
-					newRows[i].Cells[j].AnchorRow += len(completed)
+		cells := make([]Cell, pf.Width)
+		copy(cells, pf.Rows[i].Cells)
+		if shiftAnchors {
+			below := 0
+			for _, r := range completed {
+				if r > i {
+					below++
+				}
+			}
+			if below > 0 {
+				for j := range cells {
+					if cells[j].Active {
+						cells[j].AnchorRow += below
+					}
 				}
 			}
 		}
+		newRows = append(newRows, Row{Cells: cells})
+	}
+	for len(newRows) < pf.Height {
+		newRows = append([]Row{NewRow(pf.Width)}, newRows...)
 	}
 	return newRows
 }

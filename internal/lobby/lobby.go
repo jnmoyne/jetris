@@ -34,6 +34,7 @@ type Lobby struct {
 	chatLog         []ChatMessage // lobby + game chat, in stream order, capped at chatLogCap
 	status          PresenceStatus
 	currentGameID   string
+	presenceMu      sync.Mutex // serializes presence KV writes with their state read (see publishPresence)
 	invites         map[string]Invitation // every live invitation in the KV, keyed "<invitee>.<gameID>"; guarded by mu
 	eventSub        *nats.Subscription    // core NATS lobby-event subscription (see runEventListener)
 	cancelFn        context.CancelFunc
@@ -285,20 +286,45 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 
 func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	gameID := strings.TrimPrefix(entry.Key(), "games.")
 
+	dead := false
 	switch entry.Operation() {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
 		delete(l.games, gameID)
 		delete(l.abandoned, gameID)
+		dead = true
 	default:
 		var g GameListing
 		if err := json.Unmarshal(entry.Value(), &g); err != nil {
+			l.mu.Unlock()
 			return
 		}
 		l.games[gameID] = g
+		switch g.Status {
+		case config.GameStatusFinished, config.GameStatusArchived, config.GameStatusCancelled:
+			dead = true
+		}
+	}
+
+	// Self-heal our presence. When a game ends, only the archiving client's
+	// LeaveGame resets its own status — every OTHER player's presence would
+	// stay "in game" forever once the listing is gone (their heartbeat keeps
+	// re-publishing the stale status, which also keeps the TTL from expiring
+	// it). So when the game that died is OUR current game, release presence
+	// right here off the watcher event.
+	heal := dead && l.currentGameID == gameID && l.status != StatusInLobby
+	if heal {
+		l.status = StatusInLobby
+		l.currentGameID = ""
+	}
+	l.mu.Unlock()
+
+	if heal {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		l.publishPresence(ctx)
+		cancel()
 	}
 
 	l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateGames})

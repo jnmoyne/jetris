@@ -46,8 +46,12 @@ func (l *Lobby) runHeartbeat(ctx context.Context) {
 			// Best-effort removal on any context cancellation (Leave already
 			// deletes it explicitly on a clean quit; this covers the rest).
 			// Otherwise the presence TTL removes it a few minutes later.
+			// presenceMu keeps an in-flight publish from landing after the
+			// delete and resurrecting the entry as a TTL-long ghost.
 			delCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			l.presenceMu.Lock()
 			_ = l.kv.Delete(delCtx, config.LobbyPlayerKey(l.playerID))
+			l.presenceMu.Unlock()
 			cancel()
 			return
 		case <-ticker.C:
@@ -64,6 +68,9 @@ func (l *Lobby) Leave(ctx context.Context) {
 	if l.kv == nil {
 		return
 	}
+	// presenceMu: see runHeartbeat's delete — same publish-after-delete race.
+	l.presenceMu.Lock()
+	defer l.presenceMu.Unlock()
 	if err := l.kv.Delete(ctx, config.LobbyPlayerKey(l.playerID)); err != nil {
 		log.Printf("delete presence on leave: %v", err)
 	}
@@ -109,6 +116,14 @@ func IsNameInUse(ctx context.Context, kv jetstream.KeyValue, name string) (bool,
 }
 
 func (l *Lobby) publishPresence(ctx context.Context) {
+	// presenceMu is held from the state read through the publish, so payloads
+	// land in the order their state was read. Without it, a heartbeat that
+	// read the status just before a JoinGame/LeaveGame flipped it could land
+	// its write AFTER the fresh publish and hold the stale status in the KV
+	// for a full heartbeat interval.
+	l.presenceMu.Lock()
+	defer l.presenceMu.Unlock()
+
 	l.mu.RLock()
 	presence := PlayerPresence{
 		PlayerID: l.playerID,

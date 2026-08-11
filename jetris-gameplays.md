@@ -667,7 +667,7 @@ Locks are published as no-CAS authoritative writes (see below) and so cannot fai
 
 ### The garbage ledger: attacks as durable CAS-adds
 
-An attack is never an event. Events on a `MaxMsgsPerSubject: 1` stream can be trimmed by later events before a slow consumer sees them — exactly the near-simultaneous-clears-at-high-RTT case that matters most. Instead, the clearing player advances every victim board's **garbage register** with a CAS-add: read the register's last value `{total, by}` and sequence, publish `total + lines` expecting that sequence, and on a lost race refresh from the stream and re-add (bounded retries with a small per-player offset). The register is a **cumulative monotonic total**, so:
+An attack is never an event. Fire-and-forget events from near-simultaneous clears race each other — exactly the high-RTT case that matters most. Instead, the clearing player advances every victim board's **garbage register** with a CAS-add: read the register's last value `{total, by}` and sequence, publish `total + lines` expecting that sequence, and on a lost race refresh from the stream and re-add (bounded retries with a small per-player offset). The register is a **cumulative monotonic total**, so:
 
 - simultaneous attackers serialize and the total converges to the exact **sum** — no attack lost, none double-counted;
 - retention keeping only the last value is harmless — a newer total subsumes every older one;

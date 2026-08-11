@@ -275,12 +275,11 @@ func MetaSubject(gameID string) string
 func RosterSubject(gameID, playerID string) string
 // → "jetris.game." + gameID + ".roster." + playerID
 
-// Game events live on PER-KIND, PER-PLAYER subjects. The game stream keeps
-// only the last message per subject (MaxMsgsPerSubject: 1), so events sharing
-// one subject would trim each other — near-simultaneous events from different
-// players, or a game_over overwritten by a later event, would simply vanish
-// for any consumer that wasn't perfectly live. Scoping the subject by kind AND
-// sender bounds the loss to "an older event of the same kind from the same
+// Game events live on PER-KIND, PER-PLAYER subjects, so no event can ever
+// overwrite an unrelated one — near-simultaneous events from different
+// players, or a game_over followed by later events, each keep their own
+// subject. Scoping the subject by kind AND
+// sender bounds any loss to "an older event of the same kind from the same
 // player", which the payloads are designed to tolerate: line_clear carries the
 // sender's CUMULATIVE totals (a newer total subsumes a trimmed older one) and
 // each player publishes at most one game_over. Stream order across subjects is
@@ -766,7 +765,8 @@ jetstream.StreamConfig{
     Subjects:           []string{config.GameSubjectFilter(gameID)},
     AllowAtomicPublish: true,  // required for jetstreamext batch publish
     AllowDirect:        true,  // direct get for fast last-message-per-subject fetches
-    MaxMsgsPerSubject:  1,     // only the latest message per subject is needed
+    // no per-subject cap: full history so ordered consumers never miss a
+    // trimmed write and spectators replay the game from the start
     Storage:            jetstream.MemoryStorage,
     Retention:          jetstream.LimitsPolicy,
 }
@@ -1892,9 +1892,8 @@ does a read-then-CAS update of `meta.PieceIdx`. This is fire-and-forget (called
 via `go`); errors are ignored rather than blocking the consumer goroutine.
 
 **Garbage handling** (`internal/engine/ledger.go` + `registers.go`) — an attack
-is never an event. Events on a `MaxMsgsPerSubject: 1` stream can be trimmed by
-later events before a slow consumer sees them — exactly the
-near-simultaneous-clears-at-high-RTT case that matters most. Instead the
+is never an event. Fire-and-forget events from near-simultaneous clears race
+each other — exactly the high-RTT case that matters most. Instead the
 protocol is register-based, attacker side and victim side:
 
 - **Attacker** (`bumpVictimLedgers`, called from `handleLockIn` on a
@@ -2939,8 +2938,8 @@ touches most of the board).
 authoritative source), with `EventGameOver.Team` as the fallback for players
 missing from it. Per-player results come from the archiver's own engine plus
 an event drain over `EventsSubjectFilter`: events live on per-kind, per-player
-subjects, so each player's single game_over survives `MaxMsgsPerSubject: 1`
-retention and the drain recovers EVERY player's final score/level/piece-count.
+subjects, so each player's single game_over can never be overwritten by other
+traffic and the drain recovers EVERY player's final score/level/piece-count.
 Verdicts still never come from the replay — near-simultaneous final top-outs
 put BOTH teams' last events on the stream, so no set-of-eliminated computation
 can pick the winner; `WinningTeam` comes from the archiving engine's own
@@ -3280,8 +3279,8 @@ Lobby chat and per-game chat share the `JETRIS_CHAT` stream, distinguished
 purely by the game-ID token of the subject: a game's messages on
 `jetris.chat.<gameID>` (`config.GameChatSubject`), the lobby's under the
 reserved game ID `lobby` (`jetris.chat.lobby`; the stream config is the one
-filter `ChatSubjectFilter`). Game chat cannot live on the game stream
-(MaxMsgsPerSubject: 1 keeps only the latest message).
+filter `ChatSubjectFilter`). Game chat lives on its own stream with
+its own retention (`MaxAge`), separate from the game blackboard.
 
 - **lobby:** `ChatMessage.GameID` (`json:"-"`, derived from the delivery
   subject via `config.GameIDFromChatSubject` — "" = lobby); `runChatConsumer`

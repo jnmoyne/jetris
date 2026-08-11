@@ -428,16 +428,13 @@ func IsTxnSubject(subject string) bool
 func MetaSubject(gameID string) string
 func RosterSubject(gameID string, playerID string) string
 
-// Game events are published to PER-KIND, PER-PLAYER subjects. The game stream
-// keeps only the last message per subject, so events sharing one subject would
-// trim each other — near-simultaneous events from different players, or a
-// game_over overwritten by a later event, would vanish for any consumer that
-// wasn't perfectly live. Scoping the subject by kind AND sender bounds the loss
-// to "an older event of the same kind from the same player", which the payloads
-// tolerate: line_clear carries the sender's CUMULATIVE totals (a newer total
-// subsumes a trimmed older one) and each player publishes at most one
-// game_over. Stream order across subjects is still total, so every engine sees
-// the same verdict order.
+// Game events are published to PER-KIND, PER-PLAYER subjects, so no event can
+// ever overwrite an unrelated one, and the payloads stay correct under any
+// retention or replay: line_clear carries the sender's CUMULATIVE totals (a
+// newer total subsumes any older one, and a full-history replay — e.g. a
+// spectator joining mid-game — folds to the same numbers) and each player
+// publishes at most one game_over. Stream order across subjects is total, so
+// every engine sees the same verdict order.
 func EventKindSubject(gameID, kind, playerID string) string
 //   → jetris.game.<id>.events.<kind>.<pid>
 func EventsSubjectFilter(gameID string) string
@@ -466,13 +463,13 @@ All subject and stream names in the application are produced exclusively through
 
 ### Stream Configuration Notes
 
-`JETRIS_GAME_<id>` is created with `MemoryStorage`, `MaxMsgsPerSubject: 1`, `LimitsPolicy` retention, and two stream-level flags:
+`JETRIS_GAME_<id>` is created with `MemoryStorage`, `LimitsPolicy` retention, and two stream-level flags:
 - `AllowAtomicPublish: true` — required for jetstreamext atomic batch move publishing
 - `AllowDirect: true` — enables direct get / `GetLastMsgsFor` for fast playfield reconstruction and per-subject refetch
 
-The stream uses **memory storage** (game streams are ephemeral and deleted at game end, so there is no need to persist them to disk) and retains **only the latest message per subject** (`MaxMsgsPerSubject: 1`) — only the current state for each subject/key is needed. Both flags are set unconditionally on every game stream regardless of mode. No `MaxAge` is set (game streams are deleted at game end), and `AllowMsgCounter` is **not** set — the cooperative score is a plain local counter propagated via events, not a server-side counter CRDT.
+The stream uses **memory storage** (game streams are ephemeral and deleted at game end, so there is no need to persist them to disk) and retains the **full game history** — no per-subject cap. Full retention gives two guarantees: an ordered consumer delivers *every* write in order (a lagging viewer can never miss a cell's vacate because a later write to the same subject trimmed it, which used to leave stale piece cells on replicas), and a spectator joining mid-game can replay the whole game from the start before catching up to live play. Current state is still read as the last message per subject via direct get. Both flags are set unconditionally on every game stream regardless of mode. No `MaxAge` is set (game streams are deleted at game end), and `AllowMsgCounter` is **not** set — the cooperative score is a plain local counter propagated via events, not a server-side counter CRDT.
 
-Every payload on the stream is designed to survive that last-message-wins retention. The board **registers** are cumulative monotonic totals, so a trimmed intermediate value is subsumed by the next one and a late joiner recovers everything owed/applied from the snapshot fetch. **Events** are scoped per kind and per sender (`EventKindSubject`): `line_clear` carries the sender's cumulative totals (receivers fold deltas), and each player's single `game_over` lives alone on its own subject, so it can never be trimmed by other traffic — which is what lets the archiver replay every player's final event post-game.
+Every payload on the stream is additionally designed so that only its latest value matters. The board **registers** are cumulative monotonic totals, so a newer value subsumes every older one and a late joiner recovers everything owed/applied from the snapshot fetch. **Events** are scoped per kind and per sender (`EventKindSubject`): `line_clear` carries the sender's cumulative totals (receivers fold deltas, so a full-history replay converges to the same numbers), and each player's single `game_over` lives alone on its own subject — which is what lets the archiver replay every player's final event post-game.
 
 ### GameMeta Struct
 
@@ -832,7 +829,7 @@ func FetchGameMeta(
 ) (config.GameMeta, uint64, error)
 ```
 
-`FetchPlayfieldState` calls `jetstreamext.GetLastMsgsFor(ctx, js, streamName, cellSubjects)` where `cellSubjects` is the caller-supplied list of cell subjects for the game. The engine builds it with the mode-appropriate scheme: `config.CoopCellSubject(gameID, row, col)` for the shared cooperative board (no player token), `config.CompetitiveCellSubject(gameID, playerID, row, col)` for one competitive player's board, or `config.TeamCellSubject(gameID, team, row, col)` for one team's shared board. This returns the last message per subject in a single server round trip — far more efficient than replaying the entire stream from sequence 0 on join or reconnect. The engine uses this for its initial playfield snapshot before starting the ordered consumer, then the consumer takes over for live updates from that point forward.
+`FetchPlayfieldState` calls `jetstreamext.GetLastMsgsFor(ctx, js, streamName, cellSubjects)` where `cellSubjects` is the caller-supplied list of cell subjects for the game. The engine builds it with the mode-appropriate scheme: `config.CoopCellSubject(gameID, row, col)` for the shared cooperative board (no player token), `config.CompetitiveCellSubject(gameID, playerID, row, col)` for one competitive player's board, or `config.TeamCellSubject(gameID, team, row, col)` for one team's shared board. This returns the last message per subject in a single server round trip — far more efficient than replaying the entire stream from sequence 0 on join or reconnect. PLAYER engines use this for their initial playfield snapshot before starting the ordered consumer (`startSeq = maxSeq+1`), then the consumer takes over for live updates. SPECTATOR engines skip the snapshot entirely and start their board consumers from the beginning of the stream (`startSeq 0` → `DeliverAllPolicy`): the retained full history replays the whole game quickly on screen, then the consumer tracks live play.
 
 One NATS server limit matters here: a multi-last direct get is hard-capped at **1024 responses** per request (the server answers `413 Too Many Results`, with no pagination). A full board snapshot asks for `width × height` cell subjects — well over the cap for a wide coop board — so when more than 512 subjects are requested, `FetchPlayfieldState` splits them into chunks of ≤512 `GetLastMsgsFor` calls, each bounded to a common point in the stream via `jetstreamext.GetLastMsgsUpToSeq(stream last seq)` so the combined snapshot is consistent; anything newer is replayed by the caller's consumer (`startSeq = maxSeq+1`).
 
@@ -1224,9 +1221,10 @@ type Engine struct {
     opponentGarbage map[string]opponentLedger
 
     // eventTotals tracks, per sender, the last cumulative line_clear totals
-    // folded from the events stream, so handleGameEvent folds DELTAS even when
-    // per-subject retention trimmed intermediate events. Touched only by the
-    // events-consumer goroutine — no lock needed.
+    // folded from the events stream, so handleGameEvent folds DELTAS — a
+    // full-history replay (mid-game spectator) or a missed intermediate event
+    // converges to the same totals. Touched only by the events-consumer
+    // goroutine — no lock needed.
     eventTotals map[string]struct{ score, lines int }
 
     // Channels for outbound events to the UI layer
@@ -1814,9 +1812,11 @@ const (
 //
 // Garbage attacks are NOT events: they are recorded durably in the victim
 // board's garbage register (GarbageRegister), which simultaneous attackers
-// CAS-add and victims reconcile against — an event on the trimming stream
-// could be lost, a cumulative register cannot. (CAS-failure feedback is not an
-// event either; it stays local as UpdateCASFlash.)
+// CAS-add and victims reconcile against — fire-and-forget events from
+// simultaneous attackers could race each other, a cumulative register
+// serializes and sums them, and the amount owed is recoverable from any
+// snapshot. (CAS-failure feedback is not an event either; it stays local as
+// UpdateCASFlash.)
 type GameEvent struct {
     Kind         EventKind `json:"kind"`
     PlayerID     string    `json:"player_id"`               // who caused/detected the event
@@ -1830,8 +1830,8 @@ type GameEvent struct {
 
     // line_clear only: the sender's CUMULATIVE totals from its OWN clears
     // (ownClearScore/ownClearLines). Receivers fold the DELTA against the last
-    // total they saw from that sender (eventTotals), so a trimmed intermediate
-    // event (per-subject retention keeps only the last) is subsumed by the
+    // total they saw from that sender (eventTotals), so any missed
+    // intermediate event is subsumed by the
     // next — and a late joiner replaying each sender's last event reconstructs
     // the full scoreboard.
     TotalScore int `json:"total_score,omitempty"`
@@ -1851,7 +1851,7 @@ type GameEvent struct {
 
 **Score tracking:**
 
-In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta, LinesCleared: n, TotalScore, TotalLines}` on its per-kind event subject; every other player's events consumer folds the **delta between the sender's cumulative totals and the last totals it saw from them** (`eventTotals`) into its own local `score` and `totalLines` (then `refreshLevel()` stores/emits the new level), so all clients converge on the same combined team total, shared level, and gravity — even when per-subject retention trimmed an intermediate event, whose delta the next one absorbs. This is **not** a server-side counter CRDT and uses no score subject. See `jetris-gameplays.md` for the authoritative scoring rules.
+In **cooperative mode** the team score is a plain local counter (`score atomic.Int64`). When a player clears lines it adds `playerCount × lines` to its own `score` (reflecting the harder-to-fill wider playfield) and publishes a `GameEvent{Kind: EventLineClear, Score: delta, LinesCleared: n, TotalScore, TotalLines}` on its per-kind event subject; every other player's events consumer folds the **delta between the sender's cumulative totals and the last totals it saw from them** (`eventTotals`) into its own local `score` and `totalLines` (then `refreshLevel()` stores/emits the new level), so all clients converge on the same combined team total, shared level, and gravity — any missed intermediate event's delta is absorbed by the next, and a full-history replay folds to the same totals. This is **not** a server-side counter CRDT and uses no score subject. See `jetris-gameplays.md` for the authoritative scoring rules.
 
 **Line clear publishing:** The cells changed by a clear (`changedCells` over the shifted projection, full row range) are published as a txn-gated transform in competitive and teams mode (NoCAS cells serialized by the board's gate against a concurrent raise) and through CAS+merge-retry in coop (so the shift can never overwrite the other player's mid-flight piece — `refetchAndMerge` skips any cell currently holding their active piece, and the category order applies their shifted piece before vacating its old positions). Score, events, and the attack are derived from the rows the committed transform **actually** cleared, not the pre-race detection — a gated clear that loses its gate re-detects its completed rows (still complete, possibly shifted) from the fresh snapshot. After the clear cells are published, the per-cell `LastSeq` entries are advanced by the write-through from the publish acknowledgment so subsequent CAS publishes use the correct sequences.
 
@@ -2364,7 +2364,7 @@ Decisions settled during design review, recorded here for future reference.
 | 1 | Competitive playfield topology | Player-scoped cell subjects within one shared stream (`jetris.game.<id>.player.<pid>.playfield.cell.<row>.<col>`) | One stream per game keeps lifecycle management simple. Player-scoped subjects provide full isolation within it. |
 | 2 | Lock-in detection | Implicit — engine scans the playfield state for the `Active→Occupied` transition after each cell message | No extra message; lock-in is definitionally visible in the cell data that would be fetched anyway on rejoin. |
 | 3 | Line-clear row shift publisher | Client whose piece caused the lock-in | Avoids a first-CAS-wins race on a large batch; the publisher has the most current local state. |
-| 4 | Garbage attack delivery (competitive/teams) | An attack is never an event: the clearing player CAS-adds the victim board's cumulative **garbage register** (`…playfield.garbage`); the victim applies the deficit against its **txn register** (`…playfield.txn`) as a txn-gated transform on its own `runInput` | The victim still owns its cell subjects — the attacker only ever touches the register, so A's writes stay decoupled from B's CAS keys. Events on a `MaxMsgsPerSubject: 1` stream can be trimmed before a slow consumer sees them — exactly the near-simultaneous-clears-at-high-RTT case that matters most; a cumulative register makes simultaneous attacks SUM, last-value retention lossless, and the deficit recoverable from any snapshot (late join, reconnect, replay). |
+| 4 | Garbage attack delivery (competitive/teams) | An attack is never an event: the clearing player CAS-adds the victim board's cumulative **garbage register** (`…playfield.garbage`); the victim applies the deficit against its **txn register** (`…playfield.txn`) as a txn-gated transform on its own `runInput` | The victim still owns its cell subjects — the attacker only ever touches the register, so A's writes stay decoupled from B's CAS keys. Fire-and-forget events from near-simultaneous clears race each other — exactly the high-RTT case that matters most; a cumulative register makes simultaneous attacks SUM and the deficit recoverable from any snapshot (late join, reconnect, replay). |
 | 5 | Cell payload encoding | JSON (one `Cell` document per message; empty cell → `{}`, the vacate payload) | Simpler to implement and debug with `nats` CLI. Cell update rate is low enough that JSON overhead is not a concern. |
 | 6 | Startup consumer start point | `max(snapshot seqs)+1` — the snapshot covers all cells plus the board's garbage/txn registers | Avoids reprocessing the entire stream history on every join/reconnect. The gap in other subjects (at most a few milliseconds of game time) is acceptable; the board snapshot reflects any clears or raises in that window, and the registers ride in the same snapshot, so any garbage still owed is applied before play (nothing is lost to the gap). |
 | 7 | Lobby map concurrency | `sync.RWMutex` on `Lobby.mu`, maps unexported, accessed via `Players()` / `Games()` snapshot methods | Straightforward, low-overhead, and makes the access pattern explicit without channel complexity. |
@@ -2389,7 +2389,7 @@ Decisions settled during design review, recorded here for future reference.
 | 27 | Piece preview (`next_count`) | Per-game 0..4, chosen at creation, stored in `GameMeta` (NOT omitempty — 0 is meaningful and pre-field metas unmarshal to 0) and mirrored on the listing; the NEXT well beside the playfield and the agent's lookahead both read `Engine.NextPieces()` | One attribute moves both eyes: the fair-visibility contract goes from "never look ahead" to "look ahead exactly as far as the preview", and it stays enforceable because UI and planner consume the identical accessor over the seekable 7-bag sequence (no queue state to reconcile). |
 | 21 | Shared-board spawn blocked by another player's ACTIVE piece | DEFER the spawn (`spawnPending`) and retry it from `runInput`'s gravity tick (`retrySpawnIfPending`) — top out only when the spawn cells hold LOCKED cells (`CanPlaceCoop` fails AND `CanPlace` fails) | Mirrors the locked-vs-active distinction gravity/hard-drop already make; a teammate's piece merely crossing the spawn area must not eliminate a player (in teams permanently — the "one piece per team board" bug — and in coop it would end the game for everyone). The gravity ticker is the retry heartbeat: no new goroutine, the single-write-goroutine invariant holds, and the cadence matches how fast the blocker can move. Known deferred edge: a *disconnected* player's abandoned mid-air piece blocks indefinitely — a pre-existing engine-wide gap (it equally blocks movement/locks today). |
 | 22 | Piece-less watchdog + no-regress meta transitions | `retrySpawnIfPending` force-spawns after 2 piece-less gravity ticks (gated on `gameStarted`); `lobby.transitionGameStatus` refuses to overwrite finished/archived/cancelled | The lock-in edge detector needs an incoming message to fire — a dropped spawn publish on a since-silent shared board (last teammate eliminated) stalls a player forever without the watchdog. And the countdown's final `StartGame` is a detached goroutine racing the game itself: a fast game (agents) can FINISH before that write lands, and an unguarded in_progress stamp over finished resurrects the game and strands it unarchivable. |
-| 23 | Archive verdicts (winner / winning team) | Verdicts taken from the archiving ENGINE's live record (`IsEliminated` set, `GameOutcome()` accessor); per-player STATS (score/level/piece count) recovered by replaying each player's retained game_over event | With per-kind, per-player event subjects each player's single game_over survives `MaxMsgsPerSubject: 1` retention, so the post-game replay now recovers every player's final stats — but a who-ever-sent-an-event set would still mis-score near-simultaneous final top-outs as a draw, so the verdict stays with the engine that lived through the game: in competitive it knows every elimination; in teams it is by construction on the winning side (or a draw participant), so its own verdict IS the team verdict. |
+| 23 | Archive verdicts (winner / winning team) | Verdicts taken from the archiving ENGINE's live record (`IsEliminated` set, `GameOutcome()` accessor); per-player STATS (score/level/piece count) recovered by replaying each player's retained game_over event | With per-kind, per-player event subjects each player's single game_over can never be overwritten by other traffic, so the post-game replay recovers every player's final stats — but a who-ever-sent-an-event set would still mis-score near-simultaneous final top-outs as a draw, so the verdict stays with the engine that lived through the game: in competitive it knows every elimination; in teams it is by construction on the winning side (or a draw participant), so its own verdict IS the team verdict. |
 
 ---
 

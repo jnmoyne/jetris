@@ -183,7 +183,7 @@ discipline.
 | `JETRIS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game) |
 | `JETRIS_CHAT` | stream | all chat on `jetris.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby` |
 | `JETRIS_ARCHIVE` | stream | finished-game records (`jetris.archive`) |
-| `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, **MaxMsgsPerSubject: 1**, atomic publish + direct get enabled |
+| `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, full game history retained (no per-subject cap), atomic publish + direct get enabled |
 | `jetris.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
 
 The last property is the heart of the design: the stream keeps only the latest

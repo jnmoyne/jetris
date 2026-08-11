@@ -460,29 +460,42 @@ func (g *Game) teamDead(t int) bool {
 // vacateOwnPiece removes our dead piece from the team board as a txn-gated
 // transform (op "vacate"), so a racing garbage application can never
 // resurrect it from a stale snapshot. Caller holds mu.
+//
+// It retries persistently: on a busy board the gate keeps losing to teammate
+// moves and other transforms, and a dead piece that is never vacated becomes
+// a ghost obstacle every falling piece hovers on forever (nobody ever locks
+// against another player's "active" cells). Each retry resyncs, so a cascade
+// that already vacated us ends the loop with piece == nil.
 func (g *Game) vacateOwnPiece(ctx context.Context) {
-	if g.piece == nil {
-		return
-	}
-	var diff []cellUpd
-	for _, c := range g.activeCells() {
-		diff = append(diff, cellUpd{at: c})
-	}
-	txn := txnReg{Applied: g.txnApplied, Op: "vacate", By: g.idx}
-	if err := g.publishGatedBatch(ctx, txn, diff); err != nil && errors.Is(err, errCAS) {
-		// A transform beat us (possibly the very cascade that killed us, which
-		// already vacated the piece): refresh and retry once from fresh state.
-		g.resyncShared(ctx)
-		g.refreshRegisters(ctx)
-		if g.piece != nil {
-			diff = diff[:0]
-			for _, c := range g.activeCells() {
-				diff = append(diff, cellUpd{at: c})
-			}
-			txn.Applied = g.txnApplied
-			_ = g.publishGatedBatch(ctx, txn, diff)
+	const maxAttempts = 10
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Refresh from converged state: the winner's transform may have
+			// moved our cells (or already vacated us — resync then clears
+			// g.piece and we are done).
+			g.resyncShared(ctx)
+			g.refreshRegisters(ctx)
+		}
+		if g.piece == nil {
+			return
+		}
+		var diff []cellUpd
+		for _, c := range g.activeCells() {
+			diff = append(diff, cellUpd{at: c})
+		}
+		txn := txnReg{Applied: g.txnApplied, Op: "vacate", By: g.idx}
+		err := g.publishGatedBatch(ctx, txn, diff)
+		if err == nil {
+			g.piece = nil
+			return
+		}
+		if !errors.Is(err, errCAS) {
+			log.Printf("vacate: %v", err)
+			g.piece = nil
+			return
 		}
 	}
+	log.Printf("vacate: gave up after %d attempts — dead piece may linger until the next board transform", maxAttempts)
 	g.piece = nil
 }
 

@@ -466,6 +466,16 @@ func (g *Game) activeCells() []cell {
 // the top-out; covered only by another player's falling piece it is DEFERRED —
 // placed=false, topped=false — and the caller retries (gameplays §3).
 func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool) {
+	if g.piece != nil {
+		// We already own a live piece on the board — adopted from a committed
+		// transform that moved it (a garbage lift racing our NoCAS lock), or
+		// re-adopted by a resync (execute's parked-piece escape). Spawning
+		// over it would orphan its cells as a frozen ghost nothing ever
+		// vacates (our own vacates follow g.piece). Resume it instead: the
+		// caller re-plans from its actual position, same as the native
+		// engine's rule of only spawning on the zero-active-cells edge.
+		return time.Now(), true, false
+	}
 	pt := pieceAt(g.metaSeed, g.pieceIdx)
 	n := active{pt, 0, spawnRow, g.spawnC}
 	cs := pieceCells(pt, 0, spawnRow, g.spawnC)

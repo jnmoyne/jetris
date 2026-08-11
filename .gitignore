@@ -3,4 +3,5 @@ jetstream-data/
 .DS_Store
 .idea/
 /jetris
+/headless-player
 agents/golang-mk1/golang-mk1

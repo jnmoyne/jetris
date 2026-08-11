@@ -146,8 +146,7 @@ type ChatLine struct {
 const ArchiveChatCap = 200
 
 // HasAgents reports whether any seat in the archived game was played by an
-// agent (the lobby's history filter; records from before the agent flag simply
-// read as all-human).
+// agent (records from before the agent flag simply read as all-human).
 func (r ArchiveRecord) HasAgents() bool {
 	for _, p := range r.Players {
 		if p.Agent {

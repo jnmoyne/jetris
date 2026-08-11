@@ -9,7 +9,8 @@ import (
 
 // The history controls: both sort modes group by agent composition first
 // (agents-only, then mixed, then all-human) and rank within each group by the
-// selected key; the agent filter drops any record with an agent seat.
+// selected key; the agent filter drops only agents-only records — any game
+// with a human seat stays.
 func TestArchivesForDisplay(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	recs := func() []config.ArchiveRecord {
@@ -47,12 +48,12 @@ func TestArchivesForDisplay(t *testing.T) {
 		t.Fatalf("date sort = %v, want %v", ids(got), want)
 	}
 
-	// Agent filter: every game with an agent seat drops out, leaving the two
-	// all-human games (score sort within the remaining group).
+	// Agent filter: only the agents-only game drops out — the mixed game has a
+	// human seat, so it stays (still grouped ahead of the all-human games).
 	a.histSortEnum.Value = "score"
 	a.histAgentsCb.Value = false
 	got = a.archivesForDisplay(recs())
-	if want := []string{"human-high", "human-low"}; !sameIDs(got, want) {
+	if want := []string{"mixed", "human-high", "human-low"}; !sameIDs(got, want) {
 		t.Fatalf("agent filter = %v, want %v", ids(got), want)
 	}
 }

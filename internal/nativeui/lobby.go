@@ -297,20 +297,21 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 	)
 }
 
-// archivesForDisplay applies the history controls: drop games with agent
-// seats when the "Agent games" box is unchecked, then order the survivors.
+// archivesForDisplay applies the history controls: drop agents-only games
+// when the "Agent games" box is unchecked — any game with a human seat, mixed
+// human/agent games included, always shows — then order the survivors.
 // Both sort modes group by agent composition first — agents-only games, then
 // mixed human/agent games, then all-human games — and rank within each group
 // by the selected key: headline score (default) or finish time, newest first.
 func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	if !a.histAgentsCb.Value {
-		humanOnly := recs[:0:0]
+		withHumans := recs[:0:0]
 		for _, r := range recs {
-			if !r.HasAgents() {
-				humanOnly = append(humanOnly, r)
+			if r.AgentClass() != config.AgentClassAgentsOnly {
+				withHumans = append(withHumans, r)
 			}
 		}
-		recs = humanOnly
+		recs = withHumans
 	}
 	if a.histSortEnum.Value == "date" {
 		return sortedArchivesByDate(recs)

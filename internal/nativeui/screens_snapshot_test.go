@@ -18,6 +18,7 @@ import (
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
+	"gioui.org/widget"
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
@@ -189,4 +190,67 @@ func TestScreenSnapshots(t *testing.T) {
 			scanlines(gtx)
 		})
 	})
+
+	// A history row for a game with a replay archive: the Replay action next
+	// to View board.
+	t.Run("history_row_replay", func(t *testing.T) {
+		a := newTestApp()
+		rec := sampleReplayRecord()
+		var viewBtn, replayBtn widget.Clickable
+		snapshotPNG(t, w, dir, "screen_history_row_replay", func(gtx C) {
+			layout.Center.Layout(gtx, func(gtx C) D {
+				gtx.Constraints.Max.X = 900
+				return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn)
+			})
+			scanlines(gtx)
+		})
+	})
+
+	// The replay speed-choice dialog over the lobby.
+	t.Run("replay_dialog", func(t *testing.T) {
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		rec := sampleReplayRecord()
+		a.replayChoice = &rec
+		snapshotPNG(t, w, dir, "screen_replay_dialog", func(gtx C) { a.layout(gtx) })
+	})
+
+	// The replay screen mid-replay: two competitive boards being rebuilt from
+	// the replay stream.
+	t.Run("replay", func(t *testing.T) {
+		a := newTestApp()
+		rv := newReplayView(sampleReplayRecord(), false)
+		src := sampleBoard()
+		for r, row := range src.Rows {
+			for c, cell := range row.Cells {
+				br := r + rv.boards[0].visibleStart
+				if br < rv.boards[0].height && c < rv.boards[0].width {
+					rv.boards[0].rows[br].Cells[c] = cell
+					if cell.Occupied && !cell.Adversarial {
+						rv.boards[1].rows[br].Cells[c] = cell
+					}
+				}
+			}
+		}
+		a.replayView = rv
+		a.screen = screenReplay
+		snapshotPNG(t, w, dir, "screen_replay", func(gtx C) { a.layout(gtx) })
+	})
+}
+
+// sampleReplayRecord is a finished competitive game with a replay archive.
+func sampleReplayRecord() config.ArchiveRecord {
+	return config.ArchiveRecord{
+		GameID:      "g-replay",
+		Mode:        config.ModeCompetitive,
+		PlayerCount: 2,
+		StartedAt:   time.Date(2026, 7, 23, 14, 0, 0, 0, time.Local),
+		FinishedAt:  time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local),
+		WinningTeam: -1,
+		Players: []config.PlayerResult{
+			{PlayerID: "alice", Score: 4200, Level: 4, Winner: true},
+			{PlayerID: "bob", Score: 3100, Level: 3},
+		},
+	}
 }

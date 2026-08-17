@@ -31,10 +31,12 @@ type Lobby struct {
 	games           map[string]GameListing
 	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
-	chatLog         []ChatMessage // lobby + game chat, in stream order, capped at chatLogCap
+	replays         map[string]bool // archived game IDs that have a replay (see runReplayRefresher)
+	replayKick      chan struct{}   // pings the refresher to re-list the replay markers
+	chatLog         []ChatMessage   // lobby + game chat, in stream order, capped at chatLogCap
 	status          PresenceStatus
 	currentGameID   string
-	presenceMu      sync.Mutex // serializes presence KV writes with their state read (see publishPresence)
+	presenceMu      sync.Mutex            // serializes presence KV writes with their state read (see publishPresence)
 	invites         map[string]Invitation // every live invitation in the KV, keyed "<invitee>.<gameID>"; guarded by mu
 	eventSub        *nats.Subscription    // core NATS lobby-event subscription (see runEventListener)
 	cancelFn        context.CancelFunc
@@ -62,6 +64,8 @@ func New(
 		players:         make(map[string]PlayerPresence),
 		games:           make(map[string]GameListing),
 		abandoned:       make(map[string]bool),
+		replays:         make(map[string]bool),
+		replayKick:      make(chan struct{}, 1),
 		invites:         make(map[string]Invitation),
 		status:          StatusInLobby,
 		initialLoadDone: make(chan struct{}),
@@ -131,6 +135,12 @@ func (l *Lobby) Start(ctx context.Context) error {
 
 	// Start archive consumer
 	go l.runArchiveConsumer(ctx)
+
+	// Start the replay-stream lister (an initial kick loads the current set;
+	// each arriving archive record re-kicks it — that is exactly when replays
+	// appear and displaced ones vanish).
+	go l.runReplayRefresher(ctx)
+	l.kickReplayRefresh()
 
 	// Start heartbeat
 	go l.runHeartbeat(ctx)
@@ -412,6 +422,74 @@ func (l *Lobby) runArchiveConsumer(ctx context.Context) {
 			l.mu.Lock()
 			l.archives = append(l.archives, rec)
 			l.mu.Unlock()
+			l.kickReplayRefresh()
+			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
+		}
+	}
+}
+
+// HasReplay reports whether an archived game has a replay (and thus a
+// Replay button in the history list).
+func (l *Lobby) HasReplay(gameID string) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.replays[gameID]
+}
+
+// kickReplayRefresh asks the refresher for a re-list; extra kicks while one is
+// already pending coalesce.
+func (l *Lobby) kickReplayRefresh() {
+	select {
+	case l.replayKick <- struct{}{}:
+	default:
+	}
+}
+
+// runReplayRefresher maintains the set of game IDs that have a replay
+// (their copy-complete marker on the shared replay stream).
+// The set changes exactly when a game is archived (a new replay appears, a
+// displaced one is deleted), so it is refreshed on every arriving archive
+// record — after a short delay that both coalesces the initial record burst
+// into one listing call and lets the archiver finish its displacement
+// deletions before we look.
+func (l *Lobby) runReplayRefresher(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-l.replayKick:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		select {
+		case <-l.replayKick: // absorb kicks that arrived during the delay
+		default:
+		}
+		ids, err := natspkg.ListReplayGameIDs(ctx, l.js)
+		if err != nil {
+			log.Printf("replay listing: %v", err)
+			continue
+		}
+		fresh := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			fresh[id] = true
+		}
+		l.mu.Lock()
+		changed := len(fresh) != len(l.replays)
+		if !changed {
+			for id := range fresh {
+				if !l.replays[id] {
+					changed = true
+					break
+				}
+			}
+		}
+		l.replays = fresh
+		l.mu.Unlock()
+		if changed {
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
 		}
 	}

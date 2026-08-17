@@ -324,7 +324,29 @@ agree on eliminations and outcomes without a coordinator.
    stream, so copy them into the record FIRST — last 200 lines; the GUI's
    archived-game viewer replays them). Best-effort: a record without `chat`
    simply shows no conversation.
-6. **Walk away cleanly**: if a game you joined never starts, remove yourself from
+6. **Replay archive** (part of archiving, BEFORE the record publish and the
+   stream deletion): if the finishing game ranks in the top 10 of its bucket —
+   one bucket per (mode, with/without agent seats) pair, ranked by headline
+   score (coop total / best team / best player), then shorter duration, newer
+   finish, game ID — copy the ENTIRE game stream into the ONE shared
+   file-backed **`JETRIS_REPLAY`** stream so the GUI can replay the game
+   later. Republish each message under
+   `jetris.replay.<gameID>.<original tail>` (the tail is the game-stream
+   subject after `jetris.game.<gameID>.`): payload verbatim, the message's
+   ORIGINAL stream timestamp in a **`Jetris-Ts`** header (integer nanoseconds
+   since the epoch — the copy gets a copy-time stream timestamp, so the
+   recorded pace lives in the header; an original-speed replay paces itself
+   from it), and the original headers DROPPED (their CAS expectations
+   reference the dying game stream). Publish a
+   `jetris.replay.<gameID>.done` **marker** message last, only after every
+   copy is acked — the marker's presence is what marks the replay complete
+   and listable (stream info with subjects filter `jetris.replay.*.done`).
+   Then `Purge` (filter `jetris.replay.<gameID>.>`) the replay of any
+   same-bucket game your ranking pushed out of the top 10 — one purge removes
+   a game's copies and marker alike. Best-effort: on any failure purge your
+   own half-made copy and archive without a replay. `golang-mk1`'s
+   `replay.go` is the reference implementation.
+7. **Walk away cleanly**: if a game you joined never starts, remove yourself from
    the roster (CAS, pre-start only) and purge your roster announcement so you
    don't linger as a ghost seat.
 

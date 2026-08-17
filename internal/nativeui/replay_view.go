@@ -1,0 +1,451 @@
+package nativeui
+
+import (
+	"context"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"gioui.org/layout"
+	"gioui.org/unit"
+	"gioui.org/widget"
+
+	"github.com/nats-io/nats.go/jetstream"
+
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	natspkg "jetris/internal/nats"
+)
+
+// replayStartGuard widens the "game has started" threshold the pacer uses:
+// messages recorded before StartedAt−guard (game creation, roster joins, the
+// lobby wait) fast-forward instead of replaying their arbitrarily long real
+// gaps. StartedAt is stamped by the client that ran the countdown while the
+// copied timestamps come from the server, so the guard also keeps a fast
+// client clock from fast-forwarding through the game's first cell writes.
+// It costs at most a couple of paced seconds (the countdown tail) at the
+// start of an original-speed replay.
+const replayStartGuard = 2 * time.Second
+
+// replayPacer schedules an original-speed replay from the copied messages'
+// ORIGINAL timestamps (the config.ReplayTsHeader header — the shared replay
+// stream stamps copy-time timestamps, so the recorded pace lives in the
+// header). The first paced message anchors recorded time to the wall clock;
+// every later message is due at anchor + (its recorded time − the first's),
+// an absolute schedule that cannot drift.
+type replayPacer struct {
+	thresh time.Time // pre-game cutoff: messages recorded before it fast-forward
+	base   time.Time // recorded time of the first paced message
+	wall0  time.Time // wall-clock moment the first paced message was applied
+}
+
+// delay returns how long to wait before applying a message recorded at ts,
+// given the current wall clock.
+func (p *replayPacer) delay(ts, now time.Time) time.Duration {
+	if ts.IsZero() || ts.Before(p.thresh) {
+		return 0
+	}
+	if p.base.IsZero() {
+		p.base, p.wall0 = ts, now
+		return 0
+	}
+	if d := p.wall0.Add(ts.Sub(p.base)).Sub(now); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// replayMsgTime parses a copied message's original timestamp header
+// (nanoseconds since the Unix epoch); zero when absent or malformed — the
+// pacer applies such a message immediately.
+func replayMsgTime(msg jetstream.Msg) time.Time {
+	ns, err := strconv.ParseInt(msg.Headers().Get(config.ReplayTsHeader), 10, 64)
+	if err != nil || ns <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// replayBoard is one board's live state during a replay, rebuilt cell by cell
+// from the replay stream. Written by the replay consumer goroutine and read by
+// the layout — both under App.mu.
+type replayBoard struct {
+	label        string
+	idx          int // player/team index for coloring; -1 if not applicable
+	width        int
+	height       int // total rows (headroom + visible)
+	visibleStart int
+	rows         []game.Row
+}
+
+func newReplayBoard(label string, idx, width, height, visibleStart int) *replayBoard {
+	rows := make([]game.Row, height)
+	for r := range rows {
+		rows[r] = game.Row{Cells: make([]game.Cell, width)}
+	}
+	return &replayBoard{label: label, idx: idx, width: width, height: height, visibleStart: visibleStart, rows: rows}
+}
+
+// snapshot deep-copies the board's visible region into a renderable
+// BoardSnapshot. Caller holds App.mu.
+func (b *replayBoard) snapshot() engine.BoardSnapshot {
+	h := b.height - b.visibleStart
+	rows := make([]game.Row, h)
+	for r := 0; r < h; r++ {
+		cells := make([]game.Cell, b.width)
+		copy(cells, b.rows[b.visibleStart+r].Cells)
+		rows[r] = game.Row{Cells: cells}
+	}
+	return engine.BoardSnapshot{Width: b.width, Height: h, VisibleStart: 0, Rows: rows}
+}
+
+// replayView is one replay session: the archived game being replayed, the
+// chosen speed, and the boards being rebuilt from its replay stream. done/err
+// are written by the consumer goroutine under App.mu.
+type replayView struct {
+	rec      config.ArchiveRecord
+	fast     bool // as fast as possible vs. paced at the recorded rate (replayPacer)
+	boards   []*replayBoard
+	byPlayer map[string]int // competitive: playerID → boards index
+	cancel   context.CancelFunc
+	done     bool
+	err      string
+}
+
+// newReplayView builds the mode-appropriate board set: one shared board for
+// cooperative, one per player (sorted by ID, matching the archive viewer's
+// coloring) for competitive, one per team for teams.
+func newReplayView(rec config.ArchiveRecord, fast bool) *replayView {
+	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}}
+	switch rec.Mode {
+	case config.ModeCooperative:
+		rv.boards = []*replayBoard{newReplayBoard("", -1,
+			rec.PlayerCount*config.StandardWidth,
+			config.HeadroomRows+config.VisibleRows, config.VisibleRowStart)}
+	case config.ModeTeams:
+		for t := 0; t < config.TeamCount; t++ {
+			rv.boards = append(rv.boards, newReplayBoard("Team "+teamName(t), t,
+				config.TeamBoardWidth(rec.TeamSize),
+				config.TeamTotalRows(rec.TeamSize), config.TeamVisibleRowStart(rec.TeamSize)))
+		}
+	default: // competitive
+		ids := make([]string, 0, len(rec.Players))
+		for _, p := range rec.Players {
+			ids = append(ids, p.PlayerID)
+		}
+		sort.Strings(ids)
+		for i, id := range ids {
+			rv.byPlayer[id] = i
+			rv.boards = append(rv.boards, newReplayBoard(id, i,
+				config.StandardWidth,
+				config.CompetitiveTotalRows(rec.PlayerCount), config.CompetitiveVisibleRowStart(rec.PlayerCount)))
+		}
+	}
+	return rv
+}
+
+// handleReplayChoice dispatches the speed-choice dialog's buttons and reports
+// whether the dialog is (still) open.
+func (a *App) handleReplayChoice(gtx C) bool {
+	if a.replayChoice == nil {
+		return false
+	}
+	rec := *a.replayChoice
+	switch {
+	case a.replayNormalBtn.Clicked(gtx):
+		a.replayChoice = nil
+		a.startReplay(rec, false)
+	case a.replayFastBtn.Clicked(gtx):
+		a.replayChoice = nil
+		a.startReplay(rec, true)
+	case a.replayCancelBtn.Clicked(gtx):
+		a.replayChoice = nil
+	default:
+		return true
+	}
+	return false
+}
+
+// replayChoiceOverlay is the modal asking how to replay the chosen game:
+// at the recorded pace, or as fast as the messages can be delivered.
+func (a *App) replayChoiceOverlay(gtx C, rec config.ArchiveRecord) D {
+	return layout.Center.Layout(gtx, func(gtx C) D {
+		gtx.Constraints.Max.X = gtx.Dp(430)
+		return hardShadow(gtx, func(gtx C) D {
+			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+				return background(gtx, colBg, func(gtx C) D {
+					return layout.UniformInset(unit.Dp(22)).Layout(gtx, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(a.pixel(unit.Sp(13), "REPLAY GAME", colAccent).Layout),
+							layout.Rigid(spacer(12)),
+							layout.Rigid(a.body(archiveLine(rec), colFg)),
+							layout.Rigid(spacer(6)),
+							layout.Rigid(a.body("The whole game was recorded — watch it play back at the speed it actually happened, or skip straight through.", colMuted)),
+							layout.Rigid(spacer(16)),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Min.X = gtx.Constraints.Max.X
+								return a.primaryButton(gtx, &a.replayNormalBtn, "Replay at original speed")
+							}),
+							layout.Rigid(spacer(10)),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Min.X = gtx.Constraints.Max.X
+								return a.secondaryButton(gtx, &a.replayFastBtn, "Replay as fast as possible")
+							}),
+							layout.Rigid(spacer(10)),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Min.X = gtx.Constraints.Max.X
+								return a.secondaryButton(gtx, &a.replayCancelBtn, "Cancel")
+							}),
+						)
+					})
+				})
+			})
+		})
+	})
+}
+
+// startReplay opens the replay screen and starts the consumer session.
+func (a *App) startReplay(rec config.ArchiveRecord, fast bool) {
+	rv := newReplayView(rec, fast)
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	rv.cancel = cancel
+	a.mu.Lock()
+	a.replayView = rv
+	a.screen = screenReplay
+	a.mu.Unlock()
+	go a.runReplaySession(ctx, rv)
+	a.invalidate()
+}
+
+// closeReplay stops the replay session and returns to the lobby.
+func (a *App) closeReplay() {
+	a.mu.Lock()
+	rv := a.replayView
+	a.replayView = nil
+	a.screen = screenLobby
+	a.mu.Unlock()
+	if rv != nil && rv.cancel != nil {
+		rv.cancel()
+	}
+	a.invalidate()
+}
+
+// runReplaySession consumes the game's slice of the shared replay stream
+// (one ordered consumer on "jetris.replay.<id>.>") and folds every cell
+// message into the session's boards. At original speed each message is
+// applied on the recorded schedule via replayPacer (the original timestamps
+// ride the config.ReplayTsHeader header); fast mode applies them as delivered.
+// Runs on its own goroutine; ends when the game's copy-complete marker — the
+// last message under its prefix — arrives. If the channel goes quiet without
+// the marker, the marker is re-checked: gone means the game was displaced and
+// its replay purged mid-watch.
+func (a *App) runReplaySession(ctx context.Context, rv *replayView) {
+	defer rv.cancel()
+	gameID := rv.rec.GameID
+
+	a.mu.Lock()
+	js := a.js
+	a.mu.Unlock()
+	if js == nil {
+		a.setReplayErr(rv, "Not connected.")
+		return
+	}
+	markerSeq, err := natspkg.GetReplayMarker(ctx, js, gameID)
+	if err != nil {
+		a.setReplayErr(rv, "This game's replay is no longer available.")
+		return
+	}
+
+	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
+		Stream:        config.ReplayStream,
+		FilterSubject: config.ReplayFilter(gameID),
+	})
+	if err != nil {
+		a.setReplayErr(rv, "Replay failed to start: "+err.Error())
+		return
+	}
+	defer cancel()
+
+	pacer := replayPacer{thresh: rv.rec.StartedAt.Add(-replayStartGuard)}
+	idle := time.NewTimer(replayIdleCheck)
+	defer idle.Stop()
+	for {
+		if !idle.Stop() {
+			select {
+			case <-idle.C:
+			default:
+			}
+		}
+		idle.Reset(replayIdleCheck)
+		select {
+		case <-ctx.Done():
+			return
+		case <-idle.C:
+			// Quiet channel without the marker: purged mid-watch, or just a
+			// slow server — the marker lookup tells them apart.
+			if _, err := natspkg.GetReplayMarker(ctx, js, gameID); err != nil {
+				a.setReplayErr(rv, "Replay ended early — this game's replay was just removed.")
+				return
+			}
+		case msg, ok := <-ch:
+			if !ok {
+				a.setReplayErr(rv, "Replay ended early — the connection to the replay stream was lost.")
+				return
+			}
+			doneSeq := false
+			if md, err := msg.Metadata(); err == nil && md.Sequence.Stream >= markerSeq {
+				doneSeq = true
+			}
+			if doneSeq || msg.Subject() == config.ReplayMarkerSubject(gameID) {
+				a.mu.Lock()
+				rv.done = true
+				a.mu.Unlock()
+				a.invalidate()
+				return
+			}
+			if !rv.fast {
+				if d := pacer.delay(replayMsgTime(msg), time.Now()); d > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(d):
+					}
+				}
+			}
+			if a.applyReplayCell(rv, msg.Subject(), msg.Data()) {
+				a.invalidate()
+			}
+		}
+	}
+}
+
+// replayIdleCheck is how long the session waits on a silent message channel
+// before re-checking that the replay still exists (a displacement purge stops
+// deliveries without an error).
+const replayIdleCheck = 10 * time.Second
+
+// setReplayErr records a session failure for the replay screen's status line.
+func (a *App) setReplayErr(rv *replayView, msg string) {
+	a.mu.Lock()
+	rv.err = msg
+	rv.done = true
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// applyReplayCell folds one replayed message into the session's boards and
+// reports whether anything changed. Non-cell subjects (meta, roster, events,
+// countdown, the board registers) are simply skipped — the replay redraws the
+// playfields only.
+func (a *App) applyReplayCell(rv *replayView, subject string, data []byte) bool {
+	if config.IsGarbageSubject(subject) || config.IsTxnSubject(subject) {
+		return false
+	}
+	row, col := natspkg.ParseCellFromSubject(subject)
+	if row < 0 {
+		return false
+	}
+	// The copied subjects keep the game-stream tail under the replay prefix:
+	// jetris.replay.<id>.playfield.cell.<r>.<c>              (cooperative)
+	// jetris.replay.<id>.player.<pid>.playfield.cell.<r>.<c> (competitive)
+	// jetris.replay.<id>.team.<t>.playfield.cell.<r>.<c>     (teams)
+	tokens := strings.Split(subject, ".")
+	if len(tokens) < 7 {
+		return false
+	}
+	boardIdx := -1
+	switch tokens[3] {
+	case "playfield":
+		if rv.rec.Mode == config.ModeCooperative {
+			boardIdx = 0
+		}
+	case "player":
+		if i, ok := rv.byPlayer[tokens[4]]; ok {
+			boardIdx = i
+		}
+	case "team":
+		if t, err := strconv.Atoi(tokens[4]); err == nil && t >= 0 && t < len(rv.boards) {
+			boardIdx = t
+		}
+	}
+	if boardIdx < 0 || boardIdx >= len(rv.boards) {
+		return false
+	}
+	cell, err := game.UnmarshalCell(data)
+	if err != nil {
+		return false
+	}
+	b := rv.boards[boardIdx]
+	if row >= b.height || col < 0 || col >= b.width {
+		return false
+	}
+	a.mu.Lock()
+	b.rows[row].Cells[col] = cell
+	a.mu.Unlock()
+	return row >= b.visibleStart // headroom-only changes need no repaint
+}
+
+// layoutReplay is the replay screen: the boards being replayed center-stage
+// over a status line, with the game's summary up top.
+func (a *App) layoutReplay(gtx C) D {
+	a.mu.Lock()
+	rv := a.replayView
+	a.mu.Unlock()
+	if rv == nil {
+		a.mu.Lock()
+		a.screen = screenLobby
+		a.mu.Unlock()
+		return D{}
+	}
+	if a.replayBackBtn.Clicked(gtx) {
+		a.closeReplay()
+		return D{}
+	}
+
+	a.mu.Lock()
+	done, errMsg := rv.done, rv.err
+	boards := make([]labeledBoard, len(rv.boards))
+	for i, b := range rv.boards {
+		boards[i] = labeledBoard{label: b.label, idx: b.idx, snap: b.snapshot()}
+	}
+	a.mu.Unlock()
+
+	status, statusCol := "REPLAYING · ORIGINAL SPEED", colNATSGreen
+	if rv.fast {
+		status = "REPLAYING · FAST"
+	}
+	switch {
+	case errMsg != "":
+		status, statusCol = strings.ToUpper(errMsg), colErr
+	case done:
+		status, statusCol = "REPLAY COMPLETE", colGold
+	}
+
+	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.lobbyBanner),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(a.header("GAME REPLAY")),
+			layout.Rigid(spacer(4)),
+			layout.Rigid(a.body(archiveLine(rv.rec), colMuted)),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(a.pixel(unit.Sp(9), status, statusCol).Layout),
+			layout.Rigid(spacer(14)),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Center.Layout(gtx, func(gtx C) D {
+					return a.boardsStrip(gtx, &a.replayBoardsList, boards)
+				})
+			}),
+			layout.Rigid(spacer(14)),
+			layout.Rigid(func(gtx C) D {
+				return a.secondaryButton(gtx, &a.replayBackBtn, "Back to Lobby")
+			}),
+		)
+	})
+}

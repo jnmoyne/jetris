@@ -200,6 +200,9 @@ func (a *Agent) connect(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := a.ensureReplayStream(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 

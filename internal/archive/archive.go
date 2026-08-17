@@ -188,9 +188,19 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// end-of-game playfield from the archive record alone.
 	record.Boards = buildBoardPictures(ctx, js, meta, results)
 
+	// Replay archive: if the game ranks in its bucket's top config.ReplayTopN,
+	// copy its entire stream to a file-backed replay stream (and drop the
+	// replay of the game it displaces). Must happen before the record publish —
+	// clients refresh their replay listing when the record arrives, so the
+	// copy has to be complete by then — and before the stream deletion below.
+	maybeArchiveReplay(ctx, js, record)
+
 	data, _ := json.Marshal(record)
 	if _, err := js.Publish(ctx, config.ArchiveSubject, data); err != nil {
 		log.Printf("archive: publish: %v", err)
+		// Without a record the replay could never be listed or ranked — don't
+		// leave it orphaned.
+		_ = natspkg.PurgeReplay(ctx, js, eng.GameID())
 		return
 	}
 

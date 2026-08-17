@@ -1109,7 +1109,7 @@ func (g *Game) run(ctx context.Context) bool {
 		g.a.runCountdown(ctx, g.id)
 	}
 	// A game that never fills or readies must not wedge the agent forever:
-	// after the wait timeout we walk away cleanly (guide §5.6) and return to
+	// after the wait timeout we walk away cleanly (guide §5 step 6) and return to
 	// the lobby.
 	start := time.NewTimer(g.a.wait)
 	defer start.Stop()
@@ -1494,8 +1494,16 @@ func (g *Game) archive(ctx context.Context) {
 		g.mu.Unlock()
 	}
 	b, _ := json.Marshal(record)
+	// Replay archive (guide §5 step 6): if this game ranks in its bucket's top N,
+	// copy the game stream to a replay stream — before the record publish
+	// (peers refresh their replay listing when the record arrives) and before
+	// the game stream is deleted below.
+	g.a.maybeArchiveReplay(ctx, b)
 	if _, err := g.a.js.Publish(ctx, archiveSubject, b); err != nil {
 		log.Printf("archive publish: %v", err)
+		// An unlisted replay could never be ranked or displaced — don't leave
+		// it orphaned.
+		_ = g.a.purgeReplay(ctx, g.id)
 	}
 	_ = g.a.js.DeleteStream(ctx, gameStreamName(g.id))
 	_ = g.a.kv.Delete(ctx, "games."+g.id)

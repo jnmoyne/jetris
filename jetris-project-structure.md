@@ -366,6 +366,24 @@ Game IDs are UUID v4 strings with dashes (e.g. `550e8400-e29b-41d4-a716-44665544
 func GameStream(gameID string) string        // → "JETRIS_GAME_<id>"
 func GameSubjectFilter(gameID string) string // → "jetris.game.<id>.>"
 
+// Replay archive — a top-ranked finished game's stream is copied into the ONE
+// shared file-backed replay stream before deletion, each message republished
+// under the game-scoped prefix (game ID right after "jetris.replay."), so one
+// subject filter replays a game and a Purge with the same filter deletes a
+// displaced one. Copies carry their ORIGINAL stream timestamp in the
+// ReplayTsHeader header (republishing stamps copy-time timestamps); the copy
+// ends with a marker message whose presence makes the replay complete and
+// listable. config.ReplayTopN (10) is how many games per (mode, with/without
+// agents) bucket keep a replay.
+const ReplayStream = "JETRIS_REPLAY"
+const ReplaySubjectFilter = "jetris.replay.>"  // stream config
+const ReplayMarkerFilter = "jetris.replay.*.done" // listing (one marker per game)
+const ReplayTsHeader = "Jetris-Ts"             // original timestamp, int nanoseconds
+func ReplayFilter(gameID string) string        // → "jetris.replay.<id>.>" (consume + purge)
+func ReplayMarkerSubject(gameID string) string // → "jetris.replay.<id>.done"
+func ReplayCopySubject(gameID, gameSubject string) string // jetris.game.<id>.<tail> → jetris.replay.<id>.<tail>
+func GameIDFromReplayMarker(subject string) string
+
 // Each mode uses its own playfield subject scheme — they are not
 // parameterisations of one builder and are free to diverge. A game is exactly
 // one mode, so an engine uses only one scheme.
@@ -660,6 +678,35 @@ func ListGameStreams(ctx context.Context, js jetstream.JetStream) ([]string, err
 // (purge by the game's GameChatSubject). Used by archive.ArchiveAndCleanup and
 // lobby.DeleteGame.
 func PurgeGameChat(ctx context.Context, js jetstream.JetStream, gameID string) error
+
+// The replay archive — ONE shared file-backed stream (config.ReplayStream)
+// holding the full copy of every top-ranked finished game's stream (see
+// internal/archive's replay step). CopyGameToReplayStream drains the game
+// stream through an ordered consumer and republishes every message under
+// config.ReplayCopySubject — payload verbatim, the ORIGINAL stream timestamp
+// in the config.ReplayTsHeader header (republishing stamps copy-time
+// timestamps, so the recorded pace travels in the header; an original-speed
+// replay paces itself from it), the original headers deliberately dropped
+// (their CAS expectations reference the dying game stream). Copies go out as
+// chunked ASYNC publishes (a game stream holds thousands of messages; one ack
+// round trip each would take minutes to a remote server) with every ack
+// checked, and the marker (config.ReplayMarkerSubject) is published last,
+// synchronously — its presence proves the whole copy landed, so an in-flight
+// copy is never listed. Any failure purges the partial copy: a game has a
+// complete replay or none.
+func EnsureReplayStream(ctx context.Context, js jetstream.JetStream) error // Bootstrap-provisioned (AllowDirect: marker lookups)
+func CopyGameToReplayStream(ctx context.Context, js jetstream.JetStream, gameID string) error
+
+// PurgeReplay removes one game's replay — copies and marker — with a single
+// subject-filtered purge (config.ReplayFilter): a failed copy, or a game
+// displaced from its bucket's top N.
+func PurgeReplay(ctx context.Context, js jetstream.JetStream, gameID string) error
+
+// GetReplayMarker returns the marker's stream sequence (ErrMsgNotFound = the
+// game has no finished replay); ListReplayGameIDs lists every marker via a
+// subjects-filtered stream info (config.ReplayMarkerFilter).
+func GetReplayMarker(ctx context.Context, js jetstream.JetStream, gameID string) (uint64, error)
+func ListReplayGameIDs(ctx context.Context, js jetstream.JetStream) ([]string, error)
 ```
 
 #### `kv.go`
@@ -682,12 +729,15 @@ type OrderedConsumerConfig struct {
     Stream        string
     FilterSubject string        // optional subject filter
     StartSeq      uint64        // 0 = from beginning
-    ReplayOriginal bool         // for archived game replay
 }
 
-// NewOrderedConsumer creates an ordered push consumer and returns a channel
-// of jetstream.Msg. The consumer is automatically restarted on sequence gaps.
-// The returned cancel func tears it down cleanly.
+// NewOrderedConsumer creates an ordered consumer and returns a channel of
+// jetstream.Msg. The consumer is automatically restarted on sequence gaps.
+// The returned cancel func tears it down cleanly — including while the stream
+// is quiet (a watchdog stops the iterator on cancellation, so the pump never
+// hangs in Next waiting for a message that will never come; a replay session
+// on the shared replay stream is exactly that case after its game finishes
+// delivering).
 func NewOrderedConsumer(
     ctx context.Context,
     js jetstream.JetStream,
@@ -1925,6 +1975,7 @@ type Lobby struct {
     games     map[string]GameListing     // keyed by gameID — access via Games()
     abandoned map[string]bool            // games flagged abandoned — access via AbandonedGames()
     archives  []config.ArchiveRecord     // game history — access via Archives()
+    replays   map[string]bool            // archived game IDs with a replay stream — access via HasReplay()
 
     status          PresenceStatus       // local player's current presence status
     currentGameID   string               // game the local player is in, if any
@@ -1946,6 +1997,15 @@ func (l *Lobby) Archives() []config.ArchiveRecord
 // AbandonedGames returns a shallow copy of the game IDs the periodic checker
 // currently considers abandoned (see runAbandonedChecker below).
 func (l *Lobby) AbandonedGames() map[string]bool
+
+// HasReplay reports whether an archived game has a replay (and thus a Replay
+// button in the history list). The set is maintained by runReplayRefresher:
+// kicked once at Start and by every arriving archive record (exactly when
+// replays appear and displaced ones vanish), it re-lists the replay stream's
+// copy-complete markers (natspkg.ListReplayGameIDs) after a short coalescing
+// delay — one listing call per record burst, and late enough that the
+// archiver has finished its displacement purges.
+func (l *Lobby) HasReplay(gameID string) bool
 
 // New takes no ctx and returns *Lobby only (no error).
 func New(
@@ -2217,11 +2277,13 @@ Jetris has a single front end, `internal/nativeui`, over the engine/lobby logic.
 
 Two small packages support the front end:
 - **`internal/render`** — the single source of truth for cell/board appearance (piece/player colors, blend math) for the native UI. Exposes a single decision function, `CellStyle`, plus the RGBA surface (`CellAppearance` — fill, outline, outline width, and the `Bevel` flag that gates the drawer's 8-bit shading on filled cells — `PlayerColorRGBA`, `PlayerColorHex`), so every render path (own board, opponent boards, spectator view) draws from one visual model.
-- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources. Before deleting the game stream it calls `buildBoardPictures`, which reads the latest message per cell (`FetchPlayfieldState`) for every board in the game — one for cooperative, one per player for competitive, one per team for teams — and stores them sparsely (non-empty cells only) as `ArchiveRecord.Boards`, so the end-of-game playfield survives the stream deletion.
+- **`internal/archive`** — `ArchiveAndCleanup(ctx, js, kv, eng, lb, gamePlayers)`, wired as `engine.OnGameFinished`; records the finished game to the archive stream and tears down its NATS resources. Before deleting the game stream it calls `buildBoardPictures`, which reads the latest message per cell (`FetchPlayfieldState`) for every board in the game — one for cooperative, one per player for competitive, one per team for teams — and stores them sparsely (non-empty cells only) as `ArchiveRecord.Boards`, so the end-of-game playfield survives the stream deletion. It also runs the **replay archive** step (`replay.go`, `maybeArchiveReplay`): the finished game is ranked against every prior record of its bucket — one bucket per (mode, with/without agents) pair, read straight off the archive stream (`fetchArchiveRecords`), ordered by `ArchiveRecord.RankBefore` — and if it lands in the bucket's top `config.ReplayTopN` (10) its ENTIRE game stream is copied into the shared `JETRIS_REPLAY` stream under the game's `jetris.replay.<id>.` prefix (`CopyGameToReplayStream`, see `internal/nats` `streams.go`), and any same-bucket game the ranking pushed out of the top N has its replay purged (`PurgeReplay`, one subject-filtered purge). The copy runs before the record publish (peers refresh their replay listing when the record arrives) and before the game stream deletion; it is best-effort — a failed copy is purged again and the game archives without a replay. (The reference agent `golang-mk1` implements the same step in its own `replay.go`, so agent-archived games — including agents-only showcases — get replays too; guide §5 step 6.)
 
-**History list ordering & summary line.** The `GAME HISTORY` list is sorted by `sortedArchives` (`lobby.go`): headline score descending (`archiveScore` — co-op `TotalScore`, best entry of `TeamScores` for teams, best player score for competitive), and between two games with the same score the one with the shorter duration ranks higher (`archiveDuration` = `FinishedAt - StartedAt`, zero when either timestamp is missing), with `FinishedAt` (newest first) breaking remaining ties. Each summary line (`archiveLine`) is prefixed by `archiveWhen`: the start date/time in the viewer's local timezone (`2006-01-02 15:04 MST` format) and the duration rounded to the second (e.g. `2026-07-06 14:03 PDT · 4m32s · co-op · …`); records without timestamps skip the prefix and show just the mode-specific part (`archiveModeLine`).
+**History list ordering & summary line.** The `GAME HISTORY` list is sorted by `sortedArchives` (`lobby.go`) using the shared `config.ArchiveRecord.RankBefore` ordering — headline score descending (`HeadlineScore` — co-op `TotalScore`, best entry of `TeamScores` for teams, best player score for competitive), shorter `Duration` breaking a score tie, then `FinishedAt` (newest first), then the game ID for a total order. It is the SAME ordering the replay archiver's top-N cut uses, so under "By score" the replay-carrying games are exactly the top of each group. Each summary line (`archiveLine`) is prefixed by `archiveWhen`: the start date/time in the viewer's local timezone (`2006-01-02 15:04 MST` format) and the duration rounded to the second (e.g. `2026-07-06 14:03 PDT · 4m32s · co-op · …`); records without timestamps skip the prefix and show just the mode-specific part (`archiveModeLine`).
 
 **History table.** `GAME HISTORY` renders as an arcade high-score table (`lobbyRight`): a pixel-font column header (`archiveHistoryHeader`, **SCORE · TIME · MODE · PLAYERS** aligned to the shared `histScoreW`/`histTimeW`/`histModeW` widths via `fixedCol`) over one `archiveHistoryRow` per game, each closed by an `hrule` (colBorder) so a wrapping PLAYERS column can't blur into the next game. Per row: `archiveScoreCell` (the headline `archiveScore` in gold pixel numerals — the largest figure — over `archiveHeadlineLevel`), `archiveTimeCell` (`archiveDuration` over the start date), `archiveModeCell` (mode name over player count / `NvN`), and the flexed `archivePlayersCell` — `archiveRosterLines` builds the winner(s)-first lines (a trophy + gold name via `competitiveRosterLines`/`teamRosterLines`, the rest muted; `coopRosterLines` just lists the shared roster). Each row carries an accent-bordered **"View board"** button on the right (`viewBoardButton`, one `archiveBtns` Clickable per row) so it is obvious the finished game can be opened. Clicking it opens `screenArchive` (`archive_view.go`), which rebuilds each saved `BoardPicture` into an `engine.BoardSnapshot` (`boardSnapshotFromPicture`) and redraws it with the same `boardWidget` used live — cooperative shows the single wide board, competitive a board per player labeled by ID in player color, teams the two team boards (the multi-board strip is laid by `scrollableBoards`, so it stays centered while it fits and scrolls horizontally with a scrollbar when the boards are together wider than the window). To the **left** of the boards a player roster (`archiveRoster`) lists everyone in their board color with the winner(s) highlighted (a trophy and a gold name): competitive players are colored by the same sorted-by-PlayerID index the boards use (`rosterCompetitive`, survivors flagged winners), teams grouped under color-matched TEAM A / TEAM B headers with the winning team in gold (`rosterTeams`), and cooperative players list plainly under a PLAYERS header — one shared board, so no per-player color and no winner (`rosterCoop`); each line is an `archivePlayerRow` (swatch + name + winner trophy). A **GAME CHAT** panel (`archiveChatPanel`, a 320 dp bordered `archiveChatList` beside the centered boards) replays the preserved conversation (`ArchiveRecord.Chat`) — `archiveChatLine` formats each line with local wall-clock time and the "(spec)" spectator marker. The panel is always present: a record with no chat (a silent game, or one archived before the field existed) shows "No chat was recorded for this game." rather than silently vanishing, so its absence is never mistaken for a missing feature. A `secondaryButton` "Back to Lobby" returns to the lobby.
+
+**Game replay** (`replay_view.go`). A history row whose game has a replay archive — `lobby.HasReplay(gameID)`, backed by the lobby's `runReplayRefresher`, which re-lists the replay markers (`ListReplayGameIDs`) at start and, after a coalescing delay, on every arriving archive record (exactly when replays appear and displaced ones vanish) — grows a green **Replay** button (`smallActionButton`, one `replayBtns` Clickable per row) beside View board. Clicking it opens a modal speed-choice dialog (`replayChoiceOverlay`, `App.replayChoice`, dispatched with the other lobby overlays): **Replay at original speed** / **Replay as fast as possible** / Cancel. Either choice opens `screenReplay` and starts a consumer session (`runReplaySession`, a goroutine): the marker lookup (`GetReplayMarker`) both proves the replay still exists and pins its final sequence, then one ordered consumer on the game's slice of the shared replay stream (filter `jetris.replay.<id>.>`) delivers the copy. At original speed each message is applied on the recorded schedule by `replayPacer`: the original timestamps ride the `Jetris-Ts` header (the shared stream stamps copy-time timestamps), the first paced message anchors recorded time to the wall clock and every later one is due at anchor + offset — an absolute schedule that cannot drift — while messages recorded before `StartedAt` minus a 2 s clock-skew guard (`replayStartGuard`) fast-forward, skipping the pre-game roster/lobby wait; fast mode applies messages as delivered. The session folds every delivered cell message into the mode-appropriate board set (`newReplayView`: one shared board for coop, one per sorted player ID for competitive matching the archive coloring, one per team for teams; `applyReplayCell` demuxes by the subject's `playfield`/`player`/`team` token — the copied subjects keep the game-stream tail, so the demux is prefix-agnostic — and skips registers, meta, events, and countdown), and the screen redraws the boards live via the shared `boardsStrip` (the labeled-board strip `archiveBoards` also uses) with a status line — REPLAYING · ORIGINAL SPEED / FAST in green, REPLAY COMPLETE in gold once the game's marker arrives, or an error in red. A displacement purge mid-watch stops deliveries without an error, so a quiet channel (`replayIdleCheck`, 10 s) re-checks the marker: gone means "this game's replay was just removed". "Back to Lobby" (`closeReplay`) cancels the session.
 
 **Cell appearance — single source of truth.** Every cell is drawn with an explicit fill color and outline computed by `internal/render`. Piece fills come from a piece-color table composited over the board background via `blend(fg, bg, alpha)` (active ≈0.9, locked ≈0.7, adversarial ≈0.8). Outlines: own active → white; spectator (`localPlayerIdx < 0`) → per-player color on active/locked cells; other player's active piece in a player view → grid line; locked non-adversarial → per-player color when `showOutline` (suppressed to the grid line on compact opponent boards). Because appearance is computed in one package, the visual model stays consistent across own/spectator/opponent renders. In competitive mode the UI distinguishes own-field updates (`UpdatePlayfield`) from opponent updates (`UpdateOpponentField`, keyed by `OpponentID`) and redraws the corresponding sidebar board. In cooperative mode the single wide playfield (playerCount × StandardWidth columns) is drawn directly — already the correct width, so there is no concatenation or visual separator between player sections.
 
@@ -2306,6 +2368,7 @@ All goroutines are started with a context derived from the root context and exit
 | Lobby KV watcher (`runKVWatcher`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby chat consumer (`runChatConsumer`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby archive consumer (`runArchiveConsumer`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
+| Replay-stream lister (`runReplayRefresher`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Lobby presence heartbeat (`runHeartbeat`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Abandoned-game checker (`runAbandonedChecker`) | `lobby.Lobby` | `lobby.Start()` | ctx cancel |
 | Own-board consumer (`runConsumer`, cells + registers) | `engine.Engine` | `engine.Start()` | ctx cancel |
@@ -2318,6 +2381,7 @@ All goroutines are started with a context derived from the root context and exit
 | Per-opponent cells consumer (`runConsumer`) | `engine.Engine` | `startOpponentConsumer` per discovered opponent (competitive) | ctx cancel |
 | Opposing-team board consumer (`runConsumer`) | `engine.Engine` | `startTeamBoardConsumer` from `engine.Start()` (teams only; spectators consume team 1 through it) | ctx cancel |
 | Lobby/game update pumps (`pumpLobby` / `pumpEngine`) | native bridge (`nativeui`) | one per attached lobby/engine | ctx cancel |
+| Replay session (`runReplaySession`) | `nativeui` | `startReplay` (the history Replay button's speed dialog) | last replayed message delivered / Back to Lobby (`closeReplay` cancel) / ctx cancel |
 
 ---
 

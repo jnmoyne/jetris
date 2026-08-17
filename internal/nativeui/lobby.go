@@ -39,6 +39,7 @@ func (a *App) layoutLobby(gtx C) D {
 	wizOpen := a.handleCreateWizard(gtx)
 	pickerOpen := a.handleInvitePicker(gtx)
 	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
+	replayOpen := a.handleReplayChoice(gtx)
 	// The Create button just opens the wizard; the wizard's last step does
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
@@ -133,7 +134,7 @@ func (a *App) layoutLobby(gtx C) D {
 			)
 		}),
 	)
-	if !pickerOpen && !inviteOpen && !wizOpen {
+	if !pickerOpen && !inviteOpen && !wizOpen && !replayOpen {
 		return base
 	}
 	return layout.Stack{}.Layout(gtx,
@@ -150,6 +151,8 @@ func (a *App) layoutLobby(gtx C) D {
 				return a.incomingInviteOverlay(gtx, pendingInvite)
 			case pickerOpen:
 				return a.invitePickerOverlay(gtx)
+			case replayOpen:
+				return a.replayChoiceOverlay(gtx, *a.replayChoice)
 			default:
 				return a.createWizardOverlay(gtx)
 			}
@@ -280,15 +283,28 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 					layout.Rigid(a.archiveHistoryHeader),
 					layout.Rigid(func(gtx C) D { return hrule(gtx, colAccent, 1) }),
 					layout.Flexed(1, func(gtx C) D {
+						lb := a.getLobby()
 						return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
 							for len(a.archiveBtns) <= i {
 								a.archiveBtns = append(a.archiveBtns, widget.Clickable{})
+								a.replayBtns = append(a.replayBtns, widget.Clickable{})
 							}
 							btn := &a.archiveBtns[i]
 							if btn.Clicked(gtx) {
 								a.openArchive(archives[i])
 							}
-							return a.archiveHistoryRow(gtx, archives[i], btn)
+							// Games whose stream was archived to a replay
+							// stream grow a Replay button; clicking it opens
+							// the speed-choice dialog.
+							var replayBtn *widget.Clickable
+							if lb != nil && lb.HasReplay(archives[i].GameID) {
+								replayBtn = &a.replayBtns[i]
+								if replayBtn.Clicked(gtx) {
+									rec := archives[i]
+									a.replayChoice = &rec
+								}
+							}
+							return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn)
 						})
 					}),
 				)
@@ -393,70 +409,24 @@ func sortedArchivesByDate(recs []config.ArchiveRecord) []config.ArchiveRecord {
 		if !recs[i].FinishedAt.Equal(recs[j].FinishedAt) {
 			return recs[i].FinishedAt.After(recs[j].FinishedAt)
 		}
-		return archiveScore(recs[i]) > archiveScore(recs[j])
+		return recs[i].HeadlineScore() > recs[j].HeadlineScore()
 	})
 	return recs
 }
 
 // sortedArchives groups the history by agent composition (agents-only, then
-// mixed, then all-human) and orders within each group by headline score
-// (highest first); between two games with the same score the shorter game
-// ranks higher, and remaining ties show the most recently finished game first.
+// mixed, then all-human) and orders within each group by the shared "By score"
+// ranking (config.ArchiveRecord.RankBefore) — the same ordering the replay
+// archiver's top-N cut uses, so the replay-carrying games are exactly the
+// top of each group when sorted by score.
 func sortedArchives(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	sort.SliceStable(recs, func(i, j int) bool {
 		if ci, cj := recs[i].AgentClass(), recs[j].AgentClass(); ci != cj {
 			return ci < cj
 		}
-		si, sj := archiveScore(recs[i]), archiveScore(recs[j])
-		if si != sj {
-			return si > sj
-		}
-		di, dj := archiveDuration(recs[i]), archiveDuration(recs[j])
-		if di != dj {
-			return di < dj
-		}
-		return recs[i].FinishedAt.After(recs[j].FinishedAt)
+		return recs[i].RankBefore(recs[j])
 	})
 	return recs
-}
-
-// archiveScore is the headline score a finished game is ranked by: the shared
-// total for cooperative, the winning-side total for teams, and the best
-// player's score for competitive.
-func archiveScore(r config.ArchiveRecord) int {
-	switch r.Mode {
-	case config.ModeCooperative:
-		return r.TotalScore
-	case config.ModeTeams:
-		if len(r.TeamScores) > 0 {
-			best := r.TeamScores[0]
-			for _, s := range r.TeamScores[1:] {
-				if s > best {
-					best = s
-				}
-			}
-			return best
-		}
-	}
-	best := 0
-	for _, p := range r.Players {
-		if p.Score > best {
-			best = p.Score
-		}
-	}
-	return best
-}
-
-// archiveDuration is how long the game lasted; zero for records missing either
-// timestamp (or with a clock skew that made finish precede start).
-func archiveDuration(r config.ArchiveRecord) time.Duration {
-	if r.StartedAt.IsZero() || r.FinishedAt.IsZero() {
-		return 0
-	}
-	if d := r.FinishedAt.Sub(r.StartedAt); d > 0 {
-		return d
-	}
-	return 0
 }
 
 // archiveWhen renders a record's start date/time (in the viewer's local
@@ -466,7 +436,7 @@ func archiveWhen(r config.ArchiveRecord) string {
 		return ""
 	}
 	s := r.StartedAt.Local().Format("2006-01-02 15:04 MST")
-	if d := archiveDuration(r); d > 0 {
+	if d := r.Duration(); d > 0 {
 		s += " · " + d.Round(time.Second).String()
 	}
 	return s
@@ -522,12 +492,13 @@ func (a *App) archiveHistoryHeader(gtx C) D {
 // archiveHistoryRow renders one finished game as a table row: the headline
 // SCORE (largest, gold), the game TIME (duration over date), the MODE, and a
 // flexed winner-first PLAYERS column, closed by a rule separating it from the
-// next game.
-func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn *widget.Clickable) D {
+// next game. replayBtn is non-nil for games with a replay archive and adds
+// the Replay action beside View board.
+func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				children := []layout.FlexChild{
 					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec)) }),
 					layout.Rigid(hSpacer(10)),
 					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histTimeW, layout.W, a.archiveTimeCell(rec)) }),
@@ -537,7 +508,16 @@ func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn *widget.Cli
 					layout.Flexed(1, a.archivePlayersCell(rec)),
 					layout.Rigid(hSpacer(8)),
 					layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
-				)
+				}
+				if replayBtn != nil {
+					children = append(children,
+						layout.Rigid(hSpacer(6)),
+						layout.Rigid(func(gtx C) D {
+							return a.smallActionButton(gtx, replayBtn, "Replay", colNATSGreen)
+						}),
+					)
+				}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
 			})
 		}),
 		layout.Rigid(func(gtx C) D { return hrule(gtx, colBorder, 1) }),
@@ -549,7 +529,7 @@ func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn *widget.Cli
 func (a *App) archiveScoreCell(r config.ArchiveRecord) layout.Widget {
 	return func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx,
-			layout.Rigid(a.pixel(unit.Sp(13), strconv.Itoa(archiveScore(r)), colGold).Layout),
+			layout.Rigid(a.pixel(unit.Sp(13), strconv.Itoa(r.HeadlineScore()), colGold).Layout),
 			layout.Rigid(a.caption(fmt.Sprintf("LVL %d", archiveHeadlineLevel(r)), colMuted)),
 		)
 	}
@@ -560,7 +540,7 @@ func (a *App) archiveScoreCell(r config.ArchiveRecord) layout.Widget {
 func (a *App) archiveTimeCell(r config.ArchiveRecord) layout.Widget {
 	return func(gtx C) D {
 		dur := "—"
-		if d := archiveDuration(r); d > 0 {
+		if d := r.Duration(); d > 0 {
 			dur = d.Round(time.Second).String()
 		}
 		var children []layout.FlexChild
@@ -625,7 +605,7 @@ type rosterLine struct {
 	col  colorN
 }
 
-// archiveHeadlineLevel is the level that goes with archiveScore: the shared
+// archiveHeadlineLevel is the level that goes with HeadlineScore: the shared
 // final level (co-op), the winning team's level (teams; the best if a draw),
 // or the top-scoring player's level (competitive).
 func archiveHeadlineLevel(r config.ArchiveRecord) int {

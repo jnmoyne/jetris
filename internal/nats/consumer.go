@@ -8,14 +8,15 @@ import (
 
 // OrderedConsumerConfig configures an ordered consumer.
 type OrderedConsumerConfig struct {
-	Stream         string
-	FilterSubject  string
-	StartSeq       uint64 // 0 = from beginning
-	ReplayOriginal bool
+	Stream        string
+	FilterSubject string
+	StartSeq      uint64 // 0 = from beginning
 }
 
 // NewOrderedConsumer creates an ordered consumer and returns a channel of messages.
-// The returned cancel func tears it down cleanly.
+// The returned cancel func tears it down cleanly — including while the stream
+// is quiet (a watchdog stops the iterator on cancellation, so the pump never
+// hangs in Next waiting for a message that will never come).
 func NewOrderedConsumer(
 	ctx context.Context,
 	js jetstream.JetStream,
@@ -31,9 +32,6 @@ func NewOrderedConsumer(
 		consumerCfg.OptStartSeq = cfg.StartSeq
 	} else {
 		consumerCfg.DeliverPolicy = jetstream.DeliverAllPolicy
-	}
-	if cfg.ReplayOriginal {
-		consumerCfg.ReplayPolicy = jetstream.ReplayOriginalPolicy
 	}
 
 	cons, err := js.OrderedConsumer(ctx, cfg.Stream, consumerCfg)
@@ -65,6 +63,11 @@ func NewOrderedConsumer(
 				return
 			}
 		}
+	}()
+
+	go func() {
+		<-cctx.Done()
+		iter.Stop()
 	}()
 
 	return ch, cancel, nil

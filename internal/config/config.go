@@ -146,6 +146,75 @@ type ChatLine struct {
 // client still holds is ever dropped).
 const ArchiveChatCap = 200
 
+// ReplayTopN is how many games per replay bucket — one bucket per (mode,
+// with/without agents) pair — keep a full replay archive. A finishing game
+// that ranks in its bucket's top N gets its game stream copied to a file-backed
+// replay stream before deletion; the game it displaces loses its replay.
+const ReplayTopN = 10
+
+// HeadlineScore is the score a finished game is ranked (and listed) by: the
+// shared total for cooperative, the best team's total for teams, and the best
+// player's score for competitive.
+func (r ArchiveRecord) HeadlineScore() int {
+	switch r.Mode {
+	case ModeCooperative:
+		return r.TotalScore
+	case ModeTeams:
+		if len(r.TeamScores) > 0 {
+			best := r.TeamScores[0]
+			for _, s := range r.TeamScores[1:] {
+				if s > best {
+					best = s
+				}
+			}
+			return best
+		}
+	}
+	best := 0
+	for _, p := range r.Players {
+		if p.Score > best {
+			best = p.Score
+		}
+	}
+	return best
+}
+
+// Duration is how long the game lasted; zero for records missing either
+// timestamp (or with a clock skew that made finish precede start).
+func (r ArchiveRecord) Duration() time.Duration {
+	if r.StartedAt.IsZero() || r.FinishedAt.IsZero() {
+		return 0
+	}
+	if d := r.FinishedAt.Sub(r.StartedAt); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// RankBefore reports whether r outranks o in the "By score" game ordering
+// shared by the lobby's history list and the replay archiver's top-N cut:
+// higher headline score first, a shorter game breaking a score tie, then the
+// more recent finish — with the game ID as a final total-order tie-break so
+// every client computes the identical top N.
+func (r ArchiveRecord) RankBefore(o ArchiveRecord) bool {
+	if si, sj := r.HeadlineScore(), o.HeadlineScore(); si != sj {
+		return si > sj
+	}
+	if di, dj := r.Duration(), o.Duration(); di != dj {
+		return di < dj
+	}
+	if !r.FinishedAt.Equal(o.FinishedAt) {
+		return r.FinishedAt.After(o.FinishedAt)
+	}
+	return r.GameID < o.GameID
+}
+
+// SameReplayBucket reports whether two records compete for the same replay
+// top-N: same mode, and both with (or both without) agent seats.
+func (r ArchiveRecord) SameReplayBucket(o ArchiveRecord) bool {
+	return r.Mode == o.Mode && r.HasAgents() == o.HasAgents()
+}
+
 // HasAgents reports whether any seat in the archived game was played by an
 // agent (records from before the agent flag simply read as all-human).
 func (r ArchiveRecord) HasAgents() bool {
@@ -161,9 +230,9 @@ func (r ArchiveRecord) HasAgents() bool {
 // "interesting" first: a pure agent-vs-agent match, then a mixed human/agent
 // game, then an all-human game.
 const (
-	AgentClassAgentsOnly    = iota // every seat an agent
-	AgentClassMixed                // at least one agent and at least one human
-	AgentClassHumansOnly           // no agent seats (also empty/legacy rosters)
+	AgentClassAgentsOnly = iota // every seat an agent
+	AgentClassMixed             // at least one agent and at least one human
+	AgentClassHumansOnly        // no agent seats (also empty/legacy rosters)
 )
 
 // AgentClass buckets the game by who played it (AgentClassAgentsOnly <
@@ -296,6 +365,74 @@ func GameStream(gameID string) string {
 
 func GameSubjectFilter(gameID string) string {
 	return "jetris.game." + gameID + ".>"
+}
+
+// The replay archive is ONE shared file-backed stream (ReplayStream) holding
+// the full copy of every top-ranked finished game's stream. Each copied
+// message is republished under the game-scoped prefix
+// "jetris.replay.<gameID>.<original tail>" — the game ID right after the
+// prefix, so one game is exactly one subject subspace: a consumer filter
+// ReplayFilter(gameID) replays it and a Purge with the same filter deletes a
+// displaced game. Republishing means the stream stamps COPY-time timestamps,
+// so each copied message carries its ORIGINAL timestamp in the ReplayTsHeader
+// header instead — the replay viewer paces an original-speed playback from it.
+// The copy ends with a marker message on ReplayMarkerSubject; the marker is
+// what makes a replay complete and listable (ReplayMarkerFilter), so an
+// in-flight copy is never surfaced.
+const (
+	ReplayStream = "JETRIS_REPLAY"
+	// ReplaySubjectFilter matches everything in the replay stream (stream config).
+	ReplaySubjectFilter = replaySubjectPrefix + ">"
+	// ReplayMarkerFilter matches every game's copy-complete marker (listing).
+	ReplayMarkerFilter = replaySubjectPrefix + "*." + replayMarkerToken
+	// ReplayTsHeader carries a copied message's ORIGINAL stream timestamp
+	// (integer nanoseconds since the Unix epoch).
+	ReplayTsHeader = "Jetris-Ts"
+
+	replaySubjectPrefix = "jetris.replay."
+	replayMarkerToken   = "done"
+)
+
+// ReplayFilter matches one archived game's whole replay subspace — the copied
+// messages plus its marker. Used as the replay consumer's filter and as the
+// purge filter when the game is displaced.
+func ReplayFilter(gameID string) string {
+	return replaySubjectPrefix + gameID + ".>"
+}
+
+// ReplayMarkerSubject is the copy-complete marker, published last. "done" can
+// never collide with a copied subject: game-stream tails all continue past
+// their first token (meta and countdown are single tokens, but neither is
+// "done").
+func ReplayMarkerSubject(gameID string) string {
+	return replaySubjectPrefix + gameID + "." + replayMarkerToken
+}
+
+// ReplayCopySubject maps one game-stream subject to its home in the replay
+// stream: "jetris.game.<id>.<tail>" → "jetris.replay.<id>.<tail>". Returns ""
+// for a subject not under the game's prefix (never the case for messages read
+// off the game's own stream).
+func ReplayCopySubject(gameID, gameSubject string) string {
+	prefix := "jetris.game." + gameID + "."
+	tail, ok := strings.CutPrefix(gameSubject, prefix)
+	if !ok || tail == "" {
+		return ""
+	}
+	return replaySubjectPrefix + gameID + "." + tail
+}
+
+// GameIDFromReplayMarker extracts the game ID from a marker subject listed by
+// ReplayMarkerFilter ("" if the subject is not a marker).
+func GameIDFromReplayMarker(subject string) string {
+	tail, ok := strings.CutPrefix(subject, replaySubjectPrefix)
+	if !ok {
+		return ""
+	}
+	id, ok := strings.CutSuffix(tail, "."+replayMarkerToken)
+	if !ok || strings.Contains(id, ".") {
+		return ""
+	}
+	return id
 }
 
 // Cooperative and competitive modes use entirely separate playfield subject

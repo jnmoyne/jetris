@@ -23,6 +23,9 @@ nats stream ls $NATS_ARGS -j 2>/dev/null \
       nats stream rm "$stream" $NATS_ARGS -f
     done
 
+echo "Deleting replay stream..."
+nats stream rm JETRIS_REPLAY $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRIS_REPLAY" || echo "  JETRIS_REPLAY not found (ok)"
+
 echo "Deleting chat stream..."
 nats stream rm JETRIS_CHAT $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRIS_CHAT" || echo "  JETRIS_CHAT not found (ok)"
 # Legacy name from before the rename to JETRIS_CHAT.

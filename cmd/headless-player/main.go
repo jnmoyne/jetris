@@ -51,6 +51,9 @@ func main() {
 	if err := natspkg.EnsureArchiveStream(ctx, js); err != nil {
 		log.Fatal(err)
 	}
+	if err := natspkg.EnsureReplayStream(ctx, js); err != nil {
+		log.Fatal(err)
+	}
 	kv, err := natspkg.EnsureLobbyKV(ctx, js)
 	if err != nil {
 		log.Fatal(err)

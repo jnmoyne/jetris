@@ -82,6 +82,10 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*nats.Conn, jetstream.Je
 		nc.Close()
 		return nil, nil, nil, fmt.Errorf("ensure archive stream: %w", err)
 	}
+	if err := EnsureReplayStream(ctx, js); err != nil {
+		nc.Close()
+		return nil, nil, nil, fmt.Errorf("ensure replay stream: %w", err)
+	}
 	return nc, js, kv, nil
 }
 

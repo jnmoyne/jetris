@@ -216,7 +216,13 @@ What: When a game ends, its result is published to a single shared `JETRIS_ARCHI
 
 Why it's necessary: Blackboards are created and torn down per task. Sealing freezes a finished game's history; deletion reclaims it. The archive stream is a second, long-lived blackboard of *outcomes*, consumed with the same push model. This keeps resource usage bounded as games come and go.
 
-### 5.9 Bonus: measuring the loop itself (RTT)
+### 5.9 Replays: copy a finished blackboard into one archive stream, play it back at the recorded pace
+
+What: Before the archiver deletes a top-ranked game's stream — the top 10 of each (mode, with/without agents) bucket, ranked by score — it copies the ENTIRE stream into the ONE shared file-backed `JETRIS_REPLAY` stream, each message republished under `jetris.replay.<gameID>.<original tail>` with its original timestamp riding in a `Jetris-Ts` header, closed by a `jetris.replay.<gameID>.done` marker. The game ID sits right after the prefix, so one game is one subject subspace: a single `jetris.replay.<gameID>.>` filter replays it, and a `Purge` with the same filter evicts a game displaced from its bucket's top 10 — no per-game streams to create and tear down. The lobby's history then offers a **Replay** button: watch at the original recorded pace (the viewer schedules each message from the preserved timestamps) or as fast as possible.
+
+Why it's necessary: The game stream already *is* a complete, ordered recording of every board change — replay costs nothing but keeping a copy. And it shows the flip side of subject-space design: because the copy keys every message by game ID at the front of the subject, "one game" stays a first-class addressable thing *inside* a shared stream — filterable for playback, purgeable for eviction — the same way one cell is addressable inside a game stream.
+
+### 5.10 Bonus: measuring the loop itself (RTT)
 
 Because every visible board change travels the full *write → commit → consume* loop (publish a batch, the server commits it, the ordered consumer delivers it back), Jetris measures that round-trip continuously and shows it in the HUD. It's not a JetStream feature so much as a window into one: it's the actual latency a player's move pays to become visible to everyone, including themselves.
 

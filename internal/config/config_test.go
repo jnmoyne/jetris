@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSubjectBuilders(t *testing.T) {
@@ -81,5 +82,62 @@ func TestGameIDFromChatSubject(t *testing.T) {
 	}
 	if got := GameIDFromChatSubject("jetris.chat."); got != "" {
 		t.Errorf("empty game token: got %q, want empty", got)
+	}
+}
+
+// TestArchiveRecordRanking pins the shared "By score" ordering (HeadlineScore
+// per mode, then RankBefore's tie-breaks) that both the history list and the
+// replay archiver's top-N cut rely on.
+func TestArchiveRecordRanking(t *testing.T) {
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+
+	// HeadlineScore: shared total (coop), best team (teams), best player (competitive).
+	coop := ArchiveRecord{Mode: ModeCooperative, TotalScore: 40,
+		Players: []PlayerResult{{PlayerID: "a", Score: 99}}}
+	if got := coop.HeadlineScore(); got != 40 {
+		t.Errorf("coop headline = %d, want 40", got)
+	}
+	teams := ArchiveRecord{Mode: ModeTeams, TeamScores: []int{10, 30}}
+	if got := teams.HeadlineScore(); got != 30 {
+		t.Errorf("teams headline = %d, want 30", got)
+	}
+	comp := ArchiveRecord{Mode: ModeCompetitive,
+		Players: []PlayerResult{{PlayerID: "a", Score: 7}, {PlayerID: "b", Score: 12}}}
+	if got := comp.HeadlineScore(); got != 12 {
+		t.Errorf("competitive headline = %d, want 12", got)
+	}
+
+	// RankBefore: score desc, then shorter duration, then newer finish, then
+	// game ID — a total order, so every client computes the identical top N.
+	mk := func(id string, score int, dur time.Duration, fin time.Time) ArchiveRecord {
+		return ArchiveRecord{GameID: id, Mode: ModeCooperative, TotalScore: score,
+			StartedAt: fin.Add(-dur), FinishedAt: fin}
+	}
+	hi, lo := mk("a", 20, time.Minute, t0), mk("b", 10, time.Minute, t0)
+	if !hi.RankBefore(lo) || lo.RankBefore(hi) {
+		t.Error("higher score must rank first")
+	}
+	fast, slow := mk("a", 10, time.Minute, t0), mk("b", 10, 2*time.Minute, t0)
+	if !fast.RankBefore(slow) || slow.RankBefore(fast) {
+		t.Error("shorter game must break a score tie")
+	}
+	newer, older := mk("a", 10, time.Minute, t0.Add(time.Hour)), mk("b", 10, time.Minute, t0)
+	if !newer.RankBefore(older) || older.RankBefore(newer) {
+		t.Error("newer finish must break a duration tie")
+	}
+	x, y := mk("a", 10, time.Minute, t0), mk("b", 10, time.Minute, t0)
+	if !x.RankBefore(y) || y.RankBefore(x) {
+		t.Error("game ID must totally order full ties")
+	}
+
+	// SameReplayBucket: mode and agent presence both have to match.
+	human := ArchiveRecord{Mode: ModeCooperative, Players: []PlayerResult{{PlayerID: "a"}}}
+	agent := ArchiveRecord{Mode: ModeCooperative, Players: []PlayerResult{{PlayerID: "a", Agent: true}}}
+	otherMode := ArchiveRecord{Mode: ModeTeams, Players: []PlayerResult{{PlayerID: "a"}}}
+	if !human.SameReplayBucket(human) {
+		t.Error("same mode + same crew should share a bucket")
+	}
+	if human.SameReplayBucket(agent) || human.SameReplayBucket(otherMode) {
+		t.Error("agent presence and mode must both split buckets")
 	}
 }

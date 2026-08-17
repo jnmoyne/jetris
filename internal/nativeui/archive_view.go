@@ -6,6 +6,7 @@ import (
 
 	"gioui.org/layout"
 	"gioui.org/unit"
+	"gioui.org/widget"
 	"gioui.org/widget/material"
 
 	"jetris/internal/config"
@@ -96,8 +97,26 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 	if len(boards) == 0 {
 		return a.body("No playfield snapshot was saved for this game.", colMuted)(gtx)
 	}
-	// One wide cooperative board gets a larger cell; the many narrow
-	// competitive/team boards get a smaller one so several fit across.
+	entries := make([]labeledBoard, len(boards))
+	for i, p := range boards {
+		entries[i] = labeledBoard{label: p.Label, idx: p.Idx, snap: boardSnapshotFromPicture(p)}
+	}
+	return a.boardsStrip(gtx, &a.archiveBoardsList, entries)
+}
+
+// labeledBoard pairs a renderable board snapshot with its strip label (player
+// ID, team name, or "" for a single shared board) and coloring index.
+type labeledBoard struct {
+	label string
+	idx   int
+	snap  engine.BoardSnapshot
+}
+
+// boardsStrip lays labeled boards side by side — the shared body of the
+// archive viewer's final playfield and the replay screen. One wide board gets
+// a larger cell; several narrow boards get a smaller one so they fit across,
+// falling back to horizontal scrolling (scrollableBoards) when they don't.
+func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 	cellDp := 16
 	if len(boards) == 1 {
 		cellDp = 22
@@ -105,30 +124,29 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 	cell := gtx.Dp(unit.Dp(float32(cellDp)))
 
 	var items []layout.Widget
-	for _, p := range boards {
-		p := p
-		snap := boardSnapshotFromPicture(p)
+	for _, b := range boards {
+		b := b
 		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
-						if p.Label == "" {
+						if b.label == "" {
 							return D{}
 						}
-						l := material.Body2(a.th, p.Label)
+						l := material.Body2(a.th, b.label)
 						l.Color = colMuted
-						if p.Idx >= 0 {
-							l.Color = render.PlayerColorRGBA(p.Idx)
+						if b.idx >= 0 {
+							l.Color = render.PlayerColorRGBA(b.idx)
 						}
 						return l.Layout(gtx)
 					}),
 					layout.Rigid(spacer(4)),
-					layout.Rigid(a.boardWidget(snap, p.Idx, cell, true, nil, gtx.Now)),
+					layout.Rigid(a.boardWidget(b.snap, b.idx, cell, true, nil, gtx.Now)),
 				)
 			})
 		})
 	}
-	return a.scrollableBoards(gtx, &a.archiveBoardsList, items)
+	return a.scrollableBoards(gtx, list, items)
 }
 
 // archiveRoster is the player legend shown to the left of the final playfield:

@@ -47,6 +47,7 @@ const (
 	screenLobby
 	screenGame
 	screenArchive // viewing a finished game's end-of-game playfield from the history list
+	screenReplay  // replaying an archived game from its replay stream
 )
 
 const flashDur = 600 * time.Millisecond
@@ -330,11 +331,25 @@ type App struct {
 	archiveBackBtn  widget.Clickable      // "Back to Lobby" from the archive viewer
 	archiveChatList widget.List           // the record's preserved chat history
 
+	// game replay: the history rows' Replay buttons, the speed-choice dialog
+	// (replayChoice non-nil while it is open; UI goroutine only, like
+	// confirmDeleteID), and the live replay session shown on screenReplay
+	// (replayView is written by the replay consumer goroutine — guarded by mu).
+	replayBtns      []widget.Clickable    // one per history row (indexed by list position)
+	replayChoice    *config.ArchiveRecord // game awaiting the speed choice (nil = dialog closed)
+	replayNormalBtn widget.Clickable      // dialog: replay at the original speed
+	replayFastBtn   widget.Clickable      // dialog: replay as fast as possible
+	replayCancelBtn widget.Clickable      // dialog: close without replaying
+	replayBackBtn   widget.Clickable      // "Back to Lobby" from the replay screen
+	replayView      *replayView           // the active replay session (nil = none)
+
 	// Horizontal board strips that scroll when the boards together exceed the
-	// window width (spectator multi-board views and the archive final playfield).
+	// window width (spectator multi-board views, the archive final playfield,
+	// and the replay screen).
 	specBoardsList     widget.List
 	specTeamBoardsList widget.List
 	archiveBoardsList  widget.List
+	replayBoardsList   widget.List
 }
 
 // New builds the App. The window is created later, in Run, on the UI goroutine.
@@ -384,6 +399,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.specBoardsList.Axis = layout.Horizontal
 	a.specTeamBoardsList.Axis = layout.Horizontal
 	a.archiveBoardsList.Axis = layout.Horizontal
+	a.replayBoardsList.Axis = layout.Horizontal
 	return a
 }
 
@@ -527,6 +543,8 @@ func (a *App) layout(gtx C) D {
 		d = a.layoutGame(gtx)
 	case screenArchive:
 		d = a.layoutArchive(gtx)
+	case screenReplay:
+		d = a.layoutReplay(gtx)
 	}
 	a.versionBadge(gtx) // build version, top-right corner of every screen
 	scanlines(gtx)      // CRT overlay over the whole frame, screens and chrome alike

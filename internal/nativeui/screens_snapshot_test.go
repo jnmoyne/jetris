@@ -24,6 +24,7 @@ import (
 	"jetris/internal/engine"
 	"jetris/internal/game"
 	"jetris/internal/lobby"
+	"jetris/internal/prefs"
 )
 
 // snapshotPNG renders one frame with the given layout func and writes it to
@@ -122,7 +123,7 @@ func TestScreenSnapshots(t *testing.T) {
 	defer w.Release()
 
 	t.Run("login", func(t *testing.T) {
-		a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo"}, "beta")
+		a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo"}, "beta", prefs.DefaultFavorites())
 		a.th = newTestApp().th
 		snapshotPNG(t, w, dir, "screen_login", func(gtx C) { a.layout(gtx) })
 	})

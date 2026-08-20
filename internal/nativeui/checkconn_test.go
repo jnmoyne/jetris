@@ -1,16 +1,20 @@
 package nativeui
 
-// The login screen's connection check must really connect and really measure a
-// core NATS ping — for the LAN-mode option too, where "checking" means bringing
-// the embedded server up and dialing it, not just printing its address.
+// The login screen's server probe (a browser row's ↻, LAN mode's Check
+// embedded server) must really connect, really measure a core NATS ping, and
+// count the lobby's players — for LAN mode too, where "checking" means
+// bringing the embedded server up and dialing it, not just printing its
+// address.
 
 import (
+	"context"
 	"net"
 	"strconv"
 	"strings"
 	"testing"
 
 	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
 	"jetris/internal/testutil"
 )
 
@@ -18,27 +22,61 @@ func TestCheckConnURL(t *testing.T) {
 	url, _ := testutil.StartServer(t)
 	a := newTestApp()
 
-	msg, ok := a.checkConn(config.Config{NATSURL: url})
-	if !ok {
-		t.Fatalf("check failed: %s", msg)
+	res := a.checkConn(config.Config{NATSURL: url})
+	if !res.ok {
+		t.Fatalf("check failed: %s", res.msg)
 	}
-	if !strings.HasPrefix(msg, "✓ ") || !strings.Contains(msg, "Core NATS ping") {
-		t.Fatalf("msg = %q, want a ✓ line reporting the core NATS ping", msg)
+	if !strings.HasPrefix(res.msg, "✓ ") || !strings.Contains(res.msg, "Core NATS ping") {
+		t.Fatalf("msg = %q, want a ✓ line reporting the core NATS ping", res.msg)
 	}
-	if strings.Contains(msg, "—") {
-		t.Fatalf("msg = %q, want a measured ping, not the unset placeholder", msg)
+	if strings.Contains(res.msg, "—") || res.rtt <= 0 {
+		t.Fatalf("msg = %q (rtt %v), want a measured ping, not the unset placeholder", res.msg, res.rtt)
+	}
+	// A server nobody has played on yet: no lobby bucket, said so.
+	if res.lobby || res.players != 0 || !strings.Contains(res.msg, "no lobby yet") {
+		t.Fatalf("fresh server probe = %+v, want no lobby yet", res)
+	}
+
+	// With a lobby bucket holding two presence entries the probe counts them
+	// — and the inline row summary shows ping + head count.
+	ctx := context.Background()
+	nc, _, kv, err := natspkg.Bootstrap(ctx, config.Config{NATSURL: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	for _, key := range []string{"players.alice", "players.hal", "games.g1"} {
+		if _, err := kv.Put(ctx, key, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res = a.checkConn(config.Config{NATSURL: url})
+	if !res.ok || !res.lobby || res.players != 2 || !strings.Contains(res.msg, "2 players online") {
+		t.Fatalf("probe with two players = %+v, want 2 players online", res)
+	}
+	if txt, col := probeSummary(res, false); !strings.HasSuffix(txt, " · 2 online") || col != colGo {
+		t.Fatalf("row summary = %q (%v), want '<ping> · 2 online' in green", txt, col)
 	}
 }
 
 func TestCheckConnURLUnreachable(t *testing.T) {
 	a := newTestApp()
 
-	msg, ok := a.checkConn(config.Config{NATSURL: "nats://127.0.0.1:1"})
-	if ok {
-		t.Fatalf("unroutable URL reported as reachable: %s", msg)
+	res := a.checkConn(config.Config{NATSURL: "nats://127.0.0.1:1"})
+	if res.ok {
+		t.Fatalf("unroutable URL reported as reachable: %s", res.msg)
 	}
-	if !strings.HasPrefix(msg, "✗ ") {
-		t.Fatalf("msg = %q, want a ✗ error line", msg)
+	if !strings.HasPrefix(res.msg, "✗ ") {
+		t.Fatalf("msg = %q, want a ✗ error line", res.msg)
+	}
+	if txt, col := probeSummary(res, false); txt != "OFFLINE" || col != colErr {
+		t.Fatalf("row summary = %q (%v), want a red OFFLINE", txt, col)
+	}
+	if txt, _ := probeSummary(probeResult{}, true); txt != "…" {
+		t.Fatalf("row summary while probing = %q, want …", txt)
+	}
+	if txt, _ := probeSummary(probeResult{}, false); txt != "" {
+		t.Fatalf("row summary before any probe = %q, want empty", txt)
 	}
 }
 
@@ -54,25 +92,25 @@ func TestCheckConnEmbedded(t *testing.T) {
 	})
 
 	port := freePort(t)
-	msg, ok := a.checkConn(config.Config{RunEmbedded: true, EmbeddedPort: port})
-	if !ok {
-		t.Fatalf("embedded check failed: %s", msg)
+	res := a.checkConn(config.Config{RunEmbedded: true, EmbeddedPort: port})
+	if !res.ok {
+		t.Fatalf("embedded check failed: %s", res.msg)
 	}
 	if a.embSrv == nil {
 		t.Fatal("embedded check did not start the server")
 	}
-	if !strings.Contains(msg, "Core NATS ping") || !strings.Contains(msg, a.embAddr) {
-		t.Fatalf("msg = %q, want the ping and the served address", msg)
+	if !strings.Contains(res.msg, "Core NATS ping") || !strings.Contains(res.msg, a.embAddr) {
+		t.Fatalf("msg = %q, want the ping and the served address", res.msg)
 	}
-	if strings.Contains(msg, "—") {
-		t.Fatalf("msg = %q, want a measured ping, not the unset placeholder", msg)
+	if strings.Contains(res.msg, "—") {
+		t.Fatalf("msg = %q, want a measured ping, not the unset placeholder", res.msg)
 	}
 
 	// Checking again reuses the running server rather than failing on the
 	// port it already holds.
 	srv := a.embSrv
-	if msg, ok := a.checkConn(config.Config{RunEmbedded: true, EmbeddedPort: port}); !ok {
-		t.Fatalf("second embedded check failed: %s", msg)
+	if res := a.checkConn(config.Config{RunEmbedded: true, EmbeddedPort: port}); !res.ok {
+		t.Fatalf("second embedded check failed: %s", res.msg)
 	}
 	if a.embSrv != srv {
 		t.Fatal("second check restarted the embedded server")
@@ -92,22 +130,22 @@ func TestCheckConnEmbeddedHostOverride(t *testing.T) {
 
 	port := freePort(t)
 	cfg := config.Config{RunEmbedded: true, EmbeddedHost: "127.0.0.1", EmbeddedPort: port}
-	msg, ok := a.checkConn(cfg)
-	if !ok {
-		t.Fatalf("embedded check with an overridden IP failed: %s", msg)
+	res := a.checkConn(cfg)
+	if !res.ok {
+		t.Fatalf("embedded check with an overridden IP failed: %s", res.msg)
 	}
 	want := "127.0.0.1:" + strconv.Itoa(port)
 	if a.embAddr != want {
 		t.Fatalf("shareable address = %q, want the overridden %q", a.embAddr, want)
 	}
-	if !strings.Contains(msg, want) {
-		t.Fatalf("msg = %q, want the overridden address %q", msg, want)
+	if !strings.Contains(res.msg, want) {
+		t.Fatalf("msg = %q, want the overridden address %q", res.msg, want)
 	}
 
 	// An address that does not reach this machine fails the check rather than
 	// being reported as serving.
-	if msg, ok := a.checkConn(config.Config{RunEmbedded: true, EmbeddedHost: "192.0.2.1", EmbeddedPort: port}); ok {
-		t.Fatalf("unreachable overridden IP reported as serving: %s", msg)
+	if res := a.checkConn(config.Config{RunEmbedded: true, EmbeddedHost: "192.0.2.1", EmbeddedPort: port}); res.ok {
+		t.Fatalf("unreachable overridden IP reported as serving: %s", res.msg)
 	}
 }
 

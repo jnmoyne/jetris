@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"image"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"jetris/internal/config"
 	"jetris/internal/engine"
 	"jetris/internal/lobby"
+	"jetris/internal/prefs"
 )
 
 // newTestApp builds an App wired for headless layout: nil NATS handles (only
@@ -60,76 +62,181 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 	})
 
 	t.Run("login-picker", func(t *testing.T) {
-		a := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta")
+		a := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connEnum.Value != "context" || a.connCtx != "beta" {
-			t.Fatalf("default choice = %q/%q, want context/beta (the selected context)", a.connEnum.Value, a.connCtx)
+		if a.connTab != connTabBrowser || a.connSel != ctxKey("beta") {
+			t.Fatalf("default choice = %q/%q, want the browser tab with context beta (the selected context)", a.connTab, a.connSel)
+		}
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATSContext != "beta" || cfg.NATSURL != "" || cfg.RunEmbedded {
+			t.Fatalf("pickerConfig = %+v, want context beta only", cfg)
 		}
 		renderOnce(t, a)
-		// The constructor's SetText on the URL editor queues a synthetic
-		// ChangeEvent; the first frame must swallow it rather than let it
-		// flip the choice to the URL option.
-		if a.connEnum.Value != "context" {
-			t.Fatalf("choice after first frame = %q, want context (SetText must not pick the URL option)", a.connEnum.Value)
+		// Every browser state lays out: a collapsed section, the add form,
+		// a probe in flight and a finished one, then the LAN tab.
+		a.connSecClosed[secContexts] = true
+		a.connAddOpen = true
+		a.connAddScroll = true // just opened: the list scrolls the form into view
+		a.connProbing = ctxKey("beta")
+		a.connProbes[urlKey(prefs.DemoFavorite.URL)] = probeResult{ok: true, msg: "✓ ok", rtt: 12 * time.Millisecond, lobby: true, players: 2}
+		renderOnce(t, a)
+		if a.connAddScroll {
+			t.Fatal("the add-form scroll request should be consumed by the frame that lays out the form")
 		}
-		// Render again with the context pull-down expanded.
-		a.connDropOpen = true
+		a.connTab = connTabLAN
 		renderOnce(t, a)
 	})
 
 	t.Run("login-picker-no-contexts", func(t *testing.T) {
-		a := NewWithPicker(config.Config{}, nil, "")
+		// Without contexts the first favorite (the demo server) starts
+		// selected, and the CONTEXTS section shows its hint.
+		a := NewWithPicker(config.Config{}, nil, "", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connEnum.Value != "url" {
-			t.Fatalf("default choice = %q, want url when no contexts exist", a.connEnum.Value)
+		if a.connSel != urlKey(prefs.DemoFavorite.URL) {
+			t.Fatalf("default choice = %q, want the demo favorite when no contexts exist", a.connSel)
 		}
-		if a.connURLEd.Text() != DefaultNATSURL {
-			t.Fatalf("URL field = %q, want %q", a.connURLEd.Text(), DefaultNATSURL)
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATSURL != prefs.DemoFavorite.URL {
+			t.Fatalf("pickerConfig URL = %q, want %q", cfg.NATSURL, prefs.DemoFavorite.URL)
+		}
+		renderOnce(t, a)
+
+		// Nothing to select at all (no contexts, every favorite deleted):
+		// Play explains instead of dialing nowhere.
+		a = NewWithPicker(config.Config{}, nil, "", nil)
+		a.th = newTestApp().th
+		if a.connSel != "" {
+			t.Fatalf("default choice = %q, want none", a.connSel)
+		}
+		if _, err := a.pickerConfig(); err == nil {
+			t.Fatal("pickerConfig with nothing selected should error")
 		}
 		renderOnce(t, a)
 	})
 
 	t.Run("login-picker-server-flag", func(t *testing.T) {
-		// --server seeds the URL field and makes the URL option the default,
-		// beating the CLI's selected context.
-		a := NewWithPicker(config.Config{NATSURL: "nats://example:4222"}, []string{"alpha"}, "alpha")
+		// --server selects that URL, beating the CLI's selected context; a
+		// URL that isn't a favorite is listed under COMMAND LINE.
+		a := NewWithPicker(config.Config{NATSURL: "nats://example:4222", NATSUser: "u", NATSPassword: "p"}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connEnum.Value != "url" {
-			t.Fatalf("default choice = %q, want url when --server is given", a.connEnum.Value)
+		if a.connSel != urlKey("nats://example:4222") {
+			t.Fatalf("default choice = %q, want the --server URL", a.connSel)
 		}
-		if a.connURLEd.Text() != "nats://example:4222" {
-			t.Fatalf("URL field = %q, want the --server value", a.connURLEd.Text())
+		secs := a.connSections()
+		if len(secs) != 3 || secs[2].title != secCLI || len(secs[2].entries) != 1 || secs[2].entries[0].url != "nats://example:4222" {
+			t.Fatalf("sections = %+v, want a COMMAND LINE section holding the --server URL", secs)
+		}
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATSURL != "nats://example:4222" || cfg.NATSUser != "u" || cfg.NATSPassword != "p" {
+			t.Fatalf("pickerConfig = %+v, want the --server URL with its credentials", cfg)
 		}
 		renderOnce(t, a)
+
+		// A --server URL that IS a favorite selects the favorite instead.
+		a = NewWithPicker(config.Config{NATSURL: prefs.DemoFavorite.URL}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
+		a.th = newTestApp().th
+		if secs := a.connSections(); len(secs) != 2 {
+			t.Fatalf("sections = %+v, want no COMMAND LINE section for a favorite URL", secs)
+		}
+		if e, ok := a.connEntry(a.connSel); !ok || e.fav != 0 {
+			t.Fatalf("selected entry = %+v, want the demo favorite", e)
+		}
 	})
 
 	t.Run("login-picker-context-flag", func(t *testing.T) {
 		// --context preselects that context, adding it to the list if the
 		// lister didn't discover it.
-		a := NewWithPicker(config.Config{NATSContext: "mine"}, []string{"alpha"}, "alpha")
+		a := NewWithPicker(config.Config{NATSContext: "mine"}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connEnum.Value != "context" || a.connCtx != "mine" {
-			t.Fatalf("default choice = %q/%q, want context/mine when --context is given", a.connEnum.Value, a.connCtx)
+		if a.connSel != ctxKey("mine") {
+			t.Fatalf("default choice = %q, want context mine when --context is given", a.connSel)
 		}
-		found := false
-		for _, c := range a.connContexts {
-			if c == "mine" {
-				found = true
-			}
-		}
-		if !found {
+		if !slices.Contains(a.connContexts, "mine") {
 			t.Fatalf("contexts %v should include the --context value", a.connContexts)
+		}
+		cfg, err := a.pickerConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATSContext != "mine" {
+			t.Fatalf("pickerConfig context = %q, want mine", cfg.NATSContext)
+		}
+		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-favorites", func(t *testing.T) {
+		// Adding a favorite bookmarks + selects + persists it (label
+		// defaulting to the scheme-less URL); a duplicate just selects the
+		// existing row; deleting the selected one moves the selection on.
+		// Starts from a single bookmark so the counts below are exact.
+		a := NewWithPicker(config.Config{}, nil, "", []prefs.Favorite{prefs.DemoFavorite})
+		a.th = newTestApp().th
+		var saved [][]prefs.Favorite
+		a.favSave = func(f []prefs.Favorite) error { saved = append(saved, f); return nil }
+
+		a.connAddURLEd.SetText("nats://10.0.0.7:4222")
+		a.addFavorite()
+		if len(a.favorites) != 2 || a.favorites[1] != (prefs.Favorite{Label: "10.0.0.7:4222", URL: "nats://10.0.0.7:4222"}) {
+			t.Fatalf("favorites after add = %+v", a.favorites)
+		}
+		if a.connSel != urlKey("nats://10.0.0.7:4222") || a.connAddOpen || a.connAddURLEd.Text() != "" {
+			t.Fatalf("after add: sel=%q addOpen=%v url=%q; want the new row selected and the form closed", a.connSel, a.connAddOpen, a.connAddURLEd.Text())
+		}
+		if len(saved) != 1 || len(saved[0]) != 2 {
+			t.Fatalf("saved = %+v, want one save of both favorites", saved)
+		}
+
+		a.connAddLabelEd.SetText("Office")
+		a.connAddURLEd.SetText("nats://office:4222")
+		a.addFavorite()
+		if len(a.favorites) != 3 || a.favorites[2].Label != "Office" {
+			t.Fatalf("favorites after labeled add = %+v", a.favorites)
+		}
+
+		a.connSel = ctxKey("none")
+		a.connAddURLEd.SetText(prefs.DemoFavorite.URL)
+		a.addFavorite()
+		if len(a.favorites) != 3 || a.connSel != urlKey(prefs.DemoFavorite.URL) || len(saved) != 2 {
+			t.Fatalf("duplicate add: favorites=%d sel=%q saves=%d; want no new row, the existing one selected, no save", len(a.favorites), a.connSel, len(saved))
+		}
+
+		a.connAddURLEd.SetText("nats://bad url:4222")
+		a.addFavorite()
+		if len(a.favorites) != 3 || a.loginErr == "" {
+			t.Fatalf("a URL with spaces was accepted (favorites=%d err=%q)", len(a.favorites), a.loginErr)
+		}
+
+		a.deleteFavorite(0) // the selected demo row
+		if len(a.favorites) != 2 || a.connSel != urlKey("nats://10.0.0.7:4222") || len(saved) != 3 {
+			t.Fatalf("after delete: favorites=%+v sel=%q saves=%d", a.favorites, a.connSel, len(saved))
+		}
+		a.deleteFavorite(1)
+		a.deleteFavorite(0)
+		if len(a.favorites) != 0 || a.connSel != "" {
+			t.Fatalf("after deleting all: favorites=%+v sel=%q, want none", a.favorites, a.connSel)
+		}
+		if saved[len(saved)-1] == nil || len(saved[len(saved)-1]) != 0 {
+			t.Fatalf("last save = %#v, want an empty (non-nil) list so the demo server stays deleted", saved[len(saved)-1])
 		}
 		renderOnce(t, a)
 	})
 
 	t.Run("login-picker-embedded", func(t *testing.T) {
-		// The "LAN mode (embedded NATS server)" option resolves to the
-		// embedded mark with the detected IP and the default port, no URL or
-		// context, and its rows (IP + port entry, shareable-URL line) render.
-		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
+		// The LAN-mode tab resolves to the embedded mark with the detected IP
+		// and the default port, no URL or context, and its rows (IP + port
+		// entry, shareable-URL line) render.
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		a.connEnum.Value = "embedded"
+		a.connTab = connTabLAN
 		cfg, err := a.pickerConfig()
 		if err != nil {
 			t.Fatal(err)
@@ -150,9 +257,9 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		// The IP field overrides the auto-detected address; clearing it goes
 		// back to auto-detection ("" — resolved at connect time); a URL pasted
 		// into it errors instead of producing a bogus address.
-		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		a.connEnum.Value = "embedded"
+		a.connTab = connTabLAN
 		a.connHostEd.SetText("192.168.7.9")
 		a.connPortEd.SetText("14222")
 		cfg, err := a.pickerConfig()
@@ -193,9 +300,9 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 
 	t.Run("login-picker-embedded-port", func(t *testing.T) {
 		// A custom port carries through; garbage in the port field errors.
-		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha")
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		a.connEnum.Value = "embedded"
+		a.connTab = connTabLAN
 		a.connPortEd.SetText("14222")
 		cfg, err := a.pickerConfig()
 		if err != nil {

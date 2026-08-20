@@ -73,7 +73,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 		if srv != nil && nc.ConnectedServerId() != srv.ID() {
 			nc.Close()
 			a.mu.Lock()
-			a.loginErr = fmt.Sprintf("another NATS server is already using port %d — connect to it via the URL option instead, or stop it", embeddedPortOrDefault(cfg.EmbeddedPort))
+			a.loginErr = fmt.Sprintf("another NATS server is already using port %d — connect to it through the server browser instead, or stop it", embeddedPortOrDefault(cfg.EmbeddedPort))
 			a.loggingIn = false
 			a.mu.Unlock()
 			a.invalidate()
@@ -149,52 +149,58 @@ func (a *App) ensureEmbeddedServer(wantHost string, wantPort int) (string, error
 	return addr, nil
 }
 
-// doCheckConn validates a connection-picker choice without committing to it,
-// and publishes the outcome to the check row. Runs off the UI goroutine;
-// connChecking was already set by the click handler.
-func (a *App) doCheckConn(cfg config.Config) {
-	msg, ok := a.checkConn(cfg)
+// doCheckConn probes a connection-page choice without committing to it and
+// files the outcome under key (a browser entry key, or probeKeyLAN). Runs off
+// the UI goroutine; connProbing was already set by the click handler.
+func (a *App) doCheckConn(key string, cfg config.Config) {
+	res := a.checkConn(cfg)
 	a.mu.Lock()
-	a.connChecking = false
-	a.connCheckOK = ok
-	a.connCheckMsg = msg
+	a.connProbing = ""
+	a.connProbes[key] = res
 	a.mu.Unlock()
 	a.invalidate()
 }
 
-// checkConn performs the actual probe and returns the line to show (already
-// prefixed ✓/✗) plus whether it succeeded. Every choice — context, URL and LAN
-// mode alike — really dials NATS and really measures a core NATS ping, so the
-// check exercises the same path Play will take; the probe connection is closed
-// again and provisions nothing. LAN mode additionally starts the embedded
-// server first (that IS what it is checking), then dials it over its LAN
-// address exactly as doConnectAndLogin does, including the "is this actually
-// OUR server on that port?" identity check.
-func (a *App) checkConn(cfg config.Config) (string, bool) {
+// checkConn performs the actual probe: every choice — context, URL and LAN
+// mode alike — really dials NATS, really measures a core NATS ping, and
+// counts the players in that server's lobby, so the check exercises the same
+// path Play will take; the probe connection is closed again and provisions
+// nothing. LAN mode additionally starts the embedded server first (that IS
+// what it is checking), then dials it over its LAN address exactly as
+// doConnectAndLogin does, including the "is this actually OUR server on that
+// port?" identity check. The result's msg is the ✓/✗ line to show.
+func (a *App) checkConn(cfg config.Config) probeResult {
 	embedded := cfg.RunEmbedded
 	if embedded {
 		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedHost, cfg.EmbeddedPort)
 		if err != nil {
-			return "✗ " + err.Error(), false
+			return probeResult{msg: "✗ " + err.Error()}
 		}
 		cfg.NATSURL = "nats://" + addr
 	}
 	res, err := natspkg.CheckConnection(cfg)
 	if err != nil {
-		return "✗ " + err.Error(), false
+		return probeResult{msg: "✗ " + err.Error()}
 	}
-	if !embedded {
-		return "✓ " + res.ServerURL + " · Core NATS ping " + formatRTT(res.RTT), true
+	if embedded {
+		a.mu.Lock()
+		srv := a.embSrv
+		a.mu.Unlock()
+		if srv != nil && res.ServerID != srv.ID() {
+			return probeResult{msg: fmt.Sprintf("✗ another NATS server is already using port %d — connect to it through the server browser instead, or stop it", embeddedPortOrDefault(cfg.EmbeddedPort))}
+		}
 	}
-	a.mu.Lock()
-	srv := a.embSrv
-	a.mu.Unlock()
-	if srv != nil && res.ServerID != srv.ID() {
-		return fmt.Sprintf("✗ another NATS server is already using port %d — connect to it via the URL option instead, or stop it", embeddedPortOrDefault(cfg.EmbeddedPort)), false
+	server := res.ServerURL
+	if embedded {
+		server = "serving on " + server
 	}
-	// No data-directory note here: the port row right above the button already
-	// carries it, and the extra clause pushes this line into a second row.
-	return fmt.Sprintf("✓ serving on %s · Core NATS ping %s", res.ServerURL, formatRTT(res.RTT)), true
+	return probeResult{
+		ok:      true,
+		msg:     fmt.Sprintf("✓ %s · Core NATS ping %s · %s", server, formatRTT(res.RTT), playersText(res.Players, res.Lobby)),
+		rtt:     res.RTT,
+		players: res.Players,
+		lobby:   res.Lobby,
+	}
 }
 
 // disconnect drops the app-owned NATS connection and clears the handles.

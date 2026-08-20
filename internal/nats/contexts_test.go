@@ -95,3 +95,23 @@ func TestListContextsStaleSelection(t *testing.T) {
 		t.Fatalf("stale selection: got names=%v selected=%q, want [alpha] and empty", names, selected)
 	}
 }
+
+// ContextURL reads the context file's url field for display; a context without
+// one (or a missing file) yields "" rather than an error.
+func TestContextURL(t *testing.T) {
+	parent := writeContextDir(t, "bare")
+	t.Setenv("XDG_CONFIG_HOME", parent)
+	dir := filepath.Join(parent, "nats", "context")
+	if err := os.WriteFile(filepath.Join(dir, "prod.json"), []byte(`{"description":"prod","url":" nats://prod.example:4222 "}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ContextURL("prod"); got != "nats://prod.example:4222" {
+		t.Fatalf("ContextURL(prod) = %q", got)
+	}
+	if got := ContextURL("bare"); got != "" {
+		t.Fatalf("ContextURL(bare) = %q, want empty for a context without a url", got)
+	}
+	if got := ContextURL("missing"); got != "" {
+		t.Fatalf("ContextURL(missing) = %q, want empty", got)
+	}
+}

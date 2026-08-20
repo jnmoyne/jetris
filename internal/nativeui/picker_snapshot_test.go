@@ -1,8 +1,9 @@
 package nativeui
 
-// Opt-in visual verification for the login screen's context pull-down:
-// renders the picker closed and open via a headless GPU window and writes
-// PNGs for inspection. Skipped unless FW_SNAPSHOT_DIR is set (needs a GPU):
+// Opt-in visual verification for the login screen's connection page: renders
+// the server browser (with probe results, a collapsed section, the add form)
+// and the LAN-mode tab via a headless GPU window and writes PNGs for
+// inspection. Skipped unless FW_SNAPSHOT_DIR is set (needs a GPU):
 //
 //	FW_SNAPSHOT_DIR=/tmp go test ./internal/nativeui/ -run TestPickerSnapshots
 
@@ -11,6 +12,7 @@ import (
 	"image/png"
 	"os"
 	"testing"
+	"time"
 
 	"gioui.org/gpu/headless"
 	"gioui.org/layout"
@@ -18,6 +20,7 @@ import (
 	"gioui.org/unit"
 
 	"jetris/internal/config"
+	"jetris/internal/prefs"
 )
 
 func TestPickerSnapshots(t *testing.T) {
@@ -31,22 +34,22 @@ func TestPickerSnapshots(t *testing.T) {
 	}
 	defer w.Release()
 
-	a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo", "prod-cluster"}, "beta")
+	a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo", "prod-cluster"}, "beta",
+		append(prefs.DefaultFavorites(), prefs.Favorite{Label: "home lab", URL: "nats://192.168.1.20:4222"}))
 	a.th = newTestApp().th
+	a.connCtxURLs["beta"] = "nats://beta.example.com:4222"
+	a.connProbes[urlKey(prefs.DemoFavorite.URL)] = probeResult{ok: true, msg: "✓ nats://demo.nats.io:4222 · Core NATS ping 38 ms · 3 players online", rtt: 38 * time.Millisecond, players: 3, lobby: true}
+	a.connProbes[urlKey("nats://192.168.1.20:4222")] = probeResult{msg: "✗ dial tcp 192.168.1.20:4222: connection refused"}
 
 	for _, st := range []struct {
-		name     string
-		open     bool
-		embedded bool
-	}{{"closed", false, false}, {"open", true, false}, {"embedded", false, true}} {
-		a.connDropOpen = st.open
-		if st.embedded {
-			// LAN mode selected: the shareable "Your server's URL is" line
-			// appears under the port row.
-			a.connEnum.Value = "embedded"
-		} else {
-			a.connEnum.Value = "context"
-		}
+		name  string
+		setup func()
+	}{
+		{"browser", func() { a.connSel = urlKey(prefs.DemoFavorite.URL) }},
+		{"browser_add", func() { a.connAddOpen = true; a.connSecClosed[secContexts] = true }},
+		{"lan", func() { a.connAddOpen = false; a.connSecClosed[secContexts] = false; a.connTab = connTabLAN }},
+	} {
+		st.setup()
 		var ops op.Ops
 		gtx := layout.Context{
 			Ops:         &ops,

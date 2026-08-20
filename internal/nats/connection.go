@@ -2,8 +2,10 @@ package nats
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -92,37 +94,91 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*nats.Conn, jetstream.Je
 // CheckResult reports what a CheckConnection probe found: the server it
 // actually reached (a URL list or a context may resolve to any of several),
 // that server's ID (so callers can tell an embedded server from a stranger
-// squatting the same port), and the measured core NATS round trip.
+// squatting the same port), the measured core NATS round trip, and how busy
+// that server's Jetris lobby is: Players is the number of presence entries in
+// its lobby KV bucket (humans and agents currently connected), Lobby whether
+// the bucket exists at all (false = nobody has ever played there).
 type CheckResult struct {
 	ServerURL string
 	ServerID  string
 	RTT       time.Duration
+	Players   int
+	Lobby     bool
 }
 
 // CheckConnection dials per cfg (NATSURL wins over NATSContext, like
-// Bootstrap), measures the core NATS round-trip time, and closes the
-// connection. It provisions nothing — used by the login screen's "Check
-// connection" button to validate a picker choice before playing.
+// Bootstrap), measures the core NATS round-trip time, peeks at the lobby's
+// player count, and closes the connection. It provisions nothing — used by
+// the login screen's server browser (Refresh) and LAN-mode check to size up a
+// server before playing on it.
 func CheckConnection(cfg config.Config) (CheckResult, error) {
+	const timeout = 5 * time.Second
 	var (
-		nc  *nats.Conn
-		err error
+		nc     *nats.Conn
+		domain string
+		err    error
 	)
 	if cfg.NATSURL != "" {
-		nc, _, err = ConnectURL(cfg.NATSURL, cfg.NATSUser, cfg.NATSPassword, nats.Timeout(5*time.Second))
+		nc, _, err = ConnectURL(cfg.NATSURL, cfg.NATSUser, cfg.NATSPassword, nats.Timeout(timeout))
 	} else {
-		nc, _, _, err = Connect(cfg.NATSContext, nats.Timeout(5*time.Second))
+		var settings natscontext.Settings
+		nc, _, settings, err = Connect(cfg.NATSContext, nats.Timeout(timeout))
+		domain = settings.JSDomain
 	}
 	if err != nil {
 		return CheckResult{}, err
 	}
 	defer nc.Close()
-	rtt, err := CoreNATSPing(nc, 5*time.Second)
+	rtt, err := CoreNATSPing(nc, timeout)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	return CheckResult{ServerURL: nc.ConnectedUrl(), ServerID: nc.ConnectedServerId(), RTT: rtt}, nil
+	res := CheckResult{ServerURL: nc.ConnectedUrl(), ServerID: nc.ConnectedServerId(), RTT: rtt}
+	js, err := newJetStream(nc, domain)
+	if err != nil {
+		return res, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	res.Players, res.Lobby, err = LobbyPlayerCount(ctx, js)
+	if err != nil {
+		return res, fmt.Errorf("lobby: %w", err)
+	}
+	return res, nil
 }
+
+// LobbyPlayerCount counts the presence entries in the server's lobby KV bucket
+// — the players (humans and agents) currently connected to that server's
+// Jetris lobby. Presence entries carry a per-key TTL (see PutLobbyPresence), so
+// a client that vanished drops out of the count within config.PresenceTTL. A
+// server nobody has ever played on has no bucket yet: that is reported as
+// (0, false, nil), not as an error.
+func LobbyPlayerCount(ctx context.Context, js jetstream.JetStream) (count int, found bool, err error) {
+	kv, err := js.KeyValue(ctx, config.LobbyKVBucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	keys, err := kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return 0, true, nil
+	}
+	if err != nil {
+		return 0, true, err
+	}
+	for _, k := range keys {
+		if strings.HasPrefix(k, lobbyPlayersPrefix) {
+			count++
+		}
+	}
+	return count, true, nil
+}
+
+// lobbyPlayersPrefix is the key prefix of presence entries in the lobby KV
+// (config.LobbyPlayerKey builds "players.<id>").
+const lobbyPlayersPrefix = "players."
 
 // CoreNATSPing measures a core NATS round trip the way the game itself uses
 // the connection: subscribe to a fresh inbox, publish a message carrying the

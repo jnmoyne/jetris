@@ -14,6 +14,7 @@ import (
 	"jetris/internal/config"
 	"jetris/internal/nativeui"
 	natspkg "jetris/internal/nats"
+	"jetris/internal/prefs"
 )
 
 // version is overridden at release time via -ldflags "-X main.version=<tag>"
@@ -27,16 +28,20 @@ func main() {
 	defer cancel()
 
 	// The window opens immediately; the login screen combines name entry with
-	// the connection picker, and the app dials NATS when the player hits Play.
-	// --server/--context don't connect here — they only seed the picker's
-	// defaults (the URL field text, or which context radio starts selected).
+	// the connection page (NATS server browser / LAN mode), and the app dials
+	// NATS when the player hits Play. --server/--context don't connect here —
+	// they only seed the browser's selection.
 	nativeui.SetVersion(version) // shown in the window's top-right corner
 
 	names, selected, err := natspkg.ListContexts()
 	if err != nil {
 		log.Printf("warning: listing NATS contexts: %v", err)
 	}
-	runNative(ctx, cancel, nativeui.NewWithPicker(cfg, names, selected))
+	favorites, err := prefs.LoadFavorites()
+	if err != nil {
+		log.Printf("warning: loading server favorites: %v", err)
+	}
+	runNative(ctx, cancel, nativeui.NewWithPicker(cfg, names, selected, favorites))
 }
 
 // runNative opens the native (Gio) window. Gio's app.Main() owns the OS main
@@ -72,8 +77,8 @@ func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) 
 func parseFlags() config.Config {
 	cfg := config.Config{}
 
-	flag.StringVar(&cfg.NATSContext, "context", "", "NATS context to preselect in the connection picker")
-	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL to pre-fill in the connection picker (overrides --context as the default choice)")
+	flag.StringVar(&cfg.NATSContext, "context", "", "NATS context to preselect in the login screen's server browser")
+	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL to preselect in the login screen's server browser (overrides --context as the default choice)")
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
 	showVersion := flag.Bool("version", false, "print version and exit")

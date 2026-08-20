@@ -1142,8 +1142,23 @@ const (
 // the board cells' block shading) and a chunky diagonal glint that sweeps
 // across the face every few seconds, arcade attract-screen style.
 func (a *App) attractButton(gtx C, btn *widget.Clickable, label string) D {
+	return a.attractStyled(gtx, pixelize(material.Button(a.th, btn, label)))
+}
+
+// bigAttractButton is the attract treatment at marquee scale — the login
+// screen's Play: a taller button with a larger pixel label, stretched to
+// whatever width the caller gives it.
+func (a *App) bigAttractButton(gtx C, btn *widget.Clickable, label string) D {
+	b := pixelize(material.Button(a.th, btn, label))
+	b.TextSize = unit.Sp(16)
+	b.Inset = layout.Inset{Top: unit.Dp(14), Bottom: unit.Dp(14), Left: unit.Dp(24), Right: unit.Dp(24)}
+	return a.attractStyled(gtx, b)
+}
+
+// attractStyled draws button style b with the attract-mode bevel and glint.
+func (a *App) attractStyled(gtx C, b material.ButtonStyle) D {
 	return hardShadow(gtx, func(gtx C) D {
-		dims := pixelize(material.Button(a.th, btn, label)).Layout(gtx)
+		dims := b.Layout(gtx)
 		w, h := dims.Size.X, dims.Size.Y
 		bounds := image.Rect(0, 0, w, h)
 

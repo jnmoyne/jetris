@@ -31,6 +31,7 @@ import (
 	"jetris/internal/engine"
 	"jetris/internal/lobby"
 	natspkg "jetris/internal/nats"
+	"jetris/internal/prefs"
 )
 
 // Layout type aliases used throughout the package.
@@ -105,19 +106,22 @@ type App struct {
 
 	// Connection picker: set at construction by NewWithPicker, immutable
 	// afterwards. connCfg carries any --user/--password flags through to URL
-	// connects.
+	// connects; connCtxURLs is each context's server URL for display (best
+	// effort, "" when unknown); favSave persists the favorites
+	// (prefs.SaveFavorites — tests stub it).
 	needConn     bool
 	connContexts []string
 	connSelected string
+	connCtxURLs  map[string]string
 	connCfg      config.Config
+	favSave      func([]prefs.Favorite) error
 
-	// "Check connection" result state (written by doCheckConn; guarded by mu).
-	// connCheckFor is the picker option the result belongs to, so switching
-	// options hides a result that no longer describes the current choice.
-	connChecking bool
-	connCheckOK  bool
-	connCheckMsg string
-	connCheckFor string
+	// Server probes — the selected browser row's ↻ and LAN mode's "Check embedded
+	// server" (written by doCheckConn; guarded by mu): the last result per
+	// server key (connEntry.key, or probeKeyLAN for the embedded server), and
+	// the key being probed right now ("" = idle).
+	connProbes  map[string]probeResult
+	connProbing string
 
 	// Embedded server ("LAN mode (embedded NATS server)" option; guarded by
 	// mu). The server starts on the first embedded login and runs until the
@@ -199,24 +203,37 @@ type App struct {
 	msgGroupSeq  int
 
 	// --- UI-goroutine-only widgets ---
-	loginEd        widget.Editor
-	loginBtn       widget.Clickable
-	collisionYes   widget.Clickable
-	collisionNo    widget.Clickable
-	connEnum       widget.Enum        // connection choice: "context" for the context pull-down, "url" for the URL row
-	connCtx        string             // context chosen in the pull-down (seeded from --context or the CLI's selected context)
-	connDropOpen   bool               // whether the context pull-down list is expanded
-	connDropBtn    widget.Clickable   // the pull-down button itself
-	connOptBtns    []widget.Clickable // one per context row in the expanded pull-down
-	connURLEd      widget.Editor      // NATS URL entry (pre-set to the demo server or --server)
-	connURLSeeded  bool               // swallow the ChangeEvent queued by the constructor's SetText (it isn't a user edit)
-	connHostEd     widget.Editor      // LAN-mode IP entry (pre-set to the detected lanIP; empty = auto-detect again)
-	connHostSeeded bool               // same SetText-ChangeEvent swallow as connURLSeeded
-	connPortEd     widget.Editor      // LAN-mode port entry (pre-set to config.DefaultEmbeddedPort)
-	connPortSeeded bool               // same SetText-ChangeEvent swallow as connURLSeeded
-	lanIP          string             // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
-	connList       widget.List        // scrollable pull-down option list
-	connCheckBtn   widget.Clickable   // "Check connection" (connect + ping, no side effects)
+	loginEd      widget.Editor
+	loginBtn     widget.Clickable
+	collisionYes widget.Clickable
+	collisionNo  widget.Clickable
+	// Connection page widgets. connTab picks the tab (the server browser or
+	// LAN mode); the browser is a collapsible tree of sections — FAVORITES
+	// (the persisted bookmarks, with an inline add form and per-row delete),
+	// CONTEXTS (the NATS CLI contexts) and, when --server was given and isn't
+	// a favorite, COMMAND LINE — whose selected row is connSel (an entry key,
+	// "url:<url>" or "ctx:<name>"). LAN mode has the IP + port editors.
+	connTab        string
+	connTabBtns    [2]widget.Clickable          // the two tab chips
+	connSel        string                       // selected browser entry key
+	favorites      []prefs.Favorite             // FAVORITES rows, in display order
+	connSecClosed  map[string]bool              // section title → collapsed (absent = expanded)
+	connSecBtns    map[string]*widget.Clickable // section header toggles, by title
+	connRowBtns    map[string]*widget.Clickable // browser rows, by entry key
+	connDelBtns    map[string]*widget.Clickable // favorites' ✕ buttons, by entry key
+	connBrowserLst widget.List                  // the scrollable browser tree
+	connAddOpen    bool                         // the add-favorite form is expanded
+	connAddScroll  bool                         // scroll the browser to the add form on the next frame (set when it opens)
+	connAddRowBtn  widget.Clickable             // "+ Add a NATS URL…" row
+	connAddLabelEd widget.Editor                // add form: label (optional)
+	connAddURLEd   widget.Editor                // add form: the URL
+	connAddBtn     widget.Clickable             // add form: Add
+	connAddCancel  widget.Clickable             // add form: Cancel
+	connHostEd     widget.Editor                // LAN mode: IP entry (pre-set to the detected lanIP; empty = auto-detect again)
+	connPortEd     widget.Editor                // LAN mode: port entry (pre-set to config.DefaultEmbeddedPort)
+	lanIP          string                       // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
+	connRefreshBtn widget.Clickable             // browser: the selected row's ↻ (probe that server)
+	connCheckBtn   widget.Clickable             // LAN mode: Check embedded server
 
 	// Create-game wizard: the lobby's single "Create a new game" button
 	// (createBtn) opens a modal that walks through the game's attributes one
@@ -403,33 +420,38 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	return a
 }
 
-// DefaultNATSURL pre-fills the login screen's NATS URL field.
-const DefaultNATSURL = "nats://demo.nats.io:4222"
-
 // NewWithPicker builds the App for the single combined login screen: name
-// entry plus a CONNECT TO section (a "Context:" pull-down over the known NATS
-// CLI contexts plus a NATS URL entry). The app dials NATS itself when the
-// player hits Play, and quitting the lobby returns to this same screen
-// (disconnected). CLI flags only seed the picker's defaults: --server
-// pre-fills the URL field and makes the URL option the starting choice;
-// --context presets the pull-down (added to the list if it isn't among the
-// discovered ones); --user/--password ride along in connCfg and apply to URL
-// connects.
-func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
+// entry, the two-tab connection page (NATS server browser / LAN mode) and the
+// Play button. favorites are the browser's bookmarks (the caller loads them:
+// prefs.LoadFavorites). The app dials NATS itself when the player hits Play,
+// and quitting the lobby returns to this same screen (disconnected). CLI
+// flags only seed the browser's selection: --server selects that URL (listed
+// under COMMAND LINE unless it is already a favorite); --context selects that
+// context (added to the list if it isn't among the discovered ones);
+// --user/--password ride along in connCfg and apply to URL connects.
+func NewWithPicker(cfg config.Config, contexts []string, selected string, favorites []prefs.Favorite) *App {
 	a := New(nil, nil)
 	a.needConn = true
 	a.connCfg = cfg
-	a.connContexts = contexts
+	a.connContexts = append([]string(nil), contexts...)
 	a.connSelected = selected
-	a.connURLEd.SingleLine = true
-	a.connURLEd.Submit = true
-	a.connURLEd.SetText(DefaultNATSURL)
-	a.connURLSeeded = true // the SetText above queues a ChangeEvent; don't let it pick the URL option
+	a.favorites = append([]prefs.Favorite(nil), favorites...)
+	a.favSave = prefs.SaveFavorites
+	a.connProbes = map[string]probeResult{}
+	a.connSecClosed = map[string]bool{}
+	a.connSecBtns = map[string]*widget.Clickable{}
+	a.connRowBtns = map[string]*widget.Clickable{}
+	a.connDelBtns = map[string]*widget.Clickable{}
+	a.connTab = connTabBrowser
+	a.connBrowserLst.Axis = layout.Vertical
+	a.connAddLabelEd.SingleLine = true
+	a.connAddLabelEd.Submit = true
+	a.connAddURLEd.SingleLine = true
+	a.connAddURLEd.Submit = true
 	a.connPortEd.SingleLine = true
 	a.connPortEd.Submit = true
 	a.connPortEd.Filter = "0123456789"
 	a.connPortEd.SetText(strconv.Itoa(config.DefaultEmbeddedPort))
-	a.connPortSeeded = true // same swallow as connURLSeeded
 	a.lanIP = natspkg.LanIP()
 	a.connHostEd.SingleLine = true
 	a.connHostEd.Submit = true
@@ -437,34 +459,31 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string) *App {
 	// be shared and can correct it (multi-homed hosts, VPNs, containers where
 	// the detected interface is not the one friends can reach).
 	a.connHostEd.SetText(a.lanIP)
-	a.connHostSeeded = true // same swallow as connURLSeeded
-	a.connList.Axis = layout.Vertical
 
-	// Default choice precedence: --server, then --context, then the CLI's
-	// currently selected context, then the always-available URL option. The
-	// pull-down itself is preset to --context / the CLI's selected context
-	// (falling back to the first known context) whichever option starts out.
-	a.connCtx = selected
+	if cfg.NATSContext != "" && !slices.Contains(a.connContexts, cfg.NATSContext) {
+		a.connContexts = append(a.connContexts, cfg.NATSContext)
+		sort.Strings(a.connContexts)
+	}
+	a.connCtxURLs = map[string]string{}
+	for _, c := range a.connContexts {
+		a.connCtxURLs[c] = natspkg.ContextURL(c)
+	}
+
+	// Default selection precedence: --server, then --context, then the CLI's
+	// currently selected context, then the first favorite, then the first
+	// context (a machine with neither starts with nothing selected).
 	switch {
 	case cfg.NATSURL != "":
-		a.connURLEd.SetText(cfg.NATSURL)
-		a.connEnum.Value = "url"
+		a.connSel = urlKey(cfg.NATSURL)
 	case cfg.NATSContext != "":
-		if !slices.Contains(a.connContexts, cfg.NATSContext) {
-			a.connContexts = append(a.connContexts, cfg.NATSContext)
-			sort.Strings(a.connContexts)
-		}
-		a.connCtx = cfg.NATSContext
-		a.connEnum.Value = "context"
+		a.connSel = ctxKey(cfg.NATSContext)
 	case selected != "":
-		a.connEnum.Value = "context"
-	default:
-		a.connEnum.Value = "url"
+		a.connSel = ctxKey(selected)
+	case len(a.favorites) > 0:
+		a.connSel = urlKey(a.favorites[0].URL)
+	case len(a.connContexts) > 0:
+		a.connSel = ctxKey(a.connContexts[0])
 	}
-	if a.connCtx == "" && len(a.connContexts) > 0 {
-		a.connCtx = a.connContexts[0]
-	}
-	a.connOptBtns = make([]widget.Clickable, len(a.connContexts))
 	return a
 }
 

@@ -2,17 +2,79 @@ package nativeui
 
 import (
 	"errors"
+	"fmt"
+	"image"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
+	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
 	"jetris/internal/config"
+	"jetris/internal/prefs"
 )
+
+// The connection page's two tabs.
+const (
+	connTabBrowser = "browser" // NATS server browser: favorites + contexts
+	connTabLAN     = "lan"     // LAN mode: host the embedded NATS server
+)
+
+// probeKeyLAN is the connProbes key of the embedded server's check result.
+const probeKeyLAN = "lan"
+
+// Browser section titles (also the keys of connSecClosed/connSecBtns).
+const (
+	secFavorites = "FAVORITES"
+	secContexts  = "CONTEXTS"
+	secCLI       = "COMMAND LINE"
+)
+
+// loginCardW is the width of the login card. connPanelH is the fixed height
+// of the connection page's panel — the same on both tabs, so switching never
+// moves the Play button.
+const (
+	loginCardW = unit.Dp(560)
+	connPanelH = unit.Dp(300)
+)
+
+// probeResult is the outcome of one server probe (Refresh / Check embedded
+// server): the full ✓/✗ line for the detail row, plus the parts the browser
+// rows show inline.
+type probeResult struct {
+	ok      bool
+	msg     string
+	rtt     time.Duration
+	players int
+	lobby   bool
+}
+
+// connEntry is one selectable server row of the browser: a URL entry (a
+// favorite or the --server flag) or a NATS CLI context.
+type connEntry struct {
+	key    string // selection/probe key: "url:<url>" or "ctx:<name>"
+	label  string
+	detail string // muted second line (the URL; "" when unknown or same as label)
+	url    string // dial target for URL entries
+	ctx    string // context name for context entries
+	fav    int    // index into a.favorites for deletable rows, -1 otherwise
+}
+
+// connSection is one collapsible group of the browser tree.
+type connSection struct {
+	title   string
+	entries []connEntry
+	hint    string // shown in place of entries when there are none
+	addRow  bool   // FAVORITES: ends with the "+ Add a NATS URL…" row
+}
+
+func urlKey(url string) string  { return "url:" + url }
+func ctxKey(name string) string { return "ctx:" + name }
 
 func (a *App) layoutLogin(gtx C) D {
 	// --- event handling ---
@@ -26,60 +88,19 @@ func (a *App) layoutLogin(gtx C) D {
 			submitted = true
 		}
 	}
-	for {
-		ev, ok := a.connURLEd.Update(gtx)
-		if !ok {
-			break
-		}
-		switch ev.(type) {
-		case widget.SubmitEvent:
-			submitted = true
-		case widget.ChangeEvent:
-			// Typing a URL implies choosing the URL option — but the
-			// constructor's programmatic SetText also queues one ChangeEvent
-			// on the first frame, and that must not override the context
-			// default.
-			if a.connURLSeeded {
-				a.connURLSeeded = false
-			} else {
-				a.connEnum.Value = "url"
+	for _, ed := range []*widget.Editor{&a.connHostEd, &a.connPortEd} {
+		for {
+			ev, ok := ed.Update(gtx)
+			if !ok {
+				break
+			}
+			if _, ok := ev.(widget.SubmitEvent); ok {
+				submitted = true
 			}
 		}
 	}
-	for {
-		ev, ok := a.connPortEd.Update(gtx)
-		if !ok {
-			break
-		}
-		switch ev.(type) {
-		case widget.SubmitEvent:
-			submitted = true
-		case widget.ChangeEvent:
-			// Editing the port implies choosing LAN mode, with the same
-			// seeded-ChangeEvent swallow as the URL field.
-			if a.connPortSeeded {
-				a.connPortSeeded = false
-			} else {
-				a.connEnum.Value = "embedded"
-			}
-		}
-	}
-	for {
-		ev, ok := a.connHostEd.Update(gtx)
-		if !ok {
-			break
-		}
-		switch ev.(type) {
-		case widget.SubmitEvent:
-			submitted = true
-		case widget.ChangeEvent:
-			// Editing the address implies choosing LAN mode, same swallow.
-			if a.connHostSeeded {
-				a.connHostSeeded = false
-			} else {
-				a.connEnum.Value = "embedded"
-			}
-		}
+	if a.pickerActive() {
+		a.handleConnPage(gtx)
 	}
 
 	a.mu.Lock()
@@ -106,63 +127,69 @@ func (a *App) layoutLogin(gtx C) D {
 		a.submitLogin()
 	}
 
-	if a.connCheckBtn.Clicked(gtx) && a.pickerActive() {
-		a.mu.Lock()
-		checking := a.connChecking
-		a.mu.Unlock()
-		if !checking {
-			if cfg, err := a.pickerConfig(); err != nil {
-				a.setLoginErr(err.Error())
-			} else {
-				a.setLoginErr("")
-				a.mu.Lock()
-				a.connChecking = true
-				a.connCheckMsg = ""
-				a.connCheckFor = a.connEnum.Value
-				a.mu.Unlock()
-				go a.doCheckConn(cfg)
-			}
-		}
-	}
-
 	// --- render ---
-	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(440)
-		gtx.Constraints.Min.X = gtx.Dp(440)
-		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx C) D {
-				// The title flanked by NATS "N" logos, arcade-marquee style.
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
-					layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(14)}.Layout(gtx) }),
-					layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
-					layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(14)}.Layout(gtx) }),
-					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
-				)
-			}),
-			layout.Rigid(spacer(16)),
-			layout.Rigid(func(gtx C) D {
-				if collision {
-					return a.loginCollisionContent(gtx)
-				}
-				return a.loginNormalContent(gtx, loggingIn, loginErr)
-			}),
-			layout.Rigid(spacer(20)),
-			layout.Rigid(func(gtx C) D {
-				// Branding tagline at the foot of the login card.
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.pixel(unit.Sp(9), "peer to peer · made with ", colMuted).Layout),
-					layout.Rigid(a.natsTag(18, 9)),
-				)
-			}),
-		)
+	// The artwork fills the window behind the card.
+	return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+		layout.Expanded(a.loginBackdrop),
+		layout.Stacked(func(gtx C) D {
+			gtx.Constraints.Max.X = gtx.Dp(loginCardW)
+			gtx.Constraints.Min.X = gtx.Dp(loginCardW)
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					// The title flanked by NATS "N" logos, arcade-marquee style,
+					// centered over the card.
+					return layout.Center.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+							layout.Rigid(hSpacer(14)),
+							layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
+							layout.Rigid(hSpacer(14)),
+							layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+						)
+					})
+				}),
+				layout.Rigid(spacer(14)),
+				layout.Rigid(func(gtx C) D {
+					return a.loginCard(gtx, func(gtx C) D {
+						if collision {
+							return a.loginCollisionContent(gtx)
+						}
+						return a.loginNormalContent(gtx, loggingIn, loginErr)
+					})
+				}),
+				layout.Rigid(spacer(14)),
+				layout.Rigid(func(gtx C) D {
+					// Branding tagline at the foot of the login card.
+					return layout.Center.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(a.pixel(unit.Sp(9), "peer to peer · made with ", colMuted).Layout),
+							layout.Rigid(a.natsTag(18, 9)),
+						)
+					})
+				}),
+			)
+		}),
+	)
+}
+
+// loginCard frames the login form like the create-game wizard — accent
+// border over a hard shadow — on a near-opaque panel so the backdrop artwork
+// shows through only faintly.
+func (a *App) loginCard(gtx C, content layout.Widget) D {
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+			return background(gtx, withAlpha(colBg, 0.93), func(gtx C) D {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				return layout.UniformInset(unit.Dp(18)).Layout(gtx, content)
+			})
+		})
 	})
 }
 
 // submitLogin validates the entered name and kicks off the async login: in
-// picker mode it first resolves the connection choice (context or URL) and
-// dispatches doConnectAndLogin; otherwise (already connected) plain doLogin.
-// Runs on the UI goroutine.
+// picker mode it first resolves the connection choice (the browser's selected
+// server, or the LAN-mode server) and dispatches doConnectAndLogin; otherwise
+// (already connected) plain doLogin. Runs on the UI goroutine.
 func (a *App) submitLogin() {
 	name := strings.TrimSpace(a.loginEd.Text())
 	if err := config.ValidatePlayerName(name); err != nil {
@@ -190,23 +217,17 @@ func (a *App) submitLogin() {
 	go a.doConnectAndLogin(name, cfg)
 }
 
-// pickerConfig resolves the current CONNECT TO choice into a config: the URL
-// field when the URL radio is active (errors when empty), the embedded-server
-// mark plus the entered port for the "LAN mode (embedded NATS server)" radio,
-// otherwise the context chosen in the pull-down. The base is connCfg, so
-// --user/--password flags carry through to URL connects. Runs on the UI
-// goroutine (reads widgets).
+// pickerConfig resolves the connection page into a config: on the LAN tab the
+// embedded-server mark plus the entered IP and port; on the browser tab the
+// selected row — a URL entry dials its URL, a context entry connects through
+// that NATS CLI context (errors when nothing is selected). The base is
+// connCfg, so --user/--password flags carry through to URL connects. Runs on
+// the UI goroutine (reads widgets).
 func (a *App) pickerConfig() (config.Config, error) {
 	cfg := a.connCfg
 	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
 	cfg.EmbeddedHost, cfg.EmbeddedPort = "", 0
-	switch a.connEnum.Value {
-	case "url":
-		cfg.NATSURL = strings.TrimSpace(a.connURLEd.Text())
-		if cfg.NATSURL == "" {
-			return cfg, errors.New("enter a NATS URL")
-		}
-	case "embedded":
+	if a.connTab == connTabLAN {
 		cfg.RunEmbedded = true
 		host, err := a.pickerHost()
 		if err != nil {
@@ -218,11 +239,16 @@ func (a *App) pickerConfig() (config.Config, error) {
 			return cfg, err
 		}
 		cfg.EmbeddedPort = port
-	default:
-		if a.connCtx == "" {
-			return cfg, errors.New("no NATS context selected")
-		}
-		cfg.NATSContext = a.connCtx
+		return cfg, nil
+	}
+	e, ok := a.connEntry(a.connSel)
+	if !ok {
+		return cfg, errors.New("select a server in the browser (or add one to your favorites)")
+	}
+	if e.url != "" {
+		cfg.NATSURL = e.url
+	} else {
+		cfg.NATSContext = e.ctx
 	}
 	return cfg, nil
 }
@@ -282,31 +308,36 @@ func (a *App) setLoginErr(msg string) {
 	a.mu.Unlock()
 }
 
+// loginNormalContent is the card's body: the name entry on top, the two-tab
+// connection page in the middle, the big Play button at the bottom.
 func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
-	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.header("YOUR NAME")),
 		layout.Rigid(func(gtx C) D {
 			return a.editorBox(gtx, &a.loginEd, "Enter your name")
+		}),
+		layout.Rigid(func(gtx C) D {
+			l := material.Body2(a.th, "No spaces, dots, or wildcards; max 32 characters.")
+			l.Color = colMuted
+			return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, l.Layout)
 		}),
 		layout.Rigid(spacer(14)),
 		layout.Rigid(func(gtx C) D {
 			if a.pickerActive() {
-				return a.connSection(gtx)
+				return a.connPage(gtx)
 			}
 			return D{}
 		}),
-		layout.Rigid(spacer(10)),
+		layout.Rigid(spacer(16)),
 		layout.Rigid(func(gtx C) D {
-			label := "Play"
+			label := "PLAY"
 			if loggingIn {
-				label = "Connecting…"
+				label = "CONNECTING…"
 			}
-			return a.primaryButton(gtx, &a.loginBtn, label)
-		}),
-		layout.Rigid(spacer(8)),
-		layout.Rigid(func(gtx C) D {
-			l := material.Body2(a.th, "No spaces, dots, or wildcards; max 32 characters.")
-			l.Color = colMuted
-			return l.Layout(gtx)
+			// Play is the action this whole screen is waiting on: the
+			// attract treatment, at marquee size, across the card.
+			gtx.Constraints.Min.X = gtx.Constraints.Max.X
+			return a.bigAttractButton(gtx, &a.loginBtn, label)
 		}),
 		layout.Rigid(func(gtx C) D {
 			if loginErr == "" {
@@ -314,7 +345,7 @@ func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
 			}
 			l := material.Body2(a.th, loginErr)
 			l.Color = colErr
-			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, l.Layout)
+			return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, l.Layout)
 		}),
 	)
 }
@@ -339,219 +370,605 @@ func (a *App) loginCollisionContent(gtx C) D {
 	)
 }
 
-// connSection renders the CONNECT TO chooser shown while the app has not yet
-// connected (launched without --server/--context): a "Context:" radio with a
-// pull-down button over the known NATS CLI contexts — preset to --context or
-// the CLI's currently selected context — plus an always-present "NATS URL"
-// radio with an editable URL pre-set to the demo server. Opening the
-// pull-down expands a scroll-capped option list under the button; picking a
-// row (or just touching the pull-down) also selects the context radio, the
-// same way typing a URL selects the URL radio.
-func (a *App) connSection(gtx C) D {
-	if a.connDropBtn.Clicked(gtx) {
-		a.connDropOpen = !a.connDropOpen
-		a.connEnum.Value = "context" // touching the pull-down implies choosing the context option
+// --- the connection page: tabs, server browser, LAN mode ---
+
+// connSections builds the browser tree from the current state: FAVORITES
+// (always, with its add row), CONTEXTS (always — a hint when the machine has
+// none) and COMMAND LINE only while --server names a URL that isn't a
+// favorite. Built fresh every frame; rows are cheap.
+func (a *App) connSections() []connSection {
+	favs := connSection{title: secFavorites, addRow: true, hint: "no favorites yet — add a NATS URL below"}
+	for i, f := range a.favorites {
+		detail := f.URL
+		if detail == f.Label {
+			detail = ""
+		}
+		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i})
 	}
-	for i := range a.connOptBtns {
-		if a.connOptBtns[i].Clicked(gtx) {
-			a.connCtx = a.connContexts[i]
-			a.connEnum.Value = "context"
-			a.connDropOpen = false
+	ctxs := connSection{title: secContexts, hint: "no NATS CLI contexts on this machine (nats context add …)"}
+	for _, name := range a.connContexts {
+		label := name
+		if name == a.connSelected {
+			label += " (selected)"
+		}
+		ctxs.entries = append(ctxs.entries, connEntry{key: ctxKey(name), label: label, detail: a.connCtxURLs[name], ctx: name, fav: -1})
+	}
+	sections := []connSection{favs, ctxs}
+	if url := a.connCfg.NATSURL; url != "" && !a.isFavorite(url) {
+		sections = append(sections, connSection{title: secCLI, entries: []connEntry{
+			{key: urlKey(url), label: "--server", detail: url, url: url, fav: -1},
+		}})
+	}
+	return sections
+}
+
+// connEntry finds the browser entry with the given key.
+func (a *App) connEntry(key string) (connEntry, bool) {
+	if key == "" {
+		return connEntry{}, false
+	}
+	for _, sec := range a.connSections() {
+		for _, e := range sec.entries {
+			if e.key == key {
+				return e, true
+			}
+		}
+	}
+	return connEntry{}, false
+}
+
+// isFavorite reports whether url is already bookmarked.
+func (a *App) isFavorite(url string) bool {
+	for _, f := range a.favorites {
+		if f.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
+// clickable returns the per-key widget from m, creating it on first use.
+func clickable(m map[string]*widget.Clickable, key string) *widget.Clickable {
+	b, ok := m[key]
+	if !ok {
+		b = &widget.Clickable{}
+		m[key] = b
+	}
+	return b
+}
+
+// handleConnPage dispatches every click on the connection page: tab
+// switches, section toggles, row selection, favorite add/delete, the
+// selected row's ↻ and LAN mode's Check embedded server. Runs on the UI
+// goroutine, before the frame is drawn.
+func (a *App) handleConnPage(gtx C) {
+	if a.connTabBtns[0].Clicked(gtx) {
+		a.connTab = connTabBrowser
+	}
+	if a.connTabBtns[1].Clicked(gtx) {
+		a.connTab = connTabLAN
+	}
+	for _, sec := range a.connSections() {
+		if clickable(a.connSecBtns, sec.title).Clicked(gtx) {
+			a.connSecClosed[sec.title] = !a.connSecClosed[sec.title]
+		}
+		for _, e := range sec.entries {
+			if clickable(a.connRowBtns, e.key).Clicked(gtx) {
+				a.connSel = e.key
+				a.setLoginErr("")
+			}
+			if e.fav >= 0 && clickable(a.connDelBtns, e.key).Clicked(gtx) {
+				a.deleteFavorite(e.fav)
+			}
+		}
+	}
+	if a.connAddRowBtn.Clicked(gtx) {
+		a.connAddOpen = true
+		a.connAddScroll = true
+		a.connSecClosed[secFavorites] = false
+		gtx.Execute(key.FocusCmd{Tag: &a.connAddURLEd})
+	}
+	add := a.connAddBtn.Clicked(gtx)
+	for _, ed := range []*widget.Editor{&a.connAddLabelEd, &a.connAddURLEd} {
+		for {
+			ev, ok := ed.Update(gtx)
+			if !ok {
+				break
+			}
+			if _, ok := ev.(widget.SubmitEvent); ok {
+				add = true
+			}
+		}
+	}
+	if add {
+		a.addFavorite()
+	}
+	if a.connAddCancel.Clicked(gtx) {
+		a.closeAddForm()
+	}
+
+	if a.connRefreshBtn.Clicked(gtx) && a.connTab == connTabBrowser {
+		a.startProbe(a.connSel)
+	}
+	if a.connCheckBtn.Clicked(gtx) && a.connTab == connTabLAN {
+		a.startProbe(probeKeyLAN)
+	}
+}
+
+// startProbe kicks off the probe of key — the selected browser row or the
+// LAN-mode server — unless one is already running; the choice must resolve
+// to a config first (nothing selected, a bad port… land on the error line).
+func (a *App) startProbe(key string) {
+	a.mu.Lock()
+	probing := a.connProbing != ""
+	a.mu.Unlock()
+	if probing {
+		return
+	}
+	cfg, err := a.pickerConfig()
+	if err != nil {
+		a.setLoginErr(err.Error())
+		return
+	}
+	a.setLoginErr("")
+	a.mu.Lock()
+	a.connProbing = key
+	delete(a.connProbes, key)
+	a.mu.Unlock()
+	go a.doCheckConn(key, cfg)
+}
+
+// addFavorite reads the add form, bookmarks the URL (label defaults to the
+// URL without its scheme), persists the list, selects the new row and closes
+// the form. A URL already bookmarked is selected instead of duplicated.
+func (a *App) addFavorite() {
+	url := strings.TrimSpace(a.connAddURLEd.Text())
+	label := strings.TrimSpace(a.connAddLabelEd.Text())
+	if url == "" {
+		a.setLoginErr("enter the NATS URL to add (nats://host:4222)")
+		return
+	}
+	if strings.ContainsAny(url, " \t") {
+		a.setLoginErr("a NATS URL cannot contain spaces")
+		return
+	}
+	if a.isFavorite(url) {
+		a.connSel = urlKey(url)
+		a.closeAddForm()
+		return
+	}
+	if label == "" {
+		label = strings.TrimPrefix(strings.TrimPrefix(url, "nats://"), "tls://")
+	}
+	a.favorites = append(a.favorites, prefs.Favorite{Label: label, URL: url})
+	a.connSel = urlKey(url)
+	a.closeAddForm()
+	a.persistFavorites()
+}
+
+// deleteFavorite removes favorite i, moving the selection to the next best row
+// if it was selected, and persists the list.
+func (a *App) deleteFavorite(i int) {
+	if i < 0 || i >= len(a.favorites) {
+		return
+	}
+	key := urlKey(a.favorites[i].URL)
+	a.favorites = append(a.favorites[:i:i], a.favorites[i+1:]...)
+	if a.connSel == key {
+		a.connSel = ""
+		for _, sec := range a.connSections() {
+			if len(sec.entries) > 0 {
+				a.connSel = sec.entries[0].key
+				break
+			}
+		}
+	}
+	a.persistFavorites()
+}
+
+// persistFavorites saves the favorites; a failure is shown on the error line
+// (the in-memory list still works for this session).
+func (a *App) persistFavorites() {
+	if a.favSave == nil {
+		return
+	}
+	favs := make([]prefs.Favorite, len(a.favorites)) // never nil: an emptied list must save as []
+	copy(favs, a.favorites)
+	if err := a.favSave(favs); err != nil {
+		a.setLoginErr("couldn't save favorites: " + err.Error())
+	} else {
+		a.setLoginErr("")
+	}
+}
+
+// closeAddForm collapses the add-favorite form and clears its fields.
+func (a *App) closeAddForm() {
+	a.connAddOpen = false
+	a.connAddLabelEd.SetText("")
+	a.connAddURLEd.SetText("")
+}
+
+// connPage renders the two-tab connection page: the tab chips on top and the
+// active tab's panel below, framed as one unit.
+func (a *App) connPage(gtx C) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.header("CONNECT TO")),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.End}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return a.connTabChip(gtx, &a.connTabBtns[0], "NATS SERVER BROWSER", a.connTab == connTabBrowser)
+				}),
+				layout.Rigid(hSpacer(4)),
+				layout.Rigid(func(gtx C) D {
+					return a.connTabChip(gtx, &a.connTabBtns[1], "LAN MODE (EMBEDDED NATS SERVER)", a.connTab == connTabLAN)
+				}),
+			)
+		}),
+		layout.Rigid(func(gtx C) D {
+			return widget.Border{Color: colAccent, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+				return background(gtx, colPanel, func(gtx C) D {
+					// Exact height whichever tab is up (see connPanelH).
+					gtx.Constraints = layout.Exact(image.Pt(gtx.Constraints.Max.X, gtx.Dp(connPanelH)))
+					return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
+						if a.connTab == connTabLAN {
+							return a.lanTab(gtx)
+						}
+						return a.browserTab(gtx)
+					})
+				})
+			})
+		}),
+	)
+}
+
+// connTabChip is one tab: a pixel-face label on a chunky chip — accent-filled
+// while active, panel-colored with a muted label otherwise — sitting on the
+// panel's top border like a file-folder tab.
+func (a *App) connTabChip(gtx C, btn *widget.Clickable, label string, active bool) D {
+	bg, fg, border := colPanel, colMuted, colBorder
+	if active {
+		bg, fg, border = colAccent, colBg, colAccent
+	}
+	return material.Clickable(gtx, btn, func(gtx C) D {
+		return widget.Border{Color: border, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+			return background(gtx, bg, func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx,
+					a.pixel(unit.Sp(8), label, fg).Layout)
+			})
+		})
+	})
+}
+
+// browserTab is the NATS server browser: the collapsible tree of servers in a
+// list filling the panel, with the selected server's probe state on the line
+// under it.
+func (a *App) browserTab(gtx C) D {
+	a.mu.Lock()
+	probes := make(map[string]probeResult, len(a.connProbes))
+	for k, v := range a.connProbes {
+		probes[k] = v
+	}
+	probing := a.connProbing
+	a.mu.Unlock()
+
+	var rows []layout.Widget
+	for _, sec := range a.connSections() {
+		sec := sec
+		rows = append(rows, a.sectionRow(sec))
+		if a.connSecClosed[sec.title] {
+			continue
+		}
+		if len(sec.entries) == 0 {
+			rows = append(rows, a.hintRow(sec.hint))
+		}
+		for _, e := range sec.entries {
+			e := e
+			rows = append(rows, a.entryRow(e, probes, probing))
+		}
+		if sec.addRow {
+			if a.connAddOpen {
+				if a.connAddScroll {
+					// Just opened: bring the form into view (it may sit
+					// below the list's visible window).
+					a.connBrowserLst.ScrollTo(len(rows))
+					a.connAddScroll = false
+				}
+				rows = append(rows, a.addForm)
+			} else {
+				rows = append(rows, a.addRow)
+			}
 		}
 	}
 
-	children := []layout.FlexChild{
-		layout.Rigid(a.header("CONNECT TO NATS.io SERVERS")),
-		layout.Rigid(spacer(4)),
-	}
-	if len(a.connContexts) > 0 {
-		children = append(children, layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					rb := material.RadioButton(a.th, &a.connEnum, "context", "Context:")
-					rb.Color = colFg
-					return rb.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
-				}),
-				layout.Flexed(1, a.connDropButton),
-			)
-		}))
-		if a.connDropOpen {
-			children = append(children,
-				layout.Rigid(spacer(4)),
-				layout.Rigid(a.connDropList),
-			)
-		}
-		children = append(children, layout.Rigid(spacer(6)))
-	}
-	children = append(children,
-		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					rb := material.RadioButton(a.th, &a.connEnum, "url", "NATS URL:")
-					rb.Color = colFg
-					return rb.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
-				}),
-				layout.Flexed(1, func(gtx C) D {
-					return a.editorBox(gtx, &a.connURLEd, "nats://host:4222")
-				}),
-			)
-		}),
-		layout.Rigid(spacer(6)),
-		layout.Rigid(func(gtx C) D {
-			rb := material.RadioButton(a.th, &a.connEnum, "embedded", "LAN mode (embedded NATS server)")
-			rb.Color = colFg
-			return rb.Layout(gtx)
-		}),
-		layout.Rigid(func(gtx C) D {
-			// IP + port entry, indented under the LAN-mode radio. Both are
-			// editable: the IP is only auto-DETECTED, and on a multi-homed or
-			// VPN'd machine the detected one may not be the address friends
-			// can reach.
-			return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(26)}.Layout(gtx, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.body("IP:", colFg)),
-					layout.Rigid(hSpacer(6)),
-					layout.Flexed(1, func(gtx C) D {
-						return a.editorBox(gtx, &a.connHostEd, a.lanIP)
-					}),
-					layout.Rigid(hSpacer(10)),
-					layout.Rigid(a.body("Port:", colFg)),
-					layout.Rigid(hSpacer(6)),
-					layout.Rigid(func(gtx C) D {
-						gtx.Constraints.Max.X = gtx.Dp(70)
-						gtx.Constraints.Min.X = gtx.Constraints.Max.X
-						return a.editorBox(gtx, &a.connPortEd, strconv.Itoa(config.DefaultEmbeddedPort))
-					}),
-				)
-			})
-		}),
-		layout.Rigid(func(gtx C) D {
-			// With LAN mode chosen, show the URL other players dial — built
-			// from the fields above — so the host can share it before even
-			// hitting Play, plus where the server keeps its data.
-			if a.connEnum.Value != "embedded" {
-				return D{}
-			}
-			return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(26)}.Layout(gtx, func(gtx C) D {
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-							layout.Rigid(a.body("Your server's URL is ", colMuted)),
-							layout.Rigid(a.body("nats://"+a.pickerAddr(), colNATSGreen)),
-						)
-					}),
-					layout.Rigid(a.body("data in ./"+config.EmbeddedStoreDir, colMuted)),
-				)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Flexed(1, func(gtx C) D {
+			return widget.Border{Color: colBorder, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+				return background(gtx, colBg, func(gtx C) D {
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return material.List(a.th, &a.connBrowserLst).Layout(gtx, len(rows), func(gtx C, i int) D {
+						return rows[i](gtx)
+					})
+				})
 			})
 		}),
 		layout.Rigid(spacer(8)),
-		layout.Rigid(a.connCheckRow),
+		layout.Rigid(func(gtx C) D { return a.connStatusLine(gtx, a.connSel) }),
 	)
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
-// connDropButton is the collapsed pull-down: an editor-style bordered box
-// holding the chosen context name and a drop arrow (flipped while open).
-func (a *App) connDropButton(gtx C) D {
-	return material.Clickable(gtx, &a.connDropBtn, func(gtx C) D {
-		return widget.Border{Color: colBorder, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
-			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
-				gtx.Constraints.Min.X = gtx.Constraints.Max.X
-				arrow := "▼"
-				if a.connDropOpen {
-					arrow = "▲"
-				}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, a.body(a.connCtx, colFg)),
-					layout.Rigid(a.body(arrow, colAccent)),
-				)
-			})
-		})
-	})
-}
-
-// connDropList is the expanded pull-down: one clickable row per known
-// context, scrolling inside a capped box. The CLI's currently selected
-// context is marked "(selected)" and the pull-down's current choice is
-// highlighted in the accent color.
-func (a *App) connDropList(gtx C) D {
-	return bordered(gtx, func(gtx C) D {
-		if max := gtx.Dp(180); gtx.Constraints.Max.Y > max {
-			gtx.Constraints.Max.Y = max
+// sectionRow is a collapsible section header: ▼/▶ plus the title in the
+// pixel face, full width, on a panel stripe.
+func (a *App) sectionRow(sec connSection) layout.Widget {
+	return func(gtx C) D {
+		arrow := "▼ "
+		if a.connSecClosed[sec.title] {
+			arrow = "▶ "
 		}
-		gtx.Constraints.Min.Y = 0
-		return material.List(a.th, &a.connList).Layout(gtx, len(a.connContexts), func(gtx C, i int) D {
-			name := a.connContexts[i]
-			label := name
-			if name == a.connSelected {
-				label += " (selected)"
-			}
-			col := colFg
-			if name == a.connCtx {
-				col = colAccent
-			}
-			return material.Clickable(gtx, &a.connOptBtns[i], func(gtx C) D {
+		return material.Clickable(gtx, clickable(a.connSecBtns, sec.title), func(gtx C) D {
+			return background(gtx, colPanel, func(gtx C) D {
 				gtx.Constraints.Min.X = gtx.Constraints.Max.X
-				return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, a.body(label, col))
+				return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(a.body(arrow, colAccent)),
+						layout.Rigid(a.pixel(unit.Sp(9), sec.title, colAccent).Layout),
+						layout.Rigid(func(gtx C) D {
+							n := fmt.Sprintf("  (%d)", len(sec.entries))
+							return a.pixel(unit.Sp(8), n, colMuted).Layout(gtx)
+						}),
+					)
+				})
 			})
+		})
+	}
+}
+
+// entryRow is one selectable server: the selected row carries a ↻ button (the
+// pad's blocky rotate glyph) that probes that server, then the label (accent
+// while selected) with the URL under it in muted type, the last probe's inline
+// summary on the right, and — for favorites — a ✕ to delete.
+func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing string) layout.Widget {
+	return func(gtx C) D {
+		selected := e.key == a.connSel
+		labelCol, bg := colFg, colBg
+		if selected {
+			labelCol, bg = colAccent, colPanel
+		}
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D {
+				return material.Clickable(gtx, clickable(a.connRowBtns, e.key), func(gtx C) D {
+					return background(gtx, bg, func(gtx C) D {
+						gtx.Constraints.Min.X = gtx.Constraints.Max.X
+						return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx C) D {
+									sz := gtx.Dp(22)
+									if !selected {
+										return D{Size: image.Pt(sz, sz)}
+									}
+									return a.rowRefreshButton(gtx, sz, probing != "")
+								}),
+								layout.Rigid(hSpacer(6)),
+								layout.Flexed(1, func(gtx C) D {
+									return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+										layout.Rigid(a.body(e.label, labelCol)),
+										layout.Rigid(func(gtx C) D {
+											if e.detail == "" {
+												return D{}
+											}
+											l := material.Caption(a.th, e.detail)
+											l.Color = colMuted
+											return l.Layout(gtx)
+										}),
+									)
+								}),
+								layout.Rigid(func(gtx C) D {
+									txt, col := probeSummary(probes[e.key], probing == e.key)
+									if txt == "" {
+										return D{}
+									}
+									return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.pixel(unit.Sp(8), txt, col).Layout)
+								}),
+							)
+						})
+					})
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				if e.fav < 0 {
+					return D{}
+				}
+				return material.Clickable(gtx, clickable(a.connDelBtns, e.key), func(gtx C) D {
+					return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(10)}.Layout(gtx,
+						a.pixel(unit.Sp(9), "✕", colErr).Layout)
+				})
+			}),
+		)
+	}
+}
+
+// rowRefreshButton is the selected row's ↻: a bordered chip with the rotate
+// glyph in the accent (muted, inert while a probe is running).
+func (a *App) rowRefreshButton(gtx C, sz int, busy bool) D {
+	col, border := colAccent, colAccent
+	if busy {
+		col, border = colMuted, colBorder
+	}
+	return widget.Border{Color: border, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+		return material.Clickable(gtx, &a.connRefreshBtn, func(gtx C) D {
+			gtx.Constraints = layout.Exact(image.Pt(sz, sz))
+			return layout.Center.Layout(gtx, glyphWidget(glyphCW, 12, col))
 		})
 	})
 }
 
-// connCheckRow renders the check button and, next to it, the last check's
-// outcome: "✓ <server> · Core NATS ping <rtt>" in green or "✗ <error>" in red.
-// With LAN mode selected the button reads "Check embedded server" — that check
-// starts the server rather than merely dialing one. A result from a different
-// picker option is hidden: it no longer describes what the button would check.
-func (a *App) connCheckRow(gtx C) D {
-	a.mu.Lock()
-	checking := a.connChecking
-	ok := a.connCheckOK
-	msg := a.connCheckMsg
-	if a.connCheckFor != a.connEnum.Value {
-		msg = ""
+// hintRow is a section's muted placeholder when it has no entries.
+func (a *App) hintRow(txt string) layout.Widget {
+	return func(gtx C) D {
+		return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx, a.body(txt, colMuted))
 	}
-	a.mu.Unlock()
+}
 
-	label := "Check connection"
-	if a.connEnum.Value == "embedded" {
-		label = "Check embedded server"
+// addRow is the FAVORITES section's trailing "+ Add a NATS URL…" action.
+func (a *App) addRow(gtx C) D {
+	return material.Clickable(gtx, &a.connAddRowBtn, func(gtx C) D {
+		gtx.Constraints.Min.X = gtx.Constraints.Max.X
+		return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx,
+			a.body("+ Add a NATS URL…", colNATSGreen))
+	})
+}
+
+// addForm is the expanded add-favorite form: label + URL editors and
+// Add / Cancel, indented under the favorites.
+func (a *App) addForm(gtx C) D {
+	return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(8), Left: unit.Dp(28), Right: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.body("Label:", colMuted)),
+					layout.Rigid(hSpacer(6)),
+					layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, &a.connAddLabelEd, "optional") }),
+				)
+			}),
+			layout.Rigid(spacer(6)),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.body("URL:", colMuted)),
+					layout.Rigid(hSpacer(6)),
+					layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, &a.connAddURLEd, "nats://host:4222") }),
+				)
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.connAddBtn, "Add to favorites") }),
+					layout.Rigid(hSpacer(8)),
+					layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.connAddCancel, "Cancel") }),
+				)
+			}),
+		)
+	})
+}
+
+// probeSummary is a row's inline probe readout: "…" while probing, the ping
+// and head count once it succeeded ("12 ms · 3 online"), OFFLINE if it failed
+// (the detail row under the list carries the error).
+func probeSummary(p probeResult, probing bool) (string, colorN) {
+	switch {
+	case probing:
+		return "…", colMuted
+	case p.msg == "":
+		return "", colMuted
+	case !p.ok:
+		return "OFFLINE", colErr
 	}
-	if checking {
-		label = "Checking…"
+	online := "no lobby"
+	if p.lobby {
+		online = fmt.Sprintf("%d online", p.players)
 	}
-	// The outcome goes UNDER the button, on the card's full width: these lines
-	// carry a server URL, a ping and (in LAN mode) the data directory, and
-	// would wrap to a ragged column in the strip left beside the button.
+	return formatRTT(p.rtt) + " · " + online, colGo
+}
+
+// playersText words a probe's lobby head count for the detail line.
+func playersText(players int, lobby bool) string {
+	switch {
+	case !lobby:
+		return "no lobby yet"
+	case players == 0:
+		return "nobody online"
+	case players == 1:
+		return "1 player online"
+	}
+	return fmt.Sprintf("%d players online", players)
+}
+
+// lanTab is LAN mode: what it does, the IP + port editors, the shareable URL,
+// and the Check embedded server row.
+func (a *App) lanTab(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.body("Host a game on your own network: Jetris runs a JetStream-enabled NATS server inside this window and plays on it.", colMuted)),
+		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
-			// Nested row so the button keeps its content width instead of
-			// stretching to the card like Play does.
-			return layout.Flex{}.Layout(gtx,
+			// Both are editable: the IP is only auto-DETECTED, and on a
+			// multi-homed or VPN'd machine the detected one may not be the
+			// address friends can reach.
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.body("IP:", colFg)),
+				layout.Rigid(hSpacer(6)),
+				layout.Flexed(1, func(gtx C) D {
+					return a.editorBox(gtx, &a.connHostEd, a.lanIP)
+				}),
+				layout.Rigid(hSpacer(10)),
+				layout.Rigid(a.body("Port:", colFg)),
+				layout.Rigid(hSpacer(6)),
 				layout.Rigid(func(gtx C) D {
-					return a.secondaryButton(gtx, &a.connCheckBtn, label)
+					gtx.Constraints.Max.X = gtx.Dp(70)
+					gtx.Constraints.Min.X = gtx.Constraints.Max.X
+					return a.editorBox(gtx, &a.connPortEd, strconv.Itoa(config.DefaultEmbeddedPort))
 				}),
 			)
 		}),
+		layout.Rigid(spacer(8)),
 		layout.Rigid(func(gtx C) D {
-			if msg == "" {
-				return D{}
-			}
-			col := colErr
-			if ok {
-				col = colGo
-			}
-			l := material.Body2(a.th, msg)
-			l.Color = col
-			return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, l.Layout)
+			// The URL other players dial — built from the fields above — so
+			// the host can share it before even hitting Play, plus where the
+			// server keeps its data.
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+						layout.Rigid(a.body("Your server's URL is ", colMuted)),
+						layout.Rigid(a.body("nats://"+a.pickerAddr(), colNATSGreen)),
+					)
+				}),
+				layout.Rigid(a.body("Friends add it to their server browser's favorites · data in ./"+config.EmbeddedStoreDir, colMuted)),
+			)
 		}),
+		layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
+		layout.Rigid(func(gtx C) D {
+			a.mu.Lock()
+			probing := a.connProbing != ""
+			a.mu.Unlock()
+			label := "Check embedded server"
+			if probing {
+				label = "Checking…"
+			}
+			// Nested row so the button keeps its content width instead of
+			// stretching to the panel like Play does.
+			return layout.Flex{}.Layout(gtx,
+				layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.connCheckBtn, label) }),
+			)
+		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D { return a.connStatusLine(gtx, probeKeyLAN) }),
 	)
+}
+
+// connStatusLine is the probe state for key, on the panel's full width:
+// "Connecting…" while that key is being probed, then "✓ <server> · Core NATS
+// ping <rtt> · <n> players online" in green or "✗ <error>" in red — or a muted
+// hint when key was never probed.
+func (a *App) connStatusLine(gtx C, key string) D {
+	a.mu.Lock()
+	res, has := a.connProbes[key]
+	probing := a.connProbing
+	a.mu.Unlock()
+
+	msg, col := "", colMuted
+	switch {
+	case probing == key && key != "":
+		msg = "Connecting and measuring the core NATS ping…"
+	case has:
+		msg, col = res.msg, colErr
+		if res.ok {
+			col = colGo
+		}
+	case key == probeKeyLAN:
+		msg = "Starts the server and pings it over the address above."
+	default:
+		msg = "Select a server and hit its ↻ to measure the core NATS ping and count who's in its lobby."
+	}
+	l := material.Body2(a.th, msg)
+	l.Color = col
+	return l.Layout(gtx)
 }
 
 // editorBox draws a bordered, padded box around a single-line editor.

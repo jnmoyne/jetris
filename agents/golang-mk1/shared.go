@@ -236,35 +236,31 @@ func parseCellSubject(subject string) (int, int, bool) {
 
 // resyncShared rebuilds the whole shared board — settled cells, every other
 // player's active cells, our own piece if the stream still has it, and every
-// per-cell sequence — from the stream after a dropped write.
+// per-cell sequence — from one multi-get snapshot of the stream (fetchBoard)
+// after a dropped write. A fetch that fails outright leaves the current state
+// in place (and logs) rather than wiping the board to empty.
 func (g *Game) resyncShared(ctx context.Context) {
+	snap, err := g.fetchBoard(ctx)
+	if err != nil {
+		log.Printf("resync: %v", err)
+		return
+	}
 	g.locked = map[cell]wireCell{}
 	g.othersAct = map[cell]int{}
 	g.othersPiece = map[int]active{}
 	g.seqs = map[cell]uint64{}
 	g.piece = nil
-	h := g.height()
-	for r := 0; r < h; r++ {
-		for c := 0; c < g.w; c++ {
-			at := cell{r, c}
-			raw, err := g.stream.GetLastMsgForSubject(ctx, g.cellSubject(at))
-			if err != nil {
-				continue
-			}
-			g.seqs[at] = raw.Sequence
-			var wc wireCell
-			if len(raw.Data) > 0 {
-				_ = json.Unmarshal(raw.Data, &wc)
-			}
-			switch {
-			case wc.A && wc.Pi == g.idx:
-				g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
-			case wc.A:
-				g.othersAct[at] = wc.Pi
-				g.othersPiece[wc.Pi] = active{wc.T, wc.R, wc.Ar, wc.Ac}
-			case wc.O:
-				g.locked[at] = wc
-			}
+	for at, m := range snap {
+		g.seqs[at] = m.seq
+		wc := m.wc
+		switch {
+		case wc.A && wc.Pi == g.idx:
+			g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
+		case wc.A:
+			g.othersAct[at] = wc.Pi
+			g.othersPiece[wc.Pi] = active{wc.T, wc.R, wc.Ar, wc.Ac}
+		case wc.O:
+			g.locked[at] = wc
 		}
 	}
 }

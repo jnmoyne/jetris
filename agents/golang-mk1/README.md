@@ -2,9 +2,10 @@
 
 A Go sibling of [`example-python`](../example-python/): it depends on **nothing in the
 jetris repository** (its own `go.mod`; its only dependencies are the
-[`nats.go`](https://github.com/nats-io/nats.go) client and the orbit
-[`natscontext`](https://github.com/synadia-io/orbit.go) helper for NATS-CLI-compatible
-contexts) and implements the wire protocol
+[`nats.go`](https://github.com/nats-io/nats.go) client and two
+[orbit](https://github.com/synadia-io/orbit.go) helpers — `natscontext` for NATS-CLI-compatible
+contexts and `jetstreamext` for the multi-subject direct get that snapshots a board in
+one round trip) and implements the wire protocol
 from [`../../jetris-agent-guide.md`](../../jetris-agent-guide.md) — game rules from
 [`../../jetris-gameplays.md`](../../jetris-gameplays.md) — directly against NATS/JetStream,
 following the guide's fair-play rules. Unlike the example, it plays with the repo agent's

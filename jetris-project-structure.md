@@ -47,7 +47,7 @@ jetris/
 ├── agents/
 │   ├── example-python/              ← minimal Python agent (no repo dependency)
 │   └── golang-mk1/                  ← the Go reference agent: its own module (own go.mod,
-│                                      deps: nats.go + orbit natscontext), NOT part of go build ./...
+│                                      deps: nats.go + orbit natscontext/jetstreamext), NOT part of go build ./...
 ├── internal/
 │   ├── config/
 │   │   └── config.go
@@ -143,7 +143,7 @@ cmd/jetris
     └── internal/nativeui          ← depends on: engine, lobby, render, prefs, config (the front end)
 
 agents/golang-mk1                  ← separate module: depends only on nats.go + orbit
-                                     natscontext (the headless reference player; speaks
+                                     natscontext/jetstreamext (the headless reference player; speaks
                                      the wire protocol, uses no internal/ packages)
 
 Leaf packages (no internal deps):
@@ -2532,7 +2532,7 @@ fixtures generated from `internal/rng`).
 
 **The reference agent `golang-mk1`.** The repository ships one Go agent — `golang-mk1`,
 in `agents/golang-mk1/`. It is an **independent module** (its own `go.mod`; its only
-dependencies are the `nats.go` client and the orbit `natscontext` helper), NOT part of
+dependencies are the `nats.go` client and the orbit `natscontext` and `jetstreamext` helpers), NOT part of
 the main module's `go build ./...`: it
 implements the wire protocol straight from `jetris-agent-guide.md` with no access to the
 game's packages, exactly as a third-party agent would — every protocol interaction in its

@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/jetstreamext"
 )
 
 // errCAS signals a rejected CAS/gated write (wrong expected sequence): the
@@ -357,34 +358,95 @@ func (g *Game) flash(cells []cell) {
 	_ = g.a.nc.Publish("jetris.flash."+g.id+"."+g.a.name, b)
 }
 
-// resync refetches our own board from the stream after a dropped write.
+// fetchChunk bounds the subjects per multi-subject direct get: the server
+// answers at most 1024 results per request (413 Too Many Results, no
+// pagination), so larger boards go in chunks.
+const fetchChunk = 512
+
+// boardMsg is one cell's last stream message: its sequence and decoded payload.
+type boardMsg struct {
+	seq uint64
+	wc  wireCell
+}
+
+// fetchBoard fetches the last message of every cell of OUR board with orbit's
+// multi-subject direct get (guide §4.5): one round trip per fetchChunk cells
+// instead of one per cell. That matters on a real link — a 2v2 teams board is
+// 600 cells, and the per-cell form froze the agent for ~20 s at 33 ms RTT on
+// every dropped write. A fetch that needs several chunks is bound to the
+// stream's current last sequence so the whole snapshot is consistent at one
+// point in the stream; the board consumer's strictly-higher-sequence rule
+// folds anything newer. Cells never written are absent from the result.
+func (g *Game) fetchBoard(ctx context.Context) (map[cell]boardMsg, error) {
+	h := g.height()
+	subjects := make([]string, 0, h*g.w)
+	for r := 0; r < h; r++ {
+		for c := 0; c < g.w; c++ {
+			subjects = append(subjects, g.cellSubject(cell{r, c}))
+		}
+	}
+	var opts []jetstreamext.GetLastForOpt
+	if len(subjects) > fetchChunk {
+		info, err := g.stream.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, jetstreamext.GetLastMsgsUpToSeq(info.State.LastSeq))
+	}
+	out := make(map[cell]boardMsg, len(subjects))
+	for start := 0; start < len(subjects); start += fetchChunk {
+		end := min(start+fetchChunk, len(subjects))
+		msgs, err := jetstreamext.GetLastMsgsFor(ctx, g.a.js, gameStreamName(g.id), subjects[start:end], opts...)
+		if err != nil {
+			if errors.Is(err, jetstreamext.ErrNoMessages) {
+				continue // nothing written under these subjects yet
+			}
+			return nil, err
+		}
+		for m, err := range msgs {
+			if err != nil {
+				if errors.Is(err, jetstreamext.ErrNoMessages) {
+					continue
+				}
+				return nil, err
+			}
+			r, c, ok := parseCellSubject(m.Subject)
+			if !ok {
+				continue
+			}
+			var wc wireCell
+			if len(m.Data) > 0 {
+				_ = json.Unmarshal(m.Data, &wc)
+			}
+			out[cell{r, c}] = boardMsg{seq: m.Sequence, wc: wc}
+		}
+	}
+	return out, nil
+}
+
+// resync refetches our own board from the stream after a dropped write. A
+// fetch that fails outright leaves the current state in place (and logs)
+// rather than wiping the board to empty.
 func (g *Game) resync(ctx context.Context) {
 	if g.shared() {
 		g.resyncShared(ctx)
 		return
 	}
+	snap, err := g.fetchBoard(ctx)
+	if err != nil {
+		log.Printf("resync: %v", err)
+		return
+	}
 	g.locked = map[cell]wireCell{}
 	g.seqs = map[cell]uint64{}
 	g.piece = nil
-	h := g.height()
-	for r := 0; r < h; r++ {
-		for c := 0; c < g.w; c++ {
-			at := cell{r, c}
-			raw, err := g.stream.GetLastMsgForSubject(ctx, g.cellSubject(at))
-			if err != nil {
-				continue
-			}
-			g.seqs[at] = raw.Sequence
-			var wc wireCell
-			if len(raw.Data) > 0 {
-				_ = json.Unmarshal(raw.Data, &wc)
-			}
-			switch {
-			case wc.A:
-				g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
-			case wc.O:
-				g.locked[at] = wc
-			}
+	for at, m := range snap {
+		g.seqs[at] = m.seq
+		switch {
+		case m.wc.A:
+			g.piece = &active{m.wc.T, m.wc.R, m.wc.Ar, m.wc.Ac}
+		case m.wc.O:
+			g.locked[at] = m.wc
 		}
 	}
 }

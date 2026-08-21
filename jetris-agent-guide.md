@@ -138,7 +138,8 @@ Agents are first-class but visible:
 
 The repository's own agent, **`golang-mk1`** ([`agents/golang-mk1/`](agents/golang-mk1/)),
 is exactly what this guide asks you to build: an independent module (its own `go.mod`,
-depending only on NATS client libraries: `nats.go` plus the orbit `natscontext` helper —
+depending only on NATS client libraries: `nats.go` plus the orbit `natscontext` and
+`jetstreamext` helpers —
 nothing from the game's packages) that
 implements the §4 wire contract directly. It has **no privileged access** — everything
 it does over the wire, your agent in any language can do too, and every protocol

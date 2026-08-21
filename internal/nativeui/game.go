@@ -883,9 +883,11 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 
 // spectatorTeamBoards renders both teams' shared boards side by side for a
 // teams-mode spectator. The spectator engine consumes team 0 as its "own"
-// board and team 1 via the opponent consumer (see Engine.Start). A fully
-// eliminated team's board reads OUT; once either team is out, the other reads
-// WINNERS.
+// board and team 1 via the opponent consumer (see Engine.Start). Each board
+// wears its team's color: the label, and a light tint on the empty squares
+// and grid lines (boardFX.tint), so the two wells tell apart at a glance. A
+// fully eliminated team's board reads OUT; once either team is out, the
+// other reads WINNERS.
 func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	// Reactive cells: both team boards side by side, scrolling below the minimum.
 	dims := eng.Snapshot()
@@ -920,14 +922,15 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 		b := b
 		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+				teamCol := render.PlayerColorRGBA(b.team)
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.body(b.label, colMuted)),
+					layout.Rigid(a.body(b.label, teamCol)),
 					layout.Rigid(spacer(4)),
 					layout.Rigid(func(gtx C) D {
 						if !b.ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team]}, gtx.Now)
+						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], tint: teamCol}, gtx.Now)
 						switch {
 						case teamOut(b.team):
 							return a.boardOverlay(board, "OUT", colErr)(gtx)

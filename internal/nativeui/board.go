@@ -25,7 +25,18 @@ type boardFX struct {
 	flash map[[2]int]time.Time      // CAS-rejected cells → rainbow border
 	rows  map[int]rowStrobe         // absolute row index → strobe state
 	ghost map[[2]int]game.PieceType // hard-drop ghost cells (drawn on empty squares only)
+	tint  color.NRGBA               // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
 }
+
+// Board tint strength: how far an empty square's fill and its grid line are
+// lerped toward boardFX.tint — a little color on the ground, the way the
+// teams rendering lights Team A's well cyan and Team B's magenta, while the
+// pieces keep their own palette. The grid lines take more than the fill so
+// the color reads as the board's own rather than as a haze over it.
+const (
+	boardTintFill = 0.10
+	boardTintGrid = 0.26
+)
 
 // rowStrobe is one flashing row of 80's arcade feedback: the row blinks hard
 // on/off in a solid color — white for rows the local player just cleared, the
@@ -184,6 +195,9 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 			if fx != nil && !cell.Occupied && !cell.Active {
 				if pt, ok := fx.ghost[[2]int{r, c}]; ok {
 					ap = render.GhostStyle(pt)
+				} else if fx.tint.A != 0 && !cell.Adversarial {
+					ap.Fill = lerpColor(ap.Fill, fx.tint, boardTintFill)
+					ap.Outline = lerpColor(ap.Outline, fx.tint, boardTintGrid)
 				}
 			}
 			outline, outlineW := ap.Outline, ap.OutlineW

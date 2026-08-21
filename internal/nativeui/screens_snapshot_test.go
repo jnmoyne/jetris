@@ -25,6 +25,7 @@ import (
 	"jetris/internal/game"
 	"jetris/internal/lobby"
 	"jetris/internal/prefs"
+	"jetris/internal/render"
 )
 
 // snapshotPNG renders one frame with the given layout func and writes it to
@@ -201,6 +202,35 @@ func TestScreenSnapshots(t *testing.T) {
 		snap := sampleBoard()
 		snapshotPNG(t, w, dir, "screen_board", func(gtx C) {
 			layout.Center.Layout(gtx, a.boardWidget(snap, 0, 32, true, nil, gtx.Now))
+			scanlines(gtx)
+		})
+	})
+
+	// The teams spectator's two wells side by side on the game's dark ground,
+	// each tinted and labeled in its team's color (boardFX.tint): Team A cyan,
+	// Team B magenta — the pieces keep their own palette.
+	t.Run("board_team_tint", func(t *testing.T) {
+		a := newTestApp()
+		snap := sampleBoard()
+		snapshotPNG(t, w, dir, "screen_board_team_tint", func(gtx C) {
+			fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
+			layout.Center.Layout(gtx, func(gtx C) D {
+				var items []layout.FlexChild
+				for team, label := range []string{"TEAM A", "TEAM B"} {
+					team, label := team, label
+					col := render.PlayerColorRGBA(team)
+					items = append(items, layout.Rigid(func(gtx C) D {
+						return layout.Inset{Right: unit.Dp(24)}.Layout(gtx, func(gtx C) D {
+							return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(a.body(label, col)),
+								layout.Rigid(spacer(4)),
+								layout.Rigid(a.boardWidget(snap, -1, 28, true, &boardFX{tint: col}, gtx.Now)),
+							)
+						})
+					}))
+				}
+				return layout.Flex{}.Layout(gtx, items...)
+			})
 			scanlines(gtx)
 		})
 	})

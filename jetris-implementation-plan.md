@@ -2463,8 +2463,9 @@ cleanup works entirely through JetStream and the lobby maps):
 draw the pre-game countdown, per-board OUT markers for eliminated players
 (competitive) / teams (teams), and a WINNER/WINNERS marker on the deciding
 board; the lobby's GAME HISTORY header gained a score/date sort selector and
-an "Agent games" filter checkbox backed by `PlayerResult.Agent` (stamped from
-the roster by `ArchiveAndCleanup`), each row a HUMANS / WITH AGENTS crew line,
+three crew filter checkboxes — Players only / Agents and players / Agents
+only, one per `ArchiveRecord.AgentClass` — backed by `PlayerResult.Agent`
+(stamped from the roster by `ArchiveAndCleanup`), each row a HUMANS / WITH AGENTS crew line,
 and — when teams games are listed — a TEAMS OVERALL standings line
 (`teamStandingsLine`: per-team wins and summed points, leader in gold); the
 game screen gained the mouse control pad, the animated MOVE BUFFER strip, and

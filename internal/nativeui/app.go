@@ -77,7 +77,6 @@ var (
 	colNATSGreen = color.NRGBA{R: 0x8d, G: 0xc6, B: 0x3f, A: 0xff} // NATS brand green
 	colErr       = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
 	colGold      = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
-	colGoldWash  = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0x22} // faint gold row wash behind TOP 10 history games
 	colGo        = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
 	colWarn      = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
 	colOrange    = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
@@ -135,9 +134,10 @@ type App struct {
 	usingEmbedded bool
 
 	// connLabel names the server the CURRENT connection reached, for the
-	// lobby header ("context ngs · nats://connect.ngs.global:4222", "LAN mode
-	// (your embedded server)"; see connectionLabel). Set on connect, cleared
-	// on disconnect; guarded by mu.
+	// lobby header ("context ngs · nats://connect.ngs.global:4222",
+	// "nats://host:4222 (Jetris EU)" for a favorite, "LAN mode (your embedded
+	// server)"; see connectionLabel). Set on connect, cleared on disconnect;
+	// guarded by mu.
 	connLabel string
 
 	win *app.Window
@@ -267,10 +267,12 @@ type App struct {
 	archiveLst     widget.List
 	// Game-history controls: sort selector ("score"/"date") and the
 	// show-games-with-agents filter (checked = shown).
-	histSortEnum widget.Enum
-	histAgentsCb widget.Bool
-	chatList     widget.List
-	gameBtns     map[string]*gameRowBtns
+	histSortEnum     widget.Enum
+	histHumansCb     widget.Bool // history filter: list all-human games ("Players only")
+	histMixedCb      widget.Bool // history filter: list mixed human/agent games ("Agents and players")
+	histAgentsOnlyCb widget.Bool // history filter: list agent-vs-agent games ("Agents only")
+	chatList         widget.List
+	gameBtns         map[string]*gameRowBtns
 	// uninviteBtns are the per-invitation Uninvite/Dismiss buttons on the
 	// creator's invite-only game rows, keyed "<gameID>|<inviteeID>".
 	uninviteBtns map[string]*widget.Clickable
@@ -407,7 +409,10 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.modeEnum.Value = "cooperative"
 	a.createJoinEnum.Value = "open"
 	a.histSortEnum.Value = "score"
-	a.histAgentsCb.Value = true // agent games shown by default
+	// Every crew composition is listed by default; each box hides its class.
+	a.histHumansCb.Value = true
+	a.histMixedCb.Value = true
+	a.histAgentsOnlyCb.Value = true
 	a.inviteList.Axis = layout.Vertical
 	a.playerList.Axis = layout.Vertical
 	a.gameList.Axis = layout.Vertical

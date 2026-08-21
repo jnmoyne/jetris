@@ -181,6 +181,18 @@ func TestReplayKeepSet(t *testing.T) {
 		}
 	}
 
+	// The history's TOP 10 mark is the same cut, but only in buckets where
+	// it IS a cut: with ReplayTopN or fewer games nothing is marked.
+	if cut := ReplayTopRankedCut(recs); len(cut) != ReplayTopN || !cut["coop-"+strconv.Itoa(total)] {
+		t.Errorf("TOP 10 cut of a full bucket = %d games, want %d with the #1 in it", len(cut), ReplayTopN)
+	}
+	if cut := ReplayTopRankedCut(recs[:ReplayTopN]); len(cut) != 0 {
+		t.Errorf("a bucket of exactly ReplayTopN games must mark nothing, got %d", len(cut))
+	}
+	if cut := ReplayTopRankedCut(recs[:ReplayTopN+1]); len(cut) != ReplayTopN || cut["coop-1"] {
+		t.Errorf("one game over ReplayTopN must mark the top N and not the #%d", ReplayTopN+1)
+	}
+
 	// A newer low score is recent (kept) but not top; it pushes the oldest
 	// recent-only game out of the keep set while the top N are untouched.
 	oldestRecent := "coop-" + strconv.Itoa(total-ReplayRecentN+1)

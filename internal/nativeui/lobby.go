@@ -259,8 +259,8 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 		}),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(func(gtx C) D {
-			// GAME HISTORY header with its sort selector and agent filter
-			// grouped right beside it.
+			// GAME HISTORY header with its sort selector and the crew
+			// filters (one box per agent composition) grouped beside it.
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(a.header("GAME HISTORY")),
 				layout.Rigid(hSpacer(12)),
@@ -276,12 +276,11 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 					return rb.Layout(gtx)
 				}),
 				layout.Rigid(hSpacer(10)),
-				layout.Rigid(func(gtx C) D {
-					cb := material.CheckBox(a.th, &a.histAgentsCb, "Agent games")
-					cb.Color = colFg
-					cb.IconColor = colAccent
-					return cb.Layout(gtx)
-				}),
+				layout.Rigid(a.histFilterBox(&a.histHumansCb, "Players only")),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(a.histFilterBox(&a.histMixedCb, "Agents and players")),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(a.histFilterBox(&a.histAgentsOnlyCb, "Agents only")),
 			)
 		}),
 		layout.Rigid(func(gtx C) D { return a.teamStandingsLine(gtx, archives) }),
@@ -321,8 +320,9 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 								}
 							}
 							// Games in their bucket's all-time top 10 are
-							// highlighted (the ranking counts every record,
-							// not just the rows the filter shows).
+							// marked (the ranking counts every record, not
+							// just the rows the filter shows — and only once
+							// the bucket has more than ten games).
 							top := lb != nil && lb.IsTopRanked(archives[i].GameID)
 							return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top)
 						})
@@ -333,22 +333,37 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 	)
 }
 
-// archivesForDisplay applies the history controls: drop agents-only games
-// when the "Agent games" box is unchecked — any game with a human seat, mixed
-// human/agent games included, always shows — then order the survivors.
-// Both sort modes group by agent composition first — agents-only games, then
-// mixed human/agent games, then all-human games — and rank within each group
-// by the selected key: headline score (default) or finish time, newest first.
-func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
-	if !a.histAgentsCb.Value {
-		withHumans := recs[:0:0]
-		for _, r := range recs {
-			if r.AgentClass() != config.AgentClassAgentsOnly {
-				withHumans = append(withHumans, r)
-			}
-		}
-		recs = withHumans
+// histFilterBox is one of the GAME HISTORY crew filters: a checkbox that
+// lists (checked) or hides the games of one agent composition.
+func (a *App) histFilterBox(b *widget.Bool, label string) layout.Widget {
+	return func(gtx C) D {
+		cb := material.CheckBox(a.th, b, label)
+		cb.Color = colFg
+		cb.IconColor = colAccent
+		return cb.Layout(gtx)
 	}
+}
+
+// archivesForDisplay applies the history controls: keep only the games whose
+// crew composition (config.ArchiveRecord.AgentClass — all-human, mixed
+// human/agent, or agents-only) has its filter box checked, then order the
+// survivors. Both sort modes group by agent composition first — agents-only
+// games, then mixed human/agent games, then all-human games — and rank within
+// each group by the selected key: headline score (default) or finish time,
+// newest first.
+func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
+	listed := map[int]bool{
+		config.AgentClassHumansOnly: a.histHumansCb.Value,
+		config.AgentClassMixed:      a.histMixedCb.Value,
+		config.AgentClassAgentsOnly: a.histAgentsOnlyCb.Value,
+	}
+	kept := recs[:0:0]
+	for _, r := range recs {
+		if listed[r.AgentClass()] {
+			kept = append(kept, r)
+		}
+	}
+	recs = kept
 	if a.histSortEnum.Value == "date" {
 		return sortedArchivesByDate(recs)
 	}
@@ -514,8 +529,9 @@ func (a *App) archiveHistoryHeader(gtx C) D {
 // flexed winner-first PLAYERS column, closed by a rule separating it from the
 // next game. replayBtn is non-nil for games with a replay archive and adds
 // the Replay action beside View board. top marks a game in its bucket's
-// all-time top 10 (config.ReplayTopRanked): the row sits on a faint gold
-// wash and carries a TOP 10 tag under its score, so the showcase games stand
+// all-time top 10 (config.ReplayTopRankedCut): a gold bar down the row's
+// left edge and a TOP 10 tag under its score — a marker, deliberately not a
+// row tint, which would read as a selection — so the showcase games stand
 // out from the merely recent ones in either sort order.
 func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -526,12 +542,12 @@ func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn 
 			if !top {
 				return content(gtx)
 			}
-			// Lay the cells out first to learn the row's size, then paint the
-			// wash underneath before replaying them.
+			// Lay the cells out first to learn the row's height, then paint
+			// the edge bar underneath before replaying them.
 			macro := op.Record(gtx.Ops)
 			dims := content(gtx)
 			call := macro.Stop()
-			fillRect(gtx.Ops, image.Rectangle{Max: dims.Size}, colGoldWash)
+			fillRect(gtx.Ops, image.Rect(0, 0, gtx.Dp(unit.Dp(4)), dims.Size.Y), colGold)
 			call.Add(gtx.Ops)
 			return dims
 		}),

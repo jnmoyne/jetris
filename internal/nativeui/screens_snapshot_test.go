@@ -148,7 +148,7 @@ func TestScreenSnapshots(t *testing.T) {
 		a.screen = screenLobby
 		a.usingEmbedded = true
 		a.embAddr = "192.168.1.23:4222"
-		a.connLabel = connectionLabel(config.Config{RunEmbedded: true, NATSURL: "nats://" + a.embAddr}, "nats://"+a.embAddr)
+		a.connLabel = connectionLabel(config.Config{RunEmbedded: true, NATSURL: "nats://" + a.embAddr}, "nats://"+a.embAddr, "")
 		snapshotPNG(t, w, dir, "screen_lobby_lan", func(gtx C) { a.layout(gtx) })
 	})
 
@@ -220,13 +220,16 @@ func TestScreenSnapshots(t *testing.T) {
 		})
 	})
 
-	// The same row for a game in its bucket's top 10: gold wash and TOP 10
-	// tag, over a plain (recent-only) row for contrast.
+	// The same row for a game in its bucket's top 10: gold edge bar and
+	// TOP 10 tag, over a plain (recent-only) row for contrast — on the
+	// lobby's dark ground, where the marker has to read as a mark and not as
+	// a selected row.
 	t.Run("history_row_top10", func(t *testing.T) {
 		a := newTestApp()
 		rec := sampleReplayRecord()
 		var viewBtn, replayBtn, viewBtn2, replayBtn2 widget.Clickable
 		snapshotPNG(t, w, dir, "screen_history_row_top10", func(gtx C) {
+			fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
 			layout.Center.Layout(gtx, func(gtx C) D {
 				gtx.Constraints.Max.X = 900
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,

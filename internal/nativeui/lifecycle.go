@@ -20,11 +20,13 @@ import (
 )
 
 // doConnectAndLogin dials NATS per the player's connection-picker choice (cfg
-// holds either a context name or a URL), provisions the streams/KV, then
-// continues into the normal login flow. Runs off the UI goroutine; loggingIn
-// was already set by the submit handler. On failure the player stays on the
-// login screen with the error shown and can retry with a different choice.
-func (a *App) doConnectAndLogin(name string, cfg config.Config) {
+// holds either a context name or a URL; favorite is the label of the
+// favorite the URL came from, "" otherwise — it only decorates the lobby
+// header), provisions the streams/KV, then continues into the normal login
+// flow. Runs off the UI goroutine; loggingIn was already set by the submit
+// handler. On failure the player stays on the login screen with the error
+// shown and can retry with a different choice.
+func (a *App) doConnectAndLogin(name string, cfg config.Config, favorite string) {
 	// A previous Play may have connected without reaching the lobby (name
 	// collision cancelled, lobby init failed) — drop that connection first so
 	// every attempt connects fresh per the current picker choice.
@@ -85,7 +87,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 	a.mu.Lock()
 	a.nc, a.js, a.kv = nc, js, kv
 	a.usingEmbedded = cfg.RunEmbedded
-	a.connLabel = connectionLabel(cfg, nc.ConnectedUrl())
+	a.connLabel = connectionLabel(cfg, nc.ConnectedUrl(), favorite)
 	a.mu.Unlock()
 	a.doLogin(name, false)
 }
@@ -226,11 +228,14 @@ func (a *App) disconnect() {
 // chose the server (a NATS CLI context by name, or a plain URL) plus the URL
 // actually reached, which for a context or a clustered URL can differ from
 // what was configured. connectedURL is nc.ConnectedUrl(); when it is empty the
-// configured URL stands in. Any user:password in the URL is dropped so
-// credentials never reach the screen. LAN mode names the embedded server and
-// leaves the address out: the lobby's YOUR SERVER'S URL line right under the
-// header already shows it, as the thing to share.
-func connectionLabel(cfg config.Config, connectedURL string) string {
+// configured URL stands in. A URL picked from the favorites carries the
+// favorite's name after it in parentheses ("nats://host:4222 (Jetris EU)"),
+// so the header names the server the way the player knows it. Any
+// user:password in the URL is dropped so credentials never reach the screen.
+// LAN mode names the embedded server and leaves the address out: the lobby's
+// YOUR SERVER'S URL line right under the header already shows it, as the
+// thing to share.
+func connectionLabel(cfg config.Config, connectedURL, favorite string) string {
 	if cfg.RunEmbedded {
 		return "LAN mode (your embedded server)"
 	}
@@ -240,6 +245,12 @@ func connectionLabel(cfg config.Config, connectedURL string) string {
 	}
 	if cfg.NATSContext != "" {
 		return joinLabel("context "+cfg.NATSContext, u)
+	}
+	if favorite != "" {
+		if u == "" {
+			return favorite
+		}
+		return u + " (" + favorite + ")"
 	}
 	return u
 }

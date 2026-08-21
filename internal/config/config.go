@@ -266,22 +266,48 @@ func uniqueRecords(recs []ArchiveRecord) []ArchiveRecord {
 	return out
 }
 
-// ReplayTopRanked returns the game IDs that rank in the top ReplayTopN of
-// their replay bucket among recs — the games the history highlights as TOP 10
-// and the first half of the replay keep set.
-func ReplayTopRanked(recs []ArchiveRecord) map[string]bool {
+// rankedReplayBuckets groups recs (one record per game ID) into their replay
+// buckets, each ordered by RankBefore.
+func rankedReplayBuckets(recs []ArchiveRecord) map[replayBucketKey][]ArchiveRecord {
 	buckets := make(map[replayBucketKey][]ArchiveRecord)
 	for _, r := range uniqueRecords(recs) {
 		k := replayBucketKey{r.Mode, r.HasAgents()}
 		buckets[k] = append(buckets[k], r)
 	}
-	top := make(map[string]bool)
 	for _, b := range buckets {
 		sort.SliceStable(b, func(i, j int) bool { return b[i].RankBefore(b[j]) })
+	}
+	return buckets
+}
+
+// ReplayTopRanked returns the game IDs that rank in the top ReplayTopN of
+// their replay bucket among recs — the first half of the replay keep set.
+func ReplayTopRanked(recs []ArchiveRecord) map[string]bool {
+	top := make(map[string]bool)
+	for _, b := range rankedReplayBuckets(recs) {
 		for i, r := range b {
 			if i >= ReplayTopN {
 				break
 			}
+			top[r.GameID] = true
+		}
+	}
+	return top
+}
+
+// ReplayTopRankedCut returns the game IDs the history marks as TOP 10: the
+// top ReplayTopN of every bucket that holds MORE than ReplayTopN games. In a
+// bucket of ten or fewer every game is trivially in its top ten — the mark
+// would light up the whole list and say nothing — so it appears only once
+// the ranking is an actual cut, for the games that beat others to stay in.
+// (Retention uses ReplayTopRanked, where the trivial case is exactly right.)
+func ReplayTopRankedCut(recs []ArchiveRecord) map[string]bool {
+	top := make(map[string]bool)
+	for _, b := range rankedReplayBuckets(recs) {
+		if len(b) <= ReplayTopN {
+			continue
+		}
+		for _, r := range b[:ReplayTopN] {
 			top[r.GameID] = true
 		}
 	}

@@ -9,8 +9,8 @@ import (
 
 // The history controls: both sort modes group by agent composition first
 // (agents-only, then mixed, then all-human) and rank within each group by the
-// selected key; the agent filter drops only agents-only records — any game
-// with a human seat stays.
+// selected key; the three crew filter boxes each list or hide exactly their
+// own composition.
 func TestArchivesForDisplay(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	recs := func() []config.ArchiveRecord {
@@ -31,7 +31,7 @@ func TestArchivesForDisplay(t *testing.T) {
 	}
 
 	a := newTestApp()
-	a.histAgentsCb.Value = true
+	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = true, true, true
 
 	// Score sort: agents-only first (despite its low score), then the mixed
 	// game, then the two human games by score.
@@ -48,13 +48,30 @@ func TestArchivesForDisplay(t *testing.T) {
 		t.Fatalf("date sort = %v, want %v", ids(got), want)
 	}
 
-	// Agent filter: only the agents-only game drops out — the mixed game has a
-	// human seat, so it stays (still grouped ahead of the all-human games).
+	// Crew filters: each box governs exactly its own composition — unchecking
+	// "Agents only" keeps the mixed game (it has a human seat), and any single
+	// box alone lists just that class; all off lists nothing.
 	a.histSortEnum.Value = "score"
-	a.histAgentsCb.Value = false
+	a.histAgentsOnlyCb.Value = false
 	got = a.archivesForDisplay(recs())
 	if want := []string{"mixed", "human-high", "human-low"}; !sameIDs(got, want) {
-		t.Fatalf("agent filter = %v, want %v", ids(got), want)
+		t.Fatalf("without agents-only = %v, want %v", ids(got), want)
+	}
+	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = true, false, false
+	if got, want := a.archivesForDisplay(recs()), []string{"human-high", "human-low"}; !sameIDs(got, want) {
+		t.Fatalf("players only = %v, want %v", ids(got), want)
+	}
+	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = false, true, false
+	if got, want := a.archivesForDisplay(recs()), []string{"mixed"}; !sameIDs(got, want) {
+		t.Fatalf("agents and players = %v, want %v", ids(got), want)
+	}
+	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = false, false, true
+	if got, want := a.archivesForDisplay(recs()), []string{"agents-only"}; !sameIDs(got, want) {
+		t.Fatalf("agents only = %v, want %v", ids(got), want)
+	}
+	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = false, false, false
+	if got := a.archivesForDisplay(recs()); len(got) != 0 {
+		t.Fatalf("all filters off = %v, want nothing", ids(got))
 	}
 }
 

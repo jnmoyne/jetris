@@ -16,6 +16,7 @@ func TestConnectionLabel(t *testing.T) {
 		name      string
 		cfg       config.Config
 		connected string
+		favorite  string
 		want      string
 	}{
 		{
@@ -61,10 +62,29 @@ func TestConnectionLabel(t *testing.T) {
 			cfg:  config.Config{NATSContext: "local"},
 			want: "context local",
 		},
+		{
+			name:      "a favorite's name follows the server in parentheses",
+			cfg:       config.Config{NATSURL: "nats://172.105.76.148:4222"},
+			connected: "nats://172.105.76.148:4222",
+			favorite:  "Jetris (EU central)",
+			want:      "nats://172.105.76.148:4222 (Jetris (EU central))",
+		},
+		{
+			name:     "a favorite with no URL known is just its name",
+			favorite: "Jetris (EU central)",
+			want:     "Jetris (EU central)",
+		},
+		{
+			name:      "LAN mode ignores any browser favorite",
+			cfg:       config.Config{RunEmbedded: true, NATSURL: "nats://192.168.1.23:4222"},
+			connected: "nats://192.168.1.23:4222",
+			favorite:  "demo",
+			want:      "LAN mode (your embedded server)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := connectionLabel(tc.cfg, tc.connected); got != tc.want {
+			if got := connectionLabel(tc.cfg, tc.connected, tc.favorite); got != tc.want {
 				t.Fatalf("connectionLabel() = %q, want %q", got, tc.want)
 			}
 		})
@@ -90,7 +110,7 @@ func TestConnectAndLoginSetsLabel(t *testing.T) {
 		}
 	})
 
-	a.doConnectAndLogin("tester", config.Config{NATSURL: url})
+	a.doConnectAndLogin("tester", config.Config{NATSURL: url}, "")
 	if a.loginErr != "" || a.screen != screenLobby {
 		t.Fatalf("URL login: err %q, screen %v, want the lobby", a.loginErr, a.screen)
 	}
@@ -103,7 +123,7 @@ func TestConnectAndLoginSetsLabel(t *testing.T) {
 		t.Fatalf("label after quit = %q, want cleared", a.connLabel)
 	}
 
-	a.doConnectAndLogin("tester", config.Config{RunEmbedded: true, EmbeddedHost: "127.0.0.1", EmbeddedPort: freePort(t)})
+	a.doConnectAndLogin("tester", config.Config{RunEmbedded: true, EmbeddedHost: "127.0.0.1", EmbeddedPort: freePort(t)}, "")
 	if a.loginErr != "" || a.screen != screenLobby {
 		t.Fatalf("LAN login: err %q, screen %v, want the lobby", a.loginErr, a.screen)
 	}

@@ -31,7 +31,7 @@ type Lobby struct {
 	games           map[string]GameListing
 	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
-	topRanked       map[string]bool // archived game IDs in their replay bucket's top N (see config.ReplayTopRanked)
+	topRanked       map[string]bool // archived game IDs the history marks TOP 10 (see config.ReplayTopRankedCut)
 	replays         map[string]bool // archived game IDs that have a replay (see runReplayMarkerConsumer)
 	replayKick      chan struct{}   // pings the refresher to re-list the replay markers
 	chatLog         []ChatMessage   // lobby + game chat, in stream order, capped at chatLogCap
@@ -424,17 +424,18 @@ func (l *Lobby) runArchiveConsumer(ctx context.Context) {
 			}
 			l.mu.Lock()
 			l.archives = append(l.archives, rec)
-			l.topRanked = config.ReplayTopRanked(l.archives)
+			l.topRanked = config.ReplayTopRankedCut(l.archives)
 			l.mu.Unlock()
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
 		}
 	}
 }
 
-// IsTopRanked reports whether an archived game ranks in the top
-// config.ReplayTopN of its replay bucket (mode × with/without agents) among
-// the records this lobby has seen — the games the history highlights as
-// TOP 10 and whose replays survive on ranking alone.
+// IsTopRanked reports whether the history marks an archived game TOP 10:
+// it ranks in the top config.ReplayTopN of its replay bucket (mode ×
+// with/without agents) among the records this lobby has seen, AND the bucket
+// holds more than ReplayTopN games — config.ReplayTopRankedCut, so a young
+// bucket where every game is trivially top-ten marks nothing.
 func (l *Lobby) IsTopRanked(gameID string) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

@@ -211,11 +211,16 @@ func (a *App) submitLogin() {
 		a.setLoginErr(err.Error())
 		return
 	}
+	// A server picked from the favorites keeps its name for the lobby header.
+	favorite := ""
+	if e, ok := a.connEntry(a.connSel); ok && !cfg.RunEmbedded && e.fav >= 0 {
+		favorite = e.label
+	}
 	a.setLoginErr("")
 	a.mu.Lock()
 	a.loggingIn = true
 	a.mu.Unlock()
-	go a.doConnectAndLogin(name, cfg)
+	go a.doConnectAndLogin(name, cfg, favorite)
 }
 
 // pickerConfig resolves the connection page into a config: on the LAN tab the

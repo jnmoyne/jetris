@@ -7,10 +7,10 @@ import (
 	"jetris/internal/config"
 )
 
-// The history controls: both sort modes group by agent composition first
-// (agents-only, then mixed, then all-human) and rank within each group by the
-// selected key; the three crew filter boxes each list or hide exactly their
-// own composition.
+// The history controls: the score sort groups by agent composition first
+// (agents-only, then mixed, then all-human) and ranks within each group; the
+// date sort is strictly chronological, newest first, regardless of crew; the
+// three crew filter boxes each list or hide exactly their own composition.
 func TestArchivesForDisplay(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	recs := func() []config.ArchiveRecord {
@@ -41,10 +41,12 @@ func TestArchivesForDisplay(t *testing.T) {
 		t.Fatalf("score sort = %v, want %v", ids(got), want)
 	}
 
-	// Date sort: same grouping, human games by finish time (newest first).
+	// Date sort: strictly newest first — the agent game (t0+2h), then the
+	// human game from t0+1h, the mixed game from t0+30m, the human game from
+	// t0 — no crew grouping.
 	a.histSortEnum.Value = "date"
 	got = a.archivesForDisplay(recs())
-	if want := []string{"agents-only", "mixed", "human-low", "human-high"}; !sameIDs(got, want) {
+	if want := []string{"agents-only", "human-low", "mixed", "human-high"}; !sameIDs(got, want) {
 		t.Fatalf("date sort = %v, want %v", ids(got), want)
 	}
 

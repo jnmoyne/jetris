@@ -347,10 +347,11 @@ func (a *App) histFilterBox(b *widget.Bool, label string) layout.Widget {
 // archivesForDisplay applies the history controls: keep only the games whose
 // crew composition (config.ArchiveRecord.AgentClass — all-human, mixed
 // human/agent, or agents-only) has its filter box checked, then order the
-// survivors. Both sort modes group by agent composition first — agents-only
-// games, then mixed human/agent games, then all-human games — and rank within
-// each group by the selected key: headline score (default) or finish time,
-// newest first.
+// survivors by the selected key. "By score" (the default) is the ranking
+// table: agent composition first — agents-only games, then mixed human/agent
+// games, then all-human games — and the shared RankBefore order within each
+// group. "By date" is strictly chronological, the last game played at the
+// top, whoever played it.
 func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	listed := map[int]bool{
 		config.AgentClassHumansOnly: a.histHumansCb.Value,
@@ -433,18 +434,16 @@ func (a *App) teamStandingsLine(gtx C, archives []config.ArchiveRecord) D {
 	})
 }
 
-// sortedArchivesByDate groups the history by agent composition (agents-only,
-// then mixed, then all-human) and, within each group, orders by finish time,
-// most recent first (score as the tie-break).
+// sortedArchivesByDate orders the history strictly by finish time, the most
+// recent game first — no grouping by crew: "By date" answers "what was played
+// last", and the crew filters are there to narrow who. Exact ties (records
+// from before finish timestamps) fall back to the score ranking.
 func sortedArchivesByDate(recs []config.ArchiveRecord) []config.ArchiveRecord {
 	sort.SliceStable(recs, func(i, j int) bool {
-		if ci, cj := recs[i].AgentClass(), recs[j].AgentClass(); ci != cj {
-			return ci < cj
-		}
 		if !recs[i].FinishedAt.Equal(recs[j].FinishedAt) {
 			return recs[i].FinishedAt.After(recs[j].FinishedAt)
 		}
-		return recs[i].HeadlineScore() > recs[j].HeadlineScore()
+		return recs[i].RankBefore(recs[j])
 	})
 	return recs
 }

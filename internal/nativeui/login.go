@@ -40,7 +40,7 @@ const (
 // moves the Play button.
 const (
 	loginCardW = unit.Dp(560)
-	connPanelH = unit.Dp(300)
+	connPanelH = unit.Dp(326)
 )
 
 // probeResult is the outcome of one server probe (Refresh / Check embedded
@@ -395,7 +395,9 @@ func (a *App) connSections() []connSection {
 	for _, name := range a.connContexts {
 		label := name
 		if name == a.connSelected {
-			label += " (selected)"
+			// The nats CLI's own current context (nats context select) —
+			// worded so it is never confused with the browser's selection.
+			label += " (nats CLI current)"
 		}
 		ctxs.entries = append(ctxs.entries, connEntry{key: ctxKey(name), label: label, detail: a.connCtxURLs[name], ctx: name, fav: -1})
 	}
@@ -646,8 +648,8 @@ func (a *App) connTabChip(gtx C, btn *widget.Clickable, label string, active boo
 }
 
 // browserTab is the NATS server browser: the collapsible tree of servers in a
-// list filling the panel, with the selected server's probe state on the line
-// under it.
+// list filling the panel, the SELECTED line naming the row Play will use, and
+// that server's probe state on the line under it.
 func (a *App) browserTab(gtx C) D {
 	a.mu.Lock()
 	probes := make(map[string]probeResult, len(a.connProbes))
@@ -697,9 +699,60 @@ func (a *App) browserTab(gtx C) D {
 				})
 			})
 		}),
-		layout.Rigid(spacer(8)),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(a.connSelectedLine),
+		layout.Rigid(spacer(6)),
 		layout.Rigid(func(gtx C) D { return a.connStatusLine(gtx, a.connSel) }),
 	)
+}
+
+// connSelectedLine names the browser row Play will connect through — a
+// SELECTED chip in the accent, then the entry's name and URL (selectionCaption)
+// — so the choice stays in view even when its row is scrolled out of the list
+// or its section is collapsed. With nothing selected it says so, in the
+// warning color, since Play would only error.
+func (a *App) connSelectedLine(gtx C) D {
+	tag, tagBg, label, labelCol, detail := "SELECTED", colAccent, "", colAccent, ""
+	if e, ok := a.connEntry(a.connSel); ok {
+		label, detail = selectionCaption(e)
+	} else {
+		tag, tagBg, label, labelCol = "NOTHING SELECTED", colWarn, "click a server above", colMuted
+	}
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			return background(gtx, tagBg, func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx,
+					a.pixel(unit.Sp(8), tag, colBg).Layout)
+			})
+		}),
+		layout.Rigid(hSpacer(8)),
+		layout.Rigid(a.body(label, labelCol)),
+		layout.Flexed(1, func(gtx C) D {
+			if detail == "" {
+				return D{}
+			}
+			// One line: a long URL ends in an ellipsis rather than wrapping
+			// under the chip.
+			l := material.Body2(a.th, " · "+detail)
+			l.Color = colMuted
+			l.MaxLines = 1
+			return l.Layout(gtx)
+		}),
+	)
+}
+
+// selectionCaption words a browser entry for the SELECTED line: a favorite's
+// name and URL; a context as "context <name>" (without the row's nats-CLI
+// marker) and its URL when known; the --server flag's row as its URL,
+// attributed to the flag.
+func selectionCaption(e connEntry) (label, detail string) {
+	switch {
+	case e.ctx != "":
+		return "context " + e.ctx, e.detail
+	case e.fav < 0:
+		return e.url, "from --server"
+	}
+	return e.label, e.detail
 }
 
 // sectionRow is a collapsible section header: ▼/▶ plus the title in the
@@ -728,21 +781,26 @@ func (a *App) sectionRow(sec connSection) layout.Widget {
 	}
 }
 
-// entryRow is one selectable server: the selected row carries a ↻ button (the
-// pad's blocky rotate glyph) that probes that server, then the label (accent
-// while selected) with the URL under it in muted type, the last probe's inline
-// summary on the right, and — for favorites — a ✕ to delete.
+// entryRow is one selectable server. The selected row is a solid accent band
+// across the list with dark type — the same "this one is active" treatment as
+// the tab chips, unmistakable next to the plain rows — and carries in its
+// gutter the ↻ chip (the pad's blocky rotate glyph) that probes that server;
+// other rows leave the gutter blank. Every row shows its label over the URL
+// in a second line, the last probe's inline summary on the right (on the
+// selected row in a dark pill, so the green/red keeps reading against the
+// accent), and — for favorites — a ✕ to delete.
 func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing string) layout.Widget {
 	return func(gtx C) D {
 		selected := e.key == a.connSel
-		labelCol, bg := colFg, colBg
+		bg, labelCol, detailCol, delCol := colBg, colFg, colMuted, colErr
 		if selected {
-			labelCol, bg = colAccent, colPanel
+			bg, labelCol, detailCol, delCol = colAccent, colBg, withAlpha(colBg, 0.7), colBg
 		}
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, func(gtx C) D {
-				return material.Clickable(gtx, clickable(a.connRowBtns, e.key), func(gtx C) D {
-					return background(gtx, bg, func(gtx C) D {
+		return background(gtx, bg, func(gtx C) D {
+			gtx.Constraints.Min.X = gtx.Constraints.Max.X
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx C) D {
+					return material.Clickable(gtx, clickable(a.connRowBtns, e.key), func(gtx C) D {
 						gtx.Constraints.Min.X = gtx.Constraints.Max.X
 						return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -762,7 +820,7 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 												return D{}
 											}
 											l := material.Caption(a.th, e.detail)
-											l.Color = colMuted
+											l.Color = detailCol
 											return l.Layout(gtx)
 										}),
 									)
@@ -772,34 +830,43 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 									if txt == "" {
 										return D{}
 									}
-									return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.pixel(unit.Sp(8), txt, col).Layout)
+									summary := a.pixel(unit.Sp(8), txt, col).Layout
+									return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+										if !selected {
+											return summary(gtx)
+										}
+										return background(gtx, colBg, func(gtx C) D {
+											return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(5), Right: unit.Dp(5)}.Layout(gtx, summary)
+										})
+									})
 								}),
 							)
 						})
 					})
-				})
-			}),
-			layout.Rigid(func(gtx C) D {
-				if e.fav < 0 {
-					return D{}
-				}
-				return material.Clickable(gtx, clickable(a.connDelBtns, e.key), func(gtx C) D {
-					return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(10)}.Layout(gtx,
-						a.pixel(unit.Sp(9), "✕", colErr).Layout)
-				})
-			}),
-		)
+				}),
+				layout.Rigid(func(gtx C) D {
+					if e.fav < 0 {
+						return D{}
+					}
+					return material.Clickable(gtx, clickable(a.connDelBtns, e.key), func(gtx C) D {
+						return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(10)}.Layout(gtx,
+							a.pixel(unit.Sp(9), "✕", delCol).Layout)
+					})
+				}),
+			)
+		})
 	}
 }
 
-// rowRefreshButton is the selected row's ↻: a bordered chip with the rotate
-// glyph in the accent (muted, inert while a probe is running).
+// rowRefreshButton is the selected row's ↻: a chip bordered and glyphed in the
+// dark background color, cut into the row's accent band (faded, inert while a
+// probe is running).
 func (a *App) rowRefreshButton(gtx C, sz int, busy bool) D {
-	col, border := colAccent, colAccent
+	col := colBg
 	if busy {
-		col, border = colMuted, colBorder
+		col = withAlpha(colBg, 0.45)
 	}
-	return widget.Border{Color: border, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+	return widget.Border{Color: col, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 		return material.Clickable(gtx, &a.connRefreshBtn, func(gtx C) D {
 			gtx.Constraints = layout.Exact(image.Pt(sz, sz))
 			return layout.Center.Layout(gtx, glyphWidget(glyphCW, 12, col))
@@ -970,7 +1037,7 @@ func (a *App) connStatusLine(gtx C, key string) D {
 	case key == probeKeyLAN:
 		msg = "Starts the server and pings it over the address above."
 	default:
-		msg = "Select a server and hit its ↻ to measure the core NATS ping and count who's in its lobby."
+		msg = "Hit the selected server's ↻ to measure the core NATS ping and count who's in its lobby."
 	}
 	l := material.Body2(a.th, msg)
 	l.Color = col

@@ -62,17 +62,31 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 	})
 
 	t.Run("login-picker", func(t *testing.T) {
+		// Without flags the first favorite starts selected, ahead of the
+		// nats CLI's current context; that context is only the fallback of
+		// a machine with no favorites at all.
 		a := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connTab != connTabBrowser || a.connSel != ctxKey("beta") {
-			t.Fatalf("default choice = %q/%q, want the browser tab with context beta (the selected context)", a.connTab, a.connSel)
+		if a.connTab != connTabBrowser || a.connSel != urlKey(prefs.DemoFavorite.URL) {
+			t.Fatalf("default choice = %q/%q, want the browser tab with the first favorite", a.connTab, a.connSel)
 		}
 		cfg, err := a.pickerConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.NATSContext != "beta" || cfg.NATSURL != "" || cfg.RunEmbedded {
-			t.Fatalf("pickerConfig = %+v, want context beta only", cfg)
+		if cfg.NATSURL != prefs.DemoFavorite.URL || cfg.NATSContext != "" || cfg.RunEmbedded {
+			t.Fatalf("pickerConfig = %+v, want the first favorite's URL only", cfg)
+		}
+		if b := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta", nil); b.connSel != ctxKey("beta") {
+			t.Fatalf("default choice with no favorites = %q, want the CLI's current context beta", b.connSel)
+		}
+		if b := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "", nil); b.connSel != ctxKey("alpha") {
+			t.Fatalf("default choice with no favorites and no current context = %q, want the first context", b.connSel)
+		}
+		// The CLI's current context is marked as such — never "(selected)",
+		// which would read as the browser's own selection.
+		if e, ok := a.connEntry(ctxKey("beta")); !ok || e.label != "beta (nats CLI current)" {
+			t.Fatalf("current-context row = %+v, want the nats CLI current marker", e)
 		}
 		renderOnce(t, a)
 		// Every browser state lays out: a collapsed section, the add form,
@@ -170,6 +184,35 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		if cfg.NATSContext != "mine" {
 			t.Fatalf("pickerConfig context = %q, want mine", cfg.NATSContext)
 		}
+		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-selected-line", func(t *testing.T) {
+		// The SELECTED line words each kind of row: a favorite by name + URL
+		// (URL only when the name IS the URL), a context as "context <name>"
+		// without its nats-CLI marker, the --server row as its URL.
+		a := NewWithPicker(config.Config{NATSURL: "nats://example:4222"}, []string{"beta"}, "beta",
+			append(prefs.DefaultFavorites(), prefs.Favorite{Label: "nats://10.0.0.7:4222", URL: "nats://10.0.0.7:4222"}))
+		a.th = newTestApp().th
+		a.connCtxURLs["beta"] = "nats://beta:4222"
+		for key, want := range map[string][2]string{
+			urlKey(prefs.DemoFavorite.URL): {prefs.DemoFavorite.Label, prefs.DemoFavorite.URL},
+			urlKey("nats://10.0.0.7:4222"): {"nats://10.0.0.7:4222", ""},
+			ctxKey("beta"):                 {"context beta", "nats://beta:4222"},
+			urlKey("nats://example:4222"):  {"nats://example:4222", "from --server"},
+		} {
+			e, ok := a.connEntry(key)
+			if !ok {
+				t.Fatalf("no entry %q", key)
+			}
+			if label, detail := selectionCaption(e); label != want[0] || detail != want[1] {
+				t.Fatalf("selectionCaption(%q) = %q/%q, want %q/%q", key, label, detail, want[0], want[1])
+			}
+			a.connSel = key
+			renderOnce(t, a)
+		}
+		// Nothing selected still lays out (the line says so).
+		a.connSel = ""
 		renderOnce(t, a)
 	})
 

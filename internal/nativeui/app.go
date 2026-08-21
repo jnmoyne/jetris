@@ -441,7 +441,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 // and quitting the lobby returns to this same screen (disconnected). CLI
 // flags only seed the browser's selection: --server selects that URL (listed
 // under COMMAND LINE unless it is already a favorite); --context selects that
-// context (added to the list if it isn't among the discovered ones);
+// context (added to the list if it isn't among the discovered ones); with
+// neither flag the first favorite starts selected (see the precedence below);
 // --user/--password ride along in connCfg and apply to URL connects.
 func NewWithPicker(cfg config.Config, contexts []string, selected string, favorites []prefs.Favorite) *App {
 	a := New(nil, nil)
@@ -483,18 +484,20 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 		a.connCtxURLs[c] = natspkg.ContextURL(c)
 	}
 
-	// Default selection precedence: --server, then --context, then the CLI's
-	// currently selected context, then the first favorite, then the first
-	// context (a machine with neither starts with nothing selected).
+	// Default selection precedence: --server, then --context, then the first
+	// favorite — the bookmarks are the player's own list, so its head is the
+	// server they most likely want, ahead of whatever the nats CLI happens to
+	// have current — then the CLI's current context, then the first context
+	// (a machine with neither starts with nothing selected).
 	switch {
 	case cfg.NATSURL != "":
 		a.connSel = urlKey(cfg.NATSURL)
 	case cfg.NATSContext != "":
 		a.connSel = ctxKey(cfg.NATSContext)
-	case selected != "":
-		a.connSel = ctxKey(selected)
 	case len(a.favorites) > 0:
 		a.connSel = urlKey(a.favorites[0].URL)
+	case selected != "":
+		a.connSel = ctxKey(selected)
 	case len(a.connContexts) > 0:
 		a.connSel = ctxKey(a.connContexts[0])
 	}

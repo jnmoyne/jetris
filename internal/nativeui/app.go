@@ -310,6 +310,7 @@ type App struct {
 	inviteSelfLastSel  bool            // last self intent applied (non-teams)
 	inviteSelfLastTeam string          // last self intent applied (teams)
 	inviteList         widget.List
+	inviteMeasure      widget.Bool      // never drawn: measures checkbox widths for the picker's control column
 	inviteCloseBtn     widget.Clickable // keep the game (and its invites), just close the overlay
 	inviteCancelBtn    widget.Clickable // abandon: retract the invites and delete the game
 	// Incoming-invitation pop-up (reads lobby.MyInvite at draw time).

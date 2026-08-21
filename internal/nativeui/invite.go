@@ -3,10 +3,12 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"image"
 	"sort"
 
 	"gioui.org/font"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -585,8 +587,9 @@ func (a *App) invitePickerOverlay(gtx C) D {
 								gtx.Constraints.Max.Y = gtx.Dp(240)
 								// Overlay the scrollbar instead of reserving a lane for
 								// it (Occupy): list rows then span the full width, so
-								// their Invite checkboxes right-align with the pinned
-								// self row's Play checkbox above.
+								// their Invite checkboxes sit in the same column as the
+								// pinned self row's Play checkbox above (see
+								// inviteCheckBoxColumn).
 								l := material.List(a.th, &a.inviteList)
 								l.AnchorStrategy = material.Overlay
 								return l.Layout(gtx, len(ids), func(gtx C, i int) D {
@@ -649,7 +652,7 @@ func (a *App) inviteSelfRow(gtx C, g lobby.GameListing, selfName string, teams b
 					cb := material.CheckBox(a.th, &a.inviteSelfSel, "Play")
 					cb.Color = colFg
 					cb.IconColor = colAccent
-					return cb.Layout(gtx)
+					return a.inviteCheckBoxColumn(gtx, cb.Layout)
 				}
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(a.teamRadio(&a.inviteSelfTeam, "", "—")),
@@ -703,7 +706,7 @@ func (a *App) inviteRow(gtx C, c *inviteChoice, st inviteRowStatus, teams bool) 
 					cb := material.CheckBox(a.th, &c.sel, "Invite")
 					cb.Color = colFg
 					cb.IconColor = colAccent
-					return cb.Layout(gtx)
+					return a.inviteCheckBoxColumn(gtx, cb.Layout)
 				}
 				// Teams: a three-way — not invited / team A / team B.
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -716,6 +719,33 @@ func (a *App) inviteRow(gtx C, c *inviteChoice, st inviteRowStatus, teams bool) 
 			}),
 		)
 	})
+}
+
+// inviteCheckBoxLabels are the two labels the picker's checkboxes carry: the
+// pinned self row says "Play", every candidate row says "Invite".
+var inviteCheckBoxLabels = [...]string{"Play", "Invite"}
+
+// inviteCheckBoxColumn lays out a picker row's checkbox inside a column as
+// wide as the widest checkbox the picker shows, with the box flush left. A
+// material checkbox draws its box to the LEFT of its label, so right-aligning
+// the controls lines up the ends of "Play" and "Invite" while the boxes
+// themselves drift apart by the labels' width difference. Reserving one
+// column for both rows — measured, not hard-coded, so it survives any font
+// — keeps the boxes in a single vertical line down the picker.
+func (a *App) inviteCheckBoxColumn(gtx C, cb layout.Widget) D {
+	w := 0
+	for _, label := range inviteCheckBoxLabels {
+		// Measure only: the macro is dropped, so nothing is drawn and no
+		// input area is registered for the stand-in widget.
+		macro := op.Record(gtx.Ops)
+		mgtx := gtx
+		mgtx.Constraints.Min = image.Point{}
+		dims := material.CheckBox(a.th, &a.inviteMeasure, label).Layout(mgtx)
+		macro.Stop()
+		w = max(w, dims.Size.X)
+	}
+	gtx.Constraints.Min.X = min(w, gtx.Constraints.Max.X)
+	return layout.W.Layout(gtx, cb)
 }
 
 func (a *App) teamRadio(enum *widget.Enum, value, label string) layout.Widget {

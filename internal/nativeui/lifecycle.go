@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +85,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config) {
 	a.mu.Lock()
 	a.nc, a.js, a.kv = nc, js, kv
 	a.usingEmbedded = cfg.RunEmbedded
+	a.connLabel = connectionLabel(cfg, nc.ConnectedUrl())
 	a.mu.Unlock()
 	a.doLogin(name, false)
 }
@@ -213,10 +215,55 @@ func (a *App) disconnect() {
 	nc := a.nc
 	a.nc, a.js, a.kv = nil, nil, nil
 	a.usingEmbedded = false
+	a.connLabel = ""
 	a.mu.Unlock()
 	if nc != nil {
 		nc.Drain()
 	}
+}
+
+// connectionLabel describes a connection for the lobby header: how the player
+// chose the server (a NATS CLI context by name, or a plain URL) plus the URL
+// actually reached, which for a context or a clustered URL can differ from
+// what was configured. connectedURL is nc.ConnectedUrl(); when it is empty the
+// configured URL stands in. Any user:password in the URL is dropped so
+// credentials never reach the screen. LAN mode names the embedded server and
+// leaves the address out: the lobby's YOUR SERVER'S URL line right under the
+// header already shows it, as the thing to share.
+func connectionLabel(cfg config.Config, connectedURL string) string {
+	if cfg.RunEmbedded {
+		return "LAN mode (your embedded server)"
+	}
+	u := stripURLUserinfo(connectedURL)
+	if u == "" {
+		u = stripURLUserinfo(cfg.NATSURL)
+	}
+	if cfg.NATSContext != "" {
+		return joinLabel("context "+cfg.NATSContext, u)
+	}
+	return u
+}
+
+func joinLabel(how, u string) string {
+	if u == "" {
+		return how
+	}
+	return how + " · " + u
+}
+
+// stripURLUserinfo returns raw without any user:password@ part. A string that
+// doesn't parse as a URL is returned as is (nc.ConnectedUrl() always parses;
+// this only guards typed-in URLs).
+func stripURLUserinfo(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // doLogin runs the (blocking) name-collision check and lobby bring-up off the UI

@@ -330,6 +330,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
 		a.chatLog = []lobby.ChatMessage{{Name: "alice", Text: "hi"}}
+		a.connLabel = "context demo · nats://demo.nats.io:4222"
 		renderOnce(t, a)
 	})
 

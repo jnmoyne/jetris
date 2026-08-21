@@ -132,11 +132,24 @@ func TestScreenSnapshots(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
+		a.connLabel = "context demo · nats://demo.nats.io:4222"
 		a.chatLog = []lobby.ChatMessage{
 			{Name: "alice", Text: "ready when you are"},
 			{Name: "bob", Text: "one more round"},
 		}
 		snapshotPNG(t, w, dir, "screen_lobby", func(gtx C) { a.layout(gtx) })
+	})
+
+	// The lobby while hosting the embedded server (LAN mode): the header
+	// names the server and the shareable-address line sits under it.
+	t.Run("lobby_lan", func(t *testing.T) {
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		a.usingEmbedded = true
+		a.embAddr = "192.168.1.23:4222"
+		a.connLabel = connectionLabel(config.Config{RunEmbedded: true, NATSURL: "nats://" + a.embAddr}, "nats://"+a.embAddr)
+		snapshotPNG(t, w, dir, "screen_lobby_lan", func(gtx C) { a.layout(gtx) })
 	})
 
 	t.Run("game", func(t *testing.T) {

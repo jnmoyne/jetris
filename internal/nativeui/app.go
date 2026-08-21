@@ -133,6 +133,12 @@ type App struct {
 	embAddr       string // shareable "<lan-ip>:<port>"
 	usingEmbedded bool
 
+	// connLabel names the server the CURRENT connection reached, for the
+	// lobby header ("context ngs · nats://connect.ngs.global:4222", "LAN mode
+	// (your embedded server)"; see connectionLabel). Set on connect, cleared
+	// on disconnect; guarded by mu.
+	connLabel string
+
 	win *app.Window
 	th  *material.Theme
 	ctx context.Context // app lifecycle context (set in Run)

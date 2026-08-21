@@ -65,6 +65,7 @@ func (a *App) layoutLobby(gtx C) D {
 			chat = append(chat, m)
 		}
 	}
+	connLabel := a.connLabel
 	a.mu.Unlock()
 
 	// dispatch per-game buttons
@@ -128,7 +129,7 @@ func (a *App) layoutLobby(gtx C) D {
 				}),
 				layout.Flexed(2, func(gtx C) D {
 					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyRight(gtx, games, abandoned, a.archivesForDisplay(lb.Archives()), lb.PlayerName())
+						return a.lobbyRight(gtx, games, abandoned, a.archivesForDisplay(lb.Archives()), lb.PlayerName(), connLabel)
 					})
 				}),
 			)
@@ -203,12 +204,26 @@ func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.Chat
 	)
 }
 
-func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, playerName string) D {
+func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, playerName, connLabel string) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D {
-					return a.pixel(unit.Sp(13), "LOBBY — "+playerName, colFg).Layout(gtx)
+					// Title, then which server this session is on — muted,
+					// one line, truncated rather than wrapping into the
+					// rows below when the window is narrow.
+					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+						layout.Rigid(a.pixel(unit.Sp(13), "LOBBY — "+playerName, colFg).Layout),
+						layout.Rigid(hSpacer(14)),
+						layout.Flexed(1, func(gtx C) D {
+							if connLabel == "" {
+								return D{}
+							}
+							l := a.pixel(unit.Sp(8), "@ "+connLabel, colMuted)
+							l.MaxLines = 1
+							return l.Layout(gtx)
+						}),
+					)
 				}),
 				layout.Rigid(func(gtx C) D {
 					return a.secondaryButton(gtx, &a.quitBtn, "Quit")

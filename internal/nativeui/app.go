@@ -368,6 +368,7 @@ type App struct {
 	replayFastBtn   widget.Clickable      // dialog: replay as fast as possible
 	replayCancelBtn widget.Clickable      // dialog: close without replaying
 	replayBackBtn   widget.Clickable      // "Back to Lobby" from the replay screen
+	replayPauseBtn  widget.Clickable      // Pause / Resume on the replay screen (flips replayView.gate)
 	replayView      *replayView           // the active replay session (nil = none)
 
 	// Horizontal board strips that scroll when the boards together exceed the

@@ -333,6 +333,10 @@ func TestScreenSnapshots(t *testing.T) {
 		a.replayView = rv
 		a.screen = screenReplay
 		snapshotPNG(t, w, dir, "screen_replay", func(gtx C) { a.layout(gtx) })
+
+		// The same replay paused: PAUSED status line, Resume in place of Pause.
+		rv.gate.set(true, time.Now())
+		snapshotPNG(t, w, dir, "screen_replay_paused", func(gtx C) { a.layout(gtx) })
 	})
 }
 

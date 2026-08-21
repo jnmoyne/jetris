@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gioui.org/layout"
@@ -55,6 +56,63 @@ func (p *replayPacer) delay(ts, now time.Time) time.Duration {
 		return d
 	}
 	return 0
+}
+
+// shift moves the schedule's anchor forward by d — the wall-clock span the
+// replay stood paused — so the next message is due as far after the resume
+// as it was after the pause, instead of everything recorded meanwhile being
+// past due at once. A schedule not yet anchored has nothing to shift.
+func (p *replayPacer) shift(d time.Duration) {
+	if !p.base.IsZero() && d > 0 {
+		p.wall0 = p.wall0.Add(d)
+	}
+}
+
+// replayGate is the pause control shared by the replay screen, which flips
+// it, and the session goroutine, which waits on it between messages
+// (replayWait). A resume banks the paused span for the pacer (take).
+type replayGate struct {
+	mu       sync.Mutex
+	paused   bool
+	pausedAt time.Time
+	held     time.Duration // paused span not yet folded into the pacer's anchor
+	changed  chan struct{} // closed and replaced whenever paused flips, waking waiters
+}
+
+func newReplayGate() *replayGate { return &replayGate{changed: make(chan struct{})} }
+
+// set pauses (true) or resumes (false) as of now; a no-op when already so.
+func (g *replayGate) set(paused bool, now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.paused == paused {
+		return
+	}
+	g.paused = paused
+	if paused {
+		g.pausedAt = now
+	} else {
+		g.held += now.Sub(g.pausedAt)
+	}
+	close(g.changed)
+	g.changed = make(chan struct{})
+}
+
+// state reports whether the replay is paused, with a channel that closes on
+// the next flip either way.
+func (g *replayGate) state() (bool, <-chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.paused, g.changed
+}
+
+// take returns the paused span banked since the last take, and resets it.
+func (g *replayGate) take() time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	d := g.held
+	g.held = 0
+	return d
 }
 
 // replayMsgTime parses a copied message's original timestamp header
@@ -109,6 +167,7 @@ type replayView struct {
 	fast     bool // as fast as possible vs. paced at the recorded rate (replayPacer)
 	boards   []*replayBoard
 	byPlayer map[string]int // competitive: playerID → boards index
+	gate     *replayGate    // Pause / Resume (its own lock; see replayWait)
 	cancel   context.CancelFunc
 	done     bool
 	err      string
@@ -118,7 +177,7 @@ type replayView struct {
 // cooperative, one per player (sorted by ID, matching the archive viewer's
 // coloring) for competitive, one per team for teams.
 func newReplayView(rec config.ArchiveRecord, fast bool) *replayView {
-	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}}
+	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}, gate: newReplayGate()}
 	switch rec.Mode {
 	case config.ModeCooperative:
 		rv.boards = []*replayBoard{newReplayBoard("", -1,
@@ -241,6 +300,7 @@ func (a *App) closeReplay() {
 // message into the session's boards. At original speed each message is
 // applied on the recorded schedule via replayPacer (the original timestamps
 // ride the config.ReplayTsHeader header); fast mode applies them as delivered.
+// Either way every message passes the pause gate first (replayWait).
 // Runs on its own goroutine; ends when the game's copy-complete marker — the
 // last message under its prefix — arrives. If the channel goes quiet without
 // the marker, the marker is re-checked: gone means the game was displaced and
@@ -309,18 +369,46 @@ func (a *App) runReplaySession(ctx context.Context, rv *replayView) {
 				a.invalidate()
 				return
 			}
-			if !rv.fast {
-				if d := pacer.delay(replayMsgTime(msg), time.Now()); d > 0 {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(d):
-					}
-				}
+			if !replayWait(ctx, rv, &pacer, replayMsgTime(msg)) {
+				return
 			}
 			if a.applyReplayCell(rv, msg.Subject(), msg.Data()) {
 				a.invalidate()
 			}
+		}
+	}
+}
+
+// replayWait blocks until the message recorded at ts is due — after its
+// recorded gap at original speed, at once in fast mode — honoring the pause
+// gate throughout: a pause holds the message (mid-gap, the rest of its gap)
+// until the resume, and the pacer's anchor then shifts by the paused span so
+// the schedule continues where it stopped. Reports false when ctx ends.
+func replayWait(ctx context.Context, rv *replayView, pacer *replayPacer, ts time.Time) bool {
+	for {
+		paused, changed := rv.gate.state()
+		if paused {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-changed:
+			}
+			pacer.shift(rv.gate.take())
+			continue
+		}
+		if rv.fast {
+			return true
+		}
+		d := pacer.delay(ts, time.Now())
+		if d <= 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(d):
+			return true
+		case <-changed: // paused mid-gap: hold, then re-time from the shifted anchor
 		}
 	}
 }
@@ -407,6 +495,11 @@ func (a *App) layoutReplay(gtx C) D {
 		a.closeReplay()
 		return D{}
 	}
+	paused, _ := rv.gate.state()
+	if a.replayPauseBtn.Clicked(gtx) {
+		paused = !paused
+		rv.gate.set(paused, time.Now())
+	}
 
 	a.mu.Lock()
 	done, errMsg := rv.done, rv.err
@@ -416,15 +509,22 @@ func (a *App) layoutReplay(gtx C) D {
 	}
 	a.mu.Unlock()
 
-	status, statusCol := "REPLAYING · ORIGINAL SPEED", colNATSGreen
+	speed := "ORIGINAL SPEED"
 	if rv.fast {
-		status = "REPLAYING · FAST"
+		speed = "FAST"
 	}
+	status, statusCol := "REPLAYING · "+speed, colNATSGreen
 	switch {
 	case errMsg != "":
 		status, statusCol = strings.ToUpper(errMsg), colErr
 	case done:
 		status, statusCol = "REPLAY COMPLETE", colGold
+	case paused:
+		status, statusCol = "PAUSED · "+speed, colWarn
+	}
+	pauseLabel := "Pause"
+	if paused {
+		pauseLabel = "Resume"
 	}
 
 	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
@@ -444,7 +544,18 @@ func (a *App) layoutReplay(gtx C) D {
 			}),
 			layout.Rigid(spacer(14)),
 			layout.Rigid(func(gtx C) D {
-				return a.secondaryButton(gtx, &a.replayBackBtn, "Back to Lobby")
+				// Pause / Resume leads while the replay runs; a finished (or
+				// failed) replay has nothing to pause and shows only the exit.
+				children := []layout.FlexChild{
+					layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.replayBackBtn, "Back to Lobby") }),
+				}
+				if !done {
+					children = append([]layout.FlexChild{
+						layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.replayPauseBtn, pauseLabel) }),
+						layout.Rigid(hSpacer(12)),
+					}, children...)
+				}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
 			}),
 		)
 	})

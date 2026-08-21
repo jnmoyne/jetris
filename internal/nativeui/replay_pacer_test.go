@@ -41,4 +41,17 @@ func TestReplayPacer(t *testing.T) {
 	if d := p.delay(rec0.Add(3*time.Second), wall.Add(2500*time.Millisecond)); d != 500*time.Millisecond {
 		t.Fatalf("anchored delay = %v, want 500ms", d)
 	}
+	// A pause shifts the anchor by the paused span: after 2s paused, the
+	// message recorded at +3s is due at wall +5s — 2.5s from wall +2.5s.
+	p.shift(2 * time.Second)
+	if d := p.delay(rec0.Add(3*time.Second), wall.Add(2500*time.Millisecond)); d != 2500*time.Millisecond {
+		t.Fatalf("shifted delay = %v, want 2.5s", d)
+	}
+	// An unanchored schedule has nothing to shift: the first paced message
+	// still applies at once and anchors to the moment it is applied.
+	q := replayPacer{thresh: rec0.Add(-replayStartGuard)}
+	q.shift(time.Minute)
+	if d := q.delay(rec0, wall); d != 0 || !q.wall0.Equal(wall) {
+		t.Fatalf("shift before anchoring changed the first delay (%v) or anchor (%v)", d, q.wall0)
+	}
 }

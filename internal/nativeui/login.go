@@ -164,6 +164,7 @@ func (a *App) layoutLogin(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 							layout.Rigid(a.pixel(unit.Sp(9), "peer to peer · made with ", colMuted).Layout),
 							layout.Rigid(a.natsTag(18, 9)),
+							layout.Rigid(a.pixel(unit.Sp(9), " JetStream", colAccent).Layout),
 						)
 					})
 				}),

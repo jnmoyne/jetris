@@ -109,64 +109,95 @@ func hasReplay(t *testing.T, js jetstream.JetStream, gameID string) bool {
 	return false
 }
 
-// The replay archiver keeps exactly the bucket's top config.ReplayTopN games:
-// a finishing game below the cut gets no replay, one inside the cut gets a
-// full copy and evicts the replay of the game it displaces — and buckets are
-// scoped per (mode, with/without agents), so a low score in a fresh bucket
-// still qualifies.
-func TestReplayTopNAndDisplacement(t *testing.T) {
+// The replay archiver keeps exactly the keep set: every bucket's top
+// config.ReplayTopN plus the config.ReplayRecentN most recent games overall.
+// A finishing game is always the most recent, so it always gets a replay; it
+// ages out of the recent set after ReplayRecentN more finishes unless it
+// ranks in its bucket's top N — and buckets are scoped per (mode,
+// with/without agents), so a fresh bucket's low scores are its top games.
+func TestReplayKeepSetAndDisplacement(t *testing.T) {
 	js := setupJS(t)
 	ctx := context.Background()
+	const topN, recentN = config.ReplayTopN, config.ReplayRecentN
+	coop := func(i int) string { return fmt.Sprintf("coop-%02d", i) }
 
-	// Fill the coop/human bucket with ReplayTopN games, scores 100..1000.
-	for i := 1; i <= config.ReplayTopN; i++ {
-		rec := testRecord(fmt.Sprintf("coop-%02d", i), config.ModeCooperative, i*100, false)
+	// Fill the coop/human bucket with topN+recentN games, scores rising with
+	// finish order: the top N are the newest N, the recent set the newest
+	// recentN, and the first topN games have aged out of both.
+	total := topN + recentN
+	for i := 1; i <= total; i++ {
+		rec := testRecord(coop(i), config.ModeCooperative, i*100, false)
 		archiveTestGame(t, js, rec)
 		if !hasReplay(t, js, rec.GameID) {
-			t.Fatalf("game %s should have a replay (bucket not full yet)", rec.GameID)
+			t.Fatalf("game %s should have a replay (it is the most recent)", rec.GameID)
 		}
 	}
+	if hasReplay(t, js, coop(1)) || hasReplay(t, js, coop(topN)) {
+		t.Fatal("games out of both the top N and the recent set must lose their replay")
+	}
+	if !hasReplay(t, js, coop(topN+1)) {
+		t.Fatal("the oldest recent-only game must still have its replay")
+	}
+	if !hasReplay(t, js, coop(total)) {
+		t.Fatal("the bucket's #1 must have its replay")
+	}
 
-	// A game below the cut: no replay, and every existing replay survives.
+	// A game below the top-N cut: a replay for recency, aging the oldest
+	// recent-only game out; the top N are untouched.
 	archiveTestGame(t, js, testRecord("coop-low", config.ModeCooperative, 50, false))
-	if hasReplay(t, js, "coop-low") {
-		t.Fatal("a game below the top-N cut must not get a replay")
+	if !hasReplay(t, js, "coop-low") {
+		t.Fatal("a low score must still get a replay while it is recent")
 	}
-	if !hasReplay(t, js, "coop-01") {
-		t.Fatal("an unqualified game must not displace anything")
+	if hasReplay(t, js, coop(topN+1)) {
+		t.Fatal("the game aged out of the recent set should have lost its replay")
 	}
-
-	// A game inside the cut: gets a replay and evicts the now-#11 (score 100).
-	archiveTestGame(t, js, testRecord("coop-mid", config.ModeCooperative, 550, false))
-	if !hasReplay(t, js, "coop-mid") {
-		t.Fatal("a game inside the top-N cut should get a replay")
-	}
-	if hasReplay(t, js, "coop-01") {
-		t.Fatal("the displaced game's replay should have been deleted")
-	}
-	if !hasReplay(t, js, "coop-02") {
-		t.Fatal("games still inside the top N must keep their replays")
+	if !hasReplay(t, js, coop(topN+2)) || !hasReplay(t, js, coop(total-topN+1)) {
+		t.Fatal("games still recent or still top must keep their replays")
 	}
 
-	// Fresh buckets: a different mode, and the same mode with agents, both
-	// qualify regardless of the full coop/human bucket.
-	archiveTestGame(t, js, testRecord("comp-1", config.ModeCompetitive, 10, false))
-	if !hasReplay(t, js, "comp-1") {
-		t.Fatal("a different mode is a different bucket and should qualify")
+	// recentN games in ANOTHER bucket age every coop game out of the recent
+	// set: the coop top N survive on ranking alone, the rest are purged — and
+	// the competitive bucket, all ties, keeps its own newest N as its top.
+	comp := func(i int) string { return fmt.Sprintf("comp-%02d", i) }
+	for i := 1; i <= recentN; i++ {
+		archiveTestGame(t, js, testRecord(comp(i), config.ModeCompetitive, 10, false))
 	}
-	archiveTestGame(t, js, testRecord("coop-agent", config.ModeCooperative, 10, true))
-	if !hasReplay(t, js, "coop-agent") {
-		t.Fatal("an agent game is a different bucket and should qualify")
+	if hasReplay(t, js, "coop-low") || hasReplay(t, js, coop(total-topN)) {
+		t.Fatal("coop games outside the top N must lose their replay once no longer recent")
+	}
+	if !hasReplay(t, js, coop(total-topN+1)) || !hasReplay(t, js, coop(total)) {
+		t.Fatal("the coop top N must survive beyond the recent set")
+	}
+	if !hasReplay(t, js, comp(1)) || !hasReplay(t, js, comp(recentN)) {
+		t.Fatal("every competitive game is still recent")
 	}
 
-	// The listing names exactly the games whose copy-complete marker exists.
+	// One more sweep from a third bucket (coop with agents) ages the
+	// competitive games out: its top N — the newest N, by the newer-finish
+	// tie-break — stay, the older ones go, and the agent bucket's low scores
+	// are its own top games.
+	agent := func(i int) string { return fmt.Sprintf("agent-%02d", i) }
+	for i := 1; i <= recentN; i++ {
+		archiveTestGame(t, js, testRecord(agent(i), config.ModeCooperative, 10, true))
+	}
+	if hasReplay(t, js, comp(1)) || hasReplay(t, js, comp(recentN-topN)) {
+		t.Fatal("competitive games outside their top N must lose their replay once no longer recent")
+	}
+	if !hasReplay(t, js, comp(recentN-topN+1)) || !hasReplay(t, js, comp(recentN)) {
+		t.Fatal("the competitive bucket's top N (its newest, on the tie-break) must survive")
+	}
+	if !hasReplay(t, js, agent(1)) || !hasReplay(t, js, coop(total)) {
+		t.Fatal("agent games are recent; the coop top N is still top")
+	}
+
+	// The listing names exactly the keep set: coop top N, competitive top
+	// N, and the recentN agent games (their top N among them).
 	ids, err := natspkg.ListReplayGameIDs(ctx, js)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config.ReplayTopN + 2 // coop bucket still holds N, plus comp-1 and coop-agent
-	if len(ids) != want {
-		t.Fatalf("listed %d replays (%v), want %d", len(ids), ids, want)
+	if want := topN + topN + recentN; len(ids) != want {
+		t.Fatalf("listed %d replays, want %d: %v", len(ids), want, ids)
 	}
 }
 

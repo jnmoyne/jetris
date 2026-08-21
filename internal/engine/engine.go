@@ -1196,13 +1196,14 @@ func (e *Engine) transitionGameToFinished(ctx context.Context) {
 		log.Printf("transition to finished: gave up after %d attempts", maxAttempts)
 		return
 	}
-	// Trigger archive callback after a delay (gives all players time to receive game over).
-	// archiveAndCleanup is CAS-protected (finished→archived), so duplicate calls are safe.
+	// Trigger the archive callback right away (off this goroutine: archiving
+	// is a long NATS conversation). The archiver publishes the history record
+	// immediately and applies its own grace period before the destructive
+	// steps, so peers still get time to receive the final events.
+	// ArchiveAndCleanup is CAS-protected (finished→archived), so duplicate
+	// calls are safe.
 	if e.OnGameFinished != nil {
-		go func() {
-			time.Sleep(5 * time.Second)
-			e.OnGameFinished()
-		}()
+		go e.OnGameFinished()
 	}
 }
 

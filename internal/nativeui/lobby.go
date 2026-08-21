@@ -209,24 +209,25 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D {
-					// Title, then which server this session is on — muted,
-					// one line, truncated rather than wrapping into the
-					// rows below when the window is narrow.
+					// Who we are, then which server this session is on (the
+					// banner above already says LOBBY): same size, the server
+					// muted and kept to one line — truncated rather than
+					// wrapping into the rows below when the window is narrow.
 					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-						layout.Rigid(a.pixel(unit.Sp(13), "LOBBY — "+playerName, colFg).Layout),
+						layout.Rigid(a.pixel(unit.Sp(13), playerName, colFg).Layout),
 						layout.Rigid(hSpacer(14)),
 						layout.Flexed(1, func(gtx C) D {
 							if connLabel == "" {
 								return D{}
 							}
-							l := a.pixel(unit.Sp(8), "@ "+connLabel, colMuted)
+							l := a.pixel(unit.Sp(13), "@ "+connLabel, colMuted)
 							l.MaxLines = 1
 							return l.Layout(gtx)
 						}),
 					)
 				}),
 				layout.Rigid(func(gtx C) D {
-					return a.secondaryButton(gtx, &a.quitBtn, "Quit")
+					return a.secondaryButton(gtx, &a.quitBtn, "Disconnect")
 				}),
 			)
 		}),
@@ -319,7 +320,11 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 									a.replayChoice = &rec
 								}
 							}
-							return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn)
+							// Games in their bucket's all-time top 10 are
+							// highlighted (the ranking counts every record,
+							// not just the rows the filter shows).
+							top := lb != nil && lb.IsTopRanked(archives[i].GameID)
+							return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top)
 						})
 					}),
 				)
@@ -508,45 +513,74 @@ func (a *App) archiveHistoryHeader(gtx C) D {
 // SCORE (largest, gold), the game TIME (duration over date), the MODE, and a
 // flexed winner-first PLAYERS column, closed by a rule separating it from the
 // next game. replayBtn is non-nil for games with a replay archive and adds
-// the Replay action beside View board.
-func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable) D {
+// the Replay action beside View board. top marks a game in its bucket's
+// all-time top 10 (config.ReplayTopRanked): the row sits on a faint gold
+// wash and carries a TOP 10 tag under its score, so the showcase games stand
+// out from the merely recent ones in either sort order.
+func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-				children := []layout.FlexChild{
-					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec)) }),
-					layout.Rigid(hSpacer(10)),
-					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histTimeW, layout.W, a.archiveTimeCell(rec)) }),
-					layout.Rigid(hSpacer(10)),
-					layout.Rigid(func(gtx C) D { return fixedCol(gtx, histModeW, layout.W, a.archiveModeCell(rec)) }),
-					layout.Rigid(hSpacer(10)),
-					layout.Flexed(1, a.archivePlayersCell(rec)),
-					layout.Rigid(hSpacer(8)),
-					layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
-				}
-				if replayBtn != nil {
-					children = append(children,
-						layout.Rigid(hSpacer(6)),
-						layout.Rigid(func(gtx C) D {
-							return a.smallActionButton(gtx, replayBtn, "Replay", colNATSGreen)
-						}),
-					)
-				}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
-			})
+			content := func(gtx C) D {
+				return a.archiveHistoryCells(gtx, rec, btn, replayBtn, top)
+			}
+			if !top {
+				return content(gtx)
+			}
+			// Lay the cells out first to learn the row's size, then paint the
+			// wash underneath before replaying them.
+			macro := op.Record(gtx.Ops)
+			dims := content(gtx)
+			call := macro.Stop()
+			fillRect(gtx.Ops, image.Rectangle{Max: dims.Size}, colGoldWash)
+			call.Add(gtx.Ops)
+			return dims
 		}),
 		layout.Rigid(func(gtx C) D { return hrule(gtx, colBorder, 1) }),
 	)
 }
 
+// archiveHistoryCells is the history row's inset column flex (see
+// archiveHistoryRow).
+func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
+	return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		children := []layout.FlexChild{
+			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec, top)) }),
+			layout.Rigid(hSpacer(10)),
+			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histTimeW, layout.W, a.archiveTimeCell(rec)) }),
+			layout.Rigid(hSpacer(10)),
+			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histModeW, layout.W, a.archiveModeCell(rec)) }),
+			layout.Rigid(hSpacer(10)),
+			layout.Flexed(1, a.archivePlayersCell(rec)),
+			layout.Rigid(hSpacer(8)),
+			layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
+		}
+		if replayBtn != nil {
+			children = append(children,
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(func(gtx C) D {
+					return a.smallActionButton(gtx, replayBtn, "Replay", colNATSGreen)
+				}),
+			)
+		}
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
+	})
+}
+
 // archiveScoreCell is the headline SCORE (gold pixel numerals) over a small
-// achieved-level line — the game's most important figure, so the largest.
-func (a *App) archiveScoreCell(r config.ArchiveRecord) layout.Widget {
+// achieved-level line — the game's most important figure, so the largest —
+// and, for a game in its bucket's top 10, a gold TOP 10 tag beneath.
+func (a *App) archiveScoreCell(r config.ArchiveRecord, top bool) layout.Widget {
 	return func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx,
+		children := []layout.FlexChild{
 			layout.Rigid(a.pixel(unit.Sp(13), strconv.Itoa(r.HeadlineScore()), colGold).Layout),
 			layout.Rigid(a.caption(fmt.Sprintf("LVL %d", archiveHeadlineLevel(r)), colMuted)),
-		)
+		}
+		if top {
+			children = append(children, layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, a.pixel(unit.Sp(7), "TOP 10", colGold).Layout)
+			}))
+		}
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx, children...)
 	}
 }
 

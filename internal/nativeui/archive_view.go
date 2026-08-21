@@ -50,7 +50,7 @@ func (a *App) layoutArchive(gtx C) D {
 
 	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(a.lobbyBanner),
+			layout.Rigid(a.brandBanner("")),
 			layout.Rigid(spacer(8)),
 			layout.Rigid(a.header("FINAL PLAYFIELD")),
 			layout.Rigid(spacer(4)),

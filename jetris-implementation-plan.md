@@ -1844,9 +1844,12 @@ this engine to spectator (`transitionToSpectator(false)`); in
 COOPERATIVE mode it also kicks off `transitionGameToFinished`. In TEAMS mode it
 routes to `handleTeamTopOut` instead — per-player elimination while the team
 plays on; no `transitionGameToFinished` (see Phase 8). It does NOT publish
-the archive record, delete the stream, or remove the KV entry — that happens later
-in `archive.ArchiveAndCleanup`, wired via `engine.OnGameFinished` and run ~5s after
-the finish transition. ArchiveAndCleanup takes its VERDICTS from the archiving
+the archive record, delete the stream, or remove the KV entry — that happens in
+`archive.ArchiveAndCleanup`, wired via `engine.OnGameFinished` and fired right at
+the finish transition: it publishes the record immediately (the lobby history
+shows the game at once), then archives the replay, and only deletes the stream
+and listing once 5 s (`streamDeleteGrace`) have passed since the finish, so
+every peer has received the final events. ArchiveAndCleanup takes its VERDICTS from the archiving
 engine's live record (competitive winners = `!eng.IsEliminated(id)`; the teams
 winning team = `eng.GameOutcome()` + `eng.TeamIdx()`), never from replaying the
 events: with events on per-kind, per-player subjects every player's single

@@ -1,8 +1,10 @@
 // Command headless-player drives a NATIVE-engine Jetris player without a UI —
 // the same lobby + engine code paths the Gio app uses — so protocol-level
 // interactions between the native engine and wire agents (golang-mk1) can be
-// reproduced and observed headlessly. It creates a teams game, takes a team-0
-// seat, readies up, runs the countdown once everyone is ready, and then plays
+// reproduced and observed headlessly. It creates a teams game (or, with
+// --mode cooperative, a two-seat co-op game — where the crude play below makes
+// it the topper, and so the archiver), takes a team-0 seat, readies up, runs
+// the countdown once everyone is ready, and then plays
 // crude but legal Tetris: a few random lateral moves, then a hard drop, on a
 // fixed cadence. Diagnostic tool: no scoring smarts, no rejoin, one game.
 package main
@@ -30,6 +32,7 @@ func main() {
 	server := flag.String("server", "nats://127.0.0.1:4333", "NATS server URL")
 	dropEvery := flag.Duration("drop-every", 2*time.Second, "cadence of the move+hard-drop cycle")
 	seed := flag.Int64("seed", time.Now().UnixNano(), "RNG seed for the crude move generator")
+	mode := flag.String("mode", "teams", "game to create: teams (2v2, three agent seats) or cooperative (2 seats, one agent)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -70,12 +73,16 @@ func main() {
 	}
 
 	// 2v2 teams (TeamCount*teamSize players), agents may take the other three
-	// seats, one preview piece.
-	gameID, err := lb.CreateGame(ctx, config.ModeTeams, config.TeamCount*2, 2, 3, 1, true, false)
+	// seats, one preview piece — or a 2-seat co-op with one agent seat.
+	gameMode, playerCount, teamSize, maxAgents := config.ModeTeams, config.TeamCount*2, 2, 3
+	if *mode == "cooperative" {
+		gameMode, playerCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 1
+	}
+	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, maxAgents, 1, true, false)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("created teams game %s", gameID)
+	log.Printf("created %s game %s", gameMode, gameID)
 
 	res, err := lb.JoinGame(ctx, gameID, 0)
 	if err != nil {
@@ -83,7 +90,7 @@ func main() {
 	}
 	log.Printf("joined as playerIdx=%d team=%d slot=%d", res.PlayerIdx, res.Team, res.TeamSlot)
 
-	e := engine.New(lb.GetJS(), gameID, playerID, "", config.ModeTeams, engine.ModePlayer, res.PlayerIdx, res.Team, res.TeamSlot)
+	e := engine.New(lb.GetJS(), gameID, playerID, "", gameMode, engine.ModePlayer, res.PlayerIdx, res.Team, res.TeamSlot)
 	e.OnGameFinished = func() {
 		archive.ArchiveAndCleanup(context.Background(), js, kv, e, lb, lb.Games()[gameID].Players)
 	}

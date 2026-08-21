@@ -214,7 +214,25 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_history_row_replay", func(gtx C) {
 			layout.Center.Layout(gtx, func(gtx C) D {
 				gtx.Constraints.Max.X = 900
-				return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn)
+				return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn, false)
+			})
+			scanlines(gtx)
+		})
+	})
+
+	// The same row for a game in its bucket's top 10: gold wash and TOP 10
+	// tag, over a plain (recent-only) row for contrast.
+	t.Run("history_row_top10", func(t *testing.T) {
+		a := newTestApp()
+		rec := sampleReplayRecord()
+		var viewBtn, replayBtn, viewBtn2, replayBtn2 widget.Clickable
+		snapshotPNG(t, w, dir, "screen_history_row_top10", func(gtx C) {
+			layout.Center.Layout(gtx, func(gtx C) D {
+				gtx.Constraints.Max.X = 900
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn, true) }),
+					layout.Rigid(func(gtx C) D { return a.archiveHistoryRow(gtx, rec, &viewBtn2, &replayBtn2, false) }),
+				)
 			})
 			scanlines(gtx)
 		})

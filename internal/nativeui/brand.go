@@ -61,21 +61,35 @@ func (a *App) natsTag(size unit.Dp, sp unit.Sp) layout.Widget {
 	}
 }
 
-// lobbyBanner is the branding strip across the top of the lobby (and archive)
-// screen: the NATS "N" logo flanking "JETRIS: peer to peer blackboard system made with
-// NATS.io".
-func (a *App) lobbyBanner(gtx C) D {
-	gtx.Constraints.Min.X = gtx.Constraints.Max.X
-	return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
-		return layout.Center.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
-				layout.Rigid(hSpacer(10)),
-				layout.Rigid(a.pixel(unit.Sp(12), " JETRIS: peer to peer blackboard system made with ", colFg).Layout),
-				layout.Rigid(a.pixel(unit.Sp(12), "NATS.io ", colAccent).Layout),
-				layout.Rigid(hSpacer(10)),
-				layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
-			)
+// brandBanner is the branding strip across the top of the lobby and its
+// sub-screens (archive viewer, replay): the NATS "N" logo flanking "JETRIS:
+// peer to peer blackboard system made with NATS.io JetStream". A non-empty
+// tag ("LOBBY") closes the line and names the screen, so the screen needn't
+// title itself again below.
+func (a *App) brandBanner(tag string) layout.Widget {
+	return func(gtx C) D {
+		gtx.Constraints.Min.X = gtx.Constraints.Max.X
+		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+			return layout.Center.Layout(gtx, func(gtx C) D {
+				children := []layout.FlexChild{
+					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
+					layout.Rigid(hSpacer(10)),
+					layout.Rigid(a.pixel(unit.Sp(12), " JETRIS: peer to peer blackboard system made with ", colFg).Layout),
+					layout.Rigid(a.pixel(unit.Sp(12), "NATS.io JetStream ", colAccent).Layout),
+				}
+				if tag != "" {
+					children = append(children, layout.Rigid(a.pixel(unit.Sp(12), "· "+tag+" ", colFg).Layout))
+				}
+				children = append(children,
+					layout.Rigid(hSpacer(10)),
+					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
+				)
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
+			})
 		})
-	})
+	}
 }
+
+// lobbyBanner is the brand banner tagged LOBBY — the lobby screen's title
+// line (the player/server line below it no longer repeats the word).
+func (a *App) lobbyBanner(gtx C) D { return a.brandBanner("LOBBY")(gtx) }

@@ -1514,10 +1514,17 @@ func (g *Game) wait(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// archiveGrace is how long after the finish the game stream and listing
+// survive, so every peer receives the final events before they are deleted.
+// Only the destructive steps wait: the record is published right away so
+// every lobby shows the finished game immediately.
+const archiveGrace = 5 * time.Second
+
 // archive: we triggered the finish, so transition finished→archived (CAS elects
-// one archiver), publish the record, delete the game's resources (guide §5.5).
+// one archiver), publish the record, archive the replay, then — once the
+// grace has passed — delete the game's resources (guide §5.5–5.6).
 func (g *Game) archive(ctx context.Context) {
-	time.Sleep(5 * time.Second) // let every peer see the final events
+	finished := time.Now()
 	meta, seq, err := g.a.fetchMeta(ctx, g.id)
 	if err != nil || meta.str("status") != "finished" {
 		return
@@ -1556,16 +1563,20 @@ func (g *Game) archive(ctx context.Context) {
 		g.mu.Unlock()
 	}
 	b, _ := json.Marshal(record)
-	// Replay archive (guide §5 step 6): if this game ranks in its bucket's top N,
-	// copy the game stream to a replay stream — before the record publish
-	// (peers refresh their replay listing when the record arrives) and before
-	// the game stream is deleted below.
-	g.a.maybeArchiveReplay(ctx, b)
+	// The record goes out FIRST — it is what every lobby's history shows.
 	if _, err := g.a.js.Publish(ctx, archiveSubject, b); err != nil {
 		log.Printf("archive publish: %v", err)
-		// An unlisted replay could never be ranked or displaced — don't leave
-		// it orphaned.
-		_ = g.a.purgeReplay(ctx, g.id)
+		// An unlisted game could never be ranked or displaced: no replay,
+		// and its stream is left for the startup cleanup pass.
+		return
+	}
+	// Replay archive (guide §5 step 6): copy the game stream to the replay
+	// stream (purging the replays this game displaces) — after the record,
+	// before the game stream is deleted below.
+	g.a.maybeArchiveReplay(ctx, b)
+	// Let every peer see the final events before the stream goes away.
+	if wait := archiveGrace - time.Since(finished); wait > 0 {
+		time.Sleep(wait)
 	}
 	_ = g.a.js.DeleteStream(ctx, gameStreamName(g.id))
 	_ = g.a.kv.Delete(ctx, "games."+g.id)

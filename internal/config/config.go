@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,11 +147,25 @@ type ChatLine struct {
 // client still holds is ever dropped).
 const ArchiveChatCap = 200
 
-// ReplayTopN is how many games per replay bucket — one bucket per (mode,
-// with/without agents) pair — keep a full replay archive. A finishing game
-// that ranks in its bucket's top N gets its game stream copied to a file-backed
-// replay stream before deletion; the game it displaces loses its replay.
-const ReplayTopN = 10
+// Replay retention. A finished game keeps a full replay archive (its game
+// stream copied to the file-backed replay stream before deletion) while it is
+// in the KEEP SET — see ReplayKeepSet — which is the union of:
+//
+//   - the top ReplayTopN games of its replay bucket — one bucket per (mode,
+//     with/without agents) pair, ranked by RankBefore — the all-time
+//     showcase; and
+//   - the ReplayRecentN most recently finished games overall (RecentBefore),
+//     so everyone can watch their own game again right after playing it even
+//     when it never ranked.
+//
+// Every finishing game is by definition among the most recent, so every game
+// gets a replay at first; it survives the next ReplayRecentN finishes only by
+// ranking in its bucket's top N. Games that fall out of both sets lose their
+// replay (the archiver purges them — see archive.maybeArchiveReplay).
+const (
+	ReplayTopN    = 10
+	ReplayRecentN = 25
+)
 
 // HeadlineScore is the score a finished game is ranked (and listed) by: the
 // shared total for cooperative, the best team's total for teams, and the best
@@ -209,10 +224,96 @@ func (r ArchiveRecord) RankBefore(o ArchiveRecord) bool {
 	return r.GameID < o.GameID
 }
 
+// RecentBefore reports whether r finished more recently than o — the "most
+// recent games" total order (finish time, newest first; game ID as the
+// tie-break so every archiver cuts the identical ReplayRecentN).
+func (r ArchiveRecord) RecentBefore(o ArchiveRecord) bool {
+	if !r.FinishedAt.Equal(o.FinishedAt) {
+		return r.FinishedAt.After(o.FinishedAt)
+	}
+	return r.GameID < o.GameID
+}
+
 // SameReplayBucket reports whether two records compete for the same replay
 // top-N: same mode, and both with (or both without) agent seats.
 func (r ArchiveRecord) SameReplayBucket(o ArchiveRecord) bool {
 	return r.Mode == o.Mode && r.HasAgents() == o.HasAgents()
+}
+
+// replayBucketKey identifies a record's replay bucket (see SameReplayBucket).
+type replayBucketKey struct {
+	mode   GameMode
+	agents bool
+}
+
+// uniqueRecords collapses recs to one record per game ID (the last occurrence
+// wins, matching an archive-stream drain where a re-published record
+// supersedes the earlier copy), in first-seen order.
+func uniqueRecords(recs []ArchiveRecord) []ArchiveRecord {
+	idx := make(map[string]int, len(recs))
+	out := make([]ArchiveRecord, 0, len(recs))
+	for _, r := range recs {
+		if r.GameID == "" {
+			continue
+		}
+		if i, dup := idx[r.GameID]; dup {
+			out[i] = r
+			continue
+		}
+		idx[r.GameID] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+// ReplayTopRanked returns the game IDs that rank in the top ReplayTopN of
+// their replay bucket among recs — the games the history highlights as TOP 10
+// and the first half of the replay keep set.
+func ReplayTopRanked(recs []ArchiveRecord) map[string]bool {
+	buckets := make(map[replayBucketKey][]ArchiveRecord)
+	for _, r := range uniqueRecords(recs) {
+		k := replayBucketKey{r.Mode, r.HasAgents()}
+		buckets[k] = append(buckets[k], r)
+	}
+	top := make(map[string]bool)
+	for _, b := range buckets {
+		sort.SliceStable(b, func(i, j int) bool { return b[i].RankBefore(b[j]) })
+		for i, r := range b {
+			if i >= ReplayTopN {
+				break
+			}
+			top[r.GameID] = true
+		}
+	}
+	return top
+}
+
+// ReplayRecent returns the game IDs of the ReplayRecentN most recently
+// finished games among recs (all buckets together) — the second half of the
+// replay keep set.
+func ReplayRecent(recs []ArchiveRecord) map[string]bool {
+	all := uniqueRecords(recs)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].RecentBefore(all[j]) })
+	recent := make(map[string]bool, ReplayRecentN)
+	for i, r := range all {
+		if i >= ReplayRecentN {
+			break
+		}
+		recent[r.GameID] = true
+	}
+	return recent
+}
+
+// ReplayKeepSet returns the game IDs whose replay is retained given the full
+// set of archive records: ReplayTopRanked ∪ ReplayRecent. A pure function of
+// the records, so every archiver — GUI or agent — computes the same set and
+// purges the same displaced replays.
+func ReplayKeepSet(recs []ArchiveRecord) map[string]bool {
+	keep := ReplayTopRanked(recs)
+	for id := range ReplayRecent(recs) {
+		keep[id] = true
+	}
+	return keep
 }
 
 // HasAgents reports whether any seat in the archived game was played by an

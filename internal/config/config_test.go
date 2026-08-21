@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +140,94 @@ func TestArchiveRecordRanking(t *testing.T) {
 	}
 	if human.SameReplayBucket(agent) || human.SameReplayBucket(otherMode) {
 		t.Error("agent presence and mode must both split buckets")
+	}
+}
+
+// The replay keep set is the union of each bucket's top ReplayTopN (ranked by
+// RankBefore) and the ReplayRecentN most recent finishes across all buckets
+// (RecentBefore) — and every part of it is a pure function of the records, so
+// every archiver cuts the same set.
+func TestReplayKeepSet(t *testing.T) {
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	mk := func(id string, mode GameMode, score int, n int, agent bool) ArchiveRecord {
+		r := ArchiveRecord{GameID: id, Mode: mode,
+			StartedAt: t0.Add(time.Duration(n) * time.Minute), FinishedAt: t0.Add(time.Duration(n)*time.Minute + 30*time.Second),
+			Players: []PlayerResult{{PlayerID: "p", Score: score, Agent: agent}}}
+		if mode == ModeCooperative {
+			r.TotalScore = score
+		}
+		return r
+	}
+
+	// Coop/human bucket: ReplayTopN + ReplayRecentN games finishing in order,
+	// score rising with finish order — so the top N are also the newest.
+	var recs []ArchiveRecord
+	total := ReplayTopN + ReplayRecentN
+	for i := 1; i <= total; i++ {
+		recs = append(recs, mk("coop-"+strconv.Itoa(i), ModeCooperative, i*100, i, false))
+	}
+	top := ReplayTopRanked(recs)
+	recent := ReplayRecent(recs)
+	keep := ReplayKeepSet(recs)
+	if len(top) != ReplayTopN || len(recent) != ReplayRecentN {
+		t.Fatalf("top %d recent %d, want %d/%d", len(top), len(recent), ReplayTopN, ReplayRecentN)
+	}
+	for i := 1; i <= total; i++ {
+		id := "coop-" + strconv.Itoa(i)
+		wantTop := i > total-ReplayTopN
+		wantRecent := i > total-ReplayRecentN
+		if top[id] != wantTop || recent[id] != wantRecent || keep[id] != (wantTop || wantRecent) {
+			t.Errorf("%s: top=%v recent=%v keep=%v, want top=%v recent=%v", id, top[id], recent[id], keep[id], wantTop, wantRecent)
+		}
+	}
+
+	// A newer low score is recent (kept) but not top; it pushes the oldest
+	// recent-only game out of the keep set while the top N are untouched.
+	oldestRecent := "coop-" + strconv.Itoa(total-ReplayRecentN+1)
+	recs = append(recs, mk("coop-low", ModeCooperative, 1, total+1, false))
+	keep = ReplayKeepSet(recs)
+	if !keep["coop-low"] || ReplayTopRanked(recs)["coop-low"] {
+		t.Error("a fresh low score must be kept for recency only")
+	}
+	if keep[oldestRecent] {
+		t.Errorf("%s should have aged out of the recent set", oldestRecent)
+	}
+	if !keep["coop-"+strconv.Itoa(total)] {
+		t.Error("the bucket's #1 must stay kept")
+	}
+
+	// Buckets are per (mode, agents): a low score in a fresh bucket is its
+	// top game, and the recent set spans buckets.
+	recs = append(recs, mk("comp-1", ModeCompetitive, 1, total+2, false), mk("coop-agent", ModeCooperative, 1, total+3, true))
+	top = ReplayTopRanked(recs)
+	if !top["comp-1"] || !top["coop-agent"] {
+		t.Error("a fresh bucket's only game is its top game")
+	}
+	if top["coop-low"] {
+		t.Error("a low score in a full bucket is not top-ranked")
+	}
+	recent = ReplayRecent(recs)
+	if !recent["comp-1"] || !recent["coop-agent"] || !recent["coop-low"] {
+		t.Error("the recent set spans every bucket")
+	}
+
+	// Duplicate records (a re-published game) count once, the later copy
+	// winning — and records without a game ID are ignored.
+	dup := append([]ArchiveRecord(nil), recs...)
+	dup = append(dup, mk("coop-low", ModeCooperative, 999999, total+1, false), ArchiveRecord{})
+	if !ReplayTopRanked(dup)["coop-low"] {
+		t.Error("the later duplicate should supersede the earlier record")
+	}
+	if n := len(ReplayRecent(dup)); n != ReplayRecentN {
+		t.Errorf("recent set with duplicates has %d entries, want %d", n, ReplayRecentN)
+	}
+
+	// RecentBefore is a total order: newer finish first, game ID on ties.
+	a, b := mk("a", ModeCooperative, 1, 1, false), mk("b", ModeCooperative, 1, 1, false)
+	if !a.RecentBefore(b) || b.RecentBefore(a) {
+		t.Error("game ID must totally order equal finish times")
+	}
+	if !mk("z", ModeCooperative, 1, 2, false).RecentBefore(a) {
+		t.Error("a newer finish is more recent regardless of ID")
 	}
 }

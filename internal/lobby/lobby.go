@@ -31,7 +31,8 @@ type Lobby struct {
 	games           map[string]GameListing
 	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
-	replays         map[string]bool // archived game IDs that have a replay (see runReplayRefresher)
+	topRanked       map[string]bool // archived game IDs in their replay bucket's top N (see config.ReplayTopRanked)
+	replays         map[string]bool // archived game IDs that have a replay (see runReplayMarkerConsumer)
 	replayKick      chan struct{}   // pings the refresher to re-list the replay markers
 	chatLog         []ChatMessage   // lobby + game chat, in stream order, capped at chatLogCap
 	status          PresenceStatus
@@ -64,6 +65,7 @@ func New(
 		players:         make(map[string]PlayerPresence),
 		games:           make(map[string]GameListing),
 		abandoned:       make(map[string]bool),
+		topRanked:       make(map[string]bool),
 		replays:         make(map[string]bool),
 		replayKick:      make(chan struct{}, 1),
 		invites:         make(map[string]Invitation),
@@ -136,10 +138,11 @@ func (l *Lobby) Start(ctx context.Context) error {
 	// Start archive consumer
 	go l.runArchiveConsumer(ctx)
 
-	// Start the replay-stream lister (an initial kick loads the current set;
-	// each arriving archive record re-kicks it — that is exactly when replays
-	// appear and displaced ones vanish).
+	// Replay availability: the marker consumer flips a game's Replay on the
+	// moment its copy completes; the lister (kicked by each marker, and once
+	// at start) reconciles the set — that is how displaced replays vanish.
 	go l.runReplayRefresher(ctx)
+	go l.runReplayMarkerConsumer(ctx)
 	l.kickReplayRefresh()
 
 	// Start heartbeat
@@ -421,11 +424,21 @@ func (l *Lobby) runArchiveConsumer(ctx context.Context) {
 			}
 			l.mu.Lock()
 			l.archives = append(l.archives, rec)
+			l.topRanked = config.ReplayTopRanked(l.archives)
 			l.mu.Unlock()
-			l.kickReplayRefresh()
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
 		}
 	}
+}
+
+// IsTopRanked reports whether an archived game ranks in the top
+// config.ReplayTopN of its replay bucket (mode × with/without agents) among
+// the records this lobby has seen — the games the history highlights as
+// TOP 10 and whose replays survive on ranking alone.
+func (l *Lobby) IsTopRanked(gameID string) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.topRanked[gameID]
 }
 
 // HasReplay reports whether an archived game has a replay (and thus a
@@ -434,6 +447,49 @@ func (l *Lobby) HasReplay(gameID string) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.replays[gameID]
+}
+
+// runReplayMarkerConsumer follows the replay stream's copy-complete markers
+// (config.ReplayMarkerFilter, every marker ever published — the set is small:
+// at most the keep set). A marker is published LAST by an archiver, after the
+// copy and after it purged the replays the game displaced, so its arrival
+// both adds the game's replay immediately and is the signal to reconcile the
+// whole set by listing — which drops the displaced ones.
+func (l *Lobby) runReplayMarkerConsumer(ctx context.Context) {
+	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, l.js, natspkg.OrderedConsumerConfig{
+		Stream:        config.ReplayStream,
+		FilterSubject: config.ReplayMarkerFilter,
+	})
+	if err != nil {
+		// Bootstrap provisions the replay stream before the lobby starts;
+		// without the consumer, replays still surface through the lister.
+		log.Printf("replay marker consumer error: %v", err)
+		return
+	}
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			id := config.GameIDFromReplayMarker(msg.Subject())
+			if id == "" {
+				continue
+			}
+			l.mu.Lock()
+			fresh := !l.replays[id]
+			l.replays[id] = true
+			l.mu.Unlock()
+			if fresh {
+				l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
+			}
+			l.kickReplayRefresh()
+		}
+	}
 }
 
 // kickReplayRefresh asks the refresher for a re-list; extra kicks while one is
@@ -445,13 +501,13 @@ func (l *Lobby) kickReplayRefresh() {
 	}
 }
 
-// runReplayRefresher maintains the set of game IDs that have a replay
-// (their copy-complete marker on the shared replay stream).
-// The set changes exactly when a game is archived (a new replay appears, a
-// displaced one is deleted), so it is refreshed on every arriving archive
-// record — after a short delay that both coalesces the initial record burst
-// into one listing call and lets the archiver finish its displacement
-// deletions before we look.
+// runReplayRefresher reconciles the set of game IDs that have a replay
+// (their copy-complete marker on the shared replay stream) by listing the
+// markers. It runs once at start and after every marker arrival
+// (runReplayMarkerConsumer) — the only time the set shrinks is the
+// displacement an archiver does right before publishing its marker. The
+// short delay coalesces the start-up marker burst into one listing call and
+// tolerates an archiver that still purges after its marker.
 func (l *Lobby) runReplayRefresher(ctx context.Context) {
 	for {
 		select {

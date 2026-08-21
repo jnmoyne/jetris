@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"sort"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -13,71 +12,71 @@ import (
 	natspkg "jetris/internal/nats"
 )
 
-// maybeArchiveReplay copies the finished game's stream into the shared replay
-// stream if the game ranks in its bucket's (mode × with/without agents) top
-// config.ReplayTopN, and purges the replay of whichever game it displaces.
-// rec is the game's not-yet-published archive record; prior records are read
-// straight off the archive stream so the decision does not depend on any
-// client's lobby state. Runs on the archiver only (the caller already won the
-// archive CAS race) and MUST run before the game stream is deleted.
-// Best-effort: a failed copy is purged again (CopyGameToReplayStream) and the
-// game simply archives without a replay.
+// maybeArchiveReplay applies the replay retention policy for a game whose
+// archive record rec has JUST been published: the keep set is the union of
+// every bucket's top config.ReplayTopN (mode × with/without agents, ranked by
+// RankBefore) and the config.ReplayRecentN most recent finishes overall
+// (config.ReplayKeepSet) — so a finishing game, always among the most recent,
+// always gets a replay, and only keeps it past the next ReplayRecentN games by
+// ranking. Records are read straight off the archive stream so the decision
+// does not depend on any client's lobby state; a record that hasn't landed
+// yet (another archiver mid-publish) is simply left alone.
+//
+// Order matters for the lobby, which tracks replays by their copy-complete
+// markers: the replays this game displaces are purged FIRST, then the game's
+// own stream is copied and its marker published LAST — so once a marker
+// arrives, a single listing reflects every change this archive made.
+// Runs on the archiver only (the caller already won the archive CAS race)
+// and MUST run before the game stream is deleted. Best-effort: a failed copy
+// is purged again (CopyGameToReplayStream) and the game simply has no replay.
 func maybeArchiveReplay(ctx context.Context, js jetstream.JetStream, rec config.ArchiveRecord) {
 	prior, err := fetchArchiveRecords(ctx, js)
 	if err != nil {
 		log.Printf("replay %s: skipping, can't read archive records: %v", rec.GameID, err)
 		return
 	}
-
-	bucket := make([]config.ArchiveRecord, 0, len(prior)+1)
+	all := make([]config.ArchiveRecord, 0, len(prior)+1)
+	known := make(map[string]bool, len(prior)+1)
 	for _, r := range prior {
-		if r.SameReplayBucket(rec) && r.GameID != rec.GameID {
-			bucket = append(bucket, r)
+		if r.GameID != rec.GameID {
+			all = append(all, r)
+			known[r.GameID] = true
 		}
 	}
-	bucket = append(bucket, rec)
-	sort.SliceStable(bucket, func(i, j int) bool { return bucket[i].RankBefore(bucket[j]) })
+	all = append(all, rec) // ours, as we know it — whether or not the stream drain caught it
+	known[rec.GameID] = true
 
-	top := make(map[string]bool, config.ReplayTopN)
-	qualified := false
-	for i, r := range bucket {
-		if i >= config.ReplayTopN {
-			break
-		}
-		top[r.GameID] = true
-		if r.GameID == rec.GameID {
-			qualified = true
-		}
-	}
-	if !qualified {
+	keep := config.ReplayKeepSet(all)
+	if !keep[rec.GameID] {
+		// Can't happen while ReplayRecentN > 0 (a finishing game is the most
+		// recent of all), but the policy is the keep set, not this comment.
 		return
+	}
+
+	// Displacement: every listed replay whose game we can see and which the
+	// keep set no longer covers — aged out of the recent set without ranking
+	// in its bucket's top N — loses its replay. Done before our own copy so
+	// the marker published last closes the whole change.
+	if ids, err := natspkg.ListReplayGameIDs(ctx, js); err != nil {
+		log.Printf("replay %s: displacement check: %v", rec.GameID, err)
+	} else {
+		for _, id := range ids {
+			if known[id] && !keep[id] {
+				log.Printf("replay %s: no longer in the keep set (top %d per bucket or last %d games), purging its replay", id, config.ReplayTopN, config.ReplayRecentN)
+				_ = natspkg.PurgeReplay(ctx, js, id)
+			}
+		}
 	}
 
 	if err := natspkg.CopyGameToReplayStream(ctx, js, rec.GameID); err != nil {
 		log.Printf("replay %s: %v", rec.GameID, err)
 		return
 	}
-	log.Printf("replay %s: archived (%s bucket top %d)", rec.GameID, rec.Mode, config.ReplayTopN)
-
-	// Displacement: any same-bucket game that still has a replay but no longer
-	// ranks in the top N loses it. Replays of other buckets — and of games
-	// whose record we can't see (another archiver may be mid-publish) — are
-	// left alone.
-	byID := make(map[string]bool, len(bucket))
-	for _, r := range bucket {
-		byID[r.GameID] = true
+	why := "recent"
+	if config.ReplayTopRanked(all)[rec.GameID] {
+		why = "bucket top"
 	}
-	ids, err := natspkg.ListReplayGameIDs(ctx, js)
-	if err != nil {
-		log.Printf("replay %s: displacement check: %v", rec.GameID, err)
-		return
-	}
-	for _, id := range ids {
-		if byID[id] && !top[id] {
-			log.Printf("replay %s: displaced from the top %d, purging its replay", id, config.ReplayTopN)
-			_ = natspkg.PurgeReplay(ctx, js, id)
-		}
-	}
+	log.Printf("replay %s: archived (%s, %s)", rec.GameID, rec.Mode, why)
 }
 
 // fetchArchiveRecords reads every record off the archive stream (latest per

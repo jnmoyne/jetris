@@ -19,12 +19,24 @@ import (
 	natspkg "jetris/internal/nats"
 )
 
+// streamDeleteGrace is how long after the finish the game's stream and lobby
+// listing survive: every other peer's ordered consumer (and any spectator
+// still catching up) gets this long to receive the final events before the
+// stream is deleted under it. Only the destructive steps wait — the archive
+// record is published as soon as it is built, so the lobby's history shows
+// the game right away.
+const streamDeleteGrace = 5 * time.Second
+
 // ArchiveAndCleanup transitions a finished game to archived (CAS on meta so only
-// one caller wins), publishes the ArchiveRecord, deletes the game stream and KV
-// listing, and leaves the game in the lobby. gamePlayers is the roster snapshot
-// used to fill in players who did not top out. The caller is responsible for
-// clearing its own engine reference afterwards.
+// one caller wins), publishes the ArchiveRecord — first, so every lobby sees
+// the finished game immediately — then archives the replay (the stream copy
+// can take seconds for a long game), and finally, once streamDeleteGrace has
+// passed since the finish, deletes the game stream and KV listing and leaves
+// the game in the lobby. gamePlayers is the roster snapshot used to fill in
+// players who did not top out. The caller is responsible for clearing its own
+// engine reference afterwards.
 func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue, eng *engine.Engine, lb *lobby.Lobby, gamePlayers []lobby.PlayerSummary) {
+	finished := time.Now() // the engine fires this callback right at the finish
 	// Use CAS on game meta to transition finished → archived.
 	// Only the first caller succeeds; others see a CAS failure and skip.
 	meta, metaSeq, err := natspkg.FetchGameMeta(ctx, js, eng.GameID())
@@ -69,10 +81,13 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	})
 	if err == nil {
 		// Drain all EventGameOver events on the stream (the consumer uses
-		// DeliverAll). The ordered consumer fetches asynchronously, so wait for
-		// messages with a short idle timeout rather than a non-blocking poll: a
-		// non-blocking poll races delivery and usually reads nothing, leaving
-		// every player but the archiver with a zero score in the archive record.
+		// DeliverAll). The finish was decided from these very events, so they
+		// are all on the stream already: the drain is complete as soon as a
+		// delivery reports nothing pending behind it. The idle timer is the
+		// fallback for a filter with nothing to deliver (the ordered consumer
+		// fetches asynchronously, so a non-blocking poll would race delivery
+		// and read nothing, leaving every player but the archiver with a zero
+		// score in the archive record).
 		const idle = time.Second
 		timer := time.NewTimer(idle)
 	drain:
@@ -95,6 +110,9 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 							PieceCount: ev.PieceCount,
 						}
 					}
+				}
+				if md, err := msg.Metadata(); err == nil && md.NumPending == 0 {
+					break drain
 				}
 				if !timer.Stop() {
 					select {
@@ -188,20 +206,32 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// end-of-game playfield from the archive record alone.
 	record.Boards = buildBoardPictures(ctx, js, meta, results)
 
-	// Replay archive: if the game ranks in its bucket's top config.ReplayTopN,
-	// copy its entire stream to a file-backed replay stream (and drop the
-	// replay of the game it displaces). Must happen before the record publish —
-	// clients refresh their replay listing when the record arrives, so the
-	// copy has to be complete by then — and before the stream deletion below.
-	maybeArchiveReplay(ctx, js, record)
-
+	// Publish the record FIRST: it is what every lobby's history shows, and
+	// nothing below (the replay copy in particular) should delay it.
 	data, _ := json.Marshal(record)
 	if _, err := js.Publish(ctx, config.ArchiveSubject, data); err != nil {
 		log.Printf("archive: publish: %v", err)
-		// Without a record the replay could never be listed or ranked — don't
-		// leave it orphaned.
-		_ = natspkg.PurgeReplay(ctx, js, eng.GameID())
+		// Without a record the game could never be listed, ranked, or
+		// displaced — leave its stream for the startup cleanup pass.
 		return
+	}
+
+	// Replay archive: copy the game's entire stream to the file-backed replay
+	// stream (every finished game gets one — it is the most recent — and
+	// keeps it while it stays in the keep set), purging the replays it
+	// displaces. The lobby learns of the copy from its completion marker, so
+	// the record above needn't wait for it. Must run before the stream
+	// deletion below.
+	maybeArchiveReplay(ctx, js, record)
+
+	// Destructive cleanup waits out the grace period (less the time already
+	// spent above) so every peer has received the final events.
+	if wait := streamDeleteGrace - time.Since(finished); wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return
+		}
 	}
 
 	// Delete the game stream and KV entry

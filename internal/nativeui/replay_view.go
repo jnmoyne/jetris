@@ -429,7 +429,7 @@ func (a *App) layoutReplay(gtx C) D {
 
 	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(a.lobbyBanner),
+			layout.Rigid(a.brandBanner("")),
 			layout.Rigid(spacer(8)),
 			layout.Rigid(a.header("GAME REPLAY")),
 			layout.Rigid(spacer(4)),

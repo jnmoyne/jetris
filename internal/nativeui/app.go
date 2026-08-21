@@ -77,6 +77,7 @@ var (
 	colNATSGreen = color.NRGBA{R: 0x8d, G: 0xc6, B: 0x3f, A: 0xff} // NATS brand green
 	colErr       = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
 	colGold      = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
+	colGoldWash  = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0x22} // faint gold row wash behind TOP 10 history games
 	colGo        = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
 	colWarn      = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
 	colOrange    = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)

@@ -1,10 +1,14 @@
 package main
 
-// Replay archive (guide §5 step 6): when the game this agent is archiving
-// ranks in the top replayTopN of its bucket — one bucket per (mode,
-// with/without agents) pair — the ENTIRE game stream is copied into the ONE
-// shared file-backed JETRIS_REPLAY stream before the game stream is deleted,
-// so the lobby can replay the game later. Each message is republished under
+// Replay archive (guide §5 step 6): after the archive record is published
+// and before the game stream is deleted, the ENTIRE game stream is copied
+// into the ONE shared file-backed JETRIS_REPLAY stream so the lobby can
+// replay the game later. A replay is kept while the game is in the KEEP SET:
+// the top replayTopN of its bucket — one bucket per (mode, with/without
+// agents) pair — or the replayRecentN most recently finished games overall.
+// A finishing game is always the most recent, so it always gets a replay; it
+// outlives the next replayRecentN games only by ranking. Each message is
+// republished under
 // "jetris.replay.<gameID>.<original tail>" (the game ID right after the
 // prefix), so one filter replays a game and a Purge with the same filter
 // deletes a displaced one. Republished copies get copy-time stream
@@ -30,6 +34,7 @@ import (
 
 const (
 	replayTopN          = 10
+	replayRecentN       = 25
 	replayStream        = "JETRIS_REPLAY"
 	replaySubjectPrefix = "jetris.replay."
 	replayTsHeader      = "Jetris-Ts"
@@ -131,10 +136,63 @@ func (r replayRecord) sameBucket(o replayRecord) bool {
 	return r.Mode == o.Mode && r.hasAgents() == o.hasAgents()
 }
 
-// maybeArchiveReplay runs the replay decision for the record this agent is
-// about to publish (recJSON, not yet on the archive stream). Must run before
-// the game stream is deleted. Best-effort: a failed copy is purged again and
-// the game archives without a replay.
+// recentBefore is the "most recent games" total order: newer finish first,
+// game ID on ties — identical to the GUI's so every archiver keeps the same
+// replayRecentN.
+func (r replayRecord) recentBefore(o replayRecord) bool {
+	if !r.FinishedAt.Equal(o.FinishedAt) {
+		return r.FinishedAt.After(o.FinishedAt)
+	}
+	return r.GameID < o.GameID
+}
+
+type replayBucket struct {
+	mode   int
+	agents bool
+}
+
+// replayKeepSet is the retention policy as a pure function of the archive
+// records (one per game ID): every bucket's top replayTopN by rankBefore,
+// plus the replayRecentN most recent finishes overall by recentBefore. top
+// reports which of the kept games rank (the rest are kept for recency).
+func replayKeepSet(recs []replayRecord) (keep, top map[string]bool) {
+	buckets := make(map[replayBucket][]replayRecord)
+	for _, r := range recs {
+		k := replayBucket{r.Mode, r.hasAgents()}
+		buckets[k] = append(buckets[k], r)
+	}
+	top = make(map[string]bool)
+	for _, b := range buckets {
+		sort.SliceStable(b, func(i, j int) bool { return b[i].rankBefore(b[j]) })
+		for i, r := range b {
+			if i >= replayTopN {
+				break
+			}
+			top[r.GameID] = true
+		}
+	}
+	keep = make(map[string]bool, len(top)+replayRecentN)
+	for id := range top {
+		keep[id] = true
+	}
+	all := append([]replayRecord(nil), recs...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].recentBefore(all[j]) })
+	for i, r := range all {
+		if i >= replayRecentN {
+			break
+		}
+		keep[r.GameID] = true
+	}
+	return keep, top
+}
+
+// maybeArchiveReplay applies the retention policy for the record this agent
+// JUST published (recJSON). Order matters for the lobby, which tracks replays
+// by their markers: the replays this game displaces are purged FIRST, then
+// the game's own stream is copied and its marker published LAST, so a marker
+// arrival means every change of this archive is visible to one listing.
+// Must run before the game stream is deleted. Best-effort: a failed copy is
+// purged again and the game simply has no replay.
 func (a *Agent) maybeArchiveReplay(ctx context.Context, recJSON []byte) {
 	var rec replayRecord
 	if err := json.Unmarshal(recJSON, &rec); err != nil || rec.GameID == "" {
@@ -145,26 +203,32 @@ func (a *Agent) maybeArchiveReplay(ctx context.Context, recJSON []byte) {
 		log.Printf("replay %s: can't read archive records: %v", rec.GameID, err)
 		return
 	}
-	bucket := []replayRecord{rec}
+	known := make(map[string]bool, len(prior)+1)
+	all := make([]replayRecord, 0, len(prior)+1)
 	for _, r := range prior {
-		if r.sameBucket(rec) && r.GameID != rec.GameID {
-			bucket = append(bucket, r)
+		if r.GameID != rec.GameID && !known[r.GameID] {
+			known[r.GameID] = true
+			all = append(all, r)
 		}
 	}
-	sort.SliceStable(bucket, func(i, j int) bool { return bucket[i].rankBefore(bucket[j]) })
-	top := make(map[string]bool, replayTopN)
-	qualified := false
-	for i, r := range bucket {
-		if i >= replayTopN {
-			break
-		}
-		top[r.GameID] = true
-		if r.GameID == rec.GameID {
-			qualified = true
-		}
+	known[rec.GameID] = true
+	all = append(all, rec) // ours, whether or not the drain caught it yet
+	keep, top := replayKeepSet(all)
+	if !keep[rec.GameID] {
+		return // impossible while replayRecentN > 0, but the policy rules
 	}
-	if !qualified {
-		return
+
+	// Displacement first: every listed replay whose record we can see and
+	// which the keep set no longer covers loses it.
+	if ids, err := a.listReplayGameIDs(ctx); err != nil {
+		log.Printf("replay %s: displacement check: %v", rec.GameID, err)
+	} else {
+		for _, id := range ids {
+			if known[id] && !keep[id] {
+				log.Printf("replay %s: out of the keep set (top %d per bucket or last %d games), purging its replay", id, replayTopN, replayRecentN)
+				_ = a.purgeReplay(ctx, id)
+			}
+		}
 	}
 
 	if err := a.copyGameToReplayStream(ctx, rec.GameID); err != nil {
@@ -172,24 +236,11 @@ func (a *Agent) maybeArchiveReplay(ctx context.Context, recJSON []byte) {
 		_ = a.purgeReplay(ctx, rec.GameID)
 		return
 	}
-	log.Printf("replay %s: archived (bucket top %d)", rec.GameID, replayTopN)
-
-	// Displace: same-bucket games with a replay but out of the top N.
-	inBucket := make(map[string]bool, len(bucket))
-	for _, r := range bucket {
-		inBucket[r.GameID] = true
+	why := "recent"
+	if top[rec.GameID] {
+		why = "bucket top"
 	}
-	ids, err := a.listReplayGameIDs(ctx)
-	if err != nil {
-		log.Printf("replay %s: displacement check: %v", rec.GameID, err)
-		return
-	}
-	for _, id := range ids {
-		if inBucket[id] && !top[id] {
-			log.Printf("replay %s: displaced from the top %d, purging its replay", id, replayTopN)
-			_ = a.purgeReplay(ctx, id)
-		}
-	}
+	log.Printf("replay %s: archived (%s)", rec.GameID, why)
 }
 
 // copyGameToReplayStream republishes every game-stream message under the

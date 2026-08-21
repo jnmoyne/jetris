@@ -318,20 +318,31 @@ agree on eliminations and outcomes without a coordinator.
    that aren't yours to change.
 5. **Finish**: competitive's last player standing, any winning teams player, or
    the cooperative topper CAS-transitions the meta to `finished` — and then
-   **archives**: transition `finished → archived` (CAS; one winner), publish the
-   `ArchiveRecord`, delete the game stream and the KV listing. If that's you,
-   don't disconnect until it's done. The record's optional `chat` field preserves
-   the game's conversation (the archive purges the game's messages from the chat
-   stream, so copy them into the record FIRST — last 200 lines; the GUI's
+   **archives**, in this order: transition `finished → archived` (CAS; one
+   winner), publish the `ArchiveRecord` **immediately** (it is what every
+   lobby's history shows — do not make it wait for anything below), archive
+   the replay (step 6), then wait until **5 s have passed since the finish**
+   (so every peer's consumer has received the final events) before deleting
+   the game stream and the KV listing. If that's you, don't disconnect until
+   it's done. The record's optional `chat` field preserves the game's
+   conversation (the archive purges the game's messages from the chat stream,
+   so copy them into the record FIRST — last 200 lines; the GUI's
    archived-game viewer replays them). Best-effort: a record without `chat`
    simply shows no conversation.
-6. **Replay archive** (part of archiving, BEFORE the record publish and the
-   stream deletion): if the finishing game ranks in the top 10 of its bucket —
-   one bucket per (mode, with/without agent seats) pair, ranked by headline
-   score (coop total / best team / best player), then shorter duration, newer
-   finish, game ID — copy the ENTIRE game stream into the ONE shared
+6. **Replay archive** (part of archiving, AFTER the record publish and BEFORE
+   the stream deletion): copy the ENTIRE game stream into the ONE shared
    file-backed **`JETRIS_REPLAY`** stream so the GUI can replay the game
-   later. Republish each message under
+   later. Every finishing game gets a replay; it is KEPT while the game is in
+   the *keep set* — the top 10 of its bucket (one bucket per (mode,
+   with/without agent seats) pair, ranked by headline score (coop total /
+   best team / best player), then shorter duration, newer finish, game ID) or
+   the 25 most recently finished games overall (newer finish first, game ID
+   on ties). Both are pure functions of the archive records (read them all
+   off `JETRIS_ARCHIVE`; yours included, as you just published it), so every
+   archiver cuts the identical set. FIRST `Purge` (filter
+   `jetris.replay.<gameID>.>`) the replay of every game you can see a record
+   for that is no longer in the keep set — one purge removes a game's copies
+   and marker alike. THEN republish each message of your game under
    `jetris.replay.<gameID>.<original tail>` (the tail is the game-stream
    subject after `jetris.game.<gameID>.`): payload verbatim, the message's
    ORIGINAL stream timestamp in a **`Jetris-Ts`** header (integer nanoseconds
@@ -339,12 +350,12 @@ agree on eliminations and outcomes without a coordinator.
    recorded pace lives in the header; an original-speed replay paces itself
    from it), and the original headers DROPPED (their CAS expectations
    reference the dying game stream). Publish a
-   `jetris.replay.<gameID>.done` **marker** message last, only after every
+   `jetris.replay.<gameID>.done` **marker** message LAST, only after every
    copy is acked — the marker's presence is what marks the replay complete
-   and listable (stream info with subjects filter `jetris.replay.*.done`).
-   Then `Purge` (filter `jetris.replay.<gameID>.>`) the replay of any
-   same-bucket game your ranking pushed out of the top 10 — one purge removes
-   a game's copies and marker alike. Best-effort: on any failure purge your
+   and listable (stream info with subjects filter `jetris.replay.*.done`),
+   and lobbies follow the markers with a consumer: a marker means "this
+   replay is ready and the displaced ones are already gone", so keep the
+   purge-then-copy-then-marker order. Best-effort: on any failure purge your
    own half-made copy and archive without a replay. `golang-mk1`'s
    `replay.go` is the reference implementation.
 7. **Walk away cleanly**: if a game you joined never starts, remove yourself from

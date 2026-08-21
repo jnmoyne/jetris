@@ -220,9 +220,7 @@ func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]
 							if connLabel == "" {
 								return D{}
 							}
-							l := a.pixel(unit.Sp(13), "@ "+connLabel, colMuted)
-							l.MaxLines = 1
-							return l.Layout(gtx)
+							return a.pixelLabelFit(gtx, unit.Sp(13), "@ "+connLabel, colMuted)
 						}),
 					)
 				}),
@@ -1307,6 +1305,35 @@ func (a *App) viewBoardButton(gtx C, btn *widget.Clickable) D {
 		b.Inset = layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(10), Right: unit.Dp(10)}
 		return b.Layout(gtx)
 	})
+}
+
+// pixelLabelFit lays out a single-line pixel-face label, cutting the text
+// to a trailing "..." when it would exceed the width. Gio's own MaxLines
+// truncation is not used: with this face its truncator lands at the START of
+// the line. The face (Press Start 2P) is monospace, so one unconstrained
+// measurement of the full string gives the per-character width and the cut
+// is a plain character count.
+func (a *App) pixelLabelFit(gtx C, size unit.Sp, txt string, col colorN) D {
+	l := a.pixel(size, txt, col)
+	l.MaxLines = 1
+	m := gtx
+	m.Constraints.Min = image.Point{}
+	m.Constraints.Max.X = 1 << 20
+	rec := op.Record(gtx.Ops)
+	full := l.Layout(m)
+	rec.Stop() // measure only — discard the recorded ops
+	if full.Size.X > gtx.Constraints.Max.X {
+		runes := []rune(txt)
+		per := float64(full.Size.X) / float64(max(len(runes), 1))
+		keep := int(float64(gtx.Constraints.Max.X)/per) - len("...")
+		if keep < 1 {
+			keep = 1
+		}
+		if keep < len(runes) {
+			l.Text = string(runes[:keep]) + "..."
+		}
+	}
+	return l.Layout(gtx)
 }
 
 func (a *App) header(txt string) layout.Widget {

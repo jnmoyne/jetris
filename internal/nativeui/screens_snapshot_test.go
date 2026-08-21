@@ -28,21 +28,28 @@ import (
 	"jetris/internal/render"
 )
 
-// snapshotPNG renders one frame with the given layout func and writes it to
-// dir/name.png.
+// snapshotPNG renders one frame with the given layout func into the standard
+// 1200×820 window and writes it to dir/name.png.
 func snapshotPNG(t *testing.T, w *headless.Window, dir, name string, frame func(gtx C)) {
+	t.Helper()
+	snapshotPNGSized(t, w, dir, name, image.Pt(1200, 820), frame)
+}
+
+// snapshotPNGSized is snapshotPNG for a window of the given size (the
+// headless window must have been created at that size).
+func snapshotPNGSized(t *testing.T, w *headless.Window, dir, name string, size image.Point, frame func(gtx C)) {
 	t.Helper()
 	var ops op.Ops
 	gtx := layout.Context{
 		Ops:         &ops,
 		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
-		Constraints: layout.Exact(image.Pt(1200, 820)),
+		Constraints: layout.Exact(size),
 	}
 	frame(gtx)
 	if err := w.Frame(&ops); err != nil {
 		t.Fatalf("frame %s: %v", name, err)
 	}
-	img := image.NewRGBA(image.Rect(0, 0, 1200, 820))
+	img := image.NewRGBA(image.Rectangle{Max: size})
 	if err := w.Screenshot(img); err != nil {
 		t.Fatalf("screenshot %s: %v", name, err)
 	}
@@ -133,12 +140,37 @@ func TestScreenSnapshots(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
-		a.connLabel = "context demo · nats://demo.nats.io:4222"
+		// A favorite's full label — long enough to need the header's
+		// single-line truncation at the default window.
+		a.connLabel = "nats://172.105.76.148:4222 (Jetris (EU central))"
 		a.chatLog = []lobby.ChatMessage{
 			{Name: "alice", Text: "ready when you are"},
 			{Name: "bob", Text: "one more round"},
 		}
 		snapshotPNG(t, w, dir, "screen_lobby", func(gtx C) { a.layout(gtx) })
+	})
+
+	// The same login and lobby screens on a display larger than the design
+	// window (1920×1200): the display-adaptive scale (scale.go) stretches
+	// them to fill it instead of leaving the 1280×820 layout floating.
+	t.Run("large_display", func(t *testing.T) {
+		big, err := headless.NewWindow(1920, 1200)
+		if err != nil {
+			t.Fatalf("headless window: %v", err)
+		}
+		defer big.Release()
+		size := image.Pt(1920, 1200)
+
+		login := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo"}, "beta", prefs.DefaultFavorites())
+		login.th = newTestApp().th
+		snapshotPNGSized(t, big, dir, "screen_login_large", size, func(gtx C) { login.layout(gtx) })
+
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		a.connLabel = "nats://172.105.76.148:4222 (Jetris (EU central))"
+		a.chatLog = []lobby.ChatMessage{{Name: "alice", Text: "ready when you are"}}
+		snapshotPNGSized(t, big, dir, "screen_lobby_large", size, func(gtx C) { a.layout(gtx) })
 	})
 
 	// The lobby while hosting the embedded server (LAN mode): the header

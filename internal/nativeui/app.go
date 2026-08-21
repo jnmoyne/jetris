@@ -564,6 +564,9 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) layout(gtx C) D {
+	// Stretch the whole frame to the display (see scale.go) before any
+	// screen measures a dp or an sp.
+	gtx = scaledContext(gtx)
 	paint.Fill(gtx.Ops, colBg)
 	var d D
 	switch a.getScreen() {

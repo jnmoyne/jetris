@@ -216,6 +216,24 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 	})
 
+	t.Run("login-update-notice", func(t *testing.T) {
+		// A newer release found by the startup check lays out on the login
+		// screen and turns the plate's label into "… · <new> AVAILABLE".
+		a := NewWithPicker(config.Config{}, nil, "", prefs.DefaultFavorites())
+		a.th = newTestApp().th
+		if got := versionLabel(""); got != "VER DEV" {
+			t.Fatalf("versionLabel() = %q, want VER DEV", got)
+		}
+		a.NotifyUpdate("v9.9.9", "https://github.com/jnmoyne/jetris/releases/tag/v9.9.9")
+		if tag, url := a.update(); tag != "v9.9.9" || url == "" {
+			t.Fatalf("update() = %q/%q", tag, url)
+		}
+		if got := versionLabel("v9.9.9"); got != "VER DEV · 9.9.9 AVAILABLE" {
+			t.Fatalf("versionLabel(v9.9.9) = %q", got)
+		}
+		renderOnce(t, a)
+	})
+
 	t.Run("login-picker-favorites", func(t *testing.T) {
 		// Adding a favorite bookmarks + selects + persists it (label
 		// defaulting to the scheme-less URL); a duplicate just selects the

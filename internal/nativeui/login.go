@@ -168,9 +168,37 @@ func (a *App) layoutLogin(gtx C) D {
 						)
 					})
 				}),
+				layout.Rigid(a.updateNotice),
 			)
 		}),
 	)
+}
+
+// updateNotice, under the tagline, tells the player a newer release exists and
+// where to download it — only once the startup check has found one (nothing is
+// laid out otherwise): a gold pixel headline with the new version, then the
+// release page's URL in plain type so it can be read off and typed.
+func (a *App) updateNotice(gtx C) D {
+	tag, url := a.update()
+	if tag == "" {
+		return D{}
+	}
+	return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+		// Shrink to the text so the card's column centers the block and the
+		// block centers its own two lines (a flex hands its full-width
+		// minimum down, which would left-align both).
+		gtx.Constraints.Min.X = 0
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(9), "▲ UPDATE AVAILABLE · JETRIS "+strings.ToUpper(strings.TrimPrefix(tag, "v")), colGold).Layout),
+			layout.Rigid(spacer(4)),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(a.body("Download it at ", colMuted)),
+					layout.Rigid(a.body(url, colFg)),
+				)
+			}),
+		)
+	})
 }
 
 // loginCard frames the login form like the create-game wizard — accent

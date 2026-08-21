@@ -48,6 +48,10 @@ func TestPickerSnapshots(t *testing.T) {
 		{"browser", func() { a.connSel = urlKey(prefs.DemoFavorite.URL) }},
 		{"browser_add", func() { a.connAddOpen = true; a.connSecClosed[secContexts] = true }},
 		{"lan", func() { a.connAddOpen = false; a.connSecClosed[secContexts] = false; a.connTab = connTabLAN }},
+		{"browser_update", func() {
+			a.connTab = connTabBrowser
+			a.NotifyUpdate("v0.6.0", "https://github.com/jnmoyne/jetris/releases/tag/v0.6.0")
+		}},
 	} {
 		st.setup()
 		var ops op.Ops

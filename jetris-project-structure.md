@@ -140,6 +140,7 @@ cmd/jetris
     ├── internal/archive           ← depends on: nats, engine, game, lobby, config
     ├── internal/render            ← depends on: game (cell/board appearance)
     ├── internal/prefs             ← local preferences (server-browser favorites); no internal deps
+    ├── internal/update            ← startup check for a newer GitHub release; no internal deps
     └── internal/nativeui          ← depends on: engine, lobby, render, prefs, config (the front end)
 
 agents/golang-mk1                  ← separate module: depends only on nats.go + orbit
@@ -151,6 +152,7 @@ Leaf packages (no internal deps):
     internal/game
     internal/rng
     internal/prefs
+    internal/update
 
 orbit.go modules used:
     orbit.go/natscontext   → internal/nats     (connection via NATS CLI contexts)
@@ -181,6 +183,7 @@ The player enters a name on the same screen; identity is NATS-backed presence. L
 | `--context` | `""` | NATS context (as configured with `nats context add`) to preselect in the login screen's server browser. |
 | `--server` / `--user` / `--password` | `""` | NATS URL + credentials: `--server` preselects that URL in the server browser (beating `--context`; listed under a COMMAND LINE section unless it is already a favorite); user/password apply to URL connects. |
 | `--version` | `false` | Print the version and exit. The `main.version` variable defaults to `dev`, is overridden at release time via `-ldflags "-X main.version=<tag>"` (see [Section 20 — Release Pipeline](#20-release-pipeline)), and is passed to `nativeui.SetVersion` so the same string shows on the UI's top-right version plate. |
+| `--no-update-check` | `false` | Skip the startup lookup of the latest GitHub release. Otherwise `checkForUpdate` runs on its own goroutine (10 s cap, `updateCheckTimeout`): `update.Check(ctx, version)` (`internal/update`) fetches `api.github.com/repos/jnmoyne/jetris/releases/latest` and compares its `tag_name` with the stamped version (`Newer`: major.minor.patch, a final release beating its pre-release; anything that isn't a version — `dev` — compares as nothing, and a `dev` build never even asks). A newer release is logged and handed to `App.NotifyUpdate(tag, url)`: the VER plate turns gold and reads `VER <this> · <new> AVAILABLE` on every screen, and the login screen shows `▲ UPDATE AVAILABLE · JETRIS <new>` with the release page's URL (`updateNotice`). A failed lookup (offline, rate-limited) is logged and otherwise ignored; nothing is ever downloaded or installed. |
 
 Connecting via a context ultimately maps to `natscontext.Connect(contextName)` from `orbit.go/natscontext`. This means Jetris shares the same connection configuration — server URL, credentials, TLS certificates, JetStream domain — as the `nats` CLI tool on the same machine. No separate connection config file or credential management is needed. Operators configure contexts once with `nats context add` and both the CLI and Jetris use them.
 
@@ -2524,7 +2527,7 @@ Gio is not cross-compilable from a single host: on Linux it uses cgo against the
 
 ### Versioning
 
-Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps the tag into `main.version` (default `dev` for local builds) — reported by the `--version` flag and, in the player binary, handed to `nativeui.SetVersion` at startup so it also shows on the **VER** plate in the window's top-right corner.
+Binaries are built with `-ldflags "-s -w -X main.version=<tag>"`, which stamps the tag into `main.version` (default `dev` for local builds) — reported by the `--version` flag and, in the player binary, handed to `nativeui.SetVersion` at startup so it also shows on the **VER** plate in the window's top-right corner. The stamped tag is also what the startup update check (`internal/update`, see the `--no-update-check` flag) compares against GitHub's latest release, so every published build can tell its player when a newer one exists.
 
 ---
 

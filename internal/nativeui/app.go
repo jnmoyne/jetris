@@ -157,8 +157,13 @@ type App struct {
 	gamePlayers []lobby.PlayerSummary
 
 	// login transient state
-	loggingIn      bool
-	loginErr       string
+	loggingIn bool
+	loginErr  string
+	// A newer release found by the startup check (NotifyUpdate): its tag and
+	// download page, "" until/unless one is found. Shown on the version
+	// plate and the login screen.
+	updateTag      string
+	updateURL      string
 	loginCollision bool
 
 	// game render snapshot (written by pumpEngine)

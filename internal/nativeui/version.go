@@ -21,17 +21,47 @@ func SetVersion(v string) {
 	}
 }
 
+// NotifyUpdate records that release tag (a newer build than this one, as found
+// by cmd/jetris's startup check) is available at url: the version plate turns
+// gold and names it, and the login screen says where to get it. Safe from any
+// goroutine.
+func (a *App) NotifyUpdate(tag, url string) {
+	a.mu.Lock()
+	a.updateTag, a.updateURL = tag, url
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// update returns the newer release's tag and page, "" when none is known.
+func (a *App) update() (tag, url string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.updateTag, a.updateURL
+}
+
 // versionLabel is the badge text: an arcade-cabinet "VER" plate, with the
 // leading "v" of a release tag folded into the label ("v1.2.3" → "VER 1.2.3").
-func versionLabel() string {
-	return "VER " + strings.ToUpper(strings.TrimPrefix(version, "v"))
+// With a newer release known, the plate names it: "VER 1.2.3 · 1.3.0 AVAILABLE".
+func versionLabel(update string) string {
+	s := "VER " + strings.ToUpper(strings.TrimPrefix(version, "v"))
+	if update != "" {
+		s += " · " + strings.ToUpper(strings.TrimPrefix(update, "v")) + " AVAILABLE"
+	}
+	return s
 }
 
 // versionBadge draws the version plate in the window's top-right corner, over
 // whatever screen is showing: pixel-face text on its own panel chip so it stays
-// readable above a board, framed like the rest of the 8-bit chrome.
+// readable above a board, framed like the rest of the 8-bit chrome. Muted
+// normally; gold while a newer release is available, so the hint follows the
+// player onto every screen.
 func (a *App) versionBadge(gtx C) {
-	lbl := a.pixel(unit.Sp(8), versionLabel(), colMuted)
+	update, _ := a.update()
+	col := colMuted
+	if update != "" {
+		col = colGold
+	}
+	lbl := a.pixel(unit.Sp(8), versionLabel(update), col)
 	inset := layout.Inset{Top: unit.Dp(6), Right: unit.Dp(8)}
 	inset.Layout(gtx, func(gtx C) D {
 		return layout.NE.Layout(gtx, func(gtx C) D {

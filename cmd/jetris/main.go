@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"gioui.org/app"
 
@@ -15,14 +16,19 @@ import (
 	"jetris/internal/nativeui"
 	natspkg "jetris/internal/nats"
 	"jetris/internal/prefs"
+	"jetris/internal/update"
 )
 
 // version is overridden at release time via -ldflags "-X main.version=<tag>"
 // (see .github/workflows/release.yml).
 var version = "dev"
 
+// updateCheckTimeout bounds the startup lookup of the latest release: the
+// check is a courtesy, never something the player waits on.
+const updateCheckTimeout = 10 * time.Second
+
 func main() {
-	cfg := parseFlags()
+	cfg, noUpdateCheck := parseFlags()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -41,7 +47,30 @@ func main() {
 	if err != nil {
 		log.Printf("warning: loading server favorites: %v", err)
 	}
-	runNative(ctx, cancel, nativeui.NewWithPicker(cfg, names, selected, favorites))
+	a := nativeui.NewWithPicker(cfg, names, selected, favorites)
+	if !noUpdateCheck {
+		go checkForUpdate(ctx, a)
+	}
+	runNative(ctx, cancel, a)
+}
+
+// checkForUpdate asks GitHub once for the newest release and, when it is newer
+// than this build, tells the player where to get it — on the login screen and
+// the version plate (App.NotifyUpdate) and in the log. Runs off the UI
+// goroutine; a failed lookup (offline, rate-limited) is logged and otherwise
+// ignored, and a dev build, having no version to compare, never asks.
+func checkForUpdate(ctx context.Context, a *nativeui.App) {
+	ctx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
+	defer cancel()
+	rel, newer, err := update.Check(ctx, version)
+	if err != nil {
+		log.Printf("update check: %v", err)
+		return
+	}
+	if newer {
+		log.Printf("Jetris %s is available (this is %s) — download it at %s", rel.Tag, version, rel.URL)
+		a.NotifyUpdate(rel.Tag, rel.URL)
+	}
 }
 
 // runNative opens the native (Gio) window. Gio's app.Main() owns the OS main
@@ -74,14 +103,16 @@ func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) 
 	app.Main()
 }
 
-func parseFlags() config.Config {
-	cfg := config.Config{}
+// parseFlags returns the connection config seeded from the flags, and whether
+// --no-update-check was given.
+func parseFlags() (cfg config.Config, noUpdateCheck bool) {
 
 	flag.StringVar(&cfg.NATSContext, "context", "", "NATS context to preselect in the login screen's server browser")
 	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL to preselect in the login screen's server browser (overrides --context as the default choice)")
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.BoolVar(&noUpdateCheck, "no-update-check", false, "skip the startup check for a newer release on GitHub")
 	flag.Parse()
 
 	if *showVersion {
@@ -89,5 +120,5 @@ func parseFlags() config.Config {
 		os.Exit(0)
 	}
 
-	return cfg
+	return cfg, noUpdateCheck
 }

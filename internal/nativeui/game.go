@@ -36,9 +36,10 @@ type gameView struct {
 	flash                map[[2]int]time.Time
 	specFlash            map[int]map[[2]int]time.Time // spectator: per-board (playerIdx or team) flashes
 	flashActive          bool
-	rowStrobes           map[int]rowStrobe // own board: arcade row strobes (clears + landed garbage)
-	shakeStart           time.Time         // own board: garbage impact-shake epoch (zero = idle)
-	fireworks            *fireworksShow    // nil unless this player/team won (competitive/teams)
+	rowStrobes           map[int]rowStrobe         // own board: arcade row strobes (clears + landed garbage)
+	specRowStrobes       map[int]map[int]rowStrobe // spectator: per-board row strobes (landed garbage)
+	shakeStart           time.Time                 // own board: garbage impact-shake epoch (zero = idle)
+	fireworks            *fireworksShow            // nil unless this player/team won (competitive/teams)
 	// Keyboard owner while the keys drive the piece (handleGameFocus): the
 	// white focus outline goes on whichever of the two holds them.
 	boardFocused, chatFocused bool
@@ -83,26 +84,44 @@ func (a *App) snapshotGame(now time.Time) gameView {
 			delete(a.rowStrobes, r)
 		}
 	}
+	// Spectator per-board row strobes: prune expired rows (and empty boards).
+	srs := make(map[int]map[int]rowStrobe)
+	for board, m := range a.specRowStrobes {
+		for r, s := range m {
+			if now.Sub(s.start) < rowStrobeDur {
+				if srs[board] == nil {
+					srs[board] = make(map[int]rowStrobe)
+				}
+				srs[board][r] = s
+			} else {
+				delete(m, r)
+			}
+		}
+		if len(m) == 0 {
+			delete(a.specRowStrobes, board)
+		}
+	}
 	return gameView{
-		score:       a.score,
-		level:       a.level,
-		teamScores:  a.teamScores,
-		teamLevels:  a.teamLevels,
-		rtt:         a.rtt,
-		status:      a.gameStatus,
-		countdown:   a.countdown,
-		countdownAt: a.countdownAt,
-		gameOver:    a.gameOver,
-		won:         a.won,
-		myReady:     a.myReady,
-		players:     append([]lobby.PlayerSummary(nil), a.gamePlayers...),
-		readyPlayer: append([]lobby.PlayerSummary(nil), a.readyPlayers...),
-		flash:       fc,
-		specFlash:   sf,
-		flashActive: len(fc) > 0 || specActive,
-		rowStrobes:  rs,
-		shakeStart:  a.shakeStart,
-		fireworks:   a.fireworks,
+		score:          a.score,
+		level:          a.level,
+		teamScores:     a.teamScores,
+		teamLevels:     a.teamLevels,
+		rtt:            a.rtt,
+		status:         a.gameStatus,
+		countdown:      a.countdown,
+		countdownAt:    a.countdownAt,
+		gameOver:       a.gameOver,
+		won:            a.won,
+		myReady:        a.myReady,
+		players:        append([]lobby.PlayerSummary(nil), a.gamePlayers...),
+		readyPlayer:    append([]lobby.PlayerSummary(nil), a.readyPlayers...),
+		flash:          fc,
+		specFlash:      sf,
+		flashActive:    len(fc) > 0 || specActive,
+		rowStrobes:     rs,
+		specRowStrobes: srs,
+		shakeStart:     a.shakeStart,
+		fireworks:      a.fireworks,
 	}
 }
 
@@ -162,7 +181,7 @@ func (a *App) layoutGame(gtx C) D {
 	if view.flashActive {
 		a.invalidate() // keep animating the flash until it expires
 	}
-	if len(view.rowStrobes) > 0 || gtx.Now.Sub(view.shakeStart) < shakeDur {
+	if len(view.rowStrobes) > 0 || len(view.specRowStrobes) > 0 || gtx.Now.Sub(view.shakeStart) < shakeDur {
 		a.invalidate() // keep the row strobes / garbage impact shake animating
 	}
 	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
@@ -824,7 +843,8 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i]}, gtx.Now)
+						a.detectGarbageOn(i, snap) // landed garbage strobes on this board
+						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i], rows: view.specRowStrobes[i]}, gtx.Now)
 						switch {
 						case out:
 							return a.boardOverlay(board, "OUT", colErr)(gtx)
@@ -974,7 +994,8 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !b.ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], tint: teamCol}, gtx.Now)
+						a.detectGarbageOn(b.team, b.snap) // landed garbage strobes on this board
+						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], rows: view.specRowStrobes[b.team], tint: teamCol}, gtx.Now)
 						switch {
 						case teamOut(b.team):
 							return a.boardOverlay(board, "OUT", colErr)(gtx)

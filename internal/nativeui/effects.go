@@ -62,29 +62,84 @@ func ghostCells(snap engine.BoardSnapshot, playerIdx int, gmode config.GameMode)
 	return cells
 }
 
-// detectGarbage compares the snapshot's adversarial-row count against the last
-// one observed and, when it grew, strobes the newly landed rows in their
-// attacker's color and kicks the impact shake. New garbage always fills the
-// BOTTOM rows (the shrink shifts older garbage up with the stack), so the new
-// arrivals are the bottom cur−prev rows. The first observation of a game only
-// seeds the count — a rejoin must not celebrate the stack it finds. Runs on
-// the UI goroutine each frame; the strobes land next frame (hence the
-// invalidate), which at frame cadence is imperceptible.
-func (a *App) detectGarbage(snap engine.BoardSnapshot) {
+// landedGarbage returns the strobes for the garbage rows that arrived on a
+// board since prev adversarial rows were last observed there — cur is the
+// count now. New garbage always fills the BOTTOM rows (the shrink shifts older
+// garbage up with the stack), so the new arrivals are the bottom cur−prev
+// rows, each strobing in its own attacker's color. Nil when nothing landed.
+func landedGarbage(snap engine.BoardSnapshot, prev, cur int, now time.Time) map[int]rowStrobe {
+	if cur <= prev {
+		return nil
+	}
+	rows := make(map[int]rowStrobe, cur-prev)
+	for r := snap.Height - (cur - prev); r < snap.Height; r++ {
+		rows[r] = rowStrobe{start: now, col: render.PlayerColorRGBA(garbageAttacker(snap.Rows[r]))}
+	}
+	return rows
+}
+
+// adversarialRows is the snapshot's bottom-anchored garbage row count.
+func adversarialRows(snap engine.BoardSnapshot) int {
 	pf := game.Playfield{Width: snap.Width, Height: snap.Height, Rows: snap.Rows}
-	cur := pf.AdversarialRowCount()
+	return pf.AdversarialRowCount()
+}
+
+// detectGarbage compares the own-board snapshot's adversarial-row count
+// against the last one observed and, when it grew, strobes the newly landed
+// rows in their attacker's color and kicks the impact shake. The first
+// observation of a game only seeds the count — a rejoin must not celebrate
+// the stack it finds. Runs on the UI goroutine each frame; the strobes land
+// next frame (hence the invalidate), which at frame cadence is imperceptible.
+func (a *App) detectGarbage(snap engine.BoardSnapshot) {
+	cur := adversarialRows(snap)
 	a.mu.Lock()
 	prev, seen := a.garbageRows, a.garbageSeen
 	a.garbageRows, a.garbageSeen = cur, true
-	if !seen || cur <= prev {
+	if !seen {
 		a.mu.Unlock()
 		return
 	}
 	now := time.Now()
-	for r := snap.Height - (cur - prev); r < snap.Height; r++ {
-		a.rowStrobes[r] = rowStrobe{start: now, col: render.PlayerColorRGBA(garbageAttacker(snap.Rows[r]))}
+	rows := landedGarbage(snap, prev, cur, now)
+	if rows == nil {
+		a.mu.Unlock()
+		return
+	}
+	for r, s := range rows {
+		a.rowStrobes[r] = s
 	}
 	a.shakeStart = now
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// detectGarbageOn is detectGarbage for a SPECTATOR's watched board (keyed
+// like specFlash: player index or team): the landed rows strobe there in the
+// attacker's color, minus the shake — the impact is the victims' to feel. The
+// first sight of a board only seeds its count, so a spectator arriving
+// mid-game never strobes the garbage already on it.
+func (a *App) detectGarbageOn(board int, snap engine.BoardSnapshot) {
+	cur := adversarialRows(snap)
+	a.mu.Lock()
+	prev, seen := a.specGarbageRows[board]
+	a.specGarbageRows[board] = cur
+	if !seen {
+		a.mu.Unlock()
+		return
+	}
+	rows := landedGarbage(snap, prev, cur, time.Now())
+	if rows == nil {
+		a.mu.Unlock()
+		return
+	}
+	m := a.specRowStrobes[board]
+	if m == nil {
+		m = make(map[int]rowStrobe)
+		a.specRowStrobes[board] = m
+	}
+	for r, s := range rows {
+		m[r] = s
+	}
 	a.mu.Unlock()
 	a.invalidate()
 }

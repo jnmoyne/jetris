@@ -564,6 +564,8 @@ func (a *App) resetBoardFX() {
 	a.flash = map[[2]int]time.Time{}
 	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.rowStrobes = map[int]rowStrobe{}
+	a.specRowStrobes = map[int]map[int]rowStrobe{}
+	a.specGarbageRows = map[int]int{}
 	a.garbageRows = 0
 	a.garbageSeen = false
 	a.shakeStart = time.Time{}

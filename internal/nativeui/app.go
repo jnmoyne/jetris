@@ -199,6 +199,13 @@ type App struct {
 	garbageRows int
 	garbageSeen bool
 	shakeStart  time.Time // garbage impact-shake epoch (zero = idle)
+	// specRowStrobes / specGarbageRows are the SPECTATOR boards' counterparts
+	// of rowStrobes / garbageRows, keyed like specFlash (player index or
+	// team): garbage that lands on a watched board strobes there in the
+	// attacker's color — the victims' impact feedback, minus the shake.
+	// Written by the layout's per-board detection (detectGarbageOn).
+	specRowStrobes  map[int]map[int]rowStrobe
+	specGarbageRows map[int]int
 
 	// chat log (written by pumpLobby)
 	chatLog []lobby.ChatMessage
@@ -396,16 +403,18 @@ type App struct {
 // New builds the App. The window is created later, in Run, on the UI goroutine.
 func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a := &App{
-		js:           js,
-		kv:           kv,
-		screen:       screenLogin,
-		countdown:    -1,
-		flash:        map[[2]int]time.Time{},
-		specFlash:    map[int]map[[2]int]time.Time{},
-		rowStrobes:   map[int]rowStrobe{},
-		gameBtns:     map[string]*gameRowBtns{},
-		uninviteBtns: map[string]*widget.Clickable{},
-		msgGroupOf:   map[string]int{},
+		js:              js,
+		kv:              kv,
+		screen:          screenLogin,
+		countdown:       -1,
+		flash:           map[[2]int]time.Time{},
+		specFlash:       map[int]map[[2]int]time.Time{},
+		rowStrobes:      map[int]rowStrobe{},
+		specRowStrobes:  map[int]map[int]rowStrobe{},
+		specGarbageRows: map[int]int{},
+		gameBtns:        map[string]*gameRowBtns{},
+		uninviteBtns:    map[string]*widget.Clickable{},
+		msgGroupOf:      map[string]int{},
 	}
 	a.ghostCb.Value = true // hard-drop ghost preview on by default
 	a.loginEd.SingleLine = true

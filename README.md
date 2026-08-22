@@ -2,6 +2,8 @@
 
 ![Jetris-screenshot-1.png](Jetris-screenshot-1.png)
 
+*Spectating a 2v2 teams game: Team A has just completed a line (flashing white) and the garbage line that clear sends is landing at the bottom of Team B's playfield (flashing in Alice's cyan). The greyed-out rows at the bottom of each playfield are garbage lines from earlier exchanges, each framed in the color of the player whose line clear sent it.*
+
 **An example of a peer-to-peer distributed blackboard system built using 'nothing but [NATS](https://nats.io)' for humans or agents to cooperate or compete towards a common goal and disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
 
 Let's get the game part out-of-the-way first: Jetris is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetris, but now there are other players. 
@@ -15,6 +17,8 @@ The competitive mode: there is one playfield per team (that changes in height ac
 Jetris comes in 3 combinations of the above: **cooperative** (one team of n players), **competitive** (n teams of 1 player) and **teams** (n teams of m players).
 
 ![Jetris-screenshot-2.png](Jetris-screenshot-2.png)
+
+*The same moment from Bob's (Team B) seat: the garbage line has just landed on his team's playfield, with the opposing team's playfield in the sidebar.*
 
 ***How to play Jetris***
 

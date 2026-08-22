@@ -4,9 +4,15 @@
 
 **An example of a peer-to-peer distributed blackboard system built using 'nothing but [NATS](https://nats.io)' for humans or agents to cooperate or compete towards a common goal and disguised as a fun real-time, multiplayer, cooperative/competitive Tetris-inspired game**
 
-Let's get the game part out-of-the-way first: Jetris is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetris, but now there are other players that you are playing with or against!
+Let's get the game part out-of-the-way first: Jetris is a very simple and fun **multiplayer** game. If you know how to play Tetris, then you know how to play Jetris, but now there are other players. 
 
-There are 3 game modes: cooperative, competitive, and teams. In cooperative, all the players work with each other to achieve the highest score, in competitive the last player alive wins the game, with teams as the name implies it's a competition between the teams.
+What is unique to Jetris compared to other multiplayer versions of Tetris is that you are not competing with others on your own and comparing scores but with or against them, in real-time and on the same playfields!
+
+The cooperative mode: you are working with your teammates to complete lines on the same shared (blackboard system) playfied (that changes in width according to the number teammates). In Jetris two teammate's pieces can _not_ overlap no matter the lag (race conditions cause a colorful flash): players literally have to move around each other to achieve their common goal. 
+
+The competitive mode: there is one playfield per team (that changes in height according to the number of teams) and when one team clears a line, a 'garbage' line gets added to all the opponents' playfield (effectively shrinking their playfield's height).
+
+Jetris comes in 3 combinations of the above: **cooperative** (one team of n players), **competitive** (n teams of 1 player) and **teams** (n teams of m players).
 
 ![Jetris-screenshot-2.png](Jetris-screenshot-2.png)
 

@@ -82,6 +82,7 @@ var (
 	colOrange    = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
 	colLobby     = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
 	colStrobe    = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // line-clear row strobe (pure white)
+	colFocus     = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // keyboard-focus outline while playing: the board's frame or the chat's ring
 )
 
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
@@ -342,7 +343,14 @@ type App struct {
 	msgDrag    gesture.Drag
 	msgPanelDp float32
 	msgGrabY   float32
-	boardTag   int // address used as the key-input focus tag
+	boardTag   int // address used as the key-input focus tag; its pointer area is the whole game screen
+	chatTag    int // address used as the chat panel's pointer-area tag (a press inside hands the keys to the chat)
+	// playingSeen is last frame's "the keys drive the piece" state; its
+	// false→true edge (game start, rejoin) hands keyboard focus to the board.
+	// playingSeenEng is the engine it was observed for — a new engine (every
+	// game entry makes one) starts the observation over. UI goroutine only.
+	playingSeen    bool
+	playingSeenEng *engine.Engine
 
 	// On-screen arcade control pad (mouse play): rotate CCW/CW, shift
 	// left/down/right, hard drop. Clicks are dispatched by handlePadClicks.

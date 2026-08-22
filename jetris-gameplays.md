@@ -581,8 +581,8 @@ There are two chat scopes, sharing one NATS stream (`JETRIS_CHAT`) and distingui
 On the game screen (player or spectator) a chat strip is displayed at the bottom:
 
 - It shows the game's messages, plus the lobby chat folded in — lobby lines are prefixed `@lobby` and rendered in a distinct color so they're obviously not from the game. Spectators' game messages are marked `(spec)`.
-- **Before the game starts**, both players and spectators can type.
-- **Once the game is in progress**, only spectators (and eliminated players) can type — a playing player's keyboard drives the piece, so their input line is replaced by a "read-only while playing" hint.
+- Players and spectators can type at any time — before the game starts and while it is in progress.
+- **While a player's game is in progress** the keyboard is shared between the piece and the chat, and a click decides who has it: clicking the chat panel hands the keys to the chat (the panel gets a white ring and the editor's hint changes accordingly), clicking anywhere else — or pressing Esc while typing — hands them back to the piece (the playfield's frame turns white), and Shift-Tab switches either way without touching the mouse. The keys jump to the board the moment the game becomes playable (start or rejoin), so a player mid-sentence during the countdown isn't caught out.
 - A message starting with `@lobby` is sent to the lobby chat (everyone sees it); anything else goes to the game's chat.
 
 Lobby chat history is retained for 7 days; a game's chat messages are purged from the stream when the game is archived — but not lost: the archiver copies the conversation into the game's `ArchiveRecord` first, so the archived-game viewer can replay it (see §Archive Record). A player joining the lobby replays the retained history (up to the last 200 messages), so everyone in the lobby sees the same chat log regardless of when they logged in.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gioui.org/gpu/headless"
+	"gioui.org/io/input"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -195,6 +196,34 @@ func TestScreenSnapshots(t *testing.T) {
 		a.readyPlayers = a.gamePlayers
 		a.screen = screenGame
 		snapshotPNG(t, w, dir, "screen_game", func(gtx C) { a.layout(gtx) })
+	})
+
+	t.Run("game_focus", func(t *testing.T) {
+		// Mid-game keyboard focus, driven through a real input.Router the
+		// way the window loop does it: the playfield's frame lights up white
+		// while the keys drive the piece; after a click into the chat panel
+		// the white ring moves to the chat and the editor's hint flips.
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+		a.gamePlayers = []lobby.PlayerSummary{
+			{PlayerID: "alice", Name: "alice", Ready: true},
+			{PlayerID: "bob", Name: "bob"},
+		}
+		a.readyPlayers = a.gamePlayers
+		a.screen = screenGame
+		a.gameStatus = string(config.GameStatusInProgress)
+		a.chatLog = []lobby.ChatMessage{{Name: "bob", Text: "good luck", GameID: "g1"}}
+		var r input.Router
+		frame := func(gtx C) {
+			gtx.Source = r.Source()
+			a.layout(gtx)
+			r.Frame(gtx.Ops)
+		}
+		gameFrame(a, &r) // the game is playable: the keys go to the board
+		snapshotPNG(t, w, dir, "screen_game_keys_board", frame)
+		press(&r, chatPressX, chatPressY)
+		gameFrame(a, &r) // the click hands them to the chat
+		snapshotPNG(t, w, dir, "screen_game_keys_chat", frame)
 	})
 
 	t.Run("game_natsmsgs", func(t *testing.T) {

@@ -26,6 +26,7 @@ type boardFX struct {
 	rows  map[int]rowStrobe         // absolute row index → strobe state
 	ghost map[[2]int]game.PieceType // hard-drop ghost cells (drawn on empty squares only)
 	tint  color.NRGBA               // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
+	frame color.NRGBA               // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
 }
 
 // Board tint strength: how far an empty square's fill and its grid line are
@@ -182,10 +183,14 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 	if h < 2*fw {
 		h = 2 * fw
 	}
-	fillRect(gtx.Ops, image.Rect(0, 0, w, fw), colBorder)
-	fillRect(gtx.Ops, image.Rect(0, h-fw, w, h), colBorder)
-	fillRect(gtx.Ops, image.Rect(0, 0, fw, h), colBorder)
-	fillRect(gtx.Ops, image.Rect(w-fw, 0, w, h), colBorder)
+	frame := colBorder
+	if fx != nil && fx.frame.A != 0 {
+		frame = fx.frame // lit up: this board holds the keyboard
+	}
+	fillRect(gtx.Ops, image.Rect(0, 0, w, fw), frame)
+	fillRect(gtx.Ops, image.Rect(0, h-fw, w, h), frame)
+	fillRect(gtx.Ops, image.Rect(0, 0, fw, h), frame)
+	fillRect(gtx.Ops, image.Rect(w-fw, 0, w, h), frame)
 	for r := snap.VisibleStart; r < snap.Height && r < len(snap.Rows); r++ {
 		row := snap.Rows[r]
 		y := fw + (r-snap.VisibleStart)*cellPx

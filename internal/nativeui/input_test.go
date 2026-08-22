@@ -1,15 +1,22 @@
 package nativeui
 
 import (
+	"image"
 	"reflect"
 	"testing"
 
+	"gioui.org/f32"
 	"gioui.org/io/event"
 	"gioui.org/io/input"
 	"gioui.org/io/key"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
 	"gioui.org/op"
+	"gioui.org/unit"
 
+	"jetris/internal/config"
 	"jetris/internal/engine"
+	"jetris/internal/lobby"
 )
 
 // TestBoardKeyFiltersIncludeFocusFilter guards the exact regression that broke
@@ -133,4 +140,149 @@ func drainEvents(r *input.Router, f ...event.Filter) []event.Event {
 		out = append(out, e)
 	}
 	return out
+}
+
+// gameFrame lays the current screen out through router r and commits the
+// frame the way the window loop does, so the focus commands, key filters and
+// pointer areas registered during layout take effect for the next one.
+func gameFrame(a *App, r *input.Router) {
+	ops := new(op.Ops)
+	gtx := layout.Context{
+		Ops:         ops,
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Constraints: layout.Exact(image.Pt(1200, 820)),
+		Source:      r.Source(),
+	}
+	a.layout(gtx)
+	r.Frame(ops)
+}
+
+// press queues a primary mouse click (press + release) at window position x,y.
+func press(r *input.Router, x, y float32) {
+	r.Queue(
+		pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(x, y)},
+		pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: f32.Pt(x, y)},
+	)
+}
+
+// Window positions used by the focus tests: the chat panel is the strip at
+// the bottom of the 1200×820 window (its pointer area includes the panel's
+// own inset, so a point right at the bottom edge is inside the panel yet over
+// no widget — it tests the panel area itself, not the editor's own click
+// handling), and the middle of the window is the playfield: pure paint, so a
+// press there falls through to the screen-wide board area.
+const (
+	chatPressX, chatPressY   = 600, 816
+	boardPressX, boardPressY = 600, 350
+	// Inside the chat panel, on widgets that consume the press themselves:
+	// the editor and the Send button (the press still reaches the panel's
+	// area, which encloses them).
+	editorPressX, editorPressY = 600, 788
+	sendPressX, sendPressY     = 1147, 787
+)
+
+// TestGameFocusFollowsClicks drives the real game screen through a Gio
+// input.Router: once the game is playable the board owns the keys; a press
+// inside the chat panel hands them to the chat editor, a press anywhere else
+// hands them back, and so does Escape while typing; Shift-Tab switches either
+// way. Before the start there is no contest (the chat editor is the only key
+// consumer), so no press moves the keys to the board.
+func TestGameFocusFollowsClicks(t *testing.T) {
+	a := newTestApp()
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.gamePlayers = []lobby.PlayerSummary{
+		{PlayerID: "alice", Name: "alice", Ready: true},
+		{PlayerID: "bob", Name: "bob"},
+	}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	var r input.Router
+
+	// Pre-start: the board never takes the keys.
+	gameFrame(a, &r)
+	press(&r, boardPressX, boardPressY)
+	gameFrame(a, &r)
+	if r.Source().Focused(&a.boardTag) {
+		t.Fatal("board took the keys before the game started")
+	}
+
+	// Start: the keys jump to the board.
+	a.gameStatus = string(config.GameStatusInProgress)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys when the game became playable")
+	}
+
+	press(&r, chatPressX, chatPressY)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("a press in the chat panel did not hand the keys to the chat editor")
+	}
+	if r.Source().Focused(&a.boardTag) {
+		t.Fatal("board kept the keys after a press in the chat panel")
+	}
+
+	press(&r, boardPressX, boardPressY)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("a press outside the chat panel did not hand the keys back to the board")
+	}
+
+	press(&r, chatPressX, chatPressY)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("second press in the chat panel did not hand the keys to the chat editor")
+	}
+	r.Queue(key.Event{Name: key.NameEscape, State: key.Press})
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("Escape in the chat did not hand the keys back to the board")
+	}
+
+	// Shift-Tab toggles. The window delivers Tab keys wrapped as an
+	// input.SystemEvent (so that, unclaimed, they drive Gio's generic focus
+	// traversal); the switch's explicit filters claim them.
+	shiftTab := input.SystemEvent{Event: key.Event{Name: key.NameTab, Modifiers: key.ModShift, State: key.Press}}
+	r.Queue(shiftTab)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("Shift-Tab on the board did not hand the keys to the chat editor")
+	}
+	r.Queue(shiftTab)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("Shift-Tab in the chat did not hand the keys back to the board")
+	}
+
+	// Presses on the panel's own widgets count as presses in the panel. The
+	// Send button is a Clickable, which takes the keys itself at the end of
+	// the press frame (its focus command is deferred behind the editor's
+	// event processing); the switch hands them on to the editor at the top
+	// of the next frame — one the pending focus events make Gio schedule at
+	// once — so give each press that second frame.
+	for _, pt := range []struct {
+		name string
+		x, y float32
+	}{{"editor", editorPressX, editorPressY}, {"Send button", sendPressX, sendPressY}} {
+		press(&r, boardPressX, boardPressY)
+		gameFrame(a, &r)
+		press(&r, pt.x, pt.y)
+		gameFrame(a, &r)
+		gameFrame(a, &r)
+		if !r.Source().Focused(&a.gameChatEd) {
+			t.Fatalf("a press on the %s did not hand the keys to the chat editor", pt.name)
+		}
+		gameFrame(a, &r)
+		if !r.Source().Focused(&a.gameChatEd) {
+			t.Fatalf("the chat editor did not keep the keys after a press on the %s", pt.name)
+		}
+	}
+
+	// A new game screen (new engine) observes the start edge afresh: the
+	// keys go to the board again even though the chat held them last.
+	a.eng = engine.New(nil, "g2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys on a fresh game screen")
+	}
 }

@@ -7,10 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"gioui.org/io/event"
 	"gioui.org/layout"
 	"gioui.org/op"
-	"gioui.org/op/clip"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -41,6 +39,9 @@ type gameView struct {
 	rowStrobes           map[int]rowStrobe // own board: arcade row strobes (clears + landed garbage)
 	shakeStart           time.Time         // own board: garbage impact-shake epoch (zero = idle)
 	fireworks            *fireworksShow    // nil unless this player/team won (competitive/teams)
+	// Keyboard owner while the keys drive the piece (handleGameFocus): the
+	// white focus outline goes on whichever of the two holds them.
+	boardFocused, chatFocused bool
 }
 
 func (a *App) snapshotGame(now time.Time) gameView {
@@ -115,23 +116,26 @@ func (a *App) layoutGame(gtx C) D {
 
 	view := a.snapshotGame(gtx.Now)
 	started := view.status == string(config.GameStatusInProgress)
-	// Chat typing rule: players may chat until the game starts; once it is in
-	// progress their keyboard drives the piece, so only spectators (and
-	// eliminated players, whose keys no longer play) can type.
-	canType := !started || mode != engine.ModePlayer
-
-	// Register the whole window as a key-input target, then dispatch moves.
-	// Focus is grabbed for the board only while actually playing — before the
-	// game starts the chat editor must be able to hold keyboard focus.
-	st := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
-	event.Op(gtx.Ops, &a.boardTag)
-	st.Pop()
+	// playing: the keyboard drives the piece (a seated player, game in
+	// progress, not eliminated). Only then do the board and the chat compete
+	// for the keys — the player chats by clicking into the chat panel and
+	// plays again by clicking anywhere else (handleGameFocus); before the
+	// start, and for spectators, the chat editor is the only key consumer.
+	playing := mode == engine.ModePlayer && started && !view.gameOver
+	a.handleGameFocus(gtx, eng, playing) // first thing in the frame — see its doc
+	// Focus outline: the chat's while its editor (or its Send button, for the
+	// one frame a press leaves it there) has the keys, the board's otherwise
+	// — while playing they converge to one or the other within a frame.
+	view.chatFocused = playing && (gtx.Source.Focused(&a.gameChatEd) || gtx.Source.Focused(&a.gameChatBtn))
+	view.boardFocused = playing && !view.chatFocused
+	// Dispatch moves (the board's key filters are registered here every
+	// frame; its key-input target, event.Op, is the root pointerArea below).
 	if mode == engine.ModePlayer && started {
 		a.handleKeys(gtx, eng)
 	}
 	// The on-screen pad mirrors the keyboard scheme; its clicks are drained
 	// every frame and only dispatched while the game is actually playable.
-	a.handlePadClicks(gtx, eng, mode == engine.ModePlayer && started && !view.gameOver)
+	a.handlePadClicks(gtx, eng, playing)
 
 	if a.readyBtn.Clicked(gtx) {
 		go a.toggleReady()
@@ -154,7 +158,7 @@ func (a *App) layoutGame(gtx C) D {
 	if a.leaveNoBtn.Clicked(gtx) {
 		a.confirmLeave = false
 	}
-	a.handleGameChatSubmit(gtx, eng, canType)
+	a.handleGameChatSubmit(gtx, eng)
 	if view.flashActive {
 		a.invalidate() // keep animating the flash until it expires
 	}
@@ -204,7 +208,7 @@ func (a *App) layoutGame(gtx C) D {
 	}
 	children := []layout.FlexChild{
 		layout.Flexed(1, content),
-		layout.Rigid(func(gtx C) D { return a.gameChatPanel(gtx, eng, canType) }),
+		layout.Rigid(func(gtx C) D { return a.gameChatPanel(gtx, eng, view) }),
 	}
 	if showMsgs {
 		children = append(children, layout.Rigid(a.natsMsgSection))
@@ -221,21 +225,27 @@ func (a *App) layoutGame(gtx C) D {
 			)
 		}
 	}
-	if !a.confirmLeave {
-		return base(gtx)
+	screen := base
+	if a.confirmLeave {
+		// Leave confirmation modal: scrim the game and swallow clicks behind it.
+		screen = func(gtx C) D {
+			return layout.Stack{}.Layout(gtx,
+				layout.Expanded(base),
+				layout.Expanded(func(gtx C) D {
+					fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0xc0))
+					return D{Size: gtx.Constraints.Max}
+				}),
+				layout.Stacked(func(gtx C) D {
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return a.confirmLeaveOverlay(gtx)
+				}),
+			)
+		}
 	}
-	// Leave confirmation modal: scrim the game and swallow clicks behind it.
-	return layout.Stack{}.Layout(gtx,
-		layout.Expanded(base),
-		layout.Expanded(func(gtx C) D {
-			fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0xc0))
-			return D{Size: gtx.Constraints.Max}
-		}),
-		layout.Stacked(func(gtx C) D {
-			gtx.Constraints.Min = gtx.Constraints.Max
-			return a.confirmLeaveOverlay(gtx)
-		}),
-	)
+	// The whole screen is the board's input area: its key-input target, and
+	// the pointer area whose presses (any not claimed by the chat panel) hand
+	// the keys back to the board.
+	return pointerArea(gtx, &a.boardTag, screen)
 }
 
 // confirmLeaveOverlay is the modal asking whether to leave an in-progress
@@ -269,10 +279,10 @@ func (a *App) confirmLeaveOverlay(gtx C) D {
 	})
 }
 
-// handleGameChatSubmit dispatches the game screen's chat input. canType gates
-// sending (see layoutGame); the editor is hidden when typing is disabled, so a
-// stale click can't send either.
-func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine, canType bool) {
+// handleGameChatSubmit dispatches the game screen's chat input: the Send
+// button or Enter in the editor (which, mid-game, only has the keys once the
+// player clicked into the chat — see handleGameFocus).
+func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 	send := a.gameChatBtn.Clicked(gtx)
 	for {
 		ev, ok := a.gameChatEd.Update(gtx)
@@ -283,7 +293,7 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine, canType bool) {
 			send = true
 		}
 	}
-	if !send || !canType {
+	if !send {
 		return
 	}
 	text := strings.TrimSpace(a.gameChatEd.Text())
@@ -300,7 +310,14 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine, canType bool) {
 // messages are seen only by this game's players and spectators (per-game chat
 // subject); a message typed here goes to the game chat, or to the lobby chat
 // when it starts with "@lobby".
-func (a *App) gameChatPanel(gtx C, eng *engine.Engine, canType bool) D {
+//
+// Everyone types, players mid-game included: while the keys drive the piece
+// a click into the panel hands them to the chat (handleGameFocus — the panel
+// is the chat's pointer area, a.chatTag) and the panel wears the white focus
+// ring; a click anywhere else, or Escape, hands them back to the board, and
+// Shift-Tab switches either way. The editor's hint says which way the keys
+// currently go.
+func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	gameID := eng.GameID()
 	a.mu.Lock()
 	msgs := make([]lobby.ChatMessage, 0, len(a.chatLog))
@@ -311,39 +328,63 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, canType bool) D {
 	}
 	a.mu.Unlock()
 
-	return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(a.header("CHAT")),
-			layout.Rigid(func(gtx C) D {
-				return bordered(gtx, func(gtx C) D {
-					// Height-reactive: at least 96 dp of chat, growing with the
-					// window (12% of the available height) so a taller window
-					// shows more of the conversation.
-					if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
-						gtx.Constraints.Max.Y = maxH
-					}
-					return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
-						txt, col := chatLine(msgs[i])
-						return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
+	hint := "Message… (start with @lobby to message the lobby)"
+	ring := colorN{} // transparent: the ring shows only while the chat holds the keys
+	switch {
+	case view.chatFocused:
+		hint = "Message… (Esc, Shift-Tab or click the board to play again; @lobby messages the lobby)"
+		ring = colFocus
+	case view.boardFocused:
+		hint = "Click here to chat — the keys are driving your piece; Shift-Tab to switch focus"
+	}
+
+	return pointerArea(gtx, &a.chatTag, func(gtx C) D {
+		return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(a.header("CHAT")),
+				layout.Rigid(func(gtx C) D {
+					return focusRing(gtx, ring, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx C) D {
+								return bordered(gtx, func(gtx C) D {
+									// Height-reactive: at least 96 dp of chat, growing with the
+									// window (12% of the available height) so a taller window
+									// shows more of the conversation.
+									if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
+										gtx.Constraints.Max.Y = maxH
+									}
+									return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
+										txt, col := chatLine(msgs[i])
+										return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
+									})
+								})
+							}),
+							layout.Rigid(spacer(6)),
+							layout.Rigid(func(gtx C) D {
+								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+									layout.Flexed(1, func(gtx C) D {
+										return a.editorBox(gtx, &a.gameChatEd, hint)
+									}),
+									layout.Rigid(func(gtx C) D {
+										return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
+								)
+							}),
+						)
 					})
-				})
-			}),
-			layout.Rigid(spacer(6)),
-			layout.Rigid(func(gtx C) D {
-				if !canType {
-					return a.body("Chat is read-only while playing — spectators can still type.", colMuted)(gtx)
-				}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, func(gtx C) D {
-						return a.editorBox(gtx, &a.gameChatEd, "Message… (start with @lobby to message the lobby)")
-					}),
-					layout.Rigid(func(gtx C) D {
-						return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
-				)
-			}),
-		)
+				}),
+			)
+		})
+	})
+}
+
+// focusRing frames w with a chunky 3 dp ring in col, padded so the ring never
+// touches the content. The padding is always there (a stable layout whichever
+// way the keys go); a transparent col draws no ring at all.
+func focusRing(gtx C, col colorN, w layout.Widget) D {
+	return widget.Border{Color: col, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+		return layout.UniformInset(unit.Dp(6)).Layout(gtx, w)
 	})
 }
 
@@ -630,6 +671,9 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
 					fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost}
+					if view.boardFocused {
+						fx.frame = colFocus // the well's frame lights up: the keys drive the piece
+					}
 					bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
 					if dx := boardShakeOffset(cell, gtx.Now.Sub(view.shakeStart)); dx != 0 {
 						// Garbage impact: judder the whole well sideways for a
@@ -1144,7 +1188,7 @@ func (a *App) nextWell(gtx C, pieces []game.PieceType, boardCellPx int) D {
 	}
 
 	macro := op.Record(gtx.Ops)
-	dims := layout.UniformInset(gtx.Metric.PxToDp(fw + gap)).Layout(gtx, inner)
+	dims := layout.UniformInset(gtx.Metric.PxToDp(fw+gap)).Layout(gtx, inner)
 	call := macro.Stop()
 	w, h := dims.Size.X, dims.Size.Y
 	fillRect(gtx.Ops, image.Rect(0, 0, w, h), colBorder)

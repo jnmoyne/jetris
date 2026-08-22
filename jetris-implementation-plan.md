@@ -3312,12 +3312,25 @@ its own retention (`MaxAge`), separate from the game blackboard.
 - **nativeui:** the game screen (player or spectator) shows a chat strip at
   the bottom (`gameChatPanel`): this game's messages plus lobby lines folded
   in — lobby lines prefixed `@lobby` in `colLobby`; spectator messages marked
-  `(spec)` (`chatLine`). Typing: players until the game starts, spectators and
-  eliminated players always (`canType`); `handleKeys` grabs board focus only
-  while `ModePlayer && in_progress`, so the editor can hold focus pre-start
-  and the playing player's keys drive the piece afterwards (muted hint shown
-  instead of the editor). Messages starting with `@lobby` route to the lobby
-  chat (`sendGameChat`). The lobby screen's chat panel filters to
+  `(spec)` (`chatLine`). Everyone types at any time, playing players
+  included: while the keys drive the piece (`playing` = seated player, game
+  in progress, not eliminated) the board and the chat editor compete for
+  them and `handleGameFocus` (called first in the frame — see its doc for
+  the two Gio router ordering rules that force this) is the switch. The
+  whole game screen is the board's pointer area (`a.boardTag`) and the chat
+  panel is the chat's (`a.chatTag`), both registered with `pointerArea` as
+  ancestors of their widgets: a press in the panel (the editor and the Send
+  button included) hands the keys to the editor, any other press — or Escape
+  while typing, or the moment the game becomes playable (start/rejoin,
+  tracked per engine via `playingSeen`/`playingSeenEng`) — hands them back to
+  the board, and Shift-Tab toggles either way (claimed by explicit filters so
+  Gio's generic Tab traversal never cycles through the other widgets). `handleKeys` claims board focus only when neither the board nor
+  the chat editor has it. The holder is shown in white (`colFocus`): the
+  playfield's frame (`boardFX.frame`) or a 3 dp ring around the chat panel
+  (`focusRing`), and the editor's hint says which way the keys go. Before
+  the start, and for spectators/eliminated players, there is no contest (the
+  editor is the only key consumer). Messages starting with `@lobby` route to
+  the lobby chat (`sendGameChat`). The lobby screen's chat panel filters to
   `GameID == ""`.
 - **archive:** archiving a game purges its chat subject from the shared chat
   stream — but first copies the conversation into the `ArchiveRecord`

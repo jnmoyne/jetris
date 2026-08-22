@@ -555,7 +555,11 @@ func (a *App) layoutReplay(gtx C) D {
 						layout.Rigid(hSpacer(12)),
 					}, children...)
 				}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
+				// Centered under the boards: the column hands this row the
+				// full width, and a bare Flex would pack the buttons left.
+				return layout.Center.Layout(gtx, func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
+				})
 			}),
 		)
 	})

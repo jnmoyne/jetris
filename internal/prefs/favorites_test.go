@@ -15,8 +15,8 @@ func TestFavoritesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(favs) != 2 || favs[0] != DemoFavorite || favs[1] != DemoFavoriteEU {
-		t.Fatalf("fresh favorites = %+v, want the US demo server then the EU Jetris server", favs)
+	if len(favs) != 3 || favs[0] != DemoFavorite || favs[1] != DemoFavoriteEU || favs[2] != DemoFavoriteAP {
+		t.Fatalf("fresh favorites = %+v, want the US demo server then the EU and AP Jetris servers", favs)
 	}
 
 	want := []Favorite{DemoFavorite, {Label: "home", URL: "nats://192.168.1.5:4222"}}
@@ -70,7 +70,7 @@ func TestFavoritesTolerantLoad(t *testing.T) {
 	if err == nil {
 		t.Fatal("corrupt favorites file loaded without error")
 	}
-	if len(got) != 2 || got[0] != DemoFavorite || got[1] != DemoFavoriteEU {
+	if len(got) != 3 || got[0] != DemoFavorite || got[1] != DemoFavoriteEU || got[2] != DemoFavoriteAP {
 		t.Fatalf("corrupt file fallback = %+v, want the defaults", got)
 	}
 }

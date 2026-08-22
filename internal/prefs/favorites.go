@@ -21,16 +21,17 @@ type Favorite struct {
 }
 
 // The bookmarks every fresh install starts with: the public nats.io demo
-// server (US central) and the Jetris server in EU central.
+// server (US central) and the Jetris servers in EU central and AP south.
 var (
-	DemoFavorite   = Favorite{Label: "demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
+	DemoFavorite   = Favorite{Label: "Demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
 	DemoFavoriteEU = Favorite{Label: "Jetris (EU central)", URL: "nats://172.105.76.148:4222"}
+	DemoFavoriteAP = Favorite{Label: "Jetris (AP south)", URL: "nats://172.104.52.4:4222"}
 )
 
-// DefaultFavorites is the pre-populated favorites list of a fresh install,
-// US first.
+// DefaultFavorites is the pre-populated favorites list of a fresh install:
+// US, then EU, then AP.
 func DefaultFavorites() []Favorite {
-	return []Favorite{DemoFavorite, DemoFavoriteEU}
+	return []Favorite{DemoFavorite, DemoFavoriteEU, DemoFavoriteAP}
 }
 
 // favoritesFile is the on-disk favorites list, relative to the config parent.
@@ -60,7 +61,7 @@ func FavoritesPath() (string, error) {
 }
 
 // LoadFavorites reads the saved favorites. A missing file is not an error: it
-// yields DefaultFavorites (a fresh install starts with the US and EU
+// yields DefaultFavorites (a fresh install starts with the US, EU and AP
 // servers). A file that exists but lists nothing yields an empty list — the
 // player deleted every bookmark on purpose, and the defaults must not come
 // back.

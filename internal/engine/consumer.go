@@ -214,8 +214,9 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		// full-board update is robust against dropped per-row triggers.
 		e.emitFullBoardRerender()
 		// Arcade feedback: tell the UI WHICH rows this player's lock completed
-		// (their pre-collapse positions) so it can strobe them. Local-only —
-		// the clearer's own celebration, never round-tripped through NATS.
+		// (their pre-collapse positions) so it can strobe them. Teammates on a
+		// shared board strobe the same rows off the line-clear event below,
+		// which carries them as cleared_rows.
 		e.emitUpdate(EngineUpdate{Kind: UpdateRowsCleared, ChangedRows: clearedRows})
 		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 		if e.gameMode == config.ModeTeams {
@@ -239,6 +240,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 				Team:         e.teamIdx,
 				Score:        scoreDelta,
 				LinesCleared: clearedLines,
+				ClearedRows:  clearedRows,
 				TotalScore:   int(e.ownClearScore.Load()),
 				TotalLines:   int(e.ownClearLines.Load()),
 			}
@@ -396,6 +398,17 @@ func (e *Engine) runEventsConsumer(ctx context.Context) {
 	}
 }
 
+// emitTeammateClear strobes the rows a teammate's clear just completed on the
+// shared board (the event's cleared_rows, pre-collapse indices) — the same
+// UpdateRowsCleared the clearer's own engine raised for itself, so the whole
+// crew sees the flash. A peer that omits the rows simply doesn't strobe.
+func (e *Engine) emitTeammateClear(ev GameEvent) {
+	if len(ev.ClearedRows) == 0 {
+		return
+	}
+	e.emitUpdate(EngineUpdate{Kind: UpdateRowsCleared, ChangedRows: ev.ClearedRows})
+}
+
 func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 	switch ev.Kind {
 	case EventLineClear:
@@ -419,13 +432,15 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 		// clear's full-visible-range republish — leaving stale, un-cleared rows
 		// on our board. Force a full-board re-render from the converged
 		// e.playfield (the same thing the clearing player does) so every player
-		// sees the cleared board. Also fold in the shared score delta.
+		// sees the cleared board. Also fold in the shared score delta, and
+		// strobe the cleared rows: the crew's clear is as much ours as theirs.
 		if ev.PlayerID != e.playerID && e.gameMode == config.ModeCooperative {
 			e.score.Add(int64(deltaScore))
 			e.totalLines.Add(int64(deltaLines))
 			e.refreshLevel()
 			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 			e.emitFullBoardRerender()
+			e.emitTeammateClear(ev)
 		}
 		// Teams: EVERY engine — teammates, the opposing team's players, and
 		// spectators — folds the clear into the per-team scoreboard (the
@@ -445,6 +460,7 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 				e.refreshLevel()
 				e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 				e.emitFullBoardRerender()
+				e.emitTeammateClear(ev)
 			}
 		}
 	case EventGameOver:

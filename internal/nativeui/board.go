@@ -40,8 +40,9 @@ const (
 )
 
 // rowStrobe is one flashing row of 80's arcade feedback: the row blinks hard
-// on/off in a solid color — white for rows the local player just cleared, the
-// attacker's player color for a garbage row that just landed.
+// on/off in a solid color — white for rows just cleared on the board (by the
+// local player, or by a teammate on a shared board), the attacker's player
+// color for a garbage row that just landed.
 type rowStrobe struct {
 	start time.Time
 	col   color.NRGBA

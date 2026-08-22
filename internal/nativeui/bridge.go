@@ -84,11 +84,12 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 					}
 				}
 			case engine.UpdateRowsCleared:
-				// Arcade feedback: strobe the rows this player just cleared,
-				// at their pre-collapse positions. Competitive modes only —
-				// there a clear doubles as an attack worth celebrating.
-				if gm := e.GameMode(); (gm == config.ModeCompetitive || gm == config.ModeTeams) &&
-					e.Mode() == engine.ModePlayer {
+				// Arcade feedback: strobe the rows just cleared on this
+				// player's board, at their pre-collapse positions — their own
+				// clear, or a teammate's on a shared board (the engine raises
+				// both). Players only: a spectator's boards get no clear
+				// strobe in any mode.
+				if e.Mode() == engine.ModePlayer {
 					now := time.Now()
 					for _, r := range u.ChangedRows {
 						a.rowStrobes[r] = rowStrobe{start: now, col: colStrobe}

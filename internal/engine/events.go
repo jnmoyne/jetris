@@ -25,7 +25,7 @@ const (
 	UpdateRTT              // a new publish→echo round-trip measurement
 	UpdateBufferedMoves    // the buffered-input queue changed (read via Engine.BufferedMoves)
 	UpdateTeamStats        // teams: a team's score or level changed (both teams' totals in TeamScores/TeamLevels)
-	UpdateRowsCleared      // the LOCAL player's lock completed ChangedRows (pre-collapse indices) — arcade feedback hook
+	UpdateRowsCleared      // a clear completed ChangedRows (pre-collapse indices) on this player's board — own lock, or a teammate's on a shared board — arcade feedback hook
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -71,7 +71,7 @@ type GameEvent struct {
 	Kind         EventKind `json:"kind"`
 	PlayerID     string    `json:"player_id"`
 	LinesCleared int       `json:"lines_cleared,omitempty"`
-	ClearedRows  []int     `json:"cleared_rows,omitempty"`
+	ClearedRows  []int     `json:"cleared_rows,omitempty"` // EventLineClear: the cleared rows' pre-collapse indices (teammates strobe them)
 	Score        int       `json:"score,omitempty"`
 	Level        int       `json:"level,omitempty"` // EventGameOver: level achieved (from the sender's line total)
 	PieceCount   uint64    `json:"piece_count,omitempty"`

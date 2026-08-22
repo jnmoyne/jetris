@@ -187,10 +187,11 @@ type App struct {
 	// board flash lives in `flash`, not here.
 	specFlash map[int]map[[2]int]time.Time
 	fireworks *fireworksShow // victory fireworks show; nil until a competitive/teams win
-	// rowStrobes holds the own board's arcade row strobes (competitive/teams):
-	// rows this player just cleared blink white, garbage rows that just landed
-	// blink in the attacker's color. Written by pumpEngine (clears) and by the
-	// layout's garbage-arrival detection (detectGarbage).
+	// rowStrobes holds the own board's arcade row strobes: rows just cleared
+	// on it (by this player, or a teammate on a shared board) blink white, and
+	// in competitive/teams garbage rows that just landed blink in the
+	// attacker's color. Written by pumpEngine (clears) and by the layout's
+	// garbage-arrival detection (detectGarbage).
 	rowStrobes map[int]rowStrobe
 	// garbageRows/garbageSeen track the adversarial-row count last observed on
 	// the own-board snapshot; a frame that sees the count grow strobes exactly

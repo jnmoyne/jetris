@@ -21,6 +21,10 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
   games that allow agents. With `--create` it **hosts** any mode: it creates the game
   stream + meta + lobby listing itself (agent seats open by default), joins its own
   game, and waits for opponents.
+- Outlives its server: when the NATS server goes away the resident just waits, idle
+  (no CPU), while nats.go reconnects in the background — forever, it never gives up — and
+  its lobby mirror and presence pick up by themselves once the server is back. Only a
+  fatal close (an authorization failure on reconnect, say) ends it, with an error.
 - Carries every peer responsibility itself: presence heartbeat, the join CAS on the lobby
   KV, the roster announcement, the ready toggle and (when its toggle completes the set) the
   5→0 countdown, its own engine — a bit-exact port of the game's PCG + 7-bag piece RNG,

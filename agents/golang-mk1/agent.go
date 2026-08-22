@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	mrand "math/rand/v2"
@@ -91,6 +92,7 @@ type Agent struct {
 	rng      *mrand.Rand
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	connErr  error // set when nats.go closed the connection for good (under stateMu)
 }
 
 // newAgent builds an agent with a fresh instance id and per-difficulty tuning.
@@ -157,8 +159,53 @@ func (a *Agent) connect(ctx context.Context) error {
 		jsDomain string
 		err      error
 	)
+	// A vanished server is nats.go's job: it reconnects in the background
+	// (2 s apart, forever) while every goroutine here just blocks on its
+	// subscription, costing no CPU. The default gives up after 60 attempts
+	// and CLOSES the connection, which closes every subscription — and a
+	// resident agent with a dead connection is useless.
+	opts := []nats.Option{
+		nats.Name(a.name),
+		nats.MaxReconnects(-1),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil && !a.stopping() {
+				log.Printf("nats: disconnected (%v); reconnecting in the background", err)
+			}
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			log.Printf("nats: reconnected to %s", nc.ConnectedUrl())
+		}),
+		nats.ErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+			// The lobby watcher's heartbeat check raises "consumer not
+			// active" every few seconds of an outage; nats.go rebuilds that
+			// consumer itself once reconnected, so it is noise until then.
+			if errors.Is(err, nats.ErrConsumerNotActive) && !nc.IsConnected() {
+				return
+			}
+			if sub != nil {
+				log.Printf("%v (subscription on %q)", err, sub.Subject)
+			} else {
+				log.Print(err)
+			}
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			// With unlimited reconnects nats.go only closes on a fatal
+			// error (an authorization failure on reconnect, say) — there is
+			// nothing left to wait for, so stop and let run report it.
+			if a.stopping() {
+				return
+			}
+			err := nc.LastError()
+			if err == nil {
+				err = nats.ErrConnectionClosed
+			}
+			a.stateMu.Lock()
+			a.connErr = err
+			a.stateMu.Unlock()
+			a.stop()
+		}),
+	}
 	if a.conn.server != "" {
-		opts := []nats.Option{nats.Name(a.name)}
 		if a.conn.user != "" {
 			opts = append(opts, nats.UserInfo(a.conn.user, a.conn.password))
 		}
@@ -167,7 +214,7 @@ func (a *Agent) connect(ctx context.Context) error {
 		// NATS-CLI-compatible contexts (credentials, TLS, JS domain included);
 		// an empty name is the currently selected context.
 		var settings natscontext.Settings
-		nc, settings, err = natscontext.Connect(a.conn.context, nats.Name(a.name))
+		nc, settings, err = natscontext.Connect(a.conn.context, opts...)
 		jsDomain = settings.JSDomain
 	}
 	if err != nil {
@@ -233,8 +280,13 @@ func (a *Agent) presenceLoop(ctx context.Context) {
 	t := time.NewTicker(presenceEvery)
 	defer t.Stop()
 	for {
-		if err := a.publishPresence(ctx); err != nil {
-			log.Printf("presence: %v", err)
+		// While nats.go is reconnecting a JetStream publish could only sit
+		// out its ack timeout: skip the tick — the first one after the
+		// reconnect restores the entry, which outlives any short outage.
+		if a.nc.IsConnected() {
+			if err := a.publishPresence(ctx); err != nil {
+				log.Printf("presence: %v", err)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -247,21 +299,50 @@ func (a *Agent) presenceLoop(ctx context.Context) {
 }
 
 // lobbyWatch mirrors the lobby KV into memory: game listings and our invitations.
+//
+// A server outage never reaches here: the watcher's subscription survives the
+// reconnect and its ordered consumer resumes where it stopped. The watcher
+// ends only when its subscription is closed underneath it — at shutdown, or
+// should the connection ever close for good — so a finished watch is either
+// the end, or something to re-establish after a pause. Never spin on it.
 func (a *Agent) lobbyWatch(ctx context.Context) {
+	for a.watchLobby(ctx) {
+		log.Print("lobby watch ended; re-watching")
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// watchLobby runs one lobby watcher until it ends. Returns true if it should
+// be re-established, false once the agent (or its connection) is done.
+func (a *Agent) watchLobby(ctx context.Context) bool {
+	again := func() bool {
+		return ctx.Err() == nil && !a.stopping() && !a.nc.IsClosed() && !a.nc.IsDraining()
+	}
 	w, err := a.kv.WatchAll(ctx)
 	if err != nil {
 		log.Printf("lobby watch: %v", err)
-		return
+		return again()
 	}
 	defer w.Stop()
 	invitePrefix := "invites." + a.name + "."
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-a.stopCh:
-			return
-		case e := <-w.Updates():
+			return false
+		case e, ok := <-w.Updates():
+			if !ok {
+				// nats.go closes the channel when the subscription is
+				// closed: a receive would return instantly forever.
+				return again()
+			}
 			if e == nil {
 				continue // end-of-initial-data marker
 			}
@@ -845,6 +926,7 @@ func (a *Agent) run(ctx context.Context) error {
 		dctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = a.kv.Delete(dctx, "players."+a.name)
+		a.stop() // our own close: the closed handler must not mistake it for a loss
 		_ = a.nc.Drain()
 	}()
 	for !a.stopping() {
@@ -869,6 +951,12 @@ func (a *Agent) run(ctx context.Context) error {
 		if a.once {
 			break
 		}
+	}
+	a.stateMu.Lock()
+	connErr := a.connErr
+	a.stateMu.Unlock()
+	if connErr != nil {
+		return fmt.Errorf("NATS connection closed: %w", connErr)
 	}
 	return nil
 }

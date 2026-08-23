@@ -221,15 +221,18 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Both teams already carry garbage from earlier exchanges: team A (Alice
-	// + Chris) two rows sent by team B — David's at the bottom, Bob's above —
-	// and team B (Bob + David) two rows sent by Chris. Team A's stack keeps
-	// the slot open for the staged clear.
+	// Both teams already carry a few rows of garbage from earlier exchanges:
+	// team A (Alice + Chris) three rows sent by team B — David's, Bob's and
+	// David's again, bottom up, so the per-sender framing shows — and team B
+	// (Bob + David) three rows, all sent by Chris, so the row about to land
+	// from Alice stands out in her color. Team A's stack keeps the slot open
+	// for the staged clear.
+	garbageA, garbageB := []int{3, 2, 3}, []int{1, 1, 1}
 	rng := rand.New(rand.NewSource(3))
-	prefillTeamBoard(t, js, gameID, 0, []int{3, 2}, true, rng)
-	prefillTeamBoard(t, js, gameID, 1, []int{1, 1}, false, rng)
+	prefillTeamBoard(t, js, gameID, 0, garbageA, true, rng)
+	prefillTeamBoard(t, js, gameID, 1, garbageB, false, rng)
 	height := config.TeamTotalRows(2)
-	floorA := height - 1 - 2 // team A's lowest stack row: the one the I piece completes
+	floorA := height - 1 - len(garbageA) // team A's lowest stack row: the one the I piece completes
 
 	// Four player engines (team A: Alice+Chris, team B: Bob+David) and a
 	// spectator engine, all consuming the real game stream.
@@ -293,8 +296,8 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	// screens seed their garbage detection — and no row may be complete yet
 	// (the prefill is seeded, so a complete row here means the seed changed).
 	waitFor(t, "pre-attack boards", func() bool {
-		return garbageRowsOf(spec, 0) == 2 && garbageRowsOf(spec, 1) == 2 &&
-			garbageRowsOf(bob, 0) == 2 && garbageRowsOf(bob, 1) == 2
+		return garbageRowsOf(spec, 0) == len(garbageA) && garbageRowsOf(spec, 1) == len(garbageB) &&
+			garbageRowsOf(bob, 0) == len(garbageA) && garbageRowsOf(bob, 1) == len(garbageB)
 	})
 	for team := 0; team < config.TeamCount; team++ {
 		if rows := completedRowsOf(spec, team); len(rows) > 0 {
@@ -360,17 +363,19 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	if _, err := js.Publish(ctx, config.TeamGarbageSubject(gameID, 1), reg); err != nil {
 		t.Fatal(err)
 	}
+	landedB := len(garbageB) + 1
 	waitFor(t, "the clear and the landed garbage row on every replica", func() bool {
 		return len(completedRowsOf(spec, 0)) == 1 && len(completedRowsOf(bob, 0)) == 1 &&
-			garbageRowsOf(spec, 1) == 3 && garbageRowsOf(bob, 1) == 3
+			garbageRowsOf(spec, 1) == landedB && garbageRowsOf(bob, 1) == landedB
 	})
 
 	// Screenshot 1: the spectator's view of both team boards. The landed row
 	// strobes in Alice's color through the spectator screen's own detection
 	// (one layout pass to observe it, then the frame drawn at the strobe's
-	// epoch, i.e. lit). The line-clear strobe is the clearer's local
-	// celebration — never broadcast, so no spectator could derive it — and
-	// is staged on the completed row for the picture.
+	// epoch, i.e. lit). The line-clear strobe is the clearing team's own
+	// celebration — the screen only strobes it for players, never on a
+	// spectator's boards — so it is staged on the completed row for the
+	// picture.
 	layoutOnly(specApp, time.Now())
 	specApp.mu.Lock()
 	landed, ok := specApp.specRowStrobes[1][height-1]

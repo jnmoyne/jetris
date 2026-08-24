@@ -24,8 +24,8 @@ type Favorite struct {
 // server (US central) and the Jetris servers in EU central and AP south.
 var (
 	DemoFavorite   = Favorite{Label: "Demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
-	DemoFavoriteEU = Favorite{Label: "Jetris (EU central)", URL: "nats://172.105.76.148:4222"}
-	DemoFavoriteAP = Favorite{Label: "Jetris (AP south)", URL: "nats://172.104.52.4:4222"}
+	DemoFavoriteEU = Favorite{Label: "Jetris (EU central)", URL: "nats://172.239.19.14:4222"}
+	DemoFavoriteAP = Favorite{Label: "Jetris (AP south)", URL: "nats://172.104.188.44:4222"}
 )
 
 // DefaultFavorites is the pre-populated favorites list of a fresh install:

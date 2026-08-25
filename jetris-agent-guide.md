@@ -60,14 +60,41 @@ An agent may NOT use:
 - **`GameMeta.Seed` or the piece RNG beyond the game's preview.** The piece
   sequence is deterministic and any client can compute every future piece — but
   the UI shows a human exactly `NextCount` upcoming pieces (none when it is 0),
-  so an agent's lookahead stops at the same horizon. (`golang-mk1`'s planner reads
-  its allowance from the meta it already fetches and caps its lookahead there.)
+  so an agent's lookahead stops at the same horizon. See §1.1: the horizon is the
+  game's setting, and nothing on the agent's side may raise it.
 - Stream internals the UI does not render: raw sequence numbers as game
   information, other players' in-flight publish timing, headers, or anything else
   observable only at the protocol layer.
 
 When in doubt, ask: *could a human learn this by looking at the screen?* If not,
 your agent doesn't get to know it either.
+
+### 1.1 The preview horizon is the game's setting, not yours
+
+How far ahead anyone in a game may see is decided once, by whoever creates it:
+`next_count` in the game's meta record (0-4, fixed for the life of the game, the
+number the lobby row advertises as `next N`). It binds every seat equally —
+humans and agents — and an agent MUST respect it:
+
+- **Read it from the meta of the game you are in**, every game, and plan with at
+  most that many upcoming pieces. A meta without the field (a game created before
+  the attribute existed) means **0**: no preview, no lookahead. Never substitute
+  the create wizard's default of 1, or any default of your own.
+- **Nothing on your side may raise it.** A difficulty level, a command-line flag, a
+  configuration default or a "hard" mode can only use *less* of the preview than
+  the game reveals, never more. `golang-mk1`'s `hard` asks for the full 4-piece
+  preview and still plans one piece at a time in a `next_count: 0` game.
+- **Hosting changes nothing.** An agent that creates a game writes `next_count`
+  into the meta like any host — and then plays by that same number.
+- **The seed is not a loophole.** You must read `seed` to generate your own piece
+  sequence, as every peer does, but `seq.Piece(pieceIdx + next_count)` is the
+  last index you may evaluate while a piece is in play. Computing further is
+  cheating even if you "only use it a little".
+
+The reference agent pins this with a test (`agents/golang-mk1/preview_test.go`:
+every difficulty against every preview size, plus the absent-field case). Do the
+same in yours — it is the easiest rule in this guide to break by accident while
+tuning a planner.
 
 ## 2. Announce yourself: the agent flag and the agent policy
 
@@ -380,7 +407,7 @@ agree on eliminations and outcomes without a coordinator.
 
 ## 7. Checklist
 
-- [ ] Decisions use only UI-visible information (no seed; lookahead at most the game's `next_count` preview)
+- [ ] Decisions use only UI-visible information (§1): the seed is read only to generate your own sequence; lookahead is capped by the game's `next_count` read from its meta (absent = 0), and no difficulty, flag or default of yours can raise it (§1.1)
 - [ ] `agent: true` on presence and roster entries
 - [ ] `max_agents` honored inside the join CAS
 - [ ] `invite_only` games joined only when invited (watch `invites.<name>.*`; accept = join + delete key, decline = rewrite with `declined: true`)

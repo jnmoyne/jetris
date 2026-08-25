@@ -46,7 +46,12 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
 It decides only on what a human sees: its own committed board and (for lookahead) the
 pieces the game actually reveals (`GameMeta.next_count`, 0–4). It reads the meta seed only
 to generate its OWN piece sequence, which every peer must do. No board state beyond the
-revealed preview is ever consulted.
+revealed preview is ever consulted. The horizon is the game's, not the agent's:
+`--difficulty` only trims it (easy 0, medium 1, hard the whole preview) and can never
+reach past it — a `next_count: 0` game gets one-piece planning at every level, and a meta
+without the field counts as 0. `revealedPieces` (`planner.go`) is the single place the
+planner's lookahead comes from, and `preview_test.go` checks every difficulty against
+every preview size so no tuning can quietly plan on pieces its opponents can't see.
 
 ## Build & run
 

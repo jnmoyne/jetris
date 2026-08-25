@@ -1270,14 +1270,7 @@ func (g *Game) plan(p active) (placement, bool) {
 	gr := g.toGrid()
 	pieceIdx := g.pieceIdx
 	g.mu.Unlock()
-	k := g.a.tn.lookahead
-	if k > g.nextCount {
-		k = g.nextCount
-	}
-	var upcoming []int
-	for i := 1; i <= k; i++ {
-		upcoming = append(upcoming, pieceAt(g.metaSeed, pieceIdx+i))
-	}
+	upcoming := revealedPieces(g.metaSeed, pieceIdx, g.nextCount, g.a.tn.lookahead)
 	ranked := planPlacements(gr, p.pt, p.row, p.col, g.spawnC, upcoming)
 	return choose(ranked, g.a.tn, g.a.rng)
 }

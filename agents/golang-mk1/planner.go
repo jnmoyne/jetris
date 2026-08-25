@@ -267,3 +267,20 @@ func choose(ranked []placement, tn tuning, rnd *rand.Rand) (placement, bool) {
 	}
 	return ranked[0], true
 }
+
+// revealedPieces is the planner's entire lookahead: the upcoming pieces the
+// GAME reveals — the next `nextCount` of this seat's sequence, exactly the
+// tiles a human sees in the NEXT well — further trimmed to the difficulty's
+// `lookahead`. This is the fair-visibility contract's preview rule
+// (jetris-agent-guide.md §1): the horizon is the game's setting, read from its
+// meta, and nothing on the agent's side (difficulty, flag, default) may reach
+// past it. A game with no preview — next_count 0, or a meta written before the
+// field existed — reveals nothing, so the planner plays one piece at a time
+// like everyone else. The seed is consulted for these indices only.
+func revealedPieces(seed uint64, pieceIdx, nextCount, lookahead int) []int {
+	var upcoming []int
+	for i := 1; i <= min(nextCount, lookahead); i++ {
+		upcoming = append(upcoming, pieceAt(seed, pieceIdx+i))
+	}
+	return upcoming
+}

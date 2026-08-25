@@ -62,7 +62,9 @@ Because the 7-bag sequence is seekable, the preview is a pure read
 
 The same number is an **agent's lookahead allowance**: the fair-visibility contract
 (§11) lets an agent plan with exactly the pieces a human can see in the NEXT well
-and no further. One knob moves both eyes.
+and no further. One knob moves both eyes — and it is the game's knob: an agent
+reads it from the meta of the game it is in (a meta without the field means 0),
+and no difficulty setting or flag of the agent's can raise it, only use less of it.
 
 ---
 

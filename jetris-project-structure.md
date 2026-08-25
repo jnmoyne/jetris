@@ -2569,7 +2569,7 @@ Everything below describes that reference implementation.
 | `pieces.go` | Tetromino geometry: spawn shapes and SRS rotations. |
 | `rng.go` | Bit-exact port of the game's piece RNG (Go `math/rand/v2` PCG + 7-bag), so the agent's own piece sequence matches every peer's view of it (`rng_test.go` locks parity fixtures generated from `internal/rng`). |
 | `engine.go` | The settled-board model: collision, drop row, completed rows, collapse. |
-| `planner.go` | The brain: Dellacherie's six features with the El-Tetris weights, placement enumeration over the move vocabulary, beam-pruned lookahead over the game's revealed preview (never past `next_count` — the fair-visibility contract), and the blunder model. |
+| `planner.go` | The brain: Dellacherie's six features with the El-Tetris weights, placement enumeration over the move vocabulary, beam-pruned lookahead over the game's revealed preview — `revealedPieces` is the planner's single source of upcoming pieces: the game's `next_count`, read from its meta (absent = 0), further trimmed by the difficulty and never past the preview (the fair-visibility contract; `preview_test.go` checks every difficulty against every preview size) — and the blunder model. |
 | `difficulty.go` | The `easy`/`medium`/`hard` knob sets: think/move pacing, blunder rate/depth, lookahead cap. |
 | `types.go` | Wire payloads and the `obj` raw-field map that keeps unknown fields — and the 64-bit seed's exact digits — intact across CAS read-modify-writes of the lobby KV and meta. |
 | `agent.go` | The lobby: presence heartbeat, the KV mirror (listings + invitations), invitation accept/decline, select/join/ready CAS flows, the 5..0 countdown when its ready toggle completes the set, `--create` hosting (game stream + meta + listing + `game.created` event), and the pre-start un-join. |
@@ -2598,8 +2598,10 @@ error.
 
 ### Testing
 
-`rng_test.go` locks the RNG-parity fixtures and `--selftest` replays them offline along
-with a planner line-clear sanity check — both need no server. Live conformance is
+`rng_test.go` locks the RNG-parity fixtures, `preview_test.go` pins the fair-visibility
+preview cap (no difficulty plans past the game's `next_count`; a meta without the field
+is 0), and `--selftest` replays the fixtures offline along with a planner line-clear
+sanity check — none need a server. Live conformance is
 verified by playing it: against the GUI (create an agent-allowed competitive game on a
 local `nats-server -js`), or agent-vs-agent (`--create --once` on one instance,
 `--auto-join --once` on another) — the winner's archive record then shows up in the

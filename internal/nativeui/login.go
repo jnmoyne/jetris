@@ -636,7 +636,7 @@ func (a *App) connPage(gtx C) D {
 				}),
 				layout.Rigid(hSpacer(4)),
 				layout.Rigid(func(gtx C) D {
-					return a.connTabChip(gtx, &a.connTabBtns[1], "LAN MODE (EMBEDDED NATS SERVER)", a.connTab == connTabLAN)
+					return a.connTabChip(gtx, &a.connTabBtns[1], "LAN PARTY MODE (EMBEDDED NATS SERVER)", a.connTab == connTabLAN)
 				}),
 			)
 		}),

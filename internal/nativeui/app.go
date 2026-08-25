@@ -124,7 +124,7 @@ type App struct {
 	connProbes  map[string]probeResult
 	connProbing string
 
-	// Embedded server ("LAN mode (embedded NATS server)" option; guarded by
+	// Embedded server ("LAN party mode (embedded NATS server)" option; guarded by
 	// mu). The server starts on the first embedded login and runs until the
 	// window closes — quitting to the login screen leaves it up for connected
 	// friends; picking a different port on a later login restarts it there.

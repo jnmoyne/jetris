@@ -19,7 +19,7 @@ type Config struct {
 	EmbeddedPort int    // port for the embedded server (0 = DefaultEmbeddedPort)
 }
 
-// Embedded-server settings for the login screen's "LAN mode (embedded NATS
+// Embedded-server settings for the login screen's "LAN party mode (embedded NATS
 // server)" option: the default port the in-process server listens on (all
 // interfaces; the player can override it in the picker) and the local
 // directory holding its JetStream storage.

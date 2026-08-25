@@ -33,7 +33,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config, favorite string)
 	a.disconnect()
 
 	if cfg.RunEmbedded {
-		// "LAN mode (embedded NATS server)": bring up (or reuse) the
+		// "LAN party mode (embedded NATS server)": bring up (or reuse) the
 		// in-process server, then connect to it via the same LAN address other
 		// players dial. (Not loopback: another NATS server holding a
 		// 127.0.0.1:4222-specific bind would intercept a loopback dial even

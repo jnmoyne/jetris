@@ -3100,7 +3100,7 @@ falls back to the first known context). `connSection` (login.go) renders the
 chooser (a "Context:" radio + pull-down button `connDropButton` that expands
 `connDropList`, a scroll-capped clickable context list; a URL radio/editor
 row — the constructor's `SetText` ChangeEvent is swallowed once via
-`connURLSeeded` so it can't steal the default; a "LAN mode (embedded NATS
+`connURLSeeded` so it can't steal the default; a "LAN party mode (embedded NATS
 server)" radio row — `connEnum` value "embedded" — followed by an indented
 "IP:" editor `connHostEd` pre-filled with the detected `App.lanIP` and a
 "Port:" digits-only editor `connPortEd` pre-filled with
@@ -3120,7 +3120,7 @@ the same combined screen to pick another server. `doCheckConn`/`checkConn` run
 reads "Check embedded server" and the check starts the embedded server
 (`ensureEmbeddedServer`) before dialing and pinging it.
 
-**Embedded server option** ("LAN mode (embedded NATS server)").
+**Embedded server option** ("LAN party mode (embedded NATS server)").
 `pickerConfig` maps the third radio to `cfg.RunEmbedded` plus the parsed
 `cfg.EmbeddedHost` (`pickerHost`, login.go: empty field → "" = auto-detect at
 connect time, otherwise an IP/host name — a pasted scheme or port errors) and

@@ -474,10 +474,11 @@ func clickable(m map[string]*widget.Clickable, key string) *widget.Clickable {
 }
 
 // handleConnPage dispatches every click on the connection page: tab
-// switches, section toggles, row selection, favorite add/delete, the
-// selected row's ↻ and LAN mode's Check embedded server. Runs on the UI
-// goroutine, before the frame is drawn.
+// switches, section toggles, row selection (which also probes the row),
+// favorite add/delete, the selected row's ↻ and LAN mode's Check embedded
+// server. Runs on the UI goroutine, before the frame is drawn.
 func (a *App) handleConnPage(gtx C) {
+	a.drainQueuedProbe()
 	if a.connTabBtns[0].Clicked(gtx) {
 		a.connTab = connTabBrowser
 	}
@@ -492,6 +493,7 @@ func (a *App) handleConnPage(gtx C) {
 			if clickable(a.connRowBtns, e.key).Clicked(gtx) {
 				a.connSel = e.key
 				a.setLoginErr("")
+				a.probeRow(e.key)
 			}
 			if e.fav >= 0 && clickable(a.connDelBtns, e.key).Clicked(gtx) {
 				a.deleteFavorite(e.fav)
@@ -528,6 +530,45 @@ func (a *App) handleConnPage(gtx C) {
 	}
 	if a.connCheckBtn.Clicked(gtx) && a.connTab == connTabLAN {
 		a.startProbe(probeKeyLAN)
+	}
+}
+
+// probeRow probes a browser row the player just clicked, so a single click
+// both selects a server and sizes it up (the ↻ chip re-probes on demand). The
+// probe slot is single-occupancy: while another probe is in flight the row is
+// parked in connProbeQueued and drainQueuedProbe starts it once the slot
+// frees — the latest click wins. Runs on the UI goroutine.
+func (a *App) probeRow(key string) {
+	a.mu.Lock()
+	busy := a.connProbing != ""
+	a.mu.Unlock()
+	if busy {
+		a.connProbeQueued = key
+		return
+	}
+	a.connProbeQueued = ""
+	a.startProbe(key)
+}
+
+// drainQueuedProbe starts the row parked by probeRow once the probe slot is
+// free — provided that row is still the browser tab's selection (a stale
+// click is dropped rather than fired at whatever the player moved on to).
+// Called every frame by handleConnPage; doCheckConn's completion invalidates
+// the window, so the drain runs promptly.
+func (a *App) drainQueuedProbe() {
+	key := a.connProbeQueued
+	if key == "" {
+		return
+	}
+	a.mu.Lock()
+	busy := a.connProbing != ""
+	a.mu.Unlock()
+	if busy {
+		return
+	}
+	a.connProbeQueued = ""
+	if a.connTab == connTabBrowser && a.connSel == key {
+		a.startProbe(key)
 	}
 }
 
@@ -1065,7 +1106,7 @@ func (a *App) connStatusLine(gtx C, key string) D {
 	case key == probeKeyLAN:
 		msg = "Starts the server and pings it over the address above."
 	default:
-		msg = "Hit the selected server's ↻ to measure the core NATS ping and count who's in its lobby."
+		msg = "Click a server (or hit its ↻) to measure the core NATS ping and count who's in its lobby."
 	}
 	l := material.Body2(a.th, msg)
 	l.Color = col

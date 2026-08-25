@@ -117,7 +117,7 @@ type App struct {
 	connCfg      config.Config
 	favSave      func([]prefs.Favorite) error
 
-	// Server probes — the selected browser row's ↻ and LAN mode's "Check embedded
+	// Server probes — a browser row's click or ↻ and LAN mode's "Check embedded
 	// server" (written by doCheckConn; guarded by mu): the last result per
 	// server key (connEntry.key, or probeKeyLAN for the embedded server), and
 	// the key being probed right now ("" = idle).
@@ -253,8 +253,12 @@ type App struct {
 	connHostEd     widget.Editor                // LAN mode: IP entry (pre-set to the detected lanIP; empty = auto-detect again)
 	connPortEd     widget.Editor                // LAN mode: port entry (pre-set to config.DefaultEmbeddedPort)
 	lanIP          string                       // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
-	connRefreshBtn widget.Clickable             // browser: the selected row's ↻ (probe that server)
+	connRefreshBtn widget.Clickable             // browser: the selected row's ↻ (probe that server again)
 	connCheckBtn   widget.Clickable             // LAN mode: Check embedded server
+
+	// A browser row clicked while a probe was in flight: probed by
+	// drainQueuedProbe once the slot frees, if it is still the selection.
+	connProbeQueued string
 
 	// Create-game wizard: the lobby's single "Create a new game" button
 	// (createBtn) opens a modal that walks through the game's attributes one

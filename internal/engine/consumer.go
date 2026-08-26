@@ -116,8 +116,9 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				// very message may be the blocker moving away. The gravity
 				// tick's retry remains as the backstop, but at agent speeds a
 				// blocking piece slides across the spawn cells in milliseconds
-				// and waiting a full 800ms tick per attempt starves the
-				// deferred player down to a piece every few seconds.
+				// and waiting a full gravity tick (a second at level 0) per
+				// attempt starves the deferred player down to a piece every
+				// few seconds.
 				if e.spawnPending && !hasActive && e.getMode() == ModePlayer && e.gameStarted.Load() {
 					e.spawnPiece(ctx, true)
 					e.hadActivePiece = pf.ActivePieceForPlayer(e.playerIdx) != nil

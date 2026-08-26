@@ -619,17 +619,17 @@ func CompletedRows(pf *Playfield) []int
 //   level = totalLinesCleared / 10  (capped at 19 for the speed curve)
 func Level(totalLinesCleared int) int
 
-// GravityInterval: standard speed curve by level.
-//   Level 0: 800ms, level 1: 717ms, ... level 19: 33ms
-//   Use the Guideline gravity table (frames at 60fps × 16.67ms).
+// GravityInterval: the Guideline speed curve by level.
+//   seconds per row = (0.8 − (L − 1) × 0.007)^(L − 1), with L = level + 1
+//   Level 0: 1000ms, level 1: 793ms, ... level 12: 18ms; floored at one
+//   60 Hz frame (≈17ms) from level 13 on.
 func GravityInterval(level int) time.Duration
 ```
 
-Gravity intervals (approximate, Guideline):
+Gravity intervals (Guideline, to the millisecond):
 ```
-0:800ms 1:717ms 2:633ms 3:550ms 4:467ms 5:383ms 6:300ms 7:217ms
-8:133ms 9:100ms 10:83ms 11:83ms 12:83ms 13:67ms 14:67ms 15:67ms
-16:50ms 17:50ms 18:50ms 19+:33ms
+0:1000ms 1:793ms 2:618ms 3:473ms 4:355ms 5:262ms 6:190ms 7:135ms
+8:94ms 9:64ms 10:43ms 11:28ms 12:18ms 13+:17ms (one 60 Hz frame)
 ```
 
 **Tests for `internal/game`:**
@@ -637,9 +637,9 @@ Gravity intervals (approximate, Guideline):
 - `CanPlace` rejects pieces out of bounds or overlapping locked cells.
 - `CanPlaceCoop` rejects pieces overlapping locked cells or the other player's active cells, but allows overlapping own active cells.
 - `HardDropDestination` lands on the correct row with a tower of occupied cells.
-- `Rotate` applies SRS kicks correctly — at minimum test all J/L/S/T/Z transitions plus I.
+- `Rotate` applies SRS kicks correctly — every kick of both tables re-derived from the Guideline's published (x, y) table, plus a T-spin triple and an I floor kick as behavioural checks (the 4th/5th kicks).
 - `CompletedRows` correctly identifies full rows. (Mode scoring is not a `game` function; it is computed inline in `handleLockIn` — competitive adds the line count, cooperative adds `playerCount` per line. See `jetris-gameplays.md`.)
-- `GravityInterval(0)==800ms`, `GravityInterval(19)==33ms`.
+- `GravityInterval(0)==1000ms`, `GravityInterval(1)==793ms`, … `GravityInterval(12)==18ms`; every higher level is the one-frame floor.
 - `Cell.Marshal()` and `UnmarshalCell()` round-trip correctly for occupied and active cells, and the empty cell encodes as exactly `{}` (the vacate payload) and decodes back to the zero `Cell`.
 - `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces (and nil when no active piece for that player is present).
 - `SetActivePieceForPlayer()` clears only the matching player's active cells before placing new ones, leaving the other player's active cells intact.

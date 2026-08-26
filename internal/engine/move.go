@@ -9,15 +9,22 @@ import (
 )
 
 // runInput is the engine's single gameplay-write goroutine: it processes player
-// input AND drives the gravity ticker. Running both on one goroutine is
-// deliberate — a player's own gravity drop and a player move can never publish
-// to their cell subjects concurrently, so they can never lose the per-subject CAS
-// race against each other (which would drop the step and flash the piece
-// outline). This applies to both competitive and cooperative modes.
+// input, drives the gravity ticker AND times the lock delay. Running all of it
+// on one goroutine is deliberate — a player's own gravity drop, a player move
+// and the piece's lock can never publish to their cell subjects concurrently,
+// so they can never lose the per-subject CAS race against each other (which
+// would drop the step and flash the piece outline). This applies to both
+// competitive and cooperative modes.
+//
+// A blocked downward step (gravity or soft drop) never locks the piece by
+// itself: landing arms the lock delay (lockdelay.go) and the piece locks when
+// that timer fires, unless a shift or rotation restarted it. Only a hard drop
+// locks at once.
 func (e *Engine) runInput(ctx context.Context) {
 	level := 0
 	timer := time.NewTimer(game.GravityInterval(level))
 	defer timer.Stop()
+	defer e.lockState.disarm()
 
 	for {
 		select {
@@ -31,7 +38,27 @@ func (e *Engine) runInput(ctx context.Context) {
 				continue
 			}
 			// Player input — drop+flash on CAS failure.
+			before := e.activePieceSnapshot()
 			_ = e.attemptMove(ctx, move, false)
+			e.updateLockDelay(before)
+		case <-e.lockState.fire:
+			// Lock delay expired: lock the piece where it rests (or let it
+			// keep falling if the stack changed under it meanwhile).
+			e.lockState.disarm()
+			if e.getMode() != ModePlayer {
+				continue
+			}
+			e.lockPieceIfGrounded(ctx)
+			e.updateLockDelay(pieceSnapshot{})
+		case <-e.cellUpdated:
+			// An own-board echo: the stack may have changed under the piece
+			// — the teammate's piece it was waiting on locked beneath it, a
+			// clear collapsed the rows it stood on, a garbage raise met it —
+			// so re-time the lock now rather than at the next gravity tick.
+			if e.getMode() != ModePlayer {
+				continue
+			}
+			e.updateLockDelay(pieceSnapshot{})
 		case <-e.applyGarbage:
 			if e.getMode() != ModePlayer {
 				continue
@@ -50,7 +77,9 @@ func (e *Engine) runInput(ctx context.Context) {
 			// contention; it flashes only if the tick is ultimately dropped.
 			// Serialized with player input above (same goroutine), so it never
 			// races our own moves.
+			before := e.activePieceSnapshot()
 			_ = e.attemptMove(ctx, MoveDown, true)
+			e.updateLockDelay(before)
 
 			// A spawn deferred because another player's active piece covered
 			// the spawn cells is retried here, on the same single-write
@@ -152,17 +181,9 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 	}
 
 	if !valid {
-		if move == MoveDown {
-			affected := affectedRowsUnion(p, nil)
-			rows := e.playfield.ProjectLock(affected, e.playerIdx)
-			cells := diffCells(e.playfield.Rows, rows)
-			e.mu.Unlock()
-			// In-place lock: all messages convert active cells to locked in
-			// place, so lock-in fires at the batch's last message with every
-			// locked cell already applied (see orderedCellKeys).
-			e.publishProjectedCellsNoCAS(ctx, cells, false)
-			return nil
-		}
+		// A blocked step is a no-op. A blocked MoveDown means the piece rests
+		// on the stack: locking it is the lock delay's job (lockdelay.go),
+		// which runInput re-times right after this move returns.
 		e.mu.Unlock()
 		return nil
 	}
@@ -219,25 +240,13 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 	}
 
 	if !valid {
-		if move == MoveDown {
-			// Distinguish: blocked by locked/bounds (lock now) vs. blocked
-			// only by other player's active piece (wait for next gravity tick).
-			downPiece := *p
-			downPiece.Row++
-			if game.CanPlace(downPiece, e.playfield) {
-				e.mu.Unlock()
-				return nil
-			}
-			affected := affectedRowsUnion(p, nil)
-			rows := e.playfield.ProjectLock(affected, e.playerIdx)
-			cells := diffCells(e.playfield.Rows, rows)
-			flashCells := p.Cells()
-			e.mu.Unlock()
-			// Coop shares cell subjects: use CAS+merge-retry so this lock can't
-			// clobber the other player's mid-flight piece with our stale view.
-			e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, false)
-			return nil
-		}
+		// A blocked step is a no-op. A blocked MoveDown is either the piece
+		// resting on the stack — locking it is the lock delay's job
+		// (lockdelay.go), re-timed by runInput right after this move — or
+		// the piece waiting on another player's active piece below it, an
+		// obstacle that will itself fall: gravity simply tries again next
+		// tick (updateLockDelay makes the same distinction and does not
+		// start the delay for a piece that is only waiting).
 		e.mu.Unlock()
 		return nil
 	}

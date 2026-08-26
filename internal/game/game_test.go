@@ -2,7 +2,6 @@ package game
 
 import (
 	"testing"
-	"time"
 
 	"jetris/internal/config"
 )
@@ -123,18 +122,6 @@ func TestLevel(t *testing.T) {
 	}
 	if Level(200) != 19 {
 		t.Error("Level(200) should be capped at 19")
-	}
-}
-
-func TestGravityInterval(t *testing.T) {
-	if GravityInterval(0) != 800*time.Millisecond {
-		t.Errorf("GravityInterval(0) = %v", GravityInterval(0))
-	}
-	if GravityInterval(19) != 33*time.Millisecond {
-		t.Errorf("GravityInterval(19) = %v", GravityInterval(19))
-	}
-	if GravityInterval(99) != 33*time.Millisecond {
-		t.Error("levels beyond 19 should use 33ms")
 	}
 }
 

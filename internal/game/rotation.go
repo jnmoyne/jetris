@@ -1,30 +1,39 @@
 package game
 
-// SRS wall kick data. Each entry is a list of (dRow, dCol) offsets to try.
-// Key: (fromOrientation, toOrientation)
+// SRS wall kick data. Each entry is a list of (dRow, dCol) offsets to try, in
+// order, keyed by (fromOrientation, toOrientation).
+//
+// The Guideline publishes the kicks as (x, y) with +y UP; this file stores
+// them as playfield deltas — (dRow, dCol) = (-y, x), row 0 at the top — so a
+// "(0, -2)" kick (down two) is {2, 0} here. TestSRSKickTables re-derives every
+// entry from the published (x, y) table, so the convention can't drift.
+//
+// The 4th and 5th kicks are the ones that matter for the classic spins: the
+// down-two kicks let a piece drop into a slot as it turns (the T-spin triple)
+// and the up-two kicks let a piece standing on the floor rotate.
 
 // kicksJLSTZ are the wall kick offsets for J, L, S, T, Z pieces.
 var kicksJLSTZ = map[[2]int][][2]int{
-	{0, 1}: {{0, 0}, {0, -1}, {-1, -1}, {0, 2}, {-1, 2}},
-	{1, 0}: {{0, 0}, {0, 1}, {1, 1}, {0, -2}, {1, -2}},
-	{1, 2}: {{0, 0}, {0, 1}, {1, 1}, {0, -2}, {1, -2}},
-	{2, 1}: {{0, 0}, {0, -1}, {-1, -1}, {0, 2}, {-1, 2}},
-	{2, 3}: {{0, 0}, {0, 1}, {-1, 1}, {0, -2}, {-1, -2}},
-	{3, 2}: {{0, 0}, {0, -1}, {1, -1}, {0, 2}, {1, 2}},
-	{3, 0}: {{0, 0}, {0, -1}, {1, -1}, {0, 2}, {1, 2}},
-	{0, 3}: {{0, 0}, {0, 1}, {-1, 1}, {0, -2}, {-1, -2}},
+	{0, 1}: {{0, 0}, {0, -1}, {-1, -1}, {2, 0}, {2, -1}},
+	{1, 0}: {{0, 0}, {0, 1}, {1, 1}, {-2, 0}, {-2, 1}},
+	{1, 2}: {{0, 0}, {0, 1}, {1, 1}, {-2, 0}, {-2, 1}},
+	{2, 1}: {{0, 0}, {0, -1}, {-1, -1}, {2, 0}, {2, -1}},
+	{2, 3}: {{0, 0}, {0, 1}, {-1, 1}, {2, 0}, {2, 1}},
+	{3, 2}: {{0, 0}, {0, -1}, {1, -1}, {-2, 0}, {-2, -1}},
+	{3, 0}: {{0, 0}, {0, -1}, {1, -1}, {-2, 0}, {-2, -1}},
+	{0, 3}: {{0, 0}, {0, 1}, {-1, 1}, {2, 0}, {2, 1}},
 }
 
 // kicksI are the wall kick offsets for the I piece.
 var kicksI = map[[2]int][][2]int{
-	{0, 1}: {{0, 0}, {0, -2}, {0, 1}, {-1, -2}, {2, 1}},
-	{1, 0}: {{0, 0}, {0, 2}, {0, -1}, {1, 2}, {-2, -1}},
-	{1, 2}: {{0, 0}, {0, -1}, {0, 2}, {2, -1}, {-1, 2}},
-	{2, 1}: {{0, 0}, {0, 1}, {0, -2}, {-2, 1}, {1, -2}},
-	{2, 3}: {{0, 0}, {0, 2}, {0, -1}, {1, 2}, {-2, -1}},
-	{3, 2}: {{0, 0}, {0, -2}, {0, 1}, {-1, -2}, {2, 1}},
-	{3, 0}: {{0, 0}, {0, 1}, {0, -2}, {-2, 1}, {1, -2}},
-	{0, 3}: {{0, 0}, {0, -1}, {0, 2}, {2, -1}, {-1, 2}},
+	{0, 1}: {{0, 0}, {0, -2}, {0, 1}, {1, -2}, {-2, 1}},
+	{1, 0}: {{0, 0}, {0, 2}, {0, -1}, {-1, 2}, {2, -1}},
+	{1, 2}: {{0, 0}, {0, -1}, {0, 2}, {-2, -1}, {1, 2}},
+	{2, 1}: {{0, 0}, {0, 1}, {0, -2}, {2, 1}, {-1, -2}},
+	{2, 3}: {{0, 0}, {0, 2}, {0, -1}, {-1, 2}, {2, -1}},
+	{3, 2}: {{0, 0}, {0, -2}, {0, 1}, {1, -2}, {-2, 1}},
+	{3, 0}: {{0, 0}, {0, 1}, {0, -2}, {2, 1}, {-1, -2}},
+	{0, 3}: {{0, 0}, {0, -1}, {0, 2}, {-2, -1}, {1, 2}},
 }
 
 // Rotate applies a CW or CCW rotation to the piece using SRS wall kicks.

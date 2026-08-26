@@ -149,6 +149,12 @@ type Engine struct {
 	// rejects and the recompute converges. Nil in production.
 	testHookBeforeGatedCommit func(op string)
 
+	// lockDelay is this engine's lock delay (config.LockDelay; tests shorten
+	// it) and lockState times the current piece's lock — see lockdelay.go.
+	// Both are runInput's alone (lockDelay is read only after Start).
+	lockDelay time.Duration
+	lockState lockDelayState
+
 	// Buffered-moves mirror of the e.moves channel, for the line under the
 	// board: dispatch appends on enqueue, runInput pops when it dequeues.
 	bufferedMu    sync.Mutex
@@ -193,6 +199,7 @@ func New(
 		opponentGarbage:    make(map[string]opponentLedger),
 		eventTotals:        make(map[string]struct{ score, lines int }),
 		rttPending:         make(map[uint64]time.Time),
+		lockDelay:          config.LockDelay,
 	}
 	e.setMode(mode)
 	return e

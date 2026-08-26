@@ -138,23 +138,29 @@ with Gio's `key.FocusFilter` + `key.FocusCmd`).
 
 Gravity ticks at the standard speed curve interval (see Section 7). On each tick, the engine attempts to move the piece down one row.
 
-**Blocked by locked cells or bounds:** The piece locks immediately (standard guideline-style behavior).
+**Blocked by locked cells or bounds:** The piece has **landed**. It does not lock on the spot: the lock delay starts (see Lock Delay below) and the piece locks where it rests when the delay expires.
 
-**Blocked only by the other player's active piece:** The piece does **NOT** lock. The obstacle is temporary — it will itself fall on its next gravity tick. Gravity waits and tries again on the next tick.
+**Blocked only by the other player's active piece:** The piece has **not** landed — it neither locks nor starts its lock delay. The obstacle is temporary — it will itself fall on its next gravity tick. Gravity waits and tries again on the next tick (and the moment the obstacle locks beneath it, the piece counts as landed and its delay starts).
 
 Detection: if `CanPlaceCoop` fails but `CanPlace` (which ignores all active cells) succeeds for the position one row below, the obstacle is the other player's active piece.
+
+### Lock Delay
+
+The Guideline lock delay: **500 ms** (`config.LockDelay`). A piece that lands on locked cells or the floor — by gravity, by a soft drop, or because the stack rose to meet it — rests for the delay before it locks. Every successful shift or rotation made while it rests **restarts** the delay (move reset), at most **15 times** per piece (`config.LockDelayMoveResets`); the allowance is renewed whenever the piece falls to a new lowest row. A piece that leaves the stack (shifted over a hole, kicked upward by a rotation) stops the timer, which starts afresh when it lands again. A soft drop pressed against the floor is not a lock and does not restart the delay; only a **hard drop** locks a piece at once.
+
+The delay is timed by each player's own engine (`internal/engine/lockdelay.go`, on the same single goroutine as gravity and input): nothing about it is on the wire — the other peers simply see the piece's cells stay active until the lock batch commits.
 
 ### Hard Drop
 
 The piece falls instantly to the lowest valid position (stopped by locked cells, bounds, or the other player's active piece).
 
-**Landed on locked cells or bounds:** Piece locks immediately.
+**Landed on locked cells or bounds:** Piece locks immediately — the hard drop is the one move that skips the lock delay.
 
 **Landed on the other player's active piece:** Piece does **NOT** lock — it stays active and resumes falling by gravity. The other player's piece will itself fall, and gravity will continue dropping this piece further.
 
 ### Lock-In
 
-A piece locks when gravity cannot move it down and the obstacle is locked cells or bounds (not another player's active piece). Lock-in converts all active cells (matching the player's `PlayerIdx`) to occupied/locked cells.
+A piece locks when it has rested on locked cells or bounds (not another player's active piece) for the lock delay, or on a hard drop. Lock-in converts all active cells (matching the player's `PlayerIdx`) to occupied/locked cells.
 
 After lock-in:
 1. Check for completed rows (full-width)
@@ -258,7 +264,7 @@ Standard guideline-style movement. Collision detection is using CAS only.
 
 ### Gravity
 
-Standard gravity. When a piece can't move down, it locks immediately (no "blocked by active piece" logic since there's only one piece per playfield).
+Standard gravity with the same lock delay as cooperative mode (see §3 Lock Delay). There is no "blocked by active piece" logic since there's only one piece per playfield: when a piece can't move down it has landed, and it locks when the lock delay expires (or at once on a hard drop).
 
 ### Line Clears
 
@@ -593,24 +599,30 @@ Lobby chat history is retained for 7 days; a game's chat messages are purged fro
 
 ## 7. Gravity Speed Curve
 
-Standard Guideline-style gravity intervals:
+The Guideline speed curve. With `L` the Guideline level (Jetris levels start at 0, so `L = level + 1`), the time a piece spends on each row is
+
+    seconds per row = (0.8 − (L − 1) × 0.007) ^ (L − 1)
+
+rounded to the millisecond and floored at one 60 Hz frame (≈17 ms): the engine moves a piece one row per gravity tick and each tick is a JetStream batch, so the sub-frame intervals of the Guideline's highest levels cannot be honoured row by row (`game.GravityInterval`).
 
 | Level | Interval |
 |-------|----------|
-| 0 | 800 ms |
-| 1 | 717 ms |
-| 2 | 633 ms |
-| 3 | 550 ms |
-| 4 | 467 ms |
-| 5 | 383 ms |
-| 6 | 300 ms |
-| 7 | 217 ms |
-| 8 | 133 ms |
-| 9 | 100 ms |
-| 10-12 | 83 ms |
-| 13-15 | 67 ms |
-| 16-18 | 50 ms |
-| 19+ | 33 ms |
+| 0 | 1000 ms |
+| 1 | 793 ms |
+| 2 | 618 ms |
+| 3 | 473 ms |
+| 4 | 355 ms |
+| 5 | 262 ms |
+| 6 | 190 ms |
+| 7 | 135 ms |
+| 8 | 94 ms |
+| 9 | 64 ms |
+| 10 | 43 ms |
+| 11 | 28 ms |
+| 12 | 18 ms |
+| 13+ | 17 ms (one frame) |
+
+Competitive mode stays at level 0 (1000 ms); shared boards (cooperative and teams) level up every 10 lines.
 
 ---
 

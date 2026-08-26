@@ -438,6 +438,15 @@ const (
 	// an agent may look ahead at most NextCount pieces in the sequence.
 	MaxNextCount = 4
 
+	// LockDelay is the Guideline lock delay: a piece that lands on the stack
+	// (or the floor) locks this long after landing, unless a successful shift
+	// or rotation restarts the timer — at most LockDelayMoveResets times per
+	// piece, the allowance renewed whenever the piece falls to a new lowest
+	// row. Only a hard drop locks at once. Each engine times its own piece;
+	// nothing about the delay is on the wire.
+	LockDelay           = 500 * time.Millisecond
+	LockDelayMoveResets = 15
+
 	LobbyKVBucket     = "JETRIS_LOBBY"
 	ChatStream        = "JETRIS_CHAT"
 	LobbyChatGameID   = "lobby" // reserved chat "game ID" for the lobby chat (real game IDs are UUIDs, so no collision)

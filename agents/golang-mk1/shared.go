@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -25,22 +26,20 @@ const (
 	modeTeams       = 2
 )
 
-// gravityInterval is the guideline speed curve (gameplays §7). Shared boards
-// level up as lines accumulate; competitive stays at level 0 forever.
+// gravityInterval is the guideline speed curve (gameplays §7): seconds per
+// row = (0.8 − (L − 1) × 0.007)^(L − 1) with L = level + 1, to the
+// millisecond, floored at one 60 Hz frame. Shared boards level up as lines
+// accumulate; competitive stays at level 0 forever.
 func gravityInterval(level int) time.Duration {
-	steps := []time.Duration{800, 717, 633, 550, 467, 383, 300, 217, 133, 100}
-	switch {
-	case level < len(steps):
-		return steps[level] * time.Millisecond
-	case level <= 12:
-		return 83 * time.Millisecond
-	case level <= 15:
-		return 67 * time.Millisecond
-	case level <= 18:
-		return 50 * time.Millisecond
-	default:
-		return 33 * time.Millisecond
+	if level < 0 {
+		level = 0
 	}
+	l := float64(level)
+	d := time.Duration(math.Round(math.Pow(0.8-l*0.007, l)*1000)) * time.Millisecond
+	if d < time.Second/60 {
+		return time.Second / 60
+	}
+	return d
 }
 
 // level is the shared-progression level for gravity: cooperative counts every

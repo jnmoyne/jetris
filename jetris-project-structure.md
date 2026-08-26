@@ -72,6 +72,7 @@ jetris/
 │   ├── engine/
 │   │   ├── engine.go
 │   │   ├── move.go
+│   │   ├── lockdelay.go
 │   │   ├── consumer.go
 │   │   ├── registers.go
 │   │   ├── ledger.go
@@ -1471,9 +1472,9 @@ The gravity arm also calls `retrySpawnIfPending` after each tick as the deferred
 func (e *Engine) runInput(ctx context.Context)
 ```
 
-The engine's single gameplay-write goroutine: it `select`s over the moves channel (player input), the gravity timer, and the `applyGarbage` signal channel. Running everything on **one** goroutine is deliberate — a player's own gravity drop, a player move, and a garbage application can never publish to their cell subjects concurrently, so they can never lose the per-subject CAS race against each other (in either mode; this removed the spurious rainbow flashes seen in competitive play). On each gravity tick it attempts to drop the active piece one row via `attemptMove(MoveDown, true)`; player input calls `attemptMove(move, false)`. The `applyGarbage` arm runs `applyOwedGarbage` (`ledger.go`) — applying owed garbage on this goroutine is what guarantees a raise never races the victim's own move publishes, and (with `getMode() != ModePlayer` guarded on every arm) makes application structurally impossible for spectators and eliminated players. The gravity arm doubles as the garbage **backstop**: if `owed − applied > 0` is still outstanding after a tick (a signal consumed by an attempt that lost its gate, or one that arrived before `runInput` started), it re-signals the application at gravity cadence. On a shared board (cooperative and teams) it reads the current level from `totalLines` after each tick and adjusts the ticker interval when the level changes (in teams the folded `LinesCleared` keeps teammates' levels in sync); in competitive mode the interval is fixed.
+The engine's single gameplay-write goroutine: it `select`s over the moves channel (player input), the gravity timer, the lock-delay timer, the `cellUpdated` own-board-echo signal, and the `applyGarbage` signal channel. Running everything on **one** goroutine is deliberate — a player's own gravity drop, a player move, the piece's lock, and a garbage application can never publish to their cell subjects concurrently, so they can never lose the per-subject CAS race against each other (in either mode; this removed the spurious rainbow flashes seen in competitive play). On each gravity tick it attempts to drop the active piece one row via `attemptMove(MoveDown, true)`; player input calls `attemptMove(move, false)`. **Neither locks a piece**: a blocked downward step is a no-op, and after every move — and every own-board echo, via `cellUpdated` — `updateLockDelay` (`lockdelay.go`) re-times the Guideline lock delay: it arms the lock timer (`config.LockDelay`, 500 ms) when the piece has landed on locked cells or the floor (`game.CanPlace` one row down fails — the same test that ignores every active piece, so a piece resting on a teammate's still-falling piece is waiting, not landing), restarts it on a successful shift or rotation (at most `config.LockDelayMoveResets` = 15 times per lowest row the piece has reached; a new piece is recognised by `pieceIdx`), and stops it when the piece is airborne again. When the timer fires, `lockPieceIfGrounded` publishes the in-place lock — NoCAS in competitive, CAS+merge-retry on shared boards, exactly the batch the blocked gravity step used to publish — unless the stack changed under the piece meanwhile and it can fall again. Only a hard drop locks at once. The `applyGarbage` arm runs `applyOwedGarbage` (`ledger.go`) — applying owed garbage on this goroutine is what guarantees a raise never races the victim's own move publishes, and (with `getMode() != ModePlayer` guarded on every arm) makes application structurally impossible for spectators and eliminated players. The gravity arm doubles as the garbage **backstop**: if `owed − applied > 0` is still outstanding after a tick (a signal consumed by an attempt that lost its gate, or one that arrived before `runInput` started), it re-signals the application at gravity cadence. On a shared board (cooperative and teams) it reads the current level from `totalLines` after each tick and adjusts the ticker interval when the level changes (in teams the folded `LinesCleared` keeps teammates' levels in sync); in competitive mode the interval is fixed.
 
-**Cooperative gravity and lock-in:** When gravity cannot move a piece down, the engine distinguishes between two cases: (1) the piece is blocked by locked cells or out-of-bounds — the piece locks immediately, as per guideline; (2) the piece is blocked only by the other player's active piece — the piece does NOT lock, since that obstacle is temporary (it will itself fall on its next gravity tick). In case (2), gravity simply waits and tries again on the next tick. This prevents premature lock-ins caused by two pieces passing through the same rows.
+**Cooperative gravity and lock-in:** When gravity cannot move a piece down, the engine distinguishes between two cases: (1) the piece is blocked by locked cells or out-of-bounds — the piece has landed and locks when the lock delay expires (see above); (2) the piece is blocked only by the other player's active piece — the piece does NOT lock, since that obstacle is temporary (it will itself fall on its next gravity tick). In case (2), gravity simply waits and tries again on the next tick. This prevents premature lock-ins caused by two pieces passing through the same rows.
 
 **Cooperative hard drop:** When a player hard-drops (space bar), the piece falls instantly to the lowest valid position — which may be on top of the other player's active piece. If the piece lands on locked cells or the floor, it locks immediately as usual. If it lands on the other player's active piece, it does NOT lock — instead it stays active and resumes falling by gravity. The other player's piece will itself fall on its next gravity tick, at which point gravity will continue dropping this piece further.
 
@@ -1487,7 +1488,9 @@ Both shared-board behaviours apply identically on the teams board, with teammate
 // (player input drops + flashes on CAS failure, gravity ticks merge-retry in
 // coop). It validates the move geometrically against the local playfield, builds
 // the projection, diffs it to the changed cells (diffCells), and publishes them
-// via the publishProjectedCells* helpers in engine.go. It dispatches by board:
+// via the publishProjectedCells* helpers in engine.go. A blocked step is a
+// no-op — a blocked MoveDown never locks the piece (that is the lock delay's
+// job, lockdelay.go). It dispatches by board:
 // sharedBoard() (coop AND teams) → attemptMoveCoop, which works verbatim on the
 // team board; competitive → attemptMoveStandard.
 func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error
@@ -1507,9 +1510,32 @@ const (
 )
 ```
 
+#### `lockdelay.go` — the Guideline lock delay
+
+```go
+// lockDelayState is the timing of the current piece's lock: the pending lock
+// timer (fire is nil while none is pending; runInput selects on it), the
+// pieceIdx the counters describe, the lowest row the piece has reached and
+// the timer restarts spent since it last advanced. runInput's goroutine only.
+type lockDelayState struct { ... }
+
+// updateLockDelay re-times the lock after anything that may have moved the
+// piece or changed the stack under it (a player move, a gravity tick, an
+// own-board echo). before is the piece before the engine's own move, so a
+// successful shift/rotation (which restarts the timer) can be told from a
+// blocked or CAS-dropped step (which does not).
+func (e *Engine) updateLockDelay(before pieceSnapshot)
+
+// lockPieceIfGrounded is the timer's expiry: the in-place lock publish,
+// skipped if the piece can fall again.
+func (e *Engine) lockPieceIfGrounded(ctx context.Context)
+```
+
+`Engine.lockDelay` is `config.LockDelay` (tests shorten it). The delay is engine-local: nothing about it is on the wire.
+
 #### Publish & CAS helpers (`engine.go` / `move.go`)
 
-There is no `Publish`/`PublishHardDrop`/`ErrMoveDropped`/`ErrLockIn` API and no 50ms-wait-on-`cellUpdated` retry loop. All publish/CAS logic lives in `engine.go` (and the hard-drop helpers in `move.go`). The relevant helpers are:
+There is no `Publish`/`PublishHardDrop`/`ErrMoveDropped`/`ErrLockIn` API and no 50ms-wait-on-`cellUpdated` retry loop (`cellUpdated` only wakes `runInput` to re-time the lock delay). All publish/CAS logic lives in `engine.go` (and the hard-drop helpers in `move.go`). The relevant helpers are:
 
 ```go
 // cellSubject / cellFilterSubject / cellSubjects build this engine's own cell

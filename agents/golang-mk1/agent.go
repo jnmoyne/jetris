@@ -79,9 +79,10 @@ type Agent struct {
 	once       bool
 	autoJoin   bool
 
-	nc *nats.Conn
-	js jetstream.JetStream
-	kv jetstream.KeyValue
+	nc     *nats.Conn
+	js     jetstream.JetStream
+	bucket string // the lobby KV bucket: lobbyBucket, or a private one under test
+	kv     jetstream.KeyValue
 
 	mu       sync.Mutex
 	listings map[string]obj // gameID -> listing
@@ -114,6 +115,7 @@ func newAgent(conn connChoice, stem, difficulty, joinID string, once, autoJoin b
 	return &Agent{
 		conn: conn, name: name, difficulty: difficulty, tn: difficultyTuning(difficulty),
 		joinID: joinID, host: host, wait: wait, once: once, autoJoin: autoJoin,
+		bucket:   lobbyBucket,
 		listings: map[string]obj{}, invites: map[string]obj{}, streams: map[string]jetstream.Stream{},
 		rng:    mrand.New(src),
 		stopCh: make(chan struct{}),
@@ -235,13 +237,7 @@ func (a *Agent) connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Create-or-update the lobby bucket exactly as the game does:
-	// LimitMarkerTTL enables the per-message-TTL presence writes below AND
-	// makes expiries emit watchable delete markers, so every lobby learns a
-	// vanished player is gone without polling. Update (not bind) also
-	// converges a plain bucket some earlier client may have left behind.
-	if a.kv, err = a.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket: lobbyBucket, Storage: jetstream.FileStorage, LimitMarkerTTL: presenceTTL}); err != nil {
+	if a.kv, err = a.ensureLobbyBucket(ctx); err != nil {
 		return err
 	}
 	if _, err := a.js.Stream(ctx, archiveStream); err != nil {
@@ -254,6 +250,24 @@ func (a *Agent) connect(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// ensureLobbyBucket creates or updates the lobby bucket exactly as the game
+// does: LimitMarkerTTL enables the per-message-TTL presence writes AND makes
+// expiries emit watchable delete markers, so every lobby learns a vanished
+// player is gone without polling. Update (not bind) also converges a plain
+// bucket some earlier client may have left behind. Idempotent, so it serves
+// both connect and the lobby watcher's recovery of a bucket that was deleted
+// underneath a running agent.
+func (a *Agent) ensureLobbyBucket(ctx context.Context) (jetstream.KeyValue, error) {
+	return a.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket: a.bucket, Storage: jetstream.FileStorage, LimitMarkerTTL: presenceTTL})
+}
+
+// done reports whether this connection's work is over: the agent stopped, its
+// context cancelled, or the connection closed (or draining) for good.
+func (a *Agent) done(ctx context.Context) bool {
+	return ctx.Err() != nil || a.stopping() || a.nc.IsClosed() || a.nc.IsDraining()
 }
 
 func (a *Agent) publishPresence(ctx context.Context) error {
@@ -269,7 +283,7 @@ func (a *Agent) publishPresence(ctx context.Context) error {
 	// like the game's: if this agent dies without its clean exit, the entry
 	// self-deletes after presenceTTL instead of haunting the lobby. The KV
 	// client's Put drops TTL headers, so publish straight to the KV subject.
-	_, err := a.js.Publish(ctx, "$KV."+lobbyBucket+".players."+a.name, b, jetstream.WithMsgTTL(presenceTTL))
+	_, err := a.js.Publish(ctx, "$KV."+a.bucket+".players."+a.name, b, jetstream.WithMsgTTL(presenceTTL))
 	return err
 }
 
@@ -304,75 +318,137 @@ func (a *Agent) presenceLoop(ctx context.Context) {
 // lobbyWatch mirrors the lobby KV into memory: game listings and our invitations.
 //
 // A server outage never reaches here: the watcher's subscription survives the
-// reconnect and its ordered consumer resumes where it stopped. The watcher
-// ends only when its subscription is closed underneath it — at shutdown, or
-// should the connection ever close for good — so a finished watch is either
-// the end, or something to re-establish after a pause. Never spin on it.
+// reconnect and its ordered consumer resumes where it stopped. What ends a
+// watch is its subscription closing underneath it — at shutdown, should the
+// connection ever close for good, or when the bucket itself is deleted, as a
+// shared server (demo.nats.io purges streams at will) can do to a running
+// agent: the consumer's heartbeats stop, nats.go fails to rebuild it on a
+// stream that is gone, and closes the subscription. A finished watch is either
+// the end, or something to re-establish after a pause — recreating a vanished
+// bucket first, as at connect. Never spin on it: the pause doubles while
+// re-watching keeps failing, and a failure that repeats is logged once.
 func (a *Agent) lobbyWatch(ctx context.Context) {
-	for a.watchLobby(ctx) {
-		log.Print("lobby watch ended; re-watching")
+	delay, last := time.Second, ""
+	for {
+		started := time.Now()
+		msg := "lobby watch ended; re-watching"
+		if err := a.watchLobby(ctx, last != ""); err != nil {
+			msg = fmt.Sprintf("lobby watch: %v", err)
+		}
+		if a.done(ctx) {
+			return
+		}
+		if time.Since(started) > watchSettled {
+			delay, last = time.Second, "" // it had been up: start afresh
+		}
+		if msg != last {
+			last = msg
+			log.Printf("%s (repeats not logged)", msg)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-a.stopCh:
 			return
-		case <-time.After(time.Second):
+		case <-time.After(delay):
 		}
+		delay = min(2*delay, watchRetryMax)
 	}
 }
 
-// watchLobby runs one lobby watcher until it ends. Returns true if it should
-// be re-established, false once the agent (or its connection) is done.
-func (a *Agent) watchLobby(ctx context.Context) bool {
-	again := func() bool {
-		return ctx.Err() == nil && !a.stopping() && !a.nc.IsClosed() && !a.nc.IsDraining()
-	}
+const (
+	watchRetryMax = 30 * time.Second // ceiling for the doubling pause between failed re-watches
+	watchSettled  = 30 * time.Second // a watch up this long before ending: the next retry starts afresh
+)
+
+// watchLobby runs one lobby watcher until it ends: nil once a watch that was
+// established has closed underneath it, else the error that kept one from
+// being established. The watch opens with the bucket's current state and then
+// a nil marker; the mirror is rebuilt aside and swapped in whole at the marker,
+// so a re-watch neither shows an empty lobby meanwhile nor keeps the entries
+// that vanished with the old bucket or during the gap. With report set, the
+// re-established watch is logged.
+func (a *Agent) watchLobby(ctx context.Context, report bool) error {
 	w, err := a.kv.WatchAll(ctx)
 	if err != nil {
-		log.Printf("lobby watch: %v", err)
-		return again()
+		recreated, rerr := a.recreateLobbyBucket(ctx)
+		if rerr != nil {
+			return rerr
+		}
+		if recreated {
+			w, err = a.kv.WatchAll(ctx)
+		}
+	}
+	if err != nil {
+		return err
 	}
 	defer w.Stop()
 	invitePrefix := "invites." + a.name + "."
+	listings, invites := map[string]obj{}, map[string]obj{}
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return nil
 		case <-a.stopCh:
-			return false
+			return nil
 		case e, ok := <-w.Updates():
 			if !ok {
 				// nats.go closes the channel when the subscription is
 				// closed: a receive would return instantly forever.
-				return again()
+				return nil
 			}
-			if e == nil {
-				continue // end-of-initial-data marker
+			if e == nil { // end-of-initial-data marker
+				a.mu.Lock()
+				a.listings, a.invites = listings, invites
+				a.mu.Unlock()
+				if report {
+					log.Printf("lobby watch re-established: %d games, %d invitations", len(listings), len(invites))
+				}
+				continue
 			}
 			key := e.Key()
 			deleted := e.Operation() == jetstream.KeyValueDelete || e.Operation() == jetstream.KeyValuePurge
+			// Private maps until the marker, the shared mirror after it:
+			// the lock is only needed then, but costs nothing before.
+			a.mu.Lock()
 			switch {
 			case len(key) > 6 && key[:6] == "games.":
 				gid := key[6:]
-				a.mu.Lock()
 				if deleted {
-					delete(a.listings, gid)
+					delete(listings, gid)
 				} else {
-					a.listings[gid] = toObj(e.Value())
+					listings[gid] = toObj(e.Value())
 				}
-				a.mu.Unlock()
 			case len(key) > len(invitePrefix) && key[:len(invitePrefix)] == invitePrefix:
 				gid := key[len(invitePrefix):]
-				a.mu.Lock()
 				if deleted {
-					delete(a.invites, gid)
+					delete(invites, gid)
 				} else {
-					a.invites[gid] = toObj(e.Value())
+					invites[gid] = toObj(e.Value())
 				}
-				a.mu.Unlock()
 			}
+			a.mu.Unlock()
 		}
 	}
+}
+
+// recreateLobbyBucket tells whether the lobby bucket is what a failed watch
+// is missing and, if so, recreates it as at connect and reports true. Our
+// presence entry went with the old bucket, so it is republished at once
+// rather than on the next tick. The KeyValue handle is left alone: it holds
+// nothing but names, so it works against the new bucket (same configuration)
+// exactly as against the old, and the other goroutines using it need no
+// coordination.
+func (a *Agent) recreateLobbyBucket(ctx context.Context) (bool, error) {
+	if _, err := a.js.KeyValue(ctx, a.bucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+		return false, nil
+	}
+	if _, err := a.ensureLobbyBucket(ctx); err != nil {
+		return false, fmt.Errorf("lobby bucket %s is gone and recreating it failed: %w", a.bucket, err)
+	}
+	log.Printf("lobby bucket %s was deleted underneath us; recreated it", a.bucket)
+	_ = a.publishPresence(ctx)
+	return true, nil
 }
 
 // freshInvites returns pending (not declined, not stale) invitations, oldest

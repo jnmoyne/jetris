@@ -59,7 +59,7 @@ Since it is a real blackboard system, you are also encouraged to create your own
 
 ## 1. The idea: a blackboard system over NATS.io
 
-Each game in Jetris is a kind of [blackboard system](https://en.wikipedia.org/wiki/Blackboard_system): agents players (which can be human) work together towards a common goal on a shared Stream that contains the state of the playfield. Players or teams of players can be evaluated in the competitive and teams play modes. It is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetris` processes or by agents and purely using the NATS servers for state storage and synchronization.
+Each game in Jetris is a kind of [blackboard system](https://en.wikipedia.org/wiki/Blackboard_system): agents players (which can be human) work together towards a common goal on a shared Stream that contains the state of the playfield. Players or teams of players can be evaluated against each other in the competitive and teams play modes. It is a purely 'peer-to-peer' distributed application (on top of NATS): there is no 'game server process' at all, the game is purely executed using the players' `jetris` processes or by agents and purely using the NATS servers for state storage and synchronization.
 
 A blackboard system is an artificial intelligence approach based on the blackboard architectural model: several independent agents share a common, structured knowledge store — the *blackboard* — that they all read from and write to. No agent owns the whole problem; each watches the blackboard, contributes the changes it can, and reacts to what the others have written. The blackboard is the only thing they share, and it is simultaneously the shared *state* and the shared *communication channel*.
 
@@ -71,12 +71,15 @@ Replace the humans with software agents and nothing about the architecture chang
 
 Picture a fleet of warehouse robots, each an autonomous agent, packing boxes of various sizes onto the wagons of a train so they fit together perfectly. To do that as a fleet, each robot needs three things from the shared world, at the same time:
 
-- Shared state: a single common picture of where every box already sits (the blackboard). A robot can't plan its placement from a private guess; it has to see the real, current arrangement.
-- Concurrency control (CAS): two robots must never drop a box into the same slot. When a robot commits a placement, that commit has to be *conditional* on the slot still being empty; if another robot got there first, the commit must fail so the robot can re-plan, not silently clobber.
+- Shared state: a single common picture of where every box already sits (the blackboard, *and* a form of 'digital twin'). A robot can't plan its placement from a private guess; it has to see the real, current arrangement.
+- Concurrency control (CAS): two robots must never drop a box into the same slot, or have accidents by running into each other. When a robot commits a placement, that commit has to be *conditional* on the slot still being empty; if another robot got there first, the commit must fail so the robot can re-plan, not silently clobber. This coordination takes care of detecting (and avoiding) 'race conditions' between agents' actions.
 - Real-time push: the instant any robot places a box, every other robot that cares must *see it*, immediately, without polling. Their next decision depends on it.
 
 This analogy is exactly what the Jetris cooperative mode is: a shared board, compare-and-set on every change, and changes pushed to everyone the moment they happen, you can build a multi-agent coordination layer on the same foundation.
 
+![Jetris-analogy-illustration-1.png](Jetris-analogy-illustration-1.png)
+
+*Illustration of a fictional real-life version of Jetris in action.*
 ---
 
 ## 2. Why this is hard, and why only NATS does it in one primitive

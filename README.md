@@ -351,6 +351,21 @@ go build -o jetris ./cmd/jetris
 
 Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`.
 
+### Browser build (WebAssembly)
+
+The same client also builds for the browser — Gio renders to a WebGL canvas and the game runs unchanged, as a wasm module:
+
+```sh
+./scripts/build-wasm.sh                      # → dist/web/{index.html,wasm_exec.js,jetris.wasm}
+python3 -m http.server -d dist/web 8080      # wasm can't load from file://; serve it
+```
+
+Open `http://localhost:8080/` (add `?server=wss://host:port` to preselect a server, the browser build's stand-in for `--server`; `user`/`password` work too). Differences from the desktop build, all behind `//go:build js` files:
+
+- **Transport is WebSocket.** A browser has no TCP sockets, so nats.go is given a custom dialer that speaks the raw NATS protocol over a browser `WebSocket` (`internal/nats/transport_js.go`, `wsconn_js.go`) — the same thing the official `nats.ws` client does. The server you connect to must have a `websocket {}` listener; `nats://` URLs are dialed as `ws://`, `tls://` as `wss://`, and `ws(s)://` as given. A page served over https may only open `wss://`. The default favorite is `wss://demo.nats.io:8443`.
+- **No LAN party mode** — a wasm module can't listen for connections, so the tab is hidden and nats-server isn't linked in (the module is ~25 MB before compression).
+- **No NATS CLI contexts** (no filesystem); favorites persist in the page's `localStorage` instead of `~/.config/jetris/favorites.json`.
+
 ### Run
 
 Jetris never connects at startup — the login screen is where you choose the connection. Type your name at the top, pick a server in the **CONNECT TO** page, and hit the big **Play** button at the bottom. The page has two tabs:

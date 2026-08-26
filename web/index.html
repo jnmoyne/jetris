@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jetris</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+    #giowindow { position: fixed; inset: 0; }
+    #giowindow canvas { display: block; width: 100%; height: 100%; }
+    #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+               color: #8fd; font: 14px monospace; background: #000; }
+  </style>
+</head>
+<body>
+  <div id="giowindow"></div>
+  <div id="loading">loading Jetris…</div>
+  <script src="wasm_exec.js"></script>
+  <script>
+    (async () => {
+      const go = new Go();
+      go.argv = ["jetris"];
+      const status = document.getElementById("loading");
+      try {
+        const result = await WebAssembly.instantiateStreaming(fetch("jetris.wasm"), go.importObject);
+        status.remove();
+        await go.run(result.instance);
+      } catch (err) {
+        status.textContent = "failed to start Jetris: " + err;
+        console.error(err);
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -40,6 +40,7 @@ type gameView struct {
 	specRowStrobes       map[int]map[int]rowStrobe // spectator: per-board row strobes (landed garbage)
 	shakeStart           time.Time                 // own board: garbage impact-shake epoch (zero = idle)
 	fireworks            *fireworksShow            // nil unless this player/team won (competitive/teams)
+	outcome              liveOutcome               // spectator: the decided game's reveal (zero while undecided, and for players)
 	// Keyboard owner while the keys drive the piece (handleGameFocus): the
 	// white focus outline goes on whichever of the two holds them.
 	boardFocused, chatFocused bool
@@ -134,6 +135,9 @@ func (a *App) layoutGame(gtx C) D {
 	gmode := eng.GameMode()
 
 	view := a.snapshotGame(gtx.Now)
+	// A spectator's decided game: the reveal the boards, the legend and the
+	// result box all draw from (spectator_reveal.go).
+	view.outcome = a.resolveOutcome(eng, view, mode, gmode, gtx.Now)
 	started := view.status == string(config.GameStatusInProgress)
 	// playing: the keyboard drives the piece (a seated player, game in
 	// progress, not eliminated). Only then do the board and the chat compete
@@ -189,6 +193,9 @@ func (a *App) layoutGame(gtx C) D {
 	}
 	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
 		a.invalidate() // keep the victory fireworks animating until the show ends
+	}
+	if view.outcome.decided {
+		a.invalidate() // keep the spectator's winner show animating while the screen is up
 	}
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
@@ -503,12 +510,21 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.GameMode) D {
 	var children []layout.FlexChild
 
+	// Once a spectated game is decided (view.outcome) the legend reveals it:
+	// the winners' names gold in bold italic with a trophy, the beaten in
+	// their board colors — no more "(out)", every beaten player is out.
+	oc := view.outcome
 	playerRow := func(i int, p lobby.PlayerSummary) layout.FlexChild {
 		return layout.Rigid(func(gtx C) D {
 			elim := (gmode == config.ModeCompetitive || gmode == config.ModeTeams) && eng.IsEliminated(p.PlayerID)
 			name := agentName(p.Name, p.Agent)
-			textCol := colFg
-			if elim {
+			textCol, won := colFg, false
+			switch {
+			case oc.wins(p.PlayerID):
+				name, textCol, won = "🏆 "+name, colGold, true
+			case oc.decided:
+				textCol = render.PlayerColorRGBA(i)
+			case elim:
 				name += " (out)"
 				textCol = colMuted
 			}
@@ -516,7 +532,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return swatch(gtx, render.PlayerColorRGBA(i), 12) }),
 					layout.Rigid(hSpacer(6)),
-					layout.Rigid(a.body(name, textCol)),
+					layout.Rigid(a.boardLabel(name, textCol, won)),
 				)
 			})
 		})
@@ -526,7 +542,15 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 		// Group players under TEAM A / TEAM B headers. Swatch colors stay
 		// keyed by the GLOBAL roster index, matching Cell.PlayerIdx on boards.
 		for t := 0; t < config.TeamCount; t++ {
-			children = append(children, layout.Rigid(a.header("TEAM "+teamName(t))))
+			hdr := a.header("TEAM " + teamName(t))
+			if oc.decided && oc.winTeam == t {
+				// The winning team's header: gold, in the synthesized bold
+				// italic (the pixel face has no such variants).
+				hdr = func(gtx C) D {
+					return layout.Inset{Bottom: unit.Dp(5)}.Layout(gtx, a.pixelEmph(unit.Sp(10), "TEAM "+teamName(t), colGold))
+				}
+			}
+			children = append(children, layout.Rigid(hdr))
 			for i, p := range view.players {
 				if p.Team == t {
 					children = append(children, playerRow(i, p))
@@ -614,20 +638,18 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// slot, which would otherwise pin the boards' Flex to the top-left the
 		// moment the countdown overlay goes away.
 		content := func(gtx C) D { return layout.Center.Layout(gtx, inner) }
-		if gmode == config.ModeTeams {
-			if decided, winner := teamsOutcome(eng, view.players); decided {
-				// Announce the verdict to the spectator in a result box beside
-				// the boards (never over them — the final playfields stay
-				// fully visible).
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, content),
-					layout.Rigid(func(gtx C) D {
-						return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-							return a.spectatorTeamResultBox(gtx, view, winner)
-						})
-					}),
-				)
-			}
+		if view.outcome.decided {
+			// Announce the verdict to the spectator in a result box beside
+			// the boards (never over them — the final playfields stay
+			// fully visible).
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, content),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+						return a.spectatorResultBox(gtx, view, view.outcome, gmode)
+					})
+				}),
+			)
 		}
 		if countdownVisible(view, mode) {
 			return layout.Stack{Alignment: layout.Center}.Layout(gtx,
@@ -694,6 +716,11 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 						fx.frame = colFocus // the well's frame lights up: the keys drive the piece
 					}
 					bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
+					if view.outcome.decided {
+						// A spectator's finished co-op board wears the winner
+						// show — the crew's rank is the prize.
+						bw = a.crownBoard(view.outcome.fx(), gtx.Now)(bw, cell)
+					}
 					if dx := boardShakeOffset(cell, gtx.Now.Sub(view.shakeStart)); dx != 0 {
 						// Garbage impact: judder the whole well sideways for a
 						// few decaying wobbles — pure paint offset, no layout.
@@ -814,17 +841,11 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, n, n*gtx.Dp(16), gtx.Dp(30), 8, 30)
 
 	// Elimination states drive the per-board overlays: an eliminated player's
-	// board reads OUT, and once the game is decided (all but one out) the
-	// survivor's board reads WINNER. A simultaneous-top-out draw shows every
-	// board OUT and no winner.
-	elimCount := 0
-	for _, p := range view.players {
-		if eng.IsEliminated(p.PlayerID) {
-			elimCount++
-		}
-	}
-	decided := len(view.players) > 1 && elimCount >= len(view.players)-1
-
+	// board reads OUT while the game goes on, and once it is decided — all
+	// but one out, view.outcome — the survivor's board wears the winner show
+	// and every other board the OUT wash. A simultaneous-top-out draw washes
+	// every board OUT and crowns nobody.
+	oc := view.outcome
 	var items []layout.Widget
 	for i, p := range view.players {
 		i, p := i, p
@@ -833,11 +854,7 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						l := material.Body2(a.th, p.Name)
-						l.Color = render.PlayerColorRGBA(i)
-						return l.Layout(gtx)
-					}),
+					layout.Rigid(a.boardLabel(p.Name, render.PlayerColorRGBA(i), oc.wins(p.PlayerID))),
 					layout.Rigid(spacer(4)),
 					layout.Rigid(func(gtx C) D {
 						if !ok {
@@ -846,10 +863,12 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 						a.detectGarbageOn(i, snap) // landed garbage strobes on this board
 						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i], rows: view.specRowStrobes[i]}, gtx.Now)
 						switch {
+						case oc.wins(p.PlayerID):
+							return a.crownBoard(oc.fx(), gtx.Now)(board, cell)(gtx)
+						case oc.decided:
+							return a.knockoutBoard(board, cell)(gtx)
 						case out:
 							return a.boardOverlay(board, "OUT", colErr)(gtx)
-						case decided:
-							return a.boardOverlay(board, "WINNER", colGo)(gtx)
 						}
 						return board(gtx)
 					}),
@@ -950,27 +969,15 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 // board and team 1 via the opponent consumer (see Engine.Start). Each board
 // wears its team's color: the label, and a light tint on the empty squares
 // and grid lines (boardFX.tint), so the two wells tell apart at a glance. A
-// fully eliminated team's board reads OUT; once either team is out, the
-// other reads WINNERS.
+// fully eliminated team is the decision itself (view.outcome): the other
+// team's board wears the winner show and the beaten one the OUT wash; both
+// out at once is a draw — both washed, nobody crowned.
 func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	// Reactive cells: both team boards side by side, scrolling below the minimum.
 	dims := eng.Snapshot()
 	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, 2, 2*gtx.Dp(16), gtx.Dp(26), 10, 40)
 	teamB, okB := eng.OpponentSnapshots()[engine.TeamBoardKey(1)]
-
-	members := [config.TeamCount]int{}
-	alive := [config.TeamCount]int{}
-	for _, p := range view.players {
-		if p.Team < 0 || p.Team >= config.TeamCount {
-			continue
-		}
-		members[p.Team]++
-		if !eng.IsEliminated(p.PlayerID) {
-			alive[p.Team]++
-		}
-	}
-	teamOut := func(t int) bool { return members[t] > 0 && alive[t] == 0 }
-	over := teamOut(0) || teamOut(1)
+	oc := view.outcome
 
 	boards := []struct {
 		label string
@@ -987,8 +994,9 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				teamCol := render.PlayerColorRGBA(b.team)
+				won := oc.decided && oc.winTeam == b.team
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.body(b.label, teamCol)),
+					layout.Rigid(a.boardLabel(b.label, teamCol, won)),
 					layout.Rigid(spacer(4)),
 					layout.Rigid(func(gtx C) D {
 						if !b.ok {
@@ -997,10 +1005,10 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 						a.detectGarbageOn(b.team, b.snap) // landed garbage strobes on this board
 						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], rows: view.specRowStrobes[b.team], tint: teamCol}, gtx.Now)
 						switch {
-						case teamOut(b.team):
-							return a.boardOverlay(board, "OUT", colErr)(gtx)
-						case over:
-							return a.boardOverlay(board, "WINNERS", colGo)(gtx)
+						case won:
+							return a.crownBoard(oc.fx(), gtx.Now)(board, cell)(gtx)
+						case oc.decided:
+							return a.knockoutBoard(board, cell)(gtx)
 						}
 						return board(gtx)
 					}),
@@ -1009,72 +1017,6 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 		})
 	}
 	return a.scrollableBoards(gtx, &a.specTeamBoardsList, items)
-}
-
-// teamsOutcome reports whether a teams game has been decided — one team fully
-// eliminated — and which team won (-1 for a simultaneous-top-out draw), from
-// the roster and the engine's elimination records. This is how a pure
-// spectator learns the verdict: spectator engines never receive the players'
-// UpdateGameOver (they were never in the game), so the outcome is derived
-// from the same elimination events that drive the OUT/WINNERS board chips.
-func teamsOutcome(eng *engine.Engine, players []lobby.PlayerSummary) (decided bool, winner int) {
-	members := [config.TeamCount]int{}
-	alive := [config.TeamCount]int{}
-	for _, p := range players {
-		if p.Team < 0 || p.Team >= config.TeamCount {
-			continue
-		}
-		members[p.Team]++
-		if !eng.IsEliminated(p.PlayerID) {
-			alive[p.Team]++
-		}
-	}
-	out := func(t int) bool { return members[t] > 0 && alive[t] == 0 }
-	switch {
-	case out(0) && out(1):
-		return true, -1
-	case out(0):
-		return true, 1
-	case out(1):
-		return true, 0
-	}
-	return false, 0
-}
-
-// spectatorTeamResultBox announces a decided teams game to a spectator: the
-// winning team, both teams' final scores, and the Back to Lobby button. Like
-// the player's gameOverBox it sits beside the boards, never over them.
-func (a *App) spectatorTeamResultBox(gtx C, view gameView, winner int) D {
-	msg, c := "DRAW", colMuted
-	if winner >= 0 && winner < config.TeamCount {
-		msg, c = "TEAM "+teamName(winner)+" WINS!", colAccent
-	}
-	score := fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
-		teamName(0), view.teamScores[0], view.teamLevels[0],
-		teamName(1), view.teamScores[1], view.teamLevels[1])
-	return hardShadow(gtx, func(gtx C) D {
-		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
-			return background(gtx, colBg, func(gtx C) D {
-				return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
-					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(a.pixel(unit.Sp(18), "GAME OVER", colFg).Layout),
-						layout.Rigid(spacer(10)),
-						layout.Rigid(a.pixel(unit.Sp(12), msg, c).Layout),
-						layout.Rigid(spacer(8)),
-						layout.Rigid(func(gtx C) D {
-							l := material.Body1(a.th, score)
-							l.Color = colGold
-							return l.Layout(gtx)
-						}),
-						layout.Rigid(spacer(14)),
-						layout.Rigid(func(gtx C) D {
-							return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
-						}),
-					)
-				})
-			})
-		})
-	})
 }
 
 // gameOverBox is the panel shown beside the board once the local player is out

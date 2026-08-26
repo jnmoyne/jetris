@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -105,11 +106,18 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 }
 
 // labeledBoard pairs a renderable board snapshot with its strip label (player
-// ID, team name, or "" for a single shared board) and coloring index.
+// ID, team name, or "" for a single shared board) and coloring index. The
+// optional decoration is the replay ending's: a label color override and
+// bold-italic emphasis (the revealed winners), and a wrap around the board
+// widget itself (the winner show, or the beaten boards' OUT wash), handed
+// the strip's cell size so its art scales with the board.
 type labeledBoard struct {
-	label string
-	idx   int
-	snap  engine.BoardSnapshot
+	label    string
+	idx      int
+	snap     engine.BoardSnapshot
+	labelCol colorN // label color when A != 0 (else the idx color)
+	emph     bool   // bold italic label
+	wrap     func(board layout.Widget, cellPx int) layout.Widget
 }
 
 // boardsStrip lays labeled boards side by side — the shared body of the
@@ -138,10 +146,22 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 						if b.idx >= 0 {
 							l.Color = render.PlayerColorRGBA(b.idx)
 						}
+						if b.labelCol.A != 0 {
+							l.Color = b.labelCol
+						}
+						if b.emph {
+							l.Font.Weight, l.Font.Style = font.Bold, font.Italic
+						}
 						return l.Layout(gtx)
 					}),
 					layout.Rigid(spacer(4)),
-					layout.Rigid(a.boardWidget(b.snap, b.idx, cell, true, nil, gtx.Now)),
+					layout.Rigid(func(gtx C) D {
+						board := a.boardWidget(b.snap, b.idx, cell, true, nil, gtx.Now)
+						if b.wrap != nil {
+							board = b.wrap(board, cell)
+						}
+						return board(gtx)
+					}),
 				)
 			})
 		})

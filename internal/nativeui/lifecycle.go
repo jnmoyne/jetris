@@ -539,6 +539,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.gameOver = false
 	a.won = false
 	a.fireworks = nil
+	a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = time.Time{}, 0, 0, false
 	a.confirmLeave = false
 	// Rejoin: our ready mark may still be set from an earlier visit to this
 	// game (leaveCurrentGame clears it, but stay roster-accurate regardless).
@@ -692,6 +693,7 @@ func (a *App) returnToLobby() {
 	a.gameOver = false
 	a.won = false
 	a.fireworks = nil
+	a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = time.Time{}, 0, 0, false
 	a.confirmLeave = false
 	a.countdown = -1
 	a.score = 0

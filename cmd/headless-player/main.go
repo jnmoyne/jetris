@@ -5,7 +5,7 @@
 // --mode cooperative, a two-seat co-op game — where the crude play below makes
 // it the topper, and so the archiver), takes a team-0 seat, readies up, runs
 // the countdown once everyone is ready, and then plays
-// crude but legal Tetris: a few random lateral moves, then a hard drop, on a
+// crude but legal Jetris: a few random lateral moves, then a hard drop, on a
 // fixed cadence. Diagnostic tool: no scoring smarts, no rejoin, one game.
 package main
 

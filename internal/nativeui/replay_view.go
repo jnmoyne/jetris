@@ -161,7 +161,10 @@ func (b *replayBoard) snapshot() engine.BoardSnapshot {
 
 // replayView is one replay session: the archived game being replayed, the
 // chosen speed, and the boards being rebuilt from its replay stream. done/err
-// are written by the consumer goroutine under App.mu.
+// (and doneAt, the winner show's clock — see replay_winner.go) are written by
+// the consumer goroutine under App.mu. rank/of place the game in its replay
+// bucket's all-time ranking (config.ReplayRank), which grades the trophy the
+// ending floats over the winning board; fixed at start.
 type replayView struct {
 	rec      config.ArchiveRecord
 	fast     bool // as fast as possible vs. paced at the recorded rate (replayPacer)
@@ -169,7 +172,9 @@ type replayView struct {
 	byPlayer map[string]int // competitive: playerID → boards index
 	gate     *replayGate    // Pause / Resume (its own lock; see replayWait)
 	cancel   context.CancelFunc
+	rank, of int
 	done     bool
+	doneAt   time.Time
 	err      string
 }
 
@@ -177,7 +182,7 @@ type replayView struct {
 // cooperative, one per player (sorted by ID, matching the archive viewer's
 // coloring) for competitive, one per team for teams.
 func newReplayView(rec config.ArchiveRecord, fast bool) *replayView {
-	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}, gate: newReplayGate()}
+	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}, gate: newReplayGate(), rank: 1, of: 1}
 	switch rec.Mode {
 	case config.ModeCooperative:
 		rv.boards = []*replayBoard{newReplayBoard("", -1,
@@ -265,9 +270,15 @@ func (a *App) replayChoiceOverlay(gtx C, rec config.ArchiveRecord) D {
 	})
 }
 
-// startReplay opens the replay screen and starts the consumer session.
+// startReplay opens the replay screen and starts the consumer session. The
+// game's rank — which grades the trophy the ending floats — is taken against
+// the lobby's copy of the whole history, so it is the same standing the
+// history's TOP 10 mark reflects.
 func (a *App) startReplay(rec config.ArchiveRecord, fast bool) {
 	rv := newReplayView(rec, fast)
+	if lb := a.getLobby(); lb != nil {
+		rv.rank, rv.of = config.ReplayRank(lb.Archives(), rec)
+	}
 	base := a.ctx
 	if base == nil {
 		base = context.Background()
@@ -364,7 +375,7 @@ func (a *App) runReplaySession(ctx context.Context, rv *replayView) {
 			}
 			if doneSeq || msg.Subject() == config.ReplayMarkerSubject(gameID) {
 				a.mu.Lock()
-				rv.done = true
+				rv.done, rv.doneAt = true, time.Now()
 				a.mu.Unlock()
 				a.invalidate()
 				return
@@ -480,7 +491,12 @@ func (a *App) applyReplayCell(rv *replayView, subject string, data []byte) bool 
 }
 
 // layoutReplay is the replay screen: the boards being replayed center-stage
-// over a status line, with the game's summary up top.
+// over a status line, with the game's summary up top. The summary names the
+// players in their board colors but keeps scores and winners back until the
+// replay completes; then the ending is revealed — the winners' names go gold
+// in bold italic, the status line says who won, the beaten boards read OUT
+// and the winning board gets the winner show (replay_winner.go), which
+// animates for as long as the screen is up.
 func (a *App) layoutReplay(gtx C) D {
 	a.mu.Lock()
 	rv := a.replayView
@@ -502,12 +518,18 @@ func (a *App) layoutReplay(gtx C) D {
 	}
 
 	a.mu.Lock()
-	done, errMsg := rv.done, rv.err
+	done, errMsg, doneAt := rv.done, rv.err, rv.doneAt
 	boards := make([]labeledBoard, len(rv.boards))
 	for i, b := range rv.boards {
 		boards[i] = labeledBoard{label: b.label, idx: b.idx, snap: b.snapshot()}
 	}
 	a.mu.Unlock()
+
+	reveal := done && errMsg == ""
+	if reveal {
+		a.invalidate() // keep the winner show animating while the screen is up
+		a.crownWinners(boards, rv, doneAt, gtx.Now)
+	}
 
 	speed := "ORIGINAL SPEED"
 	if rv.fast {
@@ -522,6 +544,18 @@ func (a *App) layoutReplay(gtx C) D {
 	case paused:
 		status, statusCol = "PAUSED · "+speed, colWarn
 	}
+	statusLine := a.pixel(unit.Sp(9), status, statusCol).Layout
+	if reveal {
+		// The verdict rides the status line in bold italic — synthesized,
+		// the pixel face having none — so who won is the one thing on the
+		// line set differently from everything else.
+		statusLine = func(gtx C) D {
+			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+				layout.Rigid(a.pixel(unit.Sp(9), status+" · ", statusCol).Layout),
+				layout.Rigid(a.pixelEmph(unit.Sp(9), replayVerdict(rv.rec), colGold)),
+			)
+		}
+	}
 	pauseLabel := "Pause"
 	if paused {
 		pauseLabel = "Resume"
@@ -533,9 +567,9 @@ func (a *App) layoutReplay(gtx C) D {
 			layout.Rigid(spacer(8)),
 			layout.Rigid(a.header("GAME REPLAY")),
 			layout.Rigid(spacer(4)),
-			layout.Rigid(a.body(archiveLine(rv.rec), colMuted)),
+			layout.Rigid(a.spansLine(replaySummary(rv.rec, reveal))),
 			layout.Rigid(spacer(8)),
-			layout.Rigid(a.pixel(unit.Sp(9), status, statusCol).Layout),
+			layout.Rigid(statusLine),
 			layout.Rigid(spacer(14)),
 			layout.Flexed(1, func(gtx C) D {
 				return layout.Center.Layout(gtx, func(gtx C) D {

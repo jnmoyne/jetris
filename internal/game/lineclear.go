@@ -22,7 +22,7 @@ func Level(totalLinesCleared int) int {
 	return l
 }
 
-// gravityTable is the standard Tetris Guideline gravity intervals by level.
+// gravityTable is the standard Guideline gravity intervals by level.
 var gravityTable = [20]time.Duration{
 	800 * time.Millisecond, // 0
 	717 * time.Millisecond, // 1

@@ -115,6 +115,19 @@ func (l *Lobby) AbandonedGames() map[string]bool {
 	return out
 }
 
+// ArchiveFor returns the archive record of one finished game, if the lobby
+// has received it (the archiver publishes it moments after the game ends).
+func (l *Lobby) ArchiveFor(gameID string) (config.ArchiveRecord, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, r := range l.archives {
+		if r.GameID == gameID {
+			return r, true
+		}
+	}
+	return config.ArchiveRecord{}, false
+}
+
 // Archives returns a snapshot of the archive records.
 func (l *Lobby) Archives() []config.ArchiveRecord {
 	l.mu.RLock()

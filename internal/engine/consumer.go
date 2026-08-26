@@ -417,13 +417,16 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 		// engine replaying the full event history (a mid-game spectator)
 		// converges to the same totals, and anything missed is absorbed by
 		// the next event's cumulative numbers at once.
+		e.mu.Lock()
 		seen := e.eventTotals[ev.PlayerID]
 		deltaScore := ev.TotalScore - seen.score
 		deltaLines := ev.TotalLines - seen.lines
 		if deltaScore < 0 || deltaLines < 0 {
+			e.mu.Unlock()
 			return // stale replay of an older total: already folded
 		}
 		e.eventTotals[ev.PlayerID] = struct{ score, lines int }{ev.TotalScore, ev.TotalLines}
+		e.mu.Unlock()
 
 		// In cooperative mode the board is shared: when ANOTHER player clears
 		// lines, our playfield consumer applies the same cleared rows (the

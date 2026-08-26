@@ -347,18 +347,7 @@ func TestScreenSnapshots(t *testing.T) {
 	t.Run("replay", func(t *testing.T) {
 		a := newTestApp()
 		rv := newReplayView(sampleReplayRecord(), false)
-		src := sampleBoard()
-		for r, row := range src.Rows {
-			for c, cell := range row.Cells {
-				br := r + rv.boards[0].visibleStart
-				if br < rv.boards[0].height && c < rv.boards[0].width {
-					rv.boards[0].rows[br].Cells[c] = cell
-					if cell.Occupied && !cell.Adversarial {
-						rv.boards[1].rows[br].Cells[c] = cell
-					}
-				}
-			}
-		}
+		fillReplayBoards(rv)
 		a.replayView = rv
 		a.screen = screenReplay
 		snapshotPNG(t, w, dir, "screen_replay", func(gtx C) { a.layout(gtx) })
@@ -367,6 +356,186 @@ func TestScreenSnapshots(t *testing.T) {
 		rv.gate.set(true, time.Now())
 		snapshotPNG(t, w, dir, "screen_replay_paused", func(gtx C) { a.layout(gtx) })
 	})
+
+	// The replay's ending, three seconds into the winner show: the WINNER
+	// banner floated up out of the winning well under the trophy and its
+	// rank caption, the winner's name gold in bold italic on the board and
+	// in the summary line (scores now shown), the verdict on the status line,
+	// the beaten board OUT behind a wash — with the trophy graded by the
+	// game's rank in its bucket: legendary (#1), epic (top 3, here a teams
+	// game), rare (top 10, a co-op run), and the plain bronze cup below that.
+	t.Run("spectate_done", func(t *testing.T) { snapshotSpectateDone(t, w, dir) })
+
+	t.Run("replay_done", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			rec      config.ArchiveRecord
+			rank, of int
+		}{
+			{"legendary", sampleReplayRecord(), 1, 12},
+			{"plain", sampleReplayRecord(), 14, 40},
+			{"teams_epic", sampleTeamsReplayRecord(), 2, 12},
+			{"coop_rare", sampleCoopReplayRecord(), 7, 12},
+		}
+		for _, tc := range cases {
+			a := newTestApp()
+			rv := newReplayView(tc.rec, false)
+			fillReplayBoards(rv)
+			rv.rank, rv.of = tc.rank, tc.of
+			rv.done, rv.doneAt = true, time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local)
+			a.replayView = rv
+			a.screen = screenReplay
+			snapshotPNG(t, w, dir, "screen_replay_done_"+tc.name, func(gtx C) {
+				gtx.Now = rv.doneAt.Add(3300 * time.Millisecond)
+				a.layout(gtx)
+			})
+		}
+	})
+}
+
+// The spectator's live ending, composed as the game screen lays it out —
+// the legend on the left, the boards strip center, the result box on the
+// right — three seconds into the show, for a competitive game whose winner
+// is the bucket's best (the legendary cup holding the I piece) and a teams
+// game ranked #2 (epic, the T piece). A spectator engine without a stream
+// has no opponent boards to show, so the strip is composed here from the
+// sample board with the same crown / knockout wraps spectatorBoards uses.
+func snapshotSpectateDone(t *testing.T, w *headless.Window, dir string) {
+	now := time.Date(2026, 7, 23, 14, 6, 3, 300_000_000, time.Local)
+	at := now.Add(-3300 * time.Millisecond)
+	cases := []struct {
+		name  string
+		gmode config.GameMode
+		oc    liveOutcome
+	}{
+		{"competitive", config.ModeCompetitive, liveOutcome{decided: true, winners: map[string]bool{"alice": true}, winTeam: -1,
+			scores: map[string]int{"alice": 4200, "bob": 3100}, banner: "WINNER", verdict: "ALICE WINS!", at: at, rank: 1, of: 12}},
+		{"teams", config.ModeTeams, liveOutcome{decided: true, winners: map[string]bool{"carol": true, "dave": true}, winTeam: 1,
+			banner: "WINNERS", verdict: "TEAM B WINS!", at: at, rank: 2, of: 12}},
+	}
+	for _, tc := range cases {
+		a := newTestApp()
+		eng := engine.New(nil, "g1", "spec", "", tc.gmode, engine.ModeSpectator, 0, 0, 0)
+		roster := []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob", Agent: true}}
+		if tc.gmode == config.ModeTeams {
+			roster = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Team: 0}, {PlayerID: "bob", Name: "bob", Team: 0},
+				{PlayerID: "carol", Name: "carol", Team: 1, Agent: true}, {PlayerID: "dave", Name: "dave", Team: 1}}
+		}
+		a.eng, a.gamePlayers, a.screen = eng, roster, screenGame
+		a.teamScores, a.teamLevels = [config.TeamCount]int{3100, 4200}, [config.TeamCount]int{3, 4}
+		snapshotPNG(t, w, dir, "screen_spectate_done_"+tc.name, func(gtx C) {
+			gtx.Now = now
+			view := a.snapshotGame(now)
+			view.outcome = tc.oc
+			fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
+			layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D { return a.legend(gtx, eng, view, tc.gmode) }),
+					layout.Rigid(hSpacer(24)),
+					layout.Flexed(1, func(gtx C) D {
+						return layout.Center.Layout(gtx, func(gtx C) D {
+							cell := gtx.Dp(20)
+							var items []layout.FlexChild
+							type well struct {
+								label string
+								col   colorN
+								won   bool
+								idx   int
+							}
+							wells := []well{{"alice", render.PlayerColorRGBA(0), true, 0}, {"bob [agent]", render.PlayerColorRGBA(1), false, 1}}
+							if tc.gmode == config.ModeTeams {
+								wells = []well{{"TEAM A", render.PlayerColorRGBA(0), false, -1}, {"TEAM B", render.PlayerColorRGBA(1), true, -1}}
+							}
+							for _, wl := range wells {
+								wl := wl
+								items = append(items, layout.Rigid(func(gtx C) D {
+									return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+										return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+											layout.Rigid(a.boardLabel(wl.label, wl.col, wl.won)),
+											layout.Rigid(spacer(4)),
+											layout.Rigid(func(gtx C) D {
+												fx := &boardFX{}
+												if wl.idx < 0 {
+													fx.tint = wl.col
+												}
+												board := a.boardWidget(sampleBoard(), wl.idx, cell, true, fx, gtx.Now)
+												if wl.won {
+													return a.crownBoard(tc.oc.fx(), gtx.Now)(board, cell)(gtx)
+												}
+												return a.knockoutBoard(board, cell)(gtx)
+											}),
+										)
+									})
+								}))
+							}
+							return layout.Flex{}.Layout(gtx, items...)
+						})
+					}),
+					layout.Rigid(func(gtx C) D { return a.spectatorResultBox(gtx, view, tc.oc, tc.gmode) }),
+				)
+			})
+			scanlines(gtx)
+		})
+	}
+}
+
+// fillReplayBoards seeds a replay view's boards from the sample board: the
+// first board gets it whole, every other board its non-garbage cells.
+func fillReplayBoards(rv *replayView) {
+	src := sampleBoard()
+	for r, row := range src.Rows {
+		for c, cell := range row.Cells {
+			for i, b := range rv.boards {
+				br := r + b.visibleStart
+				if br >= b.height || c >= b.width {
+					continue
+				}
+				if i == 0 || (cell.Occupied && !cell.Adversarial) {
+					b.rows[br].Cells[c] = cell
+				}
+			}
+		}
+	}
+}
+
+// sampleTeamsReplayRecord is a finished teams game: Team B (carol, an agent,
+// and dave) beat Team A.
+func sampleTeamsReplayRecord() config.ArchiveRecord {
+	return config.ArchiveRecord{
+		GameID:      "g-replay-teams",
+		Mode:        config.ModeTeams,
+		PlayerCount: 4,
+		TeamSize:    2,
+		StartedAt:   time.Date(2026, 7, 23, 14, 0, 0, 0, time.Local),
+		FinishedAt:  time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local),
+		WinningTeam: 1,
+		TeamScores:  []int{3100, 4200},
+		TeamLevels:  []int{3, 4},
+		Players: []config.PlayerResult{
+			{PlayerID: "alice", Score: 1600, Level: 3, Team: 0},
+			{PlayerID: "bob", Score: 1500, Level: 3, Team: 0},
+			{PlayerID: "carol", Score: 2200, Level: 4, Team: 1, Agent: true, Winner: true},
+			{PlayerID: "dave", Score: 2000, Level: 4, Team: 1, Winner: true},
+		},
+	}
+}
+
+// sampleCoopReplayRecord is a finished two-seat cooperative run.
+func sampleCoopReplayRecord() config.ArchiveRecord {
+	return config.ArchiveRecord{
+		GameID:      "g-replay-coop",
+		Mode:        config.ModeCooperative,
+		PlayerCount: 2,
+		StartedAt:   time.Date(2026, 7, 23, 14, 0, 0, 0, time.Local),
+		FinishedAt:  time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local),
+		WinningTeam: -1,
+		TotalScore:  5200,
+		FinalLevel:  5,
+		Players: []config.PlayerResult{
+			{PlayerID: "alice", Score: 2700, Level: 5},
+			{PlayerID: "bob", Score: 2500, Level: 5},
+		},
+	}
 }
 
 // sampleReplayRecord is a finished competitive game with a replay archive.

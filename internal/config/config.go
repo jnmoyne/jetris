@@ -314,6 +314,26 @@ func ReplayTopRankedCut(recs []ArchiveRecord) map[string]bool {
 	return top
 }
 
+// ReplayRank is where rec stands in the "By score" ranking of its replay
+// bucket (same mode, with/without agents) among recs — the order behind the
+// history's TOP 10 mark and the replay top-N cut: rank 1 is the bucket's best
+// game, of is the bucket's size. rec itself always counts, whether or not
+// recs already holds it (its archive round-trip may still be in flight), so
+// a game is ranked against everything before it plus itself.
+func ReplayRank(recs []ArchiveRecord, rec ArchiveRecord) (rank, of int) {
+	rank, of = 1, 1
+	for _, r := range uniqueRecords(recs) {
+		if r.GameID == rec.GameID || !r.SameReplayBucket(rec) {
+			continue
+		}
+		of++
+		if r.RankBefore(rec) {
+			rank++
+		}
+	}
+	return rank, of
+}
+
 // ReplayRecent returns the game IDs of the ReplayRecentN most recently
 // finished games among recs (all buckets together) — the second half of the
 // replay keep set.

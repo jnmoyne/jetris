@@ -119,7 +119,7 @@ type Engine struct {
 	// full-history replay (mid-game spectator) or a missed intermediate event
 	// converges to the same totals. Touched only by the events-consumer
 	// goroutine — no lock needed.
-	eventTotals map[string]struct{ score, lines int }
+	eventTotals map[string]struct{ score, lines int } // guarded by e.mu
 
 	Updates        chan EngineUpdate
 	OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -1057,6 +1057,21 @@ func (e *Engine) IsEliminated(id string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.eliminatedPlayers[id]
+}
+
+// PlayerScores reports every player's cumulative line-clear score as this
+// engine folded it from their line_clear events (the sender's own-clear
+// total, which in competitive IS the player's score — the number the archive
+// record carries). A spectator's screen ranks a just-decided game by these
+// before the archive record arrives.
+func (e *Engine) PlayerScores() map[string]int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]int, len(e.eventTotals))
+	for id, t := range e.eventTotals {
+		out[id] = t.score
+	}
+	return out
 }
 
 func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }

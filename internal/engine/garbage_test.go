@@ -304,7 +304,7 @@ func TestShrinkCascadeTopsOutSqueezedPlayer(t *testing.T) {
 		return victim.Playfield().Rows[4].Cells[1].Occupied
 	}, "victim wall to apply")
 
-	// Owe 4 rows directly (as if an opponent cleared a Tetris): the stack
+	// Owe 4 rows directly (as if an opponent cleared 4 lines at once): the stack
 	// rises to the very top, the hovering I has nowhere to go, and the victim
 	// is squeezed out.
 	payload, _ := json.Marshal(GarbageRegister{Total: 4, By: 0})

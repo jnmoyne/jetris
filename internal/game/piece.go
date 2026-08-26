@@ -1,6 +1,6 @@
 package game
 
-// PieceType identifies one of the seven standard Tetris pieces.
+// PieceType identifies one of the seven pieces.
 type PieceType int
 
 const (

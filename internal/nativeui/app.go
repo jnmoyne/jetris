@@ -187,6 +187,15 @@ type App struct {
 	// board flash lives in `flash`, not here.
 	specFlash map[int]map[[2]int]time.Time
 	fireworks *fireworksShow // victory fireworks show; nil until a competitive/teams win
+	// A spectator's winner show (spectator_reveal.go): when the game was first
+	// seen decided (the show's clock; zero until then) and the game's rank in
+	// its replay bucket — provisional from the live totals, final once the
+	// lobby holds the archive record. Written by resolveOutcome on the UI
+	// goroutine and reset with the rest of the game state; guarded by mu.
+	decidedAt     time.Time
+	liveRank      int // 0 = not yet ranked
+	liveOf        int
+	liveRankFinal bool
 	// rowStrobes holds the own board's arcade row strobes: rows just cleared
 	// on it (by this player, or a teammate on a shared board) blink white, and
 	// in competitive/teams garbage rows that just landed blink in the

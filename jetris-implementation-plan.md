@@ -389,14 +389,14 @@ type Piece struct {
 func (p Piece) Cells() [][2]int
 ```
 
-Use the standard Tetris piece shapes:
+Use the standard guideline-style piece shapes:
 - I: horizontal line of 4
 - O: 2x2 square
 - T: T-shape
 - S, Z: S and Z skews
 - J, L: J and L hooks
 
-Spawn orientation 0 is the standard "spawn state" per Tetris Guideline.
+Spawn orientation 0 is the standard "spawn state" per Guideline.
 
 #### `internal/game/row.go`
 
@@ -562,7 +562,7 @@ For J, L, S, T, Z pieces:
 0→3: (0,0), (+1,0), (+1,+1), (0,-2), (+1,-2)
 ```
 
-For I piece, separate kick table (see Tetris Guideline SRS).
+For I piece, separate kick table (see Guideline SRS).
 
 ```go
 // Rotate applies a CW (clockwise==true) or CCW rotation to the piece,
@@ -621,11 +621,11 @@ func Level(totalLinesCleared int) int
 
 // GravityInterval: standard speed curve by level.
 //   Level 0: 800ms, level 1: 717ms, ... level 19: 33ms
-//   Use the Tetris Guideline gravity table (frames at 60fps × 16.67ms).
+//   Use the Guideline gravity table (frames at 60fps × 16.67ms).
 func GravityInterval(level int) time.Duration
 ```
 
-Gravity intervals (approximate, Tetris Guideline):
+Gravity intervals (approximate, Guideline):
 ```
 0:800ms 1:717ms 2:633ms 3:550ms 4:467ms 5:383ms 6:300ms 7:217ms
 8:133ms 9:100ms 10:83ms 11:83ms 12:83ms 13:67ms 14:67ms 15:67ms

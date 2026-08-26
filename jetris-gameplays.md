@@ -138,7 +138,7 @@ with Gio's `key.FocusFilter` + `key.FocusCmd`).
 
 Gravity ticks at the standard speed curve interval (see Section 7). On each tick, the engine attempts to move the piece down one row.
 
-**Blocked by locked cells or bounds:** The piece locks immediately (standard Tetris behavior).
+**Blocked by locked cells or bounds:** The piece locks immediately (standard guideline-style behavior).
 
 **Blocked only by the other player's active piece:** The piece does **NOT** lock. The obstacle is temporary — it will itself fall on its next gravity tick. Gravity waits and tries again on the next tick.
 
@@ -254,7 +254,7 @@ Each player gets their own piece spawn on their own independent playfield. Playe
 
 ### Movement
 
-Standard Tetris movement. Collision detection is using CAS only.
+Standard guideline-style movement. Collision detection is using CAS only.
 
 ### Gravity
 
@@ -262,7 +262,7 @@ Standard gravity. When a piece can't move down, it locks immediately (no "blocke
 
 ### Line Clears
 
-A row is complete when all 10 cells are occupied (locked). Standard Tetris rules apply. When one player clears a line, every other player gets a line added at the bottom of their playfield, so all of their already-locked rows shift up by one. The currently falling piece does **not** rise with the stack — it holds its on-screen position and is simply dropped into place as the stack rises to meet it. Only if the rising stack (or the new garbage) would overlap the falling piece is the piece pushed up, and then only by the minimum number of rows needed to clear the conflict. If that upward push would run the piece off the top of the playfield, the player tops out and is eliminated (see Game Over). Once a line is cleared and added to the other player(s), that added line can never be removed or completed.
+A row is complete when all 10 cells are occupied (locked). Standard guideline-style rules apply. When one player clears a line, every other player gets a line added at the bottom of their playfield, so all of their already-locked rows shift up by one. The currently falling piece does **not** rise with the stack — it holds its on-screen position and is simply dropped into place as the stack rises to meet it. Only if the rising stack (or the new garbage) would overlap the falling piece is the piece pushed up, and then only by the minimum number of rows needed to clear the conflict. If that upward push would run the piece off the top of the playfield, the player tops out and is eliminated (see Game Over). Once a line is cleared and added to the other player(s), that added line can never be removed or completed.
 
 ### Scoring
 
@@ -593,7 +593,7 @@ Lobby chat history is retained for 7 days; a game's chat messages are purged fro
 
 ## 7. Gravity Speed Curve
 
-Standard Tetris Guideline gravity intervals:
+Standard Guideline-style gravity intervals:
 
 | Level | Interval |
 |-------|----------|
@@ -624,8 +624,8 @@ Any player in the lobby can spectate an in-progress game:
 - **Colored outlines:** Each player's active piece has a distinct colored outline (not white)
 - Spectators see the same real-time playfield updates as players
 - **Countdown:** the pre-game 5..0/GO! countdown is drawn over the spectator's boards exactly as over a player's board (a spectator who joins before the game starts sees the same start moment everyone else does)
-- **Eliminations:** an eliminated player's board (competitive) — or a fully eliminated team's board (teams) — carries a centered **OUT** chip in the spectator's multi-board view; the board itself stays fully visible under it
-- **Winner:** once the game is decided, the surviving player's board reads **WINNER** (competitive) and the surviving team's board **WINNERS** (teams); a simultaneous-top-out draw shows every board OUT with no winner. In teams a spectator additionally gets an explicit **GAME OVER** result box beside the boards (never covering them) naming the winning team with both teams' final scores and a Back to Lobby button
+- **Eliminations:** while the game goes on, an eliminated player's board (competitive) carries a centered **OUT** chip in the spectator's multi-board view; the board itself stays fully visible under it
+- **The ending is the replay's reveal, live:** the moment the game is decided — the last player standing, a team fully out, the co-op crew topped out — the winning board wears the **winner show**: its frame pulses, a **WINNER** / **WINNERS** (co-op: **GAME OVER**) banner rises out of the well and floats under a **trophy graded by the game's rank** in its replay bucket (the same "By score" ranking behind the history's TOP 10 mark — the bucket's best game a LEGENDARY holographic gold cup with halo rings and sparkles, the top three EPIC gold in a purple aura, the top ten RARE silver with a shine sweep, a plain bronze cup below that) holding a **tetromino chosen by the same rank** from the internet's worst-to-best ranking of the seven pieces (the I for the bucket's best game, then the T, L, J, O and S, and the Z for a game nobody ranks); the beaten boards read **OUT** behind a wash; the winners' names go gold in bold italic with a 🏆 on the boards and in the legend while the beaten keep their board colors; and a **GAME OVER** result box beside the boards (never covering them) sets the verdict — TEAM B WINS! / ALICE WINS! / DRAW — in bold italic over the final scores (both teams', or every player's, winners first) and a Back to Lobby button. A simultaneous-top-out draw washes every board OUT and crowns nobody. The rank is provisional, from the totals the spectator's engine folded, and becomes final the moment the archive record arrives
 - **Overflow scrolling:** the boards stay centered while they fit, but when there are enough of them that they are together wider than the window, the multi-board strip becomes **horizontally scrollable** (a scrollbar appears) so an overflowing board can be scrolled to rather than spilling off the edge or overlapping its neighbour — the same treatment as the archive final-playfield view
 - The HUD keeps a "Back to Lobby" button, so a spectator can leave the game and return to the lobby at any time
 

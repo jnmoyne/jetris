@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"gioui.org/app"
@@ -88,17 +86,8 @@ func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) 
 	}()
 
 	// Terminal Ctrl-C: exit the process (the OS main loop has no signal hook).
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		select {
-		case <-sig:
-			fmt.Println("\nShutting down...")
-			a.DrainConn()
-			os.Exit(0)
-		case <-ctx.Done():
-		}
-	}()
+	// A no-op in the browser build.
+	go watchSignals(ctx, a)
 
 	app.Main()
 }
@@ -114,6 +103,7 @@ func parseFlags() (cfg config.Config, noUpdateCheck bool) {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.BoolVar(&noUpdateCheck, "no-update-check", false, "skip the startup check for a newer release on GitHub")
 	flag.Parse()
+	applyPageParams(&cfg) // browser build: ?server=… stands in for --server
 
 	if *showVersion {
 		fmt.Printf("jetris %s\n", version)

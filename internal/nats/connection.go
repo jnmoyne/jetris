@@ -37,6 +37,10 @@ func ConnectURL(url, user, password string, opts ...nats.Option) (*nats.Conn, je
 	if user != "" {
 		opts = append(opts, nats.UserInfo(user, password))
 	}
+	// The browser build swaps TCP for a WebSocket here; the desktop build is
+	// a pass-through (see transport_*.go).
+	url, transport := transportOptions(url)
+	opts = append(opts, transport...)
 	nc, err := nats.Connect(url, opts...)
 	if err != nil {
 		return nil, nil, err

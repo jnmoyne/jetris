@@ -23,7 +23,6 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -130,7 +129,7 @@ type App struct {
 	// friends; picking a different port on a later login restarts it there.
 	// usingEmbedded marks the CURRENT connection as being to it, which is
 	// what gates the lobby's shareable-address line.
-	embSrv        *natsserver.Server
+	embSrv        natspkg.EmbeddedServer
 	embAddr       string // shareable "<lan-ip>:<port>"
 	usingEmbedded bool
 

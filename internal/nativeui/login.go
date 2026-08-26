@@ -675,8 +675,16 @@ func (a *App) connPage(gtx C) D {
 				layout.Rigid(func(gtx C) D {
 					return a.connTabChip(gtx, &a.connTabBtns[0], "NATS SERVER BROWSER", a.connTab == connTabBrowser)
 				}),
-				layout.Rigid(hSpacer(4)),
 				layout.Rigid(func(gtx C) D {
+					if !embeddedAvailable {
+						return D{} // no server to host in the browser build
+					}
+					return hSpacer(4)(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					if !embeddedAvailable {
+						return D{}
+					}
 					return a.connTabChip(gtx, &a.connTabBtns[1], "LAN PARTY MODE (EMBEDDED NATS SERVER)", a.connTab == connTabLAN)
 				}),
 			)

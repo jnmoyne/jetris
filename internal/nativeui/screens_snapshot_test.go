@@ -366,6 +366,33 @@ func TestScreenSnapshots(t *testing.T) {
 	// game), rare (top 10, a co-op run), and the plain bronze cup below that.
 	t.Run("spectate_done", func(t *testing.T) { snapshotSpectateDone(t, w, dir) })
 
+	t.Run("game_won", func(t *testing.T) {
+		// A winning player's screen a few seconds after the win: the crown
+		// settled over the board on top of the fireworks, under the
+		// scanlines, beside the game-over box.
+		now := time.Date(2026, 7, 23, 14, 6, 3, 300_000_000, time.Local)
+		cases := []struct {
+			name     string
+			gmode    config.GameMode
+			team     int
+			rank, of int
+		}{{"competitive_legendary", config.ModeCompetitive, 0, 1, 12}, {"teams_epic", config.ModeTeams, 1, 2, 12}}
+		for _, tc := range cases {
+			a := newTestApp()
+			a.eng = engine.New(nil, "g1", "alice", "bob", tc.gmode, engine.ModePlayer, 0, tc.team, 0)
+			a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Team: 1}, {PlayerID: "bob", Name: "bob", Agent: true}}
+			a.screen = screenGame
+			a.gameOver, a.won, a.score, a.level = true, true, 4200, 4
+			a.teamScores, a.teamLevels = [config.TeamCount]int{3100, 4200}, [config.TeamCount]int{3, 4}
+			a.fireworks = newFireworksShow(now.Add(-2500 * time.Millisecond))
+			a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = now.Add(-3300*time.Millisecond), tc.rank, tc.of, true
+			snapshotPNG(t, w, dir, "screen_game_won_"+tc.name, func(gtx C) {
+				gtx.Now = now
+				a.layout(gtx)
+			})
+		}
+	})
+
 	t.Run("replay_done", func(t *testing.T) {
 		cases := []struct {
 			name     string

@@ -38,7 +38,8 @@ import (
 // pure function of the frame time against the moment the replay finished —
 // the fireworks idiom: layoutReplay keeps invalidating while the show is up
 // and no per-frame state is mutated. A live game gets the same show on the
-// spectator's screen (spectator_reveal.go).
+// spectator's screen, and on a winning player's own over their victory
+// fireworks (spectator_reveal.go).
 
 // trophyTier grades the trophy by the game's rank in its replay bucket.
 type trophyTier int
@@ -255,12 +256,33 @@ func winnersVerdict(names []string) string {
 // crownBoard wraps a winning board with the winner show, drawn over the
 // board from the board's own size and the strip's cell size.
 func (a *App) crownBoard(fx winnerFX, now time.Time) func(layout.Widget, int) layout.Widget {
+	return a.crown(fx, now, false)
+}
+
+// crownBoardOnTop is crownBoard with the show painted at the very end of the
+// frame instead of right over the board: op.Defer keeps the board's
+// transform, so the show still floats over the well, but above whatever the
+// screen paints after the board — the victory fireworks a winning player's
+// screen lays over everything (layoutGame). The frame's own last layer, the
+// CRT scanlines, is deferred too and later (App.layout), so it still covers
+// the show.
+func (a *App) crownBoardOnTop(fx winnerFX, now time.Time) func(layout.Widget, int) layout.Widget {
+	return a.crown(fx, now, true)
+}
+
+func (a *App) crown(fx winnerFX, now time.Time, onTop bool) func(layout.Widget, int) layout.Widget {
 	return func(board layout.Widget, cellPx int) layout.Widget {
 		return func(gtx C) D {
 			return layout.Stack{}.Layout(gtx,
 				layout.Stacked(board),
 				layout.Expanded(func(gtx C) D {
+					if !onTop {
+						a.drawWinnerShow(gtx, fx, cellPx, now)
+						return D{Size: gtx.Constraints.Min}
+					}
+					macro := op.Record(gtx.Ops)
 					a.drawWinnerShow(gtx, fx, cellPx, now)
+					op.Defer(gtx.Ops, macro.Stop())
 					return D{Size: gtx.Constraints.Min}
 				}),
 			)

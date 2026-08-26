@@ -628,7 +628,13 @@ func (a *App) layout(gtx C) D {
 		d = a.layoutReplay(gtx)
 	}
 	a.versionBadge(gtx) // build version, top-right corner of every screen
-	scanlines(gtx)      // CRT overlay over the whole frame, screens and chrome alike
+	// CRT overlay over the whole frame, screens and chrome alike. Deferred —
+	// op.Defer runs after everything else, first in first out — so it also
+	// covers what a screen paints late: the crown a winning player's board
+	// floats over the victory fireworks (crownBoardOnTop).
+	macro := op.Record(gtx.Ops)
+	scanlines(gtx)
+	op.Defer(gtx.Ops, macro.Stop())
 	return d
 }
 

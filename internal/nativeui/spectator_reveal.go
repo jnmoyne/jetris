@@ -27,12 +27,15 @@ import (
 // the decision first landed on this screen (App.decidedAt); its rank is the
 // game's standing in its replay bucket (config.ReplayRank) — provisional
 // from the totals the spectator's engine folded, then final the moment the
-// lobby receives the archive record. Players' screens keep their own
-// game-over box and fireworks.
+// lobby receives the archive record. A winning player's own screen wears
+// the crown too: the show floats over their board, on top of the victory
+// fireworks (crownBoardOnTop), beside their game-over box, and their legend
+// reveals the winners the same way; a beaten player's screen stays as it
+// was — the reveal is the spectators' (and the replay's) to watch.
 
-// liveOutcome is a decided live game as a spectator's screen sees it; the
-// zero value (winTeam -1) while the game is undecided, and on a player's
-// screen.
+// liveOutcome is a decided live game as a spectator's — or a winning
+// player's — screen sees it; the zero value (winTeam -1) while the game is
+// undecided, and on a beaten player's screen.
 type liveOutcome struct {
 	decided  bool
 	winners  map[string]bool // player IDs on the winning side (co-op: the whole crew)
@@ -110,6 +113,43 @@ func spectatorVerdict(gmode config.GameMode, players []lobby.PlayerSummary, elim
 	return decided, winners, winTeam
 }
 
+// playerVerdict resolves a live game's outcome on a player's own screen,
+// from their engine's verdict (view.won, UpdateGameOver): a competitive win
+// is the last player standing — the winner alone; a teams win is the other
+// team fully out — the whole team wins, including members topped out
+// earlier (the engine re-emits the win to them); the cooperative crew shares
+// one board and the shared game over ends the run for all of them, so the
+// crew is crowned the way it is on a spectator's screen — the run's rank is
+// the prize. A beaten player's screen resolves nothing.
+func playerVerdict(gmode config.GameMode, view gameView, me string, myTeam int) (decided bool, winners map[string]bool, winTeam int) {
+	winners, winTeam = map[string]bool{}, -1
+	switch gmode {
+	case config.ModeCooperative:
+		decided = view.gameOver
+		for _, p := range view.players {
+			if decided {
+				winners[p.PlayerID] = true
+			}
+		}
+	case config.ModeTeams:
+		decided = view.gameOver && view.won
+		if decided {
+			winTeam = myTeam
+			for _, p := range view.players {
+				if p.Team == myTeam {
+					winners[p.PlayerID] = true
+				}
+			}
+		}
+	default:
+		decided = view.gameOver && view.won
+		if decided {
+			winners[me] = true
+		}
+	}
+	return decided, winners, winTeam
+}
+
 // liveVerdict is the result box's verdict line for a decided game.
 func liveVerdict(gmode config.GameMode, players []lobby.PlayerSummary, winners map[string]bool, winTeam int, score int) string {
 	switch gmode {
@@ -142,15 +182,23 @@ func liveBanner(gmode config.GameMode) string {
 }
 
 // resolveOutcome is the frame's outcome for the game screen: the zero value
-// for players and while a spectated game is undecided; otherwise the
-// decision, stamped with the moment it first landed here (the show's clock)
-// and ranked (rankLiveGame). UI goroutine.
-func (a *App) resolveOutcome(eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, now time.Time) liveOutcome {
+// while the game is undecided and on a beaten player's screen; otherwise the
+// decision — a spectator's from the eliminations their engine folded
+// (spectatorVerdict), a player's from their engine's own verdict
+// (playerVerdict); the engine's initial mode tells the two apart, its current
+// one having moved on to game over on a finished player's screen (and on a
+// co-op spectator's) — stamped with the moment it first landed here (the
+// show's clock) and ranked (rankLiveGame). UI goroutine.
+func (a *App) resolveOutcome(eng *engine.Engine, view gameView, gmode config.GameMode, now time.Time) liveOutcome {
 	none := liveOutcome{winTeam: -1}
-	if mode != engine.ModeSpectator {
-		return none
+	var decided bool
+	var winners map[string]bool
+	var winTeam int
+	if eng.InitialMode() == engine.ModeSpectator {
+		decided, winners, winTeam = spectatorVerdict(gmode, view.players, eng.IsEliminated, view.gameOver)
+	} else {
+		decided, winners, winTeam = playerVerdict(gmode, view, eng.PlayerID(), eng.TeamIdx())
 	}
-	decided, winners, winTeam := spectatorVerdict(gmode, view.players, eng.IsEliminated, view.gameOver)
 	if !decided {
 		return none
 	}

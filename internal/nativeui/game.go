@@ -40,7 +40,7 @@ type gameView struct {
 	specRowStrobes       map[int]map[int]rowStrobe // spectator: per-board row strobes (landed garbage)
 	shakeStart           time.Time                 // own board: garbage impact-shake epoch (zero = idle)
 	fireworks            *fireworksShow            // nil unless this player/team won (competitive/teams)
-	outcome              liveOutcome               // spectator: the decided game's reveal (zero while undecided, and for players)
+	outcome              liveOutcome               // the decided game's reveal — a spectator's, or a winning player's (zero while undecided, and on a beaten player's screen)
 	// Keyboard owner while the keys drive the piece (handleGameFocus): the
 	// white focus outline goes on whichever of the two holds them.
 	boardFocused, chatFocused bool
@@ -135,9 +135,10 @@ func (a *App) layoutGame(gtx C) D {
 	gmode := eng.GameMode()
 
 	view := a.snapshotGame(gtx.Now)
-	// A spectator's decided game: the reveal the boards, the legend and the
-	// result box all draw from (spectator_reveal.go).
-	view.outcome = a.resolveOutcome(eng, view, mode, gmode, gtx.Now)
+	// The decided game — a spectator's, or a winning player's own: the reveal
+	// the boards, the legend and the spectator's result box all draw from
+	// (spectator_reveal.go).
+	view.outcome = a.resolveOutcome(eng, view, gmode, gtx.Now)
 	started := view.status == string(config.GameStatusInProgress)
 	// playing: the keyboard drives the piece (a seated player, game in
 	// progress, not eliminated). Only then do the board and the chat compete
@@ -195,7 +196,7 @@ func (a *App) layoutGame(gtx C) D {
 		a.invalidate() // keep the victory fireworks animating until the show ends
 	}
 	if view.outcome.decided {
-		a.invalidate() // keep the spectator's winner show animating while the screen is up
+		a.invalidate() // keep the winner show animating while the screen is up
 	}
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
@@ -510,9 +511,10 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.GameMode) D {
 	var children []layout.FlexChild
 
-	// Once a spectated game is decided (view.outcome) the legend reveals it:
-	// the winners' names gold in bold italic with a trophy, the beaten in
-	// their board colors — no more "(out)", every beaten player is out.
+	// Once the game is decided (view.outcome — on a spectator's screen, or a
+	// winning player's) the legend reveals it: the winners' names gold in
+	// bold italic with a trophy, the beaten in their board colors — no more
+	// "(out)", every beaten player is out.
 	oc := view.outcome
 	playerRow := func(i int, p lobby.PlayerSummary) layout.FlexChild {
 		return layout.Rigid(func(gtx C) D {
@@ -717,9 +719,17 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					}
 					bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
 					if view.outcome.decided {
-						// A spectator's finished co-op board wears the winner
-						// show — the crew's rank is the prize.
-						bw = a.crownBoard(view.outcome.fx(), gtx.Now)(bw, cell)
+						// The finished board wears the winner show: the crew's
+						// co-op board (a spectator's or a player's — the run's
+						// rank is the prize), or a winning player's own. Over
+						// the victory fireworks the show is painted last, so
+						// the crown floats above the rockets and bursts — but
+						// never above the leave-game modal.
+						crown := a.crownBoard
+						if view.fireworks != nil && view.fireworks.active(gtx.Now) && !a.confirmLeave {
+							crown = a.crownBoardOnTop
+						}
+						bw = crown(view.outcome.fx(), gtx.Now)(bw, cell)
 					}
 					if dx := boardShakeOffset(cell, gtx.Now.Sub(view.shakeStart)); dx != 0 {
 						// Garbage impact: judder the whole well sideways for a

@@ -90,6 +90,40 @@ func TestLiveVerdictAndBanner(t *testing.T) {
 	}
 }
 
+// A player's own screen resolves the outcome from the engine's verdict: the
+// competitive winner alone, the whole winning team (an early-eliminated
+// member included, once the win reaches them), the co-op crew at the shared
+// game over — and nothing on a beaten player's screen, or while a
+// topped-out teams player waits for their team.
+func TestPlayerVerdict(t *testing.T) {
+	trio := []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob"}, {PlayerID: "carol", Name: "carol"}}
+	if d, w, team := playerVerdict(config.ModeCompetitive, gameView{players: trio, gameOver: true, won: true}, "alice", 0); !d || !w["alice"] || len(w) != 1 || team != -1 {
+		t.Errorf("competitive win → decided %v winners %v team %d, want alice alone", d, w, team)
+	}
+	for _, view := range []gameView{{players: trio}, {players: trio, gameOver: true}, {players: trio, won: true}} {
+		if d, w, _ := playerVerdict(config.ModeCompetitive, view, "alice", 0); d || len(w) != 0 {
+			t.Errorf("competitive %+v → decided %v winners %v, want nothing", view, d, w)
+		}
+	}
+	teams := []lobby.PlayerSummary{{PlayerID: "alice", Team: 0}, {PlayerID: "bob", Team: 0}, {PlayerID: "carol", Team: 1}, {PlayerID: "dave", Team: 1}}
+	d, w, team := playerVerdict(config.ModeTeams, gameView{players: teams, gameOver: true, won: true}, "carol", 1)
+	if !d || team != 1 || !w["carol"] || !w["dave"] || len(w) != 2 {
+		t.Errorf("teams win → decided %v team %d winners %v, want team B's members", d, team, w)
+	}
+	if d, w, _ := playerVerdict(config.ModeTeams, gameView{players: teams, gameOver: true, status: string(config.GameStatusInProgress)}, "carol", 1); d || len(w) != 0 {
+		t.Errorf("teams, out while the team plays on → decided %v winners %v, want nothing yet", d, w)
+	}
+	if d, _, _ := playerVerdict(config.ModeTeams, gameView{players: teams, gameOver: true}, "alice", 0); d {
+		t.Error("teams loss resolved as decided")
+	}
+	if d, w, team := playerVerdict(config.ModeCooperative, gameView{players: trio, gameOver: true}, "alice", 0); !d || len(w) != 3 || team != -1 {
+		t.Errorf("co-op game over → decided %v winners %v team %d, want the whole crew", d, w, team)
+	}
+	if d, _, _ := playerVerdict(config.ModeCooperative, gameView{players: trio}, "alice", 0); d {
+		t.Error("co-op resolved as decided before the game over")
+	}
+}
+
 // The provisional record ranks like the archive's will: the same headline
 // score, bucket (agent seats) and winners.
 func TestLiveRecordRanksLikeTheArchive(t *testing.T) {
@@ -144,31 +178,101 @@ func TestPrizePieceLadder(t *testing.T) {
 // A spectated co-op game: nothing until the shared game over; then the
 // decision is stamped once (the show's clock holds across frames), the crew
 // wins, and — with no lobby to rank against — the game stands alone. A
-// player's screen never resolves an outcome. The finished screen renders.
+// co-op player's own screen resolves the crew's game over the same way. The
+// finished screens render.
 func TestResolveOutcomeStampsTheDecision(t *testing.T) {
 	a := newTestApp()
 	eng := engine.New(nil, "g1", "spec", "", config.ModeCooperative, engine.ModeSpectator, 0, 0, 0)
 	roster := []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob"}}
 	a.eng, a.gamePlayers, a.screen = eng, roster, screenGame
 	t0 := time.Now()
-	if oc := a.resolveOutcome(eng, a.snapshotGame(t0), engine.ModeSpectator, config.ModeCooperative, t0); oc.decided {
+	if oc := a.resolveOutcome(eng, a.snapshotGame(t0), config.ModeCooperative, t0); oc.decided {
 		t.Fatalf("undecided co-op resolved as %+v", oc)
 	}
 	a.mu.Lock()
 	a.gameOver, a.score = true, 5200
 	a.mu.Unlock()
-	oc := a.resolveOutcome(eng, a.snapshotGame(t0), engine.ModeSpectator, config.ModeCooperative, t0)
+	oc := a.resolveOutcome(eng, a.snapshotGame(t0), config.ModeCooperative, t0)
 	if !oc.decided || !oc.at.Equal(t0) || oc.banner != "GAME OVER" || oc.verdict != "FINAL SCORE 5200" || len(oc.winners) != 2 || oc.rank != 1 || oc.of != 1 {
 		t.Fatalf("decided co-op = %+v, want GAME OVER at t0, the crew winning, #1 of 1", oc)
 	}
-	if later := a.resolveOutcome(eng, a.snapshotGame(t0.Add(5*time.Second)), engine.ModeSpectator, config.ModeCooperative, t0.Add(5*time.Second)); !later.at.Equal(t0) {
+	if later := a.resolveOutcome(eng, a.snapshotGame(t0.Add(5*time.Second)), config.ModeCooperative, t0.Add(5*time.Second)); !later.at.Equal(t0) {
 		t.Errorf("the show's clock moved: %v, want %v", later.at, t0)
-	}
-	if oc := a.resolveOutcome(eng, a.snapshotGame(t0), engine.ModePlayer, config.ModeCooperative, t0); oc.decided {
-		t.Errorf("a player's screen resolved an outcome: %+v", oc)
 	}
 	for _, at := range []time.Duration{0, 200 * time.Millisecond, 3 * time.Second, time.Minute} {
 		renderAt(t, a, t0.Add(at))
+	}
+
+	p := newTestApp()
+	peng := engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	p.eng, p.gamePlayers, p.screen = peng, roster, screenGame
+	if oc := p.resolveOutcome(peng, p.snapshotGame(t0), config.ModeCooperative, t0); oc.decided {
+		t.Fatalf("a co-op player's screen resolved an outcome before the game over: %+v", oc)
+	}
+	p.mu.Lock()
+	p.gameOver, p.score = true, 5200
+	p.mu.Unlock()
+	if oc := p.resolveOutcome(peng, p.snapshotGame(t0), config.ModeCooperative, t0); !oc.decided || !oc.at.Equal(t0) || oc.banner != "GAME OVER" || len(oc.winners) != 2 || oc.rank != 1 {
+		t.Fatalf("a co-op player's decided screen = %+v, want the crew's GAME OVER at t0, #1", oc)
+	}
+	for _, at := range []time.Duration{0, 200 * time.Millisecond, 3 * time.Second, time.Minute} {
+		renderAt(t, p, t0.Add(at))
+	}
+}
+
+// A winning player's own screen: the engine's win (competitive, and teams —
+// for a member topped out earlier too) resolves the outcome, stamped on the
+// frame it first showed, with the fireworks up the board wears the crown on
+// top of them (crownBoardOnTop), and every frame of the show renders; a
+// beaten player's screen resolves nothing.
+func TestWinningPlayerScreenWearsTheCrown(t *testing.T) {
+	t0 := time.Now()
+	cases := []struct {
+		name   string
+		gmode  config.GameMode
+		team   int
+		roster []lobby.PlayerSummary
+		banner string
+		wins   []string
+	}{
+		{"competitive", config.ModeCompetitive, 0,
+			[]lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob"}}, "WINNER", []string{"alice"}},
+		{"teams", config.ModeTeams, 1,
+			[]lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Team: 1}, {PlayerID: "bob", Name: "bob", Team: 0},
+				{PlayerID: "carol", Name: "carol", Team: 1}, {PlayerID: "dave", Name: "dave", Team: 0}}, "WINNERS", []string{"alice", "carol"}},
+	}
+	for _, tc := range cases {
+		a := newTestApp()
+		eng := engine.New(nil, "g1", "alice", "bob", tc.gmode, engine.ModePlayer, 0, tc.team, 0)
+		a.eng, a.gamePlayers, a.screen = eng, tc.roster, screenGame
+		a.mu.Lock()
+		a.gameOver = true // topped out: a loss so far
+		a.mu.Unlock()
+		if oc := a.resolveOutcome(eng, a.snapshotGame(t0), tc.gmode, t0); oc.decided {
+			t.Fatalf("%s: a beaten player's screen resolved %+v", tc.name, oc)
+		}
+		renderAt(t, a, t0)
+		a.mu.Lock()
+		a.won, a.fireworks = true, newFireworksShow(t0) // the win lands (teams: re-emitted to the topped-out member)
+		a.mu.Unlock()
+		oc := a.resolveOutcome(eng, a.snapshotGame(t0), tc.gmode, t0)
+		if !oc.decided || !oc.at.Equal(t0) || oc.banner != tc.banner || oc.rank != 1 || oc.of != 1 || len(oc.winners) != len(tc.wins) {
+			t.Fatalf("%s: the winner's screen resolved %+v, want %s at t0, #1 of 1, winners %v", tc.name, oc, tc.banner, tc.wins)
+		}
+		for _, id := range tc.wins {
+			if !oc.wins(id) {
+				t.Errorf("%s: %s is not on the winning side of %+v", tc.name, id, oc)
+			}
+		}
+		if tc.gmode == config.ModeTeams && oc.winTeam != tc.team {
+			t.Errorf("%s: winning team %d, want %d", tc.name, oc.winTeam, tc.team)
+		}
+		for _, at := range []time.Duration{0, 200 * time.Millisecond, 3 * time.Second, time.Minute} {
+			renderAt(t, a, t0.Add(at)) // the crown over the fireworks, every phase of the show
+		}
+		if later := a.resolveOutcome(eng, a.snapshotGame(t0.Add(time.Minute)), tc.gmode, t0.Add(time.Minute)); !later.at.Equal(t0) {
+			t.Errorf("%s: the show's clock moved: %v, want %v", tc.name, later.at, t0)
+		}
 	}
 }
 

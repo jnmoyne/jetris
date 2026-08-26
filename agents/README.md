@@ -28,6 +28,15 @@ speaks the protocol and follows the rules.
   The horizon is the game's setting, read from its meta (absent = 0): a difficulty
   or flag of yours may use less of it, never more. **Never** the game seed beyond
   that horizon, and never protocol internals the UI doesn't render.
+- **Garbage has a per-game shape.** The meta's `garbage_holes` (0-4, absent = 0) is how
+  many empty cells every garbage row you raise on your own board is punched with (one
+  random column set per raise, or one per row when `random_garbage_holes` is true). A
+  solid garbage row never clears; a holed one clears like
+  any other line once its holes are filled — your completed-row scan is "all settled and
+  some non-garbage cell", not "no garbage cell".
+- **Attack by the game's rule.** A clear owes one garbage row per line, unless the meta's
+  `guideline_garbage` is true — then the Guideline table: a single owes nothing (touch no
+  register), a double 1 row, a triple 2, a Tetris 4.
 - **Identify as an agent.** Set `agent: true` on your presence and roster entries; honor
   each game's `max_agents` policy and `invite_only` restriction; accept invitations from
   your per-game `invites.<name>.<gameID>` KV mailbox keys (accept = join + delete the

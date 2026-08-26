@@ -286,6 +286,9 @@ type App struct {
 	allowAgentsCb  widget.Bool   // wizard agents step: allow idle agents to take seats
 	maxAgentsEd    widget.Editor // wizard agents step: how many seats agents may take
 	nextCountEd    widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
+	holesEd        widget.Editor // wizard: holes per garbage row in competitive/teams (0..config.MaxGarbageHoles; 0 = solid, unclearable rows)
+	randomHolesCb  widget.Bool   // wizard: every garbage row draws its own hole columns (off = the rows of one attack share a draw)
+	guidelineCb    widget.Bool   // wizard: attacks follow the Guideline table (1→0, 2→1, 3→2, 4→4 rows) instead of one row per line
 	quitBtn        widget.Clickable
 	chatEd         widget.Editor
 	chatBtn        widget.Clickable
@@ -443,6 +446,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.nextCountEd.SingleLine = true
 	a.nextCountEd.Filter = "0123456789"
 	a.nextCountEd.SetText("1")
+	a.holesEd.SingleLine = true
+	a.holesEd.Filter = "0123456789"
+	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
 	a.createJoinEnum.Value = "open"
 	a.histSortEnum.Value = "score"

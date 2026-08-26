@@ -223,7 +223,7 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `next_count` (0-4) is the piece-preview size — your lookahead allowance; `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `next_count` (0-4) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore |
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
@@ -241,7 +241,11 @@ and the real-time push fabric.
 ```
 `o` occupied · `t` piece type (0-6 = I,O,T,S,Z,J,L) · `a` active (falling) ·
 `r` orientation 0-3 · `ar`/`ac` anchor row/col · `pi` owning player index ·
-`g` permanent adversarial garbage.
+`g` adversarial garbage. **A row of nothing but `g` cells is permanent** — it
+never completes. A garbage row raised with holes (the game's `garbage_holes`)
+completes like any other line once every cell is settled and at least one of
+them is not garbage, i.e. the holes have been filled: your completed-row scan
+must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
 
 ### 4.3 The write discipline
 
@@ -285,10 +289,13 @@ and the real-time push fabric.
 Garbage is **not an event**. An attack is recorded durably in the victim
 board's GARBAGE register and applied by the victim as a GATED transform:
 
-- **Attacking (you cleared N lines).** For every victim board (competitive:
+- **Attacking (you cleared N lines).** The rows you owe are N — or, when the
+  meta's `guideline_garbage` is true, the Guideline table: 0 for a single, 1
+  for a double, 2 for a triple, 4 for a Tetris (owing 0 means you touch no
+  register at all). For every victim board (competitive:
   each surviving opponent; teams: the opposing board), CAS-add the garbage
   register: read its last message (`{"total": T}` at sequence S, or 0/0 if
-  never written), publish `{"total": T+N, "by": <yourPlayerIdx>}` with
+  never written), publish `{"total": T+rows, "by": <yourPlayerIdx>}` with
   `Nats-Expected-Last-Subject-Sequence: S`, and on a CAS rejection refresh
   and re-add (bounded retries). Simultaneous attackers serialize on the
   expectation and the register converges to the exact sum — an attack can
@@ -304,8 +311,14 @@ board's GARBAGE register and applied by the victim as a GATED transform:
   unchanged), which is what stops a clear and a raise on the same board from
   clobbering each other.
 - **The transform itself (cascade rules, gameplays §4/§5):** the settled
-  stack shifts up N rows and N full-width permanent adversarial rows
-  (`{"o":true,"t":1,"g":true,"pi":<causer>}`) fill the bottom. Every falling
+  stack shifts up N rows and N adversarial rows
+  (`{"o":true,"t":1,"g":true,"pi":<causer>}`) fill the bottom — full-width
+  when the meta's `garbage_holes` is 0 or absent, otherwise with that many
+  cells per row left EMPTY (publish nothing there, or `{}`): pick
+  `garbage_holes` distinct random columns once per raise and leave them open
+  on every row of the raise — or, when the meta's `random_garbage_holes` is
+  true, draw afresh for every row — never more than width−1 so each row
+  keeps garbage cells. Every falling
   piece holds its position unless the risen stack overlaps it — then it lifts
   the MINIMUM rows that clear the conflict, cascading through any piece above
   it. A piece pushed off the top eliminates its owner (list it in the txn's
@@ -415,7 +428,8 @@ agree on eliminations and outcomes without a coordinator.
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried
 - [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
-- [ ] Attacks delivered by CAS-adding victims' garbage registers (never events)
+- [ ] Garbage rows raised with the meta's `garbage_holes` (one column set per raise, or one per row under `random_garbage_holes`), and a holed garbage row cleared like any line once its holes are filled — a solid garbage row never (§4.2, §4.4)
+- [ ] Attacks delivered by CAS-adding victims' garbage registers (never events), sized one row per line — or by the 0/1/2/4 Guideline table when the meta's `guideline_garbage` is true (§4.4)
 - [ ] Clears and garbage applied as txn-gated batches; deficit reconciled on join
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish

@@ -2,6 +2,7 @@ package lobby
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func TestLobbyCreateGame(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, true, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, false, false, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,5 +200,129 @@ func TestLobbyPresence(t *testing.T) {
 	players := lb.Players()
 	if _, ok := players["player-1"]; !ok {
 		t.Log("player-1 not in presence map yet (TTL may have expired)")
+	}
+}
+
+// TestLobbyCreateGameGarbageHoles: the garbage-holes rule is written to both
+// records — the meta every peer raises from and the listing the lobby row
+// tags — clamped to 0..config.MaxGarbageHoles; a meta written before the
+// field reads as 0 (solid rows).
+func TestLobbyCreateGameGarbageHoles(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 2, false, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, js, gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.GarbageHoles != 2 {
+		t.Errorf("meta garbage_holes = %d, want 2", meta.GarbageHoles)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if g := lb.Games()[gameID]; g.GarbageHoles != 2 {
+		t.Errorf("listing garbage_holes = %d, want 2", g.GarbageHoles)
+	}
+
+	over, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 1, 9, false, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, over)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.GarbageHoles != config.MaxGarbageHoles {
+		t.Errorf("clamped meta garbage_holes = %d, want %d", meta.GarbageHoles, config.MaxGarbageHoles)
+	}
+	if meta.RandomGarbageHoles {
+		t.Error("random holes should be off unless asked for")
+	}
+
+	random, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 3, true, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, random)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.GarbageHoles != 3 || !meta.RandomGarbageHoles {
+		t.Errorf("random-holes meta = holes %d random %v, want 3 true", meta.GarbageHoles, meta.RandomGarbageHoles)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if g := lb.Games()[random]; g.GarbageHoles != 3 || !g.RandomGarbageHoles {
+		t.Errorf("random-holes listing = holes %d random %v, want 3 true", g.GarbageHoles, g.RandomGarbageHoles)
+	}
+
+	// Random holes without holes is meaningless: stored off.
+	solidRandom, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 0, true, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, solidRandom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.RandomGarbageHoles {
+		t.Error("random holes at 0 holes should be stored off")
+	}
+
+	under, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, -1, false, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, under)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.GarbageHoles != 0 {
+		t.Errorf("negative holes should clamp to 0, got %d", meta.GarbageHoles)
+	}
+
+	var legacy config.GameMeta
+	if err := json.Unmarshal([]byte(`{"game_id":"x","mode":1,"player_count":2}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.GarbageHoles != 0 {
+		t.Errorf("pre-field meta garbage_holes = %d, want 0", legacy.GarbageHoles)
+	}
+}
+
+// TestLobbyCreateGameGuidelineGarbage: the Guideline attack rule is written
+// to both records, off unless asked for.
+func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 0, false, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, js, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.GuidelineGarbage {
+		t.Error("guideline garbage should be off unless asked for")
+	}
+
+	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 1, 0, false, true, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, guideline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !meta.GuidelineGarbage {
+		t.Error("guideline garbage should be stored on the meta")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if g := lb.Games()[guideline]; !g.GuidelineGarbage {
+		t.Error("guideline garbage should be mirrored on the listing")
 	}
 }

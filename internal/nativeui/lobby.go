@@ -947,6 +947,16 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	if g.NextCount > 0 {
 		extra += fmt.Sprintf(" · next %d", g.NextCount)
 	}
+	if g.GarbageHoles > 0 {
+		if g.RandomGarbageHoles {
+			extra += fmt.Sprintf(" · random holes %d", g.GarbageHoles)
+		} else {
+			extra += fmt.Sprintf(" · holes %d", g.GarbageHoles)
+		}
+	}
+	if g.GuidelineGarbage {
+		extra += " · guideline garbage"
+	}
 
 	// The creator of an invite-only game sees each outstanding invitation's
 	// state under the roster line, with a retract/dismiss action per invitee.

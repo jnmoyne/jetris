@@ -11,7 +11,7 @@ type Cell struct {
 	AnchorRow   int       `json:"ar,omitempty"`
 	AnchorCol   int       `json:"ac,omitempty"`
 	PlayerIdx   int       `json:"pi,omitempty"` // which player's active piece (cooperative mode)
-	Adversarial bool      `json:"g,omitempty"`  // permanent adversarial cell (competitive shrink); row can never be completed
+	Adversarial bool      `json:"g,omitempty"`  // adversarial garbage cell (competitive/teams shrink); a row of nothing but these is permanent, one whose holes a player filled clears like any line
 }
 
 // Marshal encodes the cell as JSON. An empty cell encodes as "{}" (every field
@@ -77,18 +77,22 @@ func CloneRows(rows []Row) []Row {
 	return out
 }
 
-// IsFull returns true if every cell in the row is occupied (locked, not active)
-// and the row contains no adversarial cells (adversarial rows can never be completed).
+// IsFull reports whether the row is complete: every cell locked (occupied,
+// not active) and at least one of them a player's. A solid garbage row —
+// nothing but adversarial cells, what a 0-hole raise lands — is permanent and
+// never completes; a garbage row raised with holes clears like any other
+// line once a player's locked cells have filled every hole.
 func (r Row) IsFull() bool {
+	player := false
 	for _, c := range r.Cells {
-		if c.Adversarial {
-			return false // adversarial rows are permanent, never completable
-		}
 		if !c.Occupied || c.Active {
 			return false
 		}
+		if !c.Adversarial {
+			player = true
+		}
 	}
-	return len(r.Cells) > 0
+	return player
 }
 
 // IsEmpty returns true if no cell in the row is occupied.

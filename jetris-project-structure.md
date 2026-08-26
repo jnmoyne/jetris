@@ -535,6 +535,22 @@ type GameMeta struct {
     // before the field existed unmarshal to 0, preserving their behavior.
     NextCount   int        `json:"next_count"`
 
+    // Garbage holes: how many empty cells every garbage row a raise lands is
+    // punched with (0..config.MaxGarbageHoles; competitive/teams). 0 — the
+    // zero value, and every meta written before the field — raises solid
+    // rows that never clear; with holes, a garbage row clears like any other
+    // line once its holes are filled (Row.IsFull). One raise = one random
+    // column set on every row it lands, unless RandomGarbageHoles.
+    GarbageHoles int       `json:"garbage_holes,omitempty"`
+    // Random garbage holes: every garbage row draws its own hole columns
+    // ("messy" garbage). Unset — the default, and every pre-field meta — the
+    // rows of one raise share a single draw ("clean" garbage). Moot at 0 holes.
+    RandomGarbageHoles bool `json:"random_garbage_holes,omitempty"`
+    // Guideline garbage: a clear attacks by the Guideline table — 0/1/2/4 rows
+    // for 1/2/3/4 lines (game.AttackRows). Unset — the default, and every
+    // pre-field meta — every cleared line sends one row.
+    GuidelineGarbage bool `json:"guideline_garbage,omitempty"`
+
     // RNG — shared seed for deterministic piece sequence
     Seed        uint64     `json:"seed"`
 
@@ -1054,8 +1070,10 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row
 // ProjectShrinkCascade returns the full new set of rows after a garbage raise
 // on ANY board — competitive or shared; the one-piece competitive board is
 // simply the degenerate case of the same transform. The locked stack shifts up
-// by rowsToAdd and rowsToAdd permanent adversarial rows tagged with causerIdx
-// fill the bottom.
+// by rowsToAdd and rowsToAdd adversarial rows tagged with causerIdx fill the
+// bottom; holes[k] lists the columns left EMPTY in the k-th added row, top to
+// bottom (see RaiseHoles); a nil entry, or a nil/short slice, raises solid
+// rows there, which can never clear.
 //
 // Every falling piece on the board — whoever owns it — holds its on-screen
 // position while the stack rises beneath it ("dropped into place"). A piece is
@@ -1072,18 +1090,45 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row
 // shift pushed a LOCKED cell past the top of the board (the stack itself no
 // longer fits): the engine eliminates the board's owner (competitive) or every
 // remaining player on it (teams).
-func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int) (rows []Row, topped []int, boardFull bool)
+func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int, holes [][]int) (rows []Row, topped []int, boardFull bool)
+
+// RaiseHoles returns the hole columns of each of the rows garbage rows one
+// raise lands, top to bottom, for ProjectShrinkCascade: by default every row
+// shares ONE draw ("clean" garbage — the holes stack into a well; each raise
+// draws its own), with random every row draws its own ("messy" garbage).
+// Nil when the game raises solid rows. The engine's default raise draw
+// (Engine.garbageRaiseHoles; tests pin it).
+func RaiseHoles(width, holes, rows int, random bool) [][]int
+
+// RandomGarbageHoles draws the hole columns of one garbage row: holes
+// distinct random columns of a width-wide board, sorted — clamped to
+// 0..config.MaxGarbageHoles and to width−1 so every garbage row keeps at
+// least one adversarial cell. Nil for holes <= 0 (a solid, permanent row).
+func RandomGarbageHoles(width, holes int) []int
+```
+
+#### `attack.go`
+
+```go
+// AttackRows converts a clear of lines rows into the garbage it owes the
+// opponents: one row per line by default; under a game's guideline-garbage
+// rule (GameMeta.GuidelineGarbage) the Guideline table — a single sends
+// nothing, a double 1 row, a triple 2, a Tetris 4. handleLockIn passes its
+// result to bumpVictimLedgers (0 = no bump).
+func AttackRows(lines int, guideline bool) int
 
 // AdversarialRowCount returns the number of garbage rows at the bottom of the
 // board: contiguous bottom rows containing AT LEAST ONE adversarial cell.
-// Garbage rows are permanent and bottom-anchored, so the count is monotonically
-// non-decreasing over a game. It plays no engine role anymore (exactly-once
-// application is the txn gate's job, and the deficit is register arithmetic) —
-// it survives as the agent executor's mid-plan garbage detector
-// (ErrBoardChanged) and as a test observability hook. "At least one" rather
-// than "all" because a garbage row can transiently hold an overlaid active
-// piece; a piece covers at most 4 of the row's cells, so a garbage row always
-// retains adversarial cells.
+// Garbage is raised at the bottom and clears collapse the rows above it
+// downward, so garbage rows always form one bottom-anchored block; the count
+// can now DROP (a holed garbage row cleared through its holes). It plays no
+// engine role (exactly-once application is the txn gate's job, and the
+// deficit is register arithmetic) — the UI diffs successive counts to strobe
+// newly landed rows (a drop strobes nothing), and tests observe it. "At
+// least one" rather than "all" because a garbage row raised with holes has
+// empty cells until a player fills them (and locked player cells once they
+// do), and can transiently hold an overlaid active piece; the holes are
+// capped below the width, so a garbage row always retains adversarial cells.
 func (pf *Playfield) AdversarialRowCount() int
 ```
 
@@ -1102,8 +1147,15 @@ type Cell struct {
     AnchorRow   int       `json:"ar,omitempty"` // anchor row of the active piece
     AnchorCol   int       `json:"ac,omitempty"` // anchor col of the active piece
     PlayerIdx   int       `json:"pi,omitempty"` // which player's active piece this cell belongs to (cooperative mode)
-    Adversarial     bool      `json:"g,omitempty"`  // permanent adversarial cell (competitive shrink); row can never be completed
+    Adversarial     bool      `json:"g,omitempty"`  // adversarial garbage cell (competitive/teams shrink); a row of nothing but these is permanent, one whose holes a player filled clears like any line
 }
+
+// IsFull reports whether the row is complete: every cell locked (occupied,
+// not active) and at least one of them a player's. A solid garbage row —
+// nothing but adversarial cells, what a 0-hole raise lands — is permanent and
+// never completes; a garbage row raised with holes clears like any other line
+// once a player's locked cells have filled every hole.
+func (r Row) IsFull() bool
 
 func (c Cell) Marshal() ([]byte, error)        // empty cell → "{}" (the vacate payload)
 func UnmarshalCell(data []byte) (Cell, error)
@@ -1384,6 +1436,20 @@ func (e *Engine) TeamSize() int
 // agent's planner both consume exactly this accessor, which is what keeps the
 // fair-visibility horizon identical for humans and agents.
 func (e *Engine) NextCount() int
+
+// GarbageHoles reports how many holes every garbage row this game raises is
+// punched with (GameMeta.GarbageHoles clamped at Start; 0 = solid rows).
+func (e *Engine) GarbageHoles() int
+
+// RandomGarbageHoles reports whether every garbage row of a raise draws its
+// own hole columns (GameMeta.RandomGarbageHoles; false = one draw per raise).
+func (e *Engine) RandomGarbageHoles() bool
+
+// GuidelineGarbage reports whether this game's clears attack by the Guideline
+// table — 0/1/2/4 rows for 1/2/3/4 lines (GameMeta.GuidelineGarbage; false =
+// one row per cleared line). handleLockIn sizes the ledger bump with
+// game.AttackRows(clearedLines, e.guidelineGarbage).
+func (e *Engine) GuidelineGarbage() bool
 func (e *Engine) NextPieces() []game.PieceType
 
 // Stop tears down all goroutines cleanly.
@@ -1950,7 +2016,7 @@ type GameEvent struct {
 
 1. Player A's engine detects a line clear after a lock-in (implicit detection from cell state) and publishes the collapse as a **txn-gated transform** (`txnOpClear`): the batch's txn register restates the applied total unchanged and gates the collapse against a concurrent raise on A's own board; the cells changed by the row shift ride NoCAS (`changedCells` diffs the full row range so only cells that differ are published).
 2. The committed clear then advances every victim board's **garbage register** (`bumpVictimLedgers`: every surviving opponent, one goroutine each): read the register's cached value, publish `{total + n, by: A}` expecting its last sequence, refresh-and-re-add on a lost race. Simultaneous attackers serialize on the CAS and the totals **sum** — nothing is trimmed or lost, unlike the old fire-and-forget shrink event.
-3. Each victim's own-board consumer folds the register echo (`handleGarbageRegisterEcho`) and signals its `runInput`, which applies the deficit `owed − applied` as one gated cascade transform (`applyOwedGarbage` → `ProjectShrinkCascade` → `publishGatedTransform`, op `"shrink"`): the locked stack shifts up, `n` fully-occupied permanent adversarial rows fill the bottom (`Cell.Adversarial = true`, rendered grey, never completable — `IsFull()` returns false for any row containing adversarial cells), and the txn register advances `Applied` to the owed total — exactly once, however many signals arrive. In a 3+ player game every victim applies its own board's deficit independently.
+3. Each victim's own-board consumer folds the register echo (`handleGarbageRegisterEcho`) and signals its `runInput`, which applies the deficit `owed − applied` as one gated cascade transform (`applyOwedGarbage` → `ProjectShrinkCascade` → `publishGatedTransform`, op `"shrink"`): the locked stack shifts up, `n` adversarial rows fill the bottom (`Cell.Adversarial = true`, rendered grey) — solid when the game's `GarbageHoles` is 0, otherwise punched with that many empty cells at one random column set per raise — or one per row in a `RandomGarbageHoles` game (`RaiseHoles`, the engine's `garbageRaiseHoles` draw); a solid garbage row is never completable while a holed one clears like any line once a player fills its holes (`IsFull()`: every cell locked and at least one non-adversarial) — and the txn register advances `Applied` to the owed total — exactly once, however many signals arrive. In a 3+ player game every victim applies its own board's deficit independently.
 4. The transform's cells are NoCAS — the raise overrides the victim's in-flight move, whose own per-subject CAS then fails against the risen board and is dropped + flashed. The victim's falling piece holds its position while the stack rises and is lifted only by the minimum rows a conflict forces; a piece pushed off the top (`topped` containing the victim) or locked rows pushed past the top (`boardFull`) top the victim out (`handleTopOut`). See `jetris-gameplays.md` for the full competitive shrink rules.
 5. A victim that is behind — high RTT, a reconnect, a late join — reconciles from the registers whenever it catches up: the Start snapshot captures both registers and applies everything owed before playing. Spectators and eliminated players structurally never apply (no `runInput`).
 
@@ -2078,8 +2144,16 @@ func (l *Lobby) Stop()
 // joining to invited players. nextCount is the piece-preview size, clamped to
 // 0..config.MaxNextCount and stored on BOTH records: meta (the game-stream
 // protocol — every peer, agents included, reads its lookahead allowance
-// there) and the listing (the lobby row's "next N" tag).
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount int, inviteOnly bool) (string, error)
+// there) and the listing (the lobby row's "next N" tag). garbageHoles is how
+// many empty cells every garbage row is raised with (clamped to
+// 0..config.MaxGarbageHoles; 0 = solid rows that never clear), stored on both
+// records the same way (meta rules the raise, listing tags the row "holes N").
+// randomHoles makes every garbage row draw its own hole columns (off by
+// default; forced off at 0 holes; both records, tag "random holes N").
+// guidelineGarbage makes clears attack by the Guideline table, 0/1/2/4 rows
+// for 1/2/3/4 lines (off by default; both records, tag "guideline garbage").
+// ghost is the hard-drop ghost rule, stored inverted as GameMeta.NoGhost.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount, garbageHoles int, randomHoles, guidelineGarbage, ghost, inviteOnly bool) (string, error)
 
 // ErrTeamFull is returned by JoinGame when the requested team already has
 // teamSize members.
@@ -2183,6 +2257,9 @@ type GameListing struct {
     PlayerCount int               `json:"player_count"`  // configured max players
     TeamSize    int               `json:"team_size,omitempty"` // teams mode: players per team
     NextCount   int               `json:"next_count,omitempty"` // piece-preview size, mirrors GameMeta.NextCount for the lobby row's "next N" tag
+    GarbageHoles int              `json:"garbage_holes,omitempty"` // holes per garbage row, mirrors GameMeta.GarbageHoles for the lobby row's "holes N" tag
+    RandomGarbageHoles bool       `json:"random_garbage_holes,omitempty"` // each row draws its own holes, mirrors GameMeta.RandomGarbageHoles ("random holes N" tag)
+    GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // Guideline attack table, mirrors GameMeta.GuidelineGarbage ("guideline garbage" tag)
     Players     []PlayerSummary   `json:"players"`       // currently joined players
     CreatedAt   time.Time         `json:"created_at"`
     FinishedAt  time.Time         `json:"finished_at,omitempty"` // zero if not finished
@@ -2304,9 +2381,9 @@ Jetris has a single front end, `internal/nativeui`, over the engine/lobby logic.
 
 **Display-adaptive scale** (`scale.go`). Every screen is designed for the default 1280×820 dp window (`designWinW`/`designWinH`, matching `app.Size` in `Run`): the login card (`loginCardW`), the connection panel (`connPanelH`), dialog widths, side panels, the boards' cell clamps, the type sizes. On a larger display `App.layout` first runs the frame context through `scaledContext`, which multiplies the dp AND sp metric by `uiScale` — the window's excess over the design size in dp, the smaller of the two dimensions so nothing overflows, floored at 1 — so every `gtx.Dp`/`gtx.Sp` below it (and every material widget) grows in proportion and the screens fill the display instead of floating in empty space. Windows at or below the design size keep the 1:1 metric (the screens' own minimums and `app.MinSize` govern there), and HiDPI displays are compared in dp, so a Retina 2560×1600 window (1280×800 dp) is not stretched. `TestUIScale` pins the factor and the dp/sp effect.
 
-**Piece-preview UI.** The create wizard's piece-preview step carries the **next-pieces editor** (`nextCountEd`, seeded "1", digits-only, clamped to 0..`config.MaxNextCount` in `finishCreateWizard`); it is gameplay rather than join policy, so every game gets the step (it precedes the who-can-join choice), and both create paths (`createGame`, `openInvitePicker`) thread it through to `lobby.CreateGame`. Game rows tag a revealing game "· next N" (`gameRow`). On the game screen, `nextWell` (`game.go`) renders the **NEXT well** — the upcoming-piece preview in its own sub-division hugging the playfield's top-left, classic arcade style: a miniature arcade well (the board's `colBorder` frame idiom over the `colPanel` background, so it reads as its own division) holding a scaled pixel-face NEXT label and one tile per revealed piece, stacked top-down in play order — read straight off `eng.NextPieces()` every frame (no queue state; the well advances the instant a lock-in bumps `pieceIdx`). It renders for players only (each seat spawns from its own `pieceIdx`, so a spectator engine has no meaningful queue) and only when `eng.NextPieces()` is non-empty. The well is **window-size reactive**: tiles use the SAME cell size as the playfield (the `fitCellPx` result), so the preview reads exactly like the pieces on the board, and `gameBoardArea` folds the well into the fit itself — `previewCols` extra board columns plus an 18 dp frame/gap slice of `reservedX` — so well + playfield always fit side by side. Each tile is `previewCols` (4) cells wide (every spawn orientation fits) and exactly its piece's rows tall — `drawMiniPiece` returns the drawn height so the stack packs evenly with no dead row under the 1-row I — drawn via `drawCell` with `render.CellStyle` locked-cell styling and whole-cell horizontal centering.
+**Piece-preview UI.** The create wizard's piece-preview step carries the **next-pieces editor** (`nextCountEd`, seeded "1", digits-only, clamped to 0..`config.MaxNextCount` in `finishCreateWizard`); it is gameplay rather than join policy, so every game gets the step (it precedes the who-can-join choice), and both create paths (`createGame`, `openInvitePicker`) thread it through to `lobby.CreateGame`. Game rows tag a revealing game "· next N", a holed-garbage game "· holes N" — "· random holes N" when each row draws its own — and a Guideline-table game "· guideline garbage" (`gameRow`). On the game screen, `nextWell` (`game.go`) renders the **NEXT well** — the upcoming-piece preview in its own sub-division hugging the playfield's top-left, classic arcade style: a miniature arcade well (the board's `colBorder` frame idiom over the `colPanel` background, so it reads as its own division) holding a scaled pixel-face NEXT label and one tile per revealed piece, stacked top-down in play order — read straight off `eng.NextPieces()` every frame (no queue state; the well advances the instant a lock-in bumps `pieceIdx`). It renders for players only (each seat spawns from its own `pieceIdx`, so a spectator engine has no meaningful queue) and only when `eng.NextPieces()` is non-empty. The well is **window-size reactive**: tiles use the SAME cell size as the playfield (the `fitCellPx` result), so the preview reads exactly like the pieces on the board, and `gameBoardArea` folds the well into the fit itself — `previewCols` extra board columns plus an 18 dp frame/gap slice of `reservedX` — so well + playfield always fit side by side. Each tile is `previewCols` (4) cells wide (every spawn orientation fits) and exactly its piece's rows tall — `drawMiniPiece` returns the drawn height so the stack packs evenly with no dead row under the 1-row I — drawn via `drawCell` with `render.CellStyle` locked-cell styling and whole-cell horizontal centering.
 
-**Create-game wizard (`createwizard.go`).** The lobby's game-creation UI is a single **"Create a new game"** button (`createRow` → `createBtn`) that opens a modal wizard over the lobby (same scrim/Stack treatment as the invite overlays; `createWizStep` on `App` is the current step, 0 = closed). The steps, each a `wizStep*` constant with its own renderer: **1** `wizardModeStep` — game-type radios (`modeEnum`, with one-line descriptions) plus the seat-count editor (`countEd`, labeled per-team in teams mode); **2** `wizardNextStep` — the piece-preview count (`nextCountEd`); **3** `wizardJoinStep` — "Open game" vs "Invite only" radios (`createJoinEnum`); **4** `wizardAgentsStep` (open games only) — the agent policy (`allowAgentsCb`/`maxAgentsEd`). `handleCreateWizard` dispatches Cancel/Back/Next each frame; on the last step (3 for invite-only, where Next reads "Choose players…"; 4 for open, "Create game") `finishCreateWizard` reads and clamps the widgets and launches the game — `openInvitePicker` for invite-only, `createGame` otherwise. The widgets keep their values, so a later run starts from the previous run's choices.
+**Create-game wizard (`createwizard.go`).** The lobby's game-creation UI is a single **"Create a new game"** button (`createRow` → `createBtn`) that opens a modal wizard over the lobby (same scrim/Stack treatment as the invite overlays; `createWizStep` on `App` is the current step, 0 = closed). The steps, each a `wizStep*` constant with its own renderer: **1** `wizardModeStep` — game-type radios (`modeEnum`, with one-line descriptions) plus the seat-count editor (`countEd`, labeled per-team in teams mode); **2** `wizardNextStep` — the piece-preview count (`nextCountEd`), the ghost checkbox (`ghostCb`) and, for competitive/teams only (the step is retitled "PREVIEW, GHOST & GARBAGE"), the garbage-holes editor (`holesEd`, seeded "0", clamped to 0..`config.MaxGarbageHoles` in `finishCreateWizard`, forced to 0 for a cooperative game) with its "Random hole positions" checkbox (`randomHolesCb`, off by default, meaningful only with holes) and the "Guideline garbage" checkbox (`guidelineCb`, off by default — the 0/1/2/4 attack table); **3** `wizardJoinStep` — "Open game" vs "Invite only" radios (`createJoinEnum`); **4** `wizardAgentsStep` (open games only) — the agent policy (`allowAgentsCb`/`maxAgentsEd`). `handleCreateWizard` dispatches Cancel/Back/Next each frame; on the last step (3 for invite-only, where Next reads "Choose players…"; 4 for open, "Create game") `finishCreateWizard` reads and clamps the widgets and launches the game — `openInvitePicker` for invite-only, `createGame` otherwise. The widgets keep their values, so a later run starts from the previous run's choices.
 
 **Invite-only create flow (`invite.go`).** Choosing "Invite only" in the create wizard makes its final step create an invite-only game and open the **invitee-picker** modal (`invitePickerOverlay`) over the lobby. There is NO send button — `handleInvitePicker` diffs each row's widget against its last-applied intent (`inviteChoice.lastSel`/`lastTeam`) every frame and dispatches immediately: selecting sends the invitation (`sendInvite` → `lobby.Invite`; a teams change re-invites to the new team), deselecting retracts it (`retractInvite` → `lobby.Uninvite`). The pinned first row is the CREATOR (`inviteSelfRow`, `inviteSelfSel`/`inviteSelfTeam` on `App`): UNSELECTED by default — `openInvitePicker` takes no seat, so the creator hosts as a spectator (row reads "spectating when the game starts"); selecting the row seats them (`selfSeat` → `JoinGame`, team A default) and deselecting frees it (`selfSeat` → `UnjoinGame`; teams moves re-seat via unjoin+join). Rows carry live status from `pickerRowStatus` (roster + `SentInvites`): pending "✉ invited — waiting…", declined "✕ declined" (widget reset; re-selecting re-invites), joined/ready "joined ✓"(· ready) with the control hidden — and every row is pinned to a fixed height (`inviteRowHeight`, ~30dp = the control's height) so a row doesn't shrink and shift the list up when its control disappears on join. A prominent bold header (built from `capLines`, rendered at `unit.Sp(16)`) tallies seats as "k/size seats filled — j joined · p invited · o open" (one line per team in teams mode). `inviteSeatUsage` (roster + pending invites, per team for teams) backs both that tally and the capacity guard, which REFUSES a selection that would over-fill a game/team by reverting the widget and showing `invitePickerErr`. The candidate list is reactive: `syncInvitePickerCandidates` runs each frame and `reconcileInvitePicker` folds in lobby joiners and drops leavers — except players involved with THIS game (roster/invitees, the `keep` set), who stay listed. **When the roster fills, `handleInvitePicker` closes the overlay and hands the creator over automatically**: `joinGame` (ready screen) if they kept their seat, `spectateGame` otherwise. "Close" merely hides the overlay (the game keeps filling; the lobby row shows the same status); "Cancel game" retracts all outstanding invitations (`cancelInviteGame`) and deletes the game. The creator can re-open the picker for an already-created invite-only game that still has open seats via an **Invite** button on its lobby row (`gameRowBtns.reinvite` → `reopenInvitePicker`): unlike `openInvitePicker` it neither creates the game nor forces a seat — it seeds the picker from the existing listing and mirrors current state (pending invitations pre-checked, the creator's own row reflecting whether they presently hold a seat), so a creator who joined and went "Back to Lobby" can still invite more players. An invited player's client shows the incoming pop-up (`incomingInviteOverlay`, driven by `lobby.MyInvites` — oldest pending first, the next surfacing once answered), which lists the game's current roster (who joined, team, ready), with Accept & Play (→ `joinGame`, consuming the invitation) / Decline (`DeclineInvite`, or `DismissInvite` when the game is gone). Both modals are Stacked over the lobby behind a click-swallowing scrim. Game rows tag invite-only games "· invite only" and hide Join from anyone but the creator or a pending invitee (`InviteTo`); the creator's row additionally renders `inviteStatusRows` — one line per outstanding invitation (pending with an **Uninvite** button, declined with **Dismiss**, via the per-(game,invitee) `uninviteBtns` clickables) — and roster names in invite-only rows read "(joined)"/"(joined · ready ✓)".
 
@@ -2524,6 +2601,8 @@ Decisions settled during design review, recorded here for future reference.
 | 25 | Live invite picker & self-seat | The picker sends/retracts invitations the moment a selection changes (no send button) and pins the creator as a first row whose selection IS a roster seat — UNSELECTED by default (the creator hosts as a spectator), selecting it `JoinGame`s, deselecting `UnjoinGame`s; when the roster fills the picker hands the creator to `joinGame` (kept seat) or `spectateGame` (opted out) | Selection-as-action removes a whole failure mode (configured-but-never-sent invites) and makes the picker double as the live status board; defaulting the creator to spectator keeps hosting and playing as two explicit, opt-in choices. Capacity is guarded at click time from roster+pending usage, so over-invites are refused rather than bounced later at the door. |
 | 26 | Leave/rejoin keeps the seat | "Back to Lobby" clears the READY mark (`SetReady(false)`) but keeps the roster seat while the game is alive; the lobby row reads **joined**/**playing** with a Rejoin button (`JoinGame`'s already-seated branch returns the same position); leaving an in-progress game asks for confirmation; presence stays In Game while a live seat is held | A seat is a commitment to the other players — silently freeing it on a screen change would strand games; keeping it makes leave/rejoin a pure view change (the stream replays the live board on rejoin). Ready must NOT survive the exit, though: an absent "ready" player would let the countdown fire without them. |
 | 27 | Piece preview (`next_count`) | Per-game 0..4, chosen at creation, stored in `GameMeta` (NOT omitempty — 0 is meaningful and pre-field metas unmarshal to 0) and mirrored on the listing; the NEXT well beside the playfield and the agent's lookahead both read `Engine.NextPieces()` | One attribute moves both eyes: the fair-visibility contract goes from "never look ahead" to "look ahead exactly as far as the preview", and it stays enforceable because UI and planner consume the identical accessor over the seekable 7-bag sequence (no queue state to reconcile). |
+| 28 | Garbage holes (`garbage_holes`) | Per-game 0..4 (default 0), chosen on the wizard's preview step for competitive/teams, stored omitempty in `GameMeta` (0 = the pre-field behavior) and mirrored on the listing; `ProjectShrinkCascade` punches the raise's hole columns (one random set per raise, or one per row under `random_garbage_holes` — `RaiseHoles`) and `Row.IsFull` completes a garbage row once every cell is locked and at least one is a player's | Solid garbage stays the classic unclearable wall; with holes the garbage becomes playable Guideline-style (clean, well-aligned holes per attack) and a cleared garbage row is just a line — same scan, same clear transform, same score and counter-attack — so no second clearing rule, register, or transform was needed. |
+| 29 | Guideline garbage (`guideline_garbage`) | Per-game bool (off by default), chosen on the wizard's preview step for competitive/teams, stored omitempty in `GameMeta` and mirrored on the listing; `handleLockIn` sizes the attack with `game.AttackRows(lines, guideline)` — 0/1/2/4 rows for a single/double/triple/Tetris — and a zero attack bumps no register | The only thing that changes is the number CAS-added to the victims' registers: the ledger, the gate, scoring and levels are untouched, so the Guideline's "singles don't attack, a Tetris is worth double a triple" strategy layer costs one table lookup. |
 | 21 | Shared-board spawn blocked by another player's ACTIVE piece | DEFER the spawn (`spawnPending`) and retry it from `runInput`'s gravity tick (`retrySpawnIfPending`) — top out only when the spawn cells hold LOCKED cells (`CanPlaceCoop` fails AND `CanPlace` fails) | Mirrors the locked-vs-active distinction gravity/hard-drop already make; a teammate's piece merely crossing the spawn area must not eliminate a player (in teams permanently — the "one piece per team board" bug — and in coop it would end the game for everyone). The gravity ticker is the retry heartbeat: no new goroutine, the single-write-goroutine invariant holds, and the cadence matches how fast the blocker can move. Known deferred edge: a *disconnected* player's abandoned mid-air piece blocks indefinitely — a pre-existing engine-wide gap (it equally blocks movement/locks today). |
 | 22 | Piece-less watchdog + no-regress meta transitions | `retrySpawnIfPending` force-spawns after 2 piece-less gravity ticks (gated on `gameStarted`); `lobby.transitionGameStatus` refuses to overwrite finished/archived/cancelled | The lock-in edge detector needs an incoming message to fire — a dropped spawn publish on a since-silent shared board (last teammate eliminated) stalls a player forever without the watchdog. And the countdown's final `StartGame` is a detached goroutine racing the game itself: a fast game (agents) can FINISH before that write lands, and an unguarded in_progress stamp over finished resurrects the game and strands it unarchivable. |
 | 23 | Archive verdicts (winner / winning team) | Verdicts taken from the archiving ENGINE's live record (`IsEliminated` set, `GameOutcome()` accessor); per-player STATS (score/level/piece count) recovered by replaying each player's retained game_over event | With per-kind, per-player event subjects each player's single game_over can never be overwritten by other traffic, so the post-game replay recovers every player's final stats — but a who-ever-sent-an-event set would still mis-score near-simultaneous final top-outs as a draw, so the verdict stays with the engine that lived through the game: in competitive it knows every elimination; in teams it is by construction on the winning side (or a draw participant), so its own verdict IS the team verdict. |

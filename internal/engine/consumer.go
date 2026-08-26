@@ -256,9 +256,11 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		// and victims reconcile the register whenever they catch up. On a
 		// goroutine: handleLockIn holds e.mu, which the bump needs briefly,
 		// and the bump's publishes must not extend the lock-in critical
-		// section anyway.
+		// section anyway. The attack is one row per line, or the Guideline
+		// table (a single sends nothing) when the game was created with
+		// guideline garbage; a zero attack is no bump at all.
 		if e.gameMode == config.ModeTeams || e.gameMode == config.ModeCompetitive {
-			go e.bumpVictimLedgers(ctx, clearedLines)
+			go e.bumpVictimLedgers(ctx, game.AttackRows(clearedLines, e.guidelineGarbage))
 		}
 	}
 

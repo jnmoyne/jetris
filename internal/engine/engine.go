@@ -45,9 +45,22 @@ type Engine struct {
 	playerCount int  // number of players in the game
 	nextCount   int  // how many upcoming pieces this game reveals (from meta at Start; 0 = none)
 	noGhost     bool // this game hides the hard-drop ghost preview (GameMeta.NoGhost at Start)
-	teamIdx     int  // teams mode: which team this player is on (0 = A, 1 = B)
-	teamSlot    int  // teams mode: section index within the team board (spawn column offset)
-	teamSize    int  // teams mode: players per team (from meta at Start)
+	// garbageHoles is how many empty cells every garbage row this board
+	// raises is punched with (GameMeta.GarbageHoles at Start, clamped; 0 =
+	// solid rows that never clear); randomGarbageHoles makes every row of a
+	// raise draw its own columns instead of sharing one draw
+	// (GameMeta.RandomGarbageHoles). garbageRaiseHoles draws the hole
+	// columns of a raise's rows (game.RaiseHoles; tests pin it).
+	garbageHoles       int
+	randomGarbageHoles bool
+	garbageRaiseHoles  func(width, holes, rows int, random bool) [][]int
+	// guidelineGarbage makes this player's clears attack by the Guideline
+	// table (0/1/2/4 rows for 1/2/3/4 lines — game.AttackRows) instead of
+	// one row per line (GameMeta.GuidelineGarbage at Start).
+	guidelineGarbage bool
+	teamIdx          int // teams mode: which team this player is on (0 = A, 1 = B)
+	teamSlot         int // teams mode: section index within the team board (spawn column offset)
+	teamSize         int // teams mode: players per team (from meta at Start)
 
 	// gameStarted flips true when this engine learns the game is in_progress
 	// (at Start, or from the meta consumer). The piece-less watchdog is gated
@@ -85,8 +98,8 @@ type Engine struct {
 	score             atomic.Int64
 	totalLines        atomic.Int64
 	level             atomic.Int64
-	ownClearScore     atomic.Int64 // cumulative score from OWN clears only — the line_clear event's TotalScore
-	ownClearLines     atomic.Int64 // cumulative lines from OWN clears only — the line_clear event's TotalLines
+	ownClearScore     atomic.Int64                   // cumulative score from OWN clears only — the line_clear event's TotalScore
+	ownClearLines     atomic.Int64                   // cumulative lines from OWN clears only — the line_clear event's TotalLines
 	teamScores        [config.TeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (both teams' players and spectators)
 	teamLines         [config.TeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
 	hadActivePiece    bool                           // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
@@ -197,6 +210,7 @@ func New(
 		eliminatedPlayers:  make(map[string]bool),
 		eliminatedTeam:     make(map[string]int),
 		opponentGarbage:    make(map[string]opponentLedger),
+		garbageRaiseHoles:  game.RaiseHoles,
 		eventTotals:        make(map[string]struct{ score, lines int }),
 		rttPending:         make(map[uint64]time.Time),
 		lockDelay:          config.LockDelay,
@@ -222,6 +236,9 @@ func (e *Engine) Start() error {
 	e.teamSize = meta.TeamSize
 	e.nextCount = meta.NextCount
 	e.noGhost = meta.NoGhost
+	e.garbageHoles = min(max(meta.GarbageHoles, 0), config.MaxGarbageHoles)
+	e.randomGarbageHoles = meta.RandomGarbageHoles && e.garbageHoles > 0
+	e.guidelineGarbage = meta.GuidelineGarbage
 
 	// Set visible row start based on mode
 	switch e.gameMode {
@@ -1091,6 +1108,21 @@ func (e *Engine) NextCount() int { return e.nextCount }
 // (GameMeta.NoGhost inverted — a creation-time rule shared by every player,
 // like the piece preview).
 func (e *Engine) ShowGhost() bool { return !e.noGhost }
+
+// GarbageHoles reports how many holes every garbage row this game raises is
+// punched with (GameMeta.GarbageHoles, fixed at creation; 0 = solid rows
+// that never clear).
+func (e *Engine) GarbageHoles() int { return e.garbageHoles }
+
+// RandomGarbageHoles reports whether every garbage row of a raise draws its
+// own hole columns (GameMeta.RandomGarbageHoles; false = the rows of one
+// raise share a draw and their holes line up).
+func (e *Engine) RandomGarbageHoles() bool { return e.randomGarbageHoles }
+
+// GuidelineGarbage reports whether this game's clears attack by the
+// Guideline table — a single sends nothing, a double 1 row, a triple 2, a
+// Tetris 4 (GameMeta.GuidelineGarbage; false = one row per cleared line).
+func (e *Engine) GuidelineGarbage() bool { return e.guidelineGarbage }
 
 // NextPieces returns the upcoming piece types this game reveals, in play
 // order: element 0 is the piece that will spawn after the current one. The

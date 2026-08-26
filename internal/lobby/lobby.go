@@ -670,10 +670,18 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // the invitation being explicit permission. nextCount is how many upcoming
 // pieces the game reveals (clamped to 0..config.MaxNextCount); it is stored in
 // GameMeta so every peer — human UI and agent alike — sees the same lookahead.
-// ghost is whether the game renders the hard-drop ghost preview (on by
-// default in the UI); stored inverted as GameMeta.NoGhost so pre-field metas
-// keep the ghost shown.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount int, ghost, inviteOnly bool) (string, error) {
+// garbageHoles is how many empty cells every garbage row is raised with
+// (clamped to 0..config.MaxGarbageHoles; 0 = solid rows that never clear),
+// stored on both records like nextCount — the meta rules the raise, the
+// listing tags the lobby row. randomHoles makes every garbage row draw its
+// own hole columns instead of the rows of one raise sharing a draw (off by
+// default; stored on both records too, and moot at 0 holes). guidelineGarbage
+// makes a clear's attack follow the Guideline table (0/1/2/4 rows for 1/2/3/4
+// lines, game.AttackRows) instead of one row per line (off by default; both
+// records). ghost is whether the game renders the hard-drop ghost preview (on
+// by default in the UI); stored inverted as GameMeta.NoGhost so pre-field
+// metas keep the ghost shown.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount, garbageHoles int, randomHoles, guidelineGarbage, ghost, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	if maxAgents < 0 {
 		maxAgents = 0
@@ -687,22 +695,27 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	if nextCount > config.MaxNextCount {
 		nextCount = config.MaxNextCount
 	}
+	garbageHoles = min(max(garbageHoles, 0), config.MaxGarbageHoles)
+	randomHoles = randomHoles && garbageHoles > 0
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
 	}
 
 	meta := config.GameMeta{
-		GameID:      gameID,
-		Mode:        mode,
-		PlayerCount: playerCount,
-		TeamSize:    teamSize,
-		NextCount:   nextCount,
-		NoGhost:     !ghost,
-		Seed:        uint64(time.Now().UnixNano()),
-		Status:      config.GameStatusCreated,
-		CreatorID:   l.playerID,
-		CreatedAt:   time.Now(),
+		GameID:             gameID,
+		Mode:               mode,
+		PlayerCount:        playerCount,
+		TeamSize:           teamSize,
+		NextCount:          nextCount,
+		NoGhost:            !ghost,
+		GarbageHoles:       garbageHoles,
+		RandomGarbageHoles: randomHoles,
+		GuidelineGarbage:   guidelineGarbage,
+		Seed:               uint64(time.Now().UnixNano()),
+		Status:             config.GameStatusCreated,
+		CreatorID:          l.playerID,
+		CreatedAt:          time.Now(),
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -714,17 +727,20 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 
 	// Update game listing in KV (no players yet — they must click Join)
 	listing := GameListing{
-		GameID:      gameID,
-		Mode:        mode,
-		Status:      config.GameStatusCreated,
-		PlayerCount: playerCount,
-		TeamSize:    teamSize,
-		MaxAgents:   maxAgents,
-		NextCount:   nextCount,
-		InviteOnly:  inviteOnly,
-		CreatorID:   l.playerID,
-		Players:     nil,
-		CreatedAt:   meta.CreatedAt,
+		GameID:             gameID,
+		Mode:               mode,
+		Status:             config.GameStatusCreated,
+		PlayerCount:        playerCount,
+		TeamSize:           teamSize,
+		MaxAgents:          maxAgents,
+		NextCount:          nextCount,
+		GarbageHoles:       garbageHoles,
+		RandomGarbageHoles: randomHoles,
+		GuidelineGarbage:   guidelineGarbage,
+		InviteOnly:         inviteOnly,
+		CreatorID:          l.playerID,
+		Players:            nil,
+		CreatedAt:          meta.CreatedAt,
 	}
 	listingData, _ := json.Marshal(listing)
 	_, _ = l.kv.Put(ctx, config.LobbyGameKey(gameID), listingData)

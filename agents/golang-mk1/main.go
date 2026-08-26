@@ -43,6 +43,9 @@ func main() {
 	players := flag.Int("players", 2, "player count when creating a game (with --create; teams: players per team)")
 	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
 	next := flag.Int("next", 1, "upcoming pieces the game reveals when creating a game (0-4, 0 = none)")
+	holes := flag.Int("holes", 0, "holes per garbage row when creating a competitive or teams game (0-4, 0 = solid rows that never clear)")
+	randomHoles := flag.Bool("random-holes", false, "every garbage row draws its own hole columns when creating a game (default: the rows of one attack share a draw)")
+	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (default: one row per line)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
 	once := flag.Bool("once", false, "play one game, then exit")
@@ -76,7 +79,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mode %q (want cooperative, competitive or teams)\n", *modeStr)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, maxAgents: *maxAgents, next: *next}
+		host = &hosting{mode: mode, players: *players, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline}
 	}
 
 	a, err := newAgent(connChoice{server: *server, context: *natsCtx, user: *user, password: *password},

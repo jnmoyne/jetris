@@ -8,18 +8,21 @@ import (
 
 // GameListing represents a game visible in the lobby.
 type GameListing struct {
-	GameID      string            `json:"game_id"`
-	Mode        config.GameMode   `json:"mode"`
-	Status      config.GameStatus `json:"status"`
-	PlayerCount int               `json:"player_count"`
-	TeamSize    int               `json:"team_size,omitempty"`   // teams mode: players per team
-	MaxAgents   int               `json:"max_agents,omitempty"`  // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
-	NextCount   int               `json:"next_count,omitempty"`  // how many upcoming pieces are shown (0..config.MaxNextCount); mirrors GameMeta.NextCount for the lobby row
-	InviteOnly  bool              `json:"invite_only,omitempty"` // players join by invitation only (creator excepted); auto-joining agents skip it
-	CreatorID   string            `json:"creator_id,omitempty"`  // who created (and may always join) the game
-	Players     []PlayerSummary   `json:"players"`
-	CreatedAt   time.Time         `json:"created_at"`
-	FinishedAt  time.Time         `json:"finished_at,omitempty"`
+	GameID             string            `json:"game_id"`
+	Mode               config.GameMode   `json:"mode"`
+	Status             config.GameStatus `json:"status"`
+	PlayerCount        int               `json:"player_count"`
+	TeamSize           int               `json:"team_size,omitempty"`            // teams mode: players per team
+	MaxAgents          int               `json:"max_agents,omitempty"`           // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
+	NextCount          int               `json:"next_count,omitempty"`           // how many upcoming pieces are shown (0..config.MaxNextCount); mirrors GameMeta.NextCount for the lobby row
+	GarbageHoles       int               `json:"garbage_holes,omitempty"`        // holes per garbage row (0..config.MaxGarbageHoles); mirrors GameMeta.GarbageHoles for the lobby row's "holes N" tag
+	RandomGarbageHoles bool              `json:"random_garbage_holes,omitempty"` // each garbage row draws its own holes; mirrors GameMeta.RandomGarbageHoles for the lobby row's "random holes N" tag
+	GuidelineGarbage   bool              `json:"guideline_garbage,omitempty"`    // Guideline attack table (0/1/2/4 rows for 1/2/3/4 lines); mirrors GameMeta.GuidelineGarbage for the lobby row's "guideline garbage" tag
+	InviteOnly         bool              `json:"invite_only,omitempty"`          // players join by invitation only (creator excepted); auto-joining agents skip it
+	CreatorID          string            `json:"creator_id,omitempty"`           // who created (and may always join) the game
+	Players            []PlayerSummary   `json:"players"`
+	CreatedAt          time.Time         `json:"created_at"`
+	FinishedAt         time.Time         `json:"finished_at,omitempty"`
 }
 
 // PlayerSummary is the player info shown in a game listing.

@@ -486,6 +486,13 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.createJoinEnum.Value = "invite"
 		a.createWizStep = wizStepJoin
 		render(a.createWizardOverlay)
+		// Step 2 carries the garbage-holes editor for the modes that raise
+		// garbage (competitive, teams) and hides it for cooperative.
+		a.createWizStep = wizStepNext
+		for _, mode := range []string{"competitive", "cooperative"} {
+			a.modeEnum.Value = mode
+			render(a.createWizardOverlay)
+		}
 
 		// The wizard also renders as the lobby's modal overlay.
 		a.lobby = lobby.New(nil, nil, "tester", "tester")

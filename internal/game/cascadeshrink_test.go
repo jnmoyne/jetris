@@ -34,12 +34,98 @@ func TestProjectShrinkCascade(t *testing.T) {
 	// Small deterministic board: 10 wide, 12 rows (bottom row = 11).
 	newBoard := func() *Playfield { return NewPlayfieldWithHeight(10, 12) }
 
+	t.Run("holes punched at the raise's columns on every row", func(t *testing.T) {
+		pf := newBoard()
+		pf.Rows[10].Cells[0] = Cell{Occupied: true, PieceType: PieceT}
+
+		out, topped, full := pf.ProjectShrinkCascade(2, causer, [][]int{{2, 7}, {2, 7}})
+
+		if len(topped) != 0 || full {
+			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
+		}
+		for r := 10; r < 12; r++ {
+			for c := 0; c < pf.Width; c++ {
+				g := out[r].Cells[c]
+				switch {
+				case c == 2 || c == 7:
+					if g != (Cell{}) {
+						t.Errorf("row %d col %d should be a hole, got %+v", r, c, g)
+					}
+				case !g.Adversarial || !g.Occupied || g.PlayerIdx != causer:
+					t.Errorf("row %d col %d should be causer-tagged garbage, got %+v", r, c, g)
+				}
+			}
+		}
+		if !out[8].Cells[0].Occupied || out[8].Cells[0].Adversarial {
+			t.Error("locked stack should have shifted up by 2 (row 10 -> 8)")
+		}
+	})
+
+	t.Run("per-row holes land top to bottom, a missing entry is solid", func(t *testing.T) {
+		pf := newBoard()
+		out, _, _ := pf.ProjectShrinkCascade(3, causer, [][]int{{1}, {8}})
+		want := map[int]int{9: 1, 10: 8, 11: -1} // row -> hole column (-1 = solid)
+		for r, h := range want {
+			for c := 0; c < pf.Width; c++ {
+				g := out[r].Cells[c]
+				if c == h {
+					if g != (Cell{}) {
+						t.Errorf("row %d col %d should be a hole, got %+v", r, c, g)
+					}
+				} else if !g.Adversarial {
+					t.Errorf("row %d col %d should be garbage, got %+v", r, c, g)
+				}
+			}
+		}
+	})
+
+	t.Run("piece resting over the holes drops into them", func(t *testing.T) {
+		// An O resting on the floor, and a 1-row raise whose holes are exactly
+		// the O's columns: the garbage slides in around the piece, which holds
+		// its position — now sitting in the holes — instead of being lifted.
+		pf := newBoard()
+		o := HardDropDestinationCoop(Piece{Type: PieceO, Row: 0, Col: 4}, pf, 0)
+		pf.SetActivePieceForPlayer(o, 0)
+		var holes []int
+		for _, c := range o.Cells() {
+			if c[0] == 11 {
+				holes = append(holes, c[1])
+			}
+		}
+		if len(holes) != 2 {
+			t.Fatalf("O on the floor should cover 2 bottom-row cells, got %v", holes)
+		}
+
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, [][]int{holes})
+
+		if len(topped) != 0 || full {
+			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
+		}
+		if got := cascadeAnchorFor(out, 0); got != o.Row {
+			t.Errorf("piece over the holes should hold its row: got anchor %d, want %d", got, o.Row)
+		}
+		for _, c := range holes {
+			if g := out[11].Cells[c]; !g.Active || g.Occupied || g.Adversarial {
+				t.Errorf("hole col %d should hold the piece's active cell, got %+v", c, g)
+			}
+		}
+
+		// Holes elsewhere: the risen garbage overlaps the O, which lifts by 1.
+		out, topped, full = pf.ProjectShrinkCascade(1, causer, [][]int{{0, 1}})
+		if len(topped) != 0 || full {
+			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
+		}
+		if got := cascadeAnchorFor(out, 0); got != o.Row-1 {
+			t.Errorf("piece off the holes should lift by 1: got anchor %d, want %d", got, o.Row-1)
+		}
+	})
+
 	t.Run("stays put when no conflict", func(t *testing.T) {
 		pf := newBoard()
 		pf.SetActivePieceForPlayer(Piece{Type: PieceO, Row: 4, Col: 4}, 0)
 		pf.Rows[10].Cells[0] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
@@ -64,7 +150,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf.Rows[6].Cells[4] = Cell{Occupied: true, PieceType: PieceT}
 		pf.Rows[6].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
@@ -80,7 +166,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf.Rows[6].Cells[4] = Cell{Occupied: true, PieceType: PieceT}
 		pf.Rows[6].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(2, causer)
+		out, topped, full := pf.ProjectShrinkCascade(2, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
@@ -96,7 +182,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf.Rows[2].Cells[4] = Cell{Occupied: true, PieceType: PieceT}
 		pf.Rows[2].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if full {
 			t.Fatal("no locked cell was pushed past the top; boardFull should be false")
@@ -116,7 +202,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf.Rows[10].Cells[4] = Cell{Occupied: true, PieceType: PieceT}     // floor under p0
 		pf.Rows[10].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected clean cascade, got topped=%v full=%v", topped, full)
@@ -139,7 +225,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf.Rows[4].Cells[4] = Cell{Occupied: true, PieceType: PieceT}      // floor under p0
 		pf.Rows[4].Cells[5] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if full {
 			t.Fatal("no locked cell was pushed past the top; boardFull should be false")
@@ -169,7 +255,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		}
 		pf.SetActivePieceForPlayer(Piece{Type: PieceO, Row: 10, Col: 4}, 0) // in the well, rows 10-11
 
-		out, topped, full := pf.ProjectShrinkCascade(2, causer)
+		out, topped, full := pf.ProjectShrinkCascade(2, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
@@ -194,7 +280,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf := newBoard()
 		pf.Rows[10].Cells[3] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected clean shrink, got topped=%v full=%v", topped, full)
@@ -213,7 +299,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf := newBoard()
 		pf.Rows[0].Cells[2] = Cell{Occupied: true, PieceType: PieceT}
 
-		out, topped, full := pf.ProjectShrinkCascade(1, causer)
+		out, topped, full := pf.ProjectShrinkCascade(1, causer, nil)
 
 		if !full {
 			t.Fatal("locked cell in row 0 pushed off the board: boardFull should be true")
@@ -233,7 +319,7 @@ func TestProjectShrinkCascade(t *testing.T) {
 		pf.SetActivePieceForPlayer(Piece{Type: PieceT, Row: 5, Col: 3}, 0)
 		pf.Rows[11].Cells[0] = Cell{Occupied: true, PieceType: PieceL}
 
-		out, topped, full := pf.ProjectShrinkCascade(0, causer)
+		out, topped, full := pf.ProjectShrinkCascade(0, causer, nil)
 
 		if len(topped) != 0 || full {
 			t.Fatalf("expected no-op, got topped=%v full=%v", topped, full)

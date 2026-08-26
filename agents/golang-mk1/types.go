@@ -77,7 +77,7 @@ type wireCell struct {
 	Ar int  `json:"ar,omitempty"` // active anchor row
 	Ac int  `json:"ac,omitempty"` // active anchor col
 	Pi int  `json:"pi,omitempty"` // owning player index
-	G  bool `json:"g,omitempty"`  // permanent adversarial garbage
+	G  bool `json:"g,omitempty"`  // adversarial garbage (a solid garbage row is permanent; one raised with holes clears once they are filled)
 }
 
 func (c wireCell) bytes() []byte {

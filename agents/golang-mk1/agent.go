@@ -55,10 +55,13 @@ type connChoice struct {
 // hosting is the --create configuration: what kind of game to host, how big,
 // and how agent-friendly. nil on an Agent means "never host".
 type hosting struct {
-	mode      int // modeCooperative / modeCompetitive / modeTeams
-	players   int // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
-	maxAgents int // agent seats, this agent included (<=0 = all seats)
-	next      int // revealed upcoming pieces (clamped 0..4)
+	mode      int  // modeCooperative / modeCompetitive / modeTeams
+	players   int  // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
+	maxAgents int  // agent seats, this agent included (<=0 = all seats)
+	next      int  // revealed upcoming pieces (clamped 0..4)
+	holes     int  // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
+	random    bool // every garbage row draws its own hole columns (off = one draw per raise)
+	guideline bool // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
@@ -652,6 +655,8 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		maxAgents = players // agent-hosted games are agent-friendly by default
 	}
 	next := min(max(h.next, 0), maxNextCount)
+	holes := min(max(h.holes, 0), maxGarbageHoles)
+	random := h.random && holes > 0
 
 	gameID := uuidV4()
 	// The stream config every game runs on (guide §4.1): full game history
@@ -678,6 +683,15 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		meta.set("team_size", teamSize)
 	}
 	meta.set("next_count", next)
+	if holes > 0 {
+		meta.set("garbage_holes", holes) // omitted at 0 like the GUI's omitempty field
+	}
+	if random {
+		meta.set("random_garbage_holes", true)
+	}
+	if h.guideline {
+		meta.set("guideline_garbage", true)
+	}
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
 	meta.set("creator_id", a.name)
@@ -699,6 +713,15 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	}
 	listing.set("max_agents", maxAgents)
 	listing.set("next_count", next)
+	if holes > 0 {
+		listing.set("garbage_holes", holes)
+	}
+	if random {
+		listing.set("random_garbage_holes", true)
+	}
+	if h.guideline {
+		listing.set("guideline_garbage", true)
+	}
 	listing.set("creator_id", a.name)
 	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included
 	listing.set("created_at", nowRFC())
@@ -713,9 +736,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	})
 	_ = a.nc.Publish("jetris.lobby.event.game.created", ev)
 
-	log.Printf("created %s game %s for %d players (max %d agents, next %d) — waiting for opponents",
+	log.Printf("created %s game %s for %d players (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v) — waiting for opponents",
 		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
-		gameID, players, maxAgents, next)
+		gameID, players, maxAgents, next, holes, random, h.guideline)
 	return gameID, nil
 }
 

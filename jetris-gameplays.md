@@ -57,6 +57,43 @@ games — show the ghost. Off means everyone eyeballs their drops; like the piec
 preview it is one rule for every eye (agents already compute their drop
 destinations, so the ghost only levels the field for humans either way).
 
+**Garbage holes are a per-game attribute on the same wizard step** (shown for the
+modes that raise garbage — competitive and teams): `garbage_holes`, an integer 0-4
+(default 0, `config.MaxGarbageHoles`), stored in the meta (`GameMeta.GarbageHoles`)
+and mirrored on the lobby row as a `holes N` tag. It is how many **empty cells every
+garbage row is raised with**:
+
+- **0** — the rows an attack lands are solid, and a solid garbage row is
+  **permanent**: it can never be completed or cleared (the original Jetris
+  behavior, and what games created before the attribute existed replay as).
+- **1-4** — every garbage row comes with that many holes, at random columns, and
+  **a garbage row clears like any other line** once a player's locked cells have
+  filled all of its holes — it scores, it counts toward the level, and it sends
+  garbage to the opponents exactly as a line built from scratch would. By default
+  all the rows of one raise share the same hole columns, so they line up into a
+  well the victim can fill straight down (classic "clean" garbage); each raise
+  draws its own columns. A falling piece hovering over the holes when the stack
+  rises keeps its position and simply finds itself sitting in them.
+
+**Random hole positions** is a companion attribute on the same step (a checkbox,
+off by default, only meaningful with holes): `random_garbage_holes`
+(`GameMeta.RandomGarbageHoles`). When set, **every garbage row draws its own hole
+columns** instead of the rows of one raise sharing a draw — "messy" garbage whose
+holes wander from row to row, so a single well no longer digs out a whole attack
+and each row has to be cleared on its own terms. The lobby row tags such a game
+`random holes N`. Games created before the attribute — and 0-hole games — behave
+as unset.
+
+**Guideline garbage** is a third attribute on the same step (a checkbox, off by
+default): `guideline_garbage` (`GameMeta.GuidelineGarbage`). It sets **how much
+garbage a clear sends**. Unset, every cleared line owes one garbage row (the
+original Jetris rule). Set, the attack follows the Tetris Guideline table
+(`game.AttackRows`): a **single sends nothing**, a **double sends 1** row, a
+**triple 2**, a **Tetris 4** — so only multi-line clears attack, and a Tetris is
+worth twice a triple. Scoring and levels are untouched (they still count the
+lines cleared); only the rows owed change. Independent of the hole attributes.
+The lobby row tags such a game `guideline garbage`.
+
 Because the 7-bag sequence is seekable, the preview is a pure read
 (`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
 
@@ -84,7 +121,7 @@ and no difficulty setting or flag of the agent's can raise it, only use less of 
 | Empty | false | false | Nothing in this cell |
 | Active | false | true | Part of a falling piece |
 | Locked | true | false | Settled piece, permanent until line clear |
-| Adversarial | true | false | Permanent garbage cell added by a competitive or teams shrink (the `Adversarial` flag is set); its row can never be completed or cleared |
+| Adversarial | true | false | Garbage cell added by a competitive or teams shrink (the `Adversarial` flag is set). A row made of nothing but garbage cells — what a 0-hole game raises — is permanent and can never be completed; a garbage row raised with holes (§1b) clears like any other line once the holes are filled with locked cells |
 
 On shared boards (cooperative, teams), active cells carry a `PlayerIdx` field (0-indexed, global across the whole game) identifying which player's piece they belong to.
 
@@ -276,10 +313,11 @@ The only score that is kept in competitive mode is the number of line each playe
 
 ### Shrink Attack
 
-When a player clears 1 or more lines, one garbage row per cleared line is owed to **all** other players still in the game. The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
+When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the Guideline table: 0, 1, 2 or 4 rows for a single, double, triple or Tetris (a single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
 
-- **Applying:** the victim applies its deficit (rows owed − rows applied) as one **txn-gated atomic batch** (§9): the locked stack shifts up, fully-occupied permanent adversarial rows fill the bottom, and the applied total recorded in the board's txn register advances — exactly once, regardless of duplicate signals or replays.
-- **Falling piece:** the victim's falling piece does **not** rise with the stack — it holds its on-screen position and is dropped into place as the stack rises to meet it. It is pushed up only when the risen stack or garbage would overlap it, and then only by the minimum number of rows needed to clear the conflict. A push that would carry it off the top tops that player out (they lose).
+- **Applying:** the victim applies its deficit (rows owed − rows applied) as one **txn-gated atomic batch** (§9): the locked stack shifts up, adversarial rows fill the bottom — solid in a 0-hole game, otherwise punched with the game's `garbage_holes` empty cells at one random set of columns shared by every row of the raise, or one draw per row in a `random_garbage_holes` game (§1b) — and the applied total recorded in the board's txn register advances — exactly once, regardless of duplicate signals or replays.
+- **Clearing garbage:** a solid garbage row is permanent. A garbage row raised with holes is an ordinary line once its holes are filled: it is detected by the same completed-row scan at the filler's lock-in, collapses with the same clear transform, scores, and owes garbage to the opponents like any other cleared line.
+- **Falling piece:** the victim's falling piece does **not** rise with the stack — it holds its on-screen position and is dropped into place as the stack rises to meet it (over the holes of a holed raise, it ends up sitting in them). It is pushed up only when the risen stack or garbage would overlap it, and then only by the minimum number of rows needed to clear the conflict. A push that would carry it off the top tops that player out (they lose).
 - **Stack overflow:** if the shift pushes already-locked rows past the top of the board, the board is full — the player tops out (standard garbage death; the rows are not silently destroyed).
 - **Raises override moves:** the gated batch's cells carry no CAS expectations, so a raise never loses to the victim's in-flight move; the move's own per-subject CAS then fails against the risen board and the move is dropped + flashed like any other lost move.
 
@@ -291,7 +329,7 @@ The game continues until only **one player remains**. When a player tops out (th
 
 ## 5. Teams Mode
 
-Two teams of equal size ("A" = team 0, "B" = team 1). **Within a team, play is cooperative** — teammates share one wide board with all the cooperative-mode mechanics (per-player sections, shared pieces as obstacles, merge-retry on the shared subjects). **Between the teams, play is competitive** — each team has its own independent board, line clears send unclearable garbage to the opposing team's board, and the last team with a player standing wins.
+Two teams of equal size ("A" = team 0, "B" = team 1). **Within a team, play is cooperative** — teammates share one wide board with all the cooperative-mode mechanics (per-player sections, shared pieces as obstacles, merge-retry on the shared subjects). **Between the teams, play is competitive** — each team has its own independent board, line clears send garbage to the opposing team's board (unclearable unless the game was created with garbage holes, §1b), and the last team with a player standing wins.
 
 ### Players & Teams
 
@@ -317,7 +355,7 @@ In addition to the own-team score, **every** engine — both teams' players, eli
 
 ### Garbage Attack (team shrink)
 
-When a team clears N lines, N permanent adversarial rows are owed to the **opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost. Application uses the same txn-gated transform, with three shared-board specifics:
+When a team clears N lines, N adversarial rows — or the Guideline table's 0/1/2/4 in a `guideline_garbage` game (§1b) — are owed to the **opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost. The rows land solid (permanent) or punched with the game's `garbage_holes` (§1b) — one random column set per raise across the whole team-wide row, or one per row with `random_garbage_holes` — and a holed garbage row a teammate fills clears like any other team line. Application uses the same txn-gated transform, with three shared-board specifics:
 
 - **Any teammate applies; the gate makes it exactly-once.** Every alive member of the receiving team may react to the register. Each applies the deficit as a txn-gated batch, and the gate's per-subject CAS admits exactly one — a loser's entire batch is atomically rejected (nothing stored), and its recompute from fresh state finds the deficit already zero. No merge-retry, no double-shift.
 - **Pieces are pushed up, never crushed.** Every falling piece on the board — whoever owns it — holds its on-screen position unless the risen stack or garbage overlaps it, then lifts by the **minimum** rows that clear the conflict. Lifts **cascade**: a lifted piece is an obstacle for the pieces above it, so a rising stack can push a whole column of stacked falling pieces upward, each moving just enough; a piece is never merged into the risen stack. A piece pushed off the top eliminates its owner — the batch's txn record lists them (delivered before the vacating cells), so the owner's engine treats the resulting zero-active edge as an elimination, not a lock-in. If the shift pushes **locked** rows past the top, the whole board is full and every remaining player on it is eliminated (the team is out).

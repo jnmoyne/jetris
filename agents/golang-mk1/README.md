@@ -85,7 +85,10 @@ go build -o golang-mk1 .
 Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--context`
 (a NATS context; default: the selected one), `--name` (version stem, default
 `golang-mk1`), `--difficulty` (`easy`/`medium`/`hard`), `--join`, `--create` (with
-`--mode`, `--players`, `--max-agents`, `--next`), `--auto-join`, `--wait`, `--once`,
+`--mode`, `--players`, `--max-agents`, `--next`, `--holes` — holes per garbage row, 0-4,
+written to the meta as `garbage_holes` — `--random-holes`, each garbage row drawing
+its own columns, `random_garbage_holes` — and `--guideline-garbage`, the 0/1/2/4
+Guideline attack table, `guideline_garbage`), `--auto-join`, `--wait`, `--once`,
 `--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the

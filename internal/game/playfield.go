@@ -1,6 +1,7 @@
 package game
 
 import (
+	"math/rand/v2"
 	"sort"
 
 	"jetris/internal/config"
@@ -302,8 +303,10 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row 
 
 // ProjectShrinkCascade returns the full new set of rows after a garbage raise
 // on any board (competitive or shared): the locked stack shifts up by
-// rowsToAdd and rowsToAdd permanent adversarial rows tagged with causerIdx are
-// added at the bottom.
+// rowsToAdd and rowsToAdd adversarial rows tagged with causerIdx are added at
+// the bottom. holes[k] lists the columns left EMPTY in the k-th added row,
+// top to bottom (see RaiseHoles); a nil entry, or a nil/short slice, raises
+// solid rows there, which can never clear.
 //
 // Every falling piece on the board — whoever owns it — holds its on-screen
 // position while the stack rises beneath it ("dropped into place"). A piece is
@@ -321,7 +324,7 @@ func (pf *Playfield) ProjectClearRows(completed []int, shiftAnchors bool) []Row 
 // the board (the stack itself no longer fits): the engine eliminates the
 // board's owner (competitive) or every remaining player on it (teams).
 // Competitive boards are simply the one-piece case of the same transform.
-func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int) ([]Row, []int, bool) {
+func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int, holes [][]int) ([]Row, []int, bool) {
 	if rowsToAdd <= 0 {
 		return CloneRows(pf.Rows), nil, false
 	}
@@ -387,14 +390,23 @@ func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int) ([]Row, []in
 		}
 		out[i] = Row{Cells: cells}
 	}
-	// Permanent adversarial garbage fills the bottom rows.
+	// Adversarial garbage fills the bottom rows, minus the hole columns.
 	garbageStart := pf.Height - rowsToAdd
 	if garbageStart < 0 {
 		garbageStart = 0
 	}
 	for i := garbageStart; i < pf.Height; i++ {
+		hole := map[int]bool{}
+		if k := i - garbageStart; k < len(holes) {
+			for _, c := range holes[k] {
+				hole[c] = true
+			}
+		}
 		cells := make([]Cell, pf.Width)
 		for c := range cells {
+			if hole[c] {
+				continue
+			}
 			cells[c] = Cell{
 				Occupied:    true,
 				PieceType:   PieceO,
@@ -438,20 +450,56 @@ func (pf *Playfield) ProjectShrinkCascade(rowsToAdd, causerIdx int) ([]Row, []in
 	return out, topped, boardFull
 }
 
+// RaiseHoles returns the hole columns of each of the rows garbage rows one
+// raise lands, top to bottom, for ProjectShrinkCascade. By default every row
+// of the raise shares ONE draw (classic "clean" garbage — the holes stack
+// into a well the victim can fill straight down; each raise draws its own).
+// With random set, every row draws its own columns ("messy" garbage: the
+// holes wander, and a well no longer clears the whole raise). Nil when the
+// game raises solid rows (holes <= 0).
+func RaiseHoles(width, holes, rows int, random bool) [][]int {
+	if rows <= 0 || RandomGarbageHoles(width, holes) == nil {
+		return nil
+	}
+	out := make([][]int, rows)
+	shared := RandomGarbageHoles(width, holes)
+	for k := range out {
+		if random {
+			out[k] = RandomGarbageHoles(width, holes)
+		} else {
+			out[k] = shared
+		}
+	}
+	return out
+}
 
+// RandomGarbageHoles draws the hole columns of one garbage row: holes
+// distinct random columns of a width-wide board, sorted. holes is clamped to
+// 0..config.MaxGarbageHoles and to width−1, so every garbage row keeps at
+// least one adversarial cell and still reads as garbage. Nil for holes <= 0:
+// a solid, permanent row.
+func RandomGarbageHoles(width, holes int) []int {
+	holes = min(holes, config.MaxGarbageHoles, width-1)
+	if holes <= 0 {
+		return nil
+	}
+	cols := rand.Perm(width)[:holes]
+	sort.Ints(cols)
+	return cols
+}
 
 // AdversarialRowCount returns the number of garbage rows at the bottom of the
 // board: contiguous bottom rows containing at least one adversarial cell.
-// Garbage rows are permanent (never cleared) and bottom-anchored, so this
-// count is monotonically non-decreasing over a game's lifetime — the engine
-// uses it as the idempotency guard when several teammates race to apply the
-// same shrink to their shared board.
+// Garbage is raised at the bottom and clears collapse the rows above it
+// downward, so garbage rows always form one bottom-anchored block. The UI
+// diffs successive counts to strobe newly landed rows (a drop — a garbage row
+// cleared through its holes — strobes nothing).
 //
-// "At least one" rather than "all" because a garbage row can transiently hold
-// a teammate's overlaid active piece and can permanently keep the empty holes
-// that piece leaves behind (the documented shared-board skip artifact); a
-// piece covers at most 4 of the row's 10-per-teammate cells, so a garbage row
-// always retains adversarial cells.
+// "At least one" rather than "all" because a garbage row raised with holes
+// has empty cells until a player fills them (and locked player cells once
+// they do), and a garbage row can transiently hold a teammate's overlaid
+// active piece; the holes are capped below the width, so a garbage row always
+// retains adversarial cells.
 func (pf *Playfield) AdversarialRowCount() int {
 	count := 0
 	for i := pf.Height - 1; i >= 0; i-- {

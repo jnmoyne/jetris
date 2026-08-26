@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	mrand "math/rand/v2"
 	"sort"
 	"sync"
 	"time"
@@ -65,6 +66,9 @@ type Game struct {
 	metaSeed    uint64
 	playerCount int
 	nextCount   int
+	holes       int  // holes punched in every garbage row this board raises (meta garbage_holes, 0..maxGarbageHoles; 0 = solid, permanent rows)
+	randomHoles bool // every garbage row draws its own hole columns (meta random_garbage_holes; off = one draw per raise)
+	guideline   bool // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
 	dead        bool
 
 	stream       jetstream.Stream
@@ -153,6 +157,25 @@ func (g *Game) lockedPayload(pt int) wireCell {
 	}
 	return c
 }
+
+// maxGarbageHoles is the game's cap on meta garbage_holes (jetris-gameplays.md
+// §1b): the empty cells punched in every garbage row a raise lands.
+const maxGarbageHoles = 4
+
+// garbageHoleColumns draws one set of hole columns: g.holes distinct random
+// columns, always leaving at least one adversarial cell in the row. Empty
+// when the game raises solid rows. A raise draws once for all its rows (the
+// holes line up into a well) unless the game's random_garbage_holes is set,
+// in which case every row draws its own.
+func (g *Game) garbageHoleColumns() map[int]bool {
+	n := min(g.holes, g.w-1)
+	holes := make(map[int]bool, n)
+	for _, c := range mrand.Perm(g.w)[:max(n, 0)] {
+		holes[c] = true
+	}
+	return holes
+}
+
 func garbagePayload(causer int) wireCell {
 	c := wireCell{O: true, T: 1, G: true}
 	if causer != 0 {
@@ -602,22 +625,25 @@ func (g *Game) lockPiece(ctx context.Context, dest active) {
 	}
 }
 
+// completedRows: every cell settled and at least one of them ours/the stack's
+// — a solid garbage row is permanent, a garbage row whose holes the stack
+// filled clears like any other (gameplays §4).
 func (g *Game) completedRows() []int {
 	var out []int
 	h := g.height()
 	for r := 0; r < h; r++ {
-		full, garbage := true, false
+		full, stack := true, false
 		for c := 0; c < g.w; c++ {
 			cc, ok := g.locked[cell{r, c}]
 			if !ok {
 				full = false
 				break
 			}
-			if cc.G {
-				garbage = true
+			if !cc.G {
+				stack = true
 			}
 		}
-		if full && !garbage {
+		if full && stack {
 			out = append(out, r)
 		}
 	}
@@ -735,12 +761,35 @@ func (g *Game) clearRows(ctx context.Context, rows []int) {
 	g.lines += cleared
 	g.publishLineClear(ctx, cleared, scoreDelta, clearedRows)
 	log.Printf("cleared %d line(s), score %d", cleared, g.score)
-	switch g.mode {
-	case modeCompetitive:
-		g.bumpVictimLedgers(ctx, cleared)
-	case modeTeams:
-		g.bumpTeamLedger(ctx, cleared)
+	if rows := g.attackRows(cleared); rows > 0 {
+		switch g.mode {
+		case modeCompetitive:
+			g.bumpVictimLedgers(ctx, rows)
+		case modeTeams:
+			g.bumpTeamLedger(ctx, rows)
+		}
 	}
+}
+
+// attackRows converts a clear into the garbage it owes: one row per line, or
+// under the game's guideline_garbage rule the Guideline table — a single
+// sends nothing, a double 1 row, a triple 2, a Tetris 4 (gameplays §4).
+func (g *Game) attackRows(lines int) int {
+	if lines <= 0 {
+		return 0
+	}
+	if !g.guideline {
+		return lines
+	}
+	switch lines {
+	case 1:
+		return 0
+	case 2:
+		return 1
+	case 3:
+		return 2
+	}
+	return 4
 }
 
 // bumpTeamLedger CAS-adds `lines` to the OPPOSING team's garbage register.
@@ -833,7 +882,8 @@ func (g *Game) bumpMetaPieceIdx(ctx context.Context) {
 }
 
 // applyOwedGarbage applies the outstanding deficit as one gated cascade: shift
-// the stack up, fill the bottom with permanent adversarial rows, lift the
+// the stack up, fill the bottom with adversarial rows (punched with the
+// game's garbage_holes, the same columns on every row of the raise), lift the
 // falling piece the minimum needed to clear the risen stack (top out if it is
 // pushed off), and top out if locked cells are shoved past row 0.
 func (g *Game) applyOwedGarbage(ctx context.Context) {
@@ -860,8 +910,15 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 				newLocked[cell{c.r - n, c.c}] = v
 			}
 		}
+		var holes map[int]bool
 		for r := h - n; r < h; r++ {
+			if holes == nil || g.randomHoles {
+				holes = g.garbageHoleColumns()
+			}
 			for c := 0; c < g.w; c++ {
+				if holes[c] {
+					continue
+				}
 				newLocked[cell{r, c}] = gp
 			}
 		}
@@ -1133,6 +1190,9 @@ func (g *Game) run(ctx context.Context) bool {
 	g.mode = meta.int("mode")
 	g.playerCount = meta.int("player_count")
 	g.nextCount = meta.int("next_count")
+	g.holes = min(max(meta.int("garbage_holes"), 0), maxGarbageHoles) // absent (pre-field meta) = 0: solid rows
+	g.randomHoles = meta.boolv("random_garbage_holes") && g.holes > 0
+	g.guideline = meta.boolv("guideline_garbage")
 	g.a.mu.Lock()
 	g.roster = g.a.listings[g.id].players()
 	g.a.mu.Unlock()
@@ -1276,7 +1336,7 @@ func (g *Game) plan(p active) (placement, bool) {
 }
 
 // toGrid snapshots the settled board for the planner (caller holds mu). Other
-// players' falling pieces are marked like garbage: solid for placement and
+// players' falling pieces are marked as obstacles (3): solid for placement and
 // every feature, but never completing a row — the planner routes around the
 // transient obstacle without fantasizing a clear through it.
 func (g *Game) toGrid() *grid {
@@ -1293,7 +1353,7 @@ func (g *Game) toGrid() *grid {
 	}
 	for c := range g.othersAct {
 		if c.r >= 0 && c.r < gr.h && c.c >= 0 && c.c < gr.w {
-			gr.set(c.r, c.c, 2)
+			gr.set(c.r, c.c, 3)
 		}
 	}
 	return gr

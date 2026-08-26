@@ -85,20 +85,23 @@ const (
 )
 
 type GameMeta struct {
-	GameID      string     `json:"game_id"`
-	Mode        GameMode   `json:"mode"`
-	PlayerCount int        `json:"player_count"`
-	TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
-	NextCount   int        `json:"next_count"`          // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
-	NoGhost     bool       `json:"no_ghost,omitempty"`  // hard-drop ghost preview disabled for this game; inverted so the zero value — and metas written before the field — keep the ghost SHOWN (the default). Meta, not listing: like NextCount it is one rule for every player
-	Seed        uint64     `json:"seed"`
-	Status      GameStatus `json:"status"`
-	CreatorID   string     `json:"creator_id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   time.Time  `json:"started_at,omitempty"`
-	FinishedAt  time.Time  `json:"finished_at,omitempty"`
-	Abandoned   bool       `json:"abandoned,omitempty"`
-	PieceIdx    uint64     `json:"piece_idx"`
+	GameID             string     `json:"game_id"`
+	Mode               GameMode   `json:"mode"`
+	PlayerCount        int        `json:"player_count"`
+	TeamSize           int        `json:"team_size,omitempty"`            // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
+	NextCount          int        `json:"next_count"`                     // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
+	NoGhost            bool       `json:"no_ghost,omitempty"`             // hard-drop ghost preview disabled for this game; inverted so the zero value — and metas written before the field — keep the ghost SHOWN (the default). Meta, not listing: like NextCount it is one rule for every player
+	GarbageHoles       int        `json:"garbage_holes,omitempty"`        // holes punched in every garbage row a raise lands (0..MaxGarbageHoles; competitive/teams). 0 — the zero value, and every meta written before the field — raises solid rows that never clear; with holes, a garbage row clears like any other line once its holes are filled
+	RandomGarbageHoles bool       `json:"random_garbage_holes,omitempty"` // every garbage row draws its own hole columns ("messy" garbage); unset — the default, and every meta written before the field — every row of one raise shares a single draw, so its holes line up into a well ("clean" garbage). Moot at GarbageHoles 0
+	GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // attack strength follows the Tetris Guideline table — a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (game.AttackRows); unset — the default, and every meta written before the field — every cleared line sends one row
+	Seed               uint64     `json:"seed"`
+	Status             GameStatus `json:"status"`
+	CreatorID          string     `json:"creator_id"`
+	CreatedAt          time.Time  `json:"created_at"`
+	StartedAt          time.Time  `json:"started_at,omitempty"`
+	FinishedAt         time.Time  `json:"finished_at,omitempty"`
+	Abandoned          bool       `json:"abandoned,omitempty"`
+	PieceIdx           uint64     `json:"piece_idx"`
 }
 
 // PlayerResult captures per-player stats at game end.
@@ -437,6 +440,11 @@ const (
 	// pieces shown to players (0 = none). The same bound applies to agents:
 	// an agent may look ahead at most NextCount pieces in the sequence.
 	MaxNextCount = 4
+
+	// MaxGarbageHoles caps GameMeta.GarbageHoles, the per-game number of empty
+	// cells punched in every garbage row a raise lands (0 = solid, permanent
+	// rows). The holes of one raise share their columns on every row it lands.
+	MaxGarbageHoles = 4
 
 	// LockDelay is the Guideline lock delay: a piece that lands on the stack
 	// (or the floor) locks this long after landing, unless a successful shift

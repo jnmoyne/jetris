@@ -133,7 +133,10 @@ func (e *Engine) applyOwedGarbage(ctx context.Context) {
 		if deficit <= 0 {
 			return nil, TxnRegister{}, false
 		}
-		rows, t, f := pf.ProjectShrinkCascade(deficit, owed.By)
+		// Each raise draws its own hole columns (one draw for all its rows,
+		// or one per row in a random-holes game); a recompute after a lost
+		// gate simply draws again.
+		rows, t, f := pf.ProjectShrinkCascade(deficit, owed.By, e.garbageRaiseHoles(pf.Width, e.garbageHoles, deficit, e.randomGarbageHoles))
 		topped, full = t, f
 		if f || slices.Contains(t, e.playerIdx) {
 			// Our own piece is about to be removed by this batch (or the

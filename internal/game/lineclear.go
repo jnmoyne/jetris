@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-// CompletedRows returns indices of fully occupied rows (all locked, no active cells).
+// CompletedRows returns indices of fully occupied rows (all locked, no active
+// cells) that can clear — see Row.IsFull for the garbage-row rule.
 func CompletedRows(pf *Playfield) []int {
 	var rows []int
 	for i := range pf.Rows {

@@ -20,6 +20,14 @@ import (
 // Seed 5 makes everyone's first piece a horizontal I (cols 3-6).
 func setupCompetitiveGame(t *testing.T, gameID string, n int) (jetstream.JetStream, []*Engine) {
 	t.Helper()
+	return setupCompetitiveGameWith(t, gameID, n, nil, nil)
+}
+
+// setupCompetitiveGameWith is setupCompetitiveGame with two hooks: metaTweak
+// adjusts the game's meta before it is published (a garbage_holes rule),
+// engineTweak adjusts each engine before it starts (a pinned hole draw).
+func setupCompetitiveGameWith(t *testing.T, gameID string, n int, metaTweak func(*config.GameMeta), engineTweak func(i int, e *Engine)) (jetstream.JetStream, []*Engine) {
+	t.Helper()
 	url, _ := testutil.StartServer(t)
 	nc, err := nats.Connect(url)
 	if err != nil {
@@ -39,6 +47,9 @@ func setupCompetitiveGame(t *testing.T, gameID string, n int) (jetstream.JetStre
 		Seed: 5, Status: config.GameStatusInProgress,
 		CreatorID: "p1", CreatedAt: time.Now(), StartedAt: time.Now(),
 	}
+	if metaTweak != nil {
+		metaTweak(&meta)
+	}
 	data, _ := json.Marshal(meta)
 	if err := natspkg.PublishMeta(ctx, js, gameID, data, 0); err != nil {
 		t.Fatal(err)
@@ -52,6 +63,9 @@ func setupCompetitiveGame(t *testing.T, gameID string, n int) (jetstream.JetStre
 	for i, id := range ids {
 		firstOpp := ids[(i+1)%n]
 		e := New(js, gameID, id, firstOpp, config.ModeCompetitive, ModePlayer, i, 0, 0)
+		if engineTweak != nil {
+			engineTweak(i, e)
+		}
 		if err := e.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -413,5 +427,166 @@ func TestSpectatorNeverAppliesGarbage(t *testing.T) {
 	}
 	if len(msgs) != 0 {
 		t.Fatalf("spectator wrote %d board messages (first: %s)", len(msgs), msgs[0].Subject)
+	}
+}
+
+// TestGarbageHolesClearLikeAnyLine: in a garbage_holes game a raise lands
+// rows punched with the game's hole count, and a garbage row whose holes the
+// victim fills clears like any other line — it scores, collapses off the
+// board, and owes the attacker a row of its own.
+func TestGarbageHolesClearLikeAnyLine(t *testing.T) {
+	gameID := "garbage-holes"
+	// Pin the victim's hole draw to the I's columns (seed 5: a horizontal I
+	// at cols 3-6), so its hard drop falls straight into the holes.
+	js, engines := setupCompetitiveGameWith(t, gameID, 2,
+		func(m *config.GameMeta) { m.GarbageHoles = 4 },
+		func(i int, e *Engine) {
+			if i == 1 {
+				e.garbageRaiseHoles = func(width, holes, rows int, random bool) [][]int {
+					if width != config.StandardWidth || holes != 4 || rows != 1 || random {
+						t.Errorf("hole draw for width %d holes %d rows %d random %v, want %d, 4, 1, false", width, holes, rows, random, config.StandardWidth)
+					}
+					return [][]int{{3, 4, 5, 6}}
+				}
+			}
+		})
+	attacker, victim := engines[0], engines[1]
+	bottom := config.CompetitiveTotalRows(2) - 1
+	if attacker.GarbageHoles() != 4 || victim.GarbageHoles() != 4 || victim.RandomGarbageHoles() {
+		t.Fatalf("engines read garbage holes %d/%d random %v from the meta, want 4/4 false", attacker.GarbageHoles(), victim.GarbageHoles(), victim.RandomGarbageHoles())
+	}
+
+	// Owe the victim one row (as if the attacker had cleared a line).
+	payload, _ := json.Marshal(GarbageRegister{Total: 1, By: 0})
+	if _, err := js.Publish(context.Background(), config.CompetitiveGarbageSubject(gameID, "p2"), payload); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 5*time.Second, func() bool {
+		return victim.Playfield().AdversarialRowCount() == 1
+	}, "victim's board to gain the garbage row")
+
+	pf := victim.Playfield()
+	for col := 0; col < config.StandardWidth; col++ {
+		c := pf.Rows[bottom].Cells[col]
+		hole := col >= 3 && col <= 6
+		if hole && (c.Occupied || c.Adversarial) {
+			t.Fatalf("col %d should be a hole, got %+v", col, c)
+		}
+		if !hole && !(c.Occupied && c.Adversarial && c.PlayerIdx == 0) {
+			t.Fatalf("col %d should be the attacker's garbage, got %+v", col, c)
+		}
+	}
+	if pf.ActivePieceForPlayer(1) == nil {
+		t.Fatal("victim lost its falling piece during the raise")
+	}
+
+	// The I drops straight into the four holes: the garbage row completes,
+	// scores one line, collapses, and sends one row back to the attacker.
+	victim.HardDrop()
+	waitUntil(t, 5*time.Second, func() bool { return victim.Score() == 1 }, "victim's clear of the garbage row to score")
+	waitUntil(t, 5*time.Second, func() bool {
+		return victim.Playfield().AdversarialRowCount() == 0
+	}, "the cleared garbage row to leave the victim's board")
+	for col := 0; col < config.StandardWidth; col++ {
+		if c := victim.Playfield().Rows[bottom].Cells[col]; c.Occupied || c.Adversarial {
+			t.Fatalf("bottom row col %d should be empty after the clear, got %+v", col, c)
+		}
+	}
+	waitUntil(t, 5*time.Second, func() bool {
+		return attacker.Playfield().AdversarialRowCount() == 1
+	}, "the attacker to receive the victim's counter-attack")
+	reg, _ := fetchGarbageRegister(t, js, gameID, config.CompetitiveGarbageSubject(gameID, "p1"))
+	if reg.Total != 1 || reg.By != 1 {
+		t.Fatalf("attacker's garbage register = %+v, want total 1 by 1", reg)
+	}
+	// The attacker's row came from the live draw: 4 holes, 6 garbage cells.
+	holes, garbage := 0, 0
+	for _, c := range attacker.Playfield().Rows[bottom].Cells {
+		switch {
+		case c.Adversarial && c.Occupied:
+			garbage++
+		case c == game.Cell{}:
+			holes++
+		}
+	}
+	if holes != 4 || garbage != 6 {
+		t.Fatalf("attacker's garbage row has %d holes and %d garbage cells, want 4 and 6", holes, garbage)
+	}
+}
+
+// TestGuidelineGarbageSingleSendsNothing: in a guideline_garbage game a
+// single line clear owes the opponent no garbage at all (the Guideline
+// table: 0/1/2/4 rows for 1/2/3/4 lines) — the register is never bumped.
+func TestGuidelineGarbageSingleSendsNothing(t *testing.T) {
+	gameID := "guideline-single"
+	js, engines := setupCompetitiveGameWith(t, gameID, 2,
+		func(m *config.GameMeta) { m.GuidelineGarbage = true }, nil)
+	a, b := engines[0], engines[1]
+	bottom := config.CompetitiveTotalRows(2) - 1
+	if !a.GuidelineGarbage() || !b.GuidelineGarbage() {
+		t.Fatal("engines should read guideline garbage from the meta")
+	}
+
+	prefillBottomForI(t, js, gameID, "p1", bottom)
+	waitUntil(t, 3*time.Second, func() bool {
+		return a.Playfield().Rows[bottom].Cells[0].Occupied
+	}, "pre-fill to apply on a's replica")
+
+	a.HardDrop()
+	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 1 }, "a's single to score")
+
+	// Give a wrongly sent attack time to land, then assert nothing did.
+	time.Sleep(700 * time.Millisecond)
+	if got := b.Playfield().AdversarialRowCount(); got != 0 {
+		t.Fatalf("b has %d adversarial rows after a single, want 0", got)
+	}
+	reg, seq := fetchGarbageRegister(t, js, gameID, config.CompetitiveGarbageSubject(gameID, "p2"))
+	if reg.Total != 0 || seq != 0 {
+		t.Fatalf("b's garbage register = %+v at seq %d, want never written", reg, seq)
+	}
+}
+
+// TestGuidelineGarbageDoubleSendsOne: under the same rule a double owes
+// exactly one row (two lines cleared, one row sent).
+func TestGuidelineGarbageDoubleSendsOne(t *testing.T) {
+	gameID := "guideline-double"
+	js, engines := setupCompetitiveGameWith(t, gameID, 2,
+		func(m *config.GameMeta) { m.GuidelineGarbage = true }, nil)
+	a, b := engines[0], engines[1]
+	bottom := config.CompetitiveTotalRows(2) - 1
+
+	// Bottom two rows full except column 5 — the seed-5 I's column once
+	// rotated vertical (as in TestMultiLineClearSendsAllGarbage).
+	for _, r := range []int{bottom - 1, bottom} {
+		for c := 0; c < config.StandardWidth; c++ {
+			if c == 5 {
+				continue
+			}
+			publishCompetitiveCell(t, js, gameID, "p1", r, c,
+				game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: 0})
+		}
+	}
+	waitUntil(t, 3*time.Second, func() bool {
+		return a.Playfield().Rows[bottom].Cells[0].Occupied &&
+			a.Playfield().Rows[bottom-1].Cells[0].Occupied
+	}, "two-row pre-fill to apply on a's replica")
+	a.RotateCW()
+	waitUntil(t, 3*time.Second, func() bool {
+		p := a.Playfield().ActivePieceForPlayer(0)
+		return p != nil && p.Orientation == 1
+	}, "a's I to rotate vertical")
+	a.HardDrop()
+	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 2 }, "a's double to score 2")
+
+	waitUntil(t, 5*time.Second, func() bool {
+		return b.Playfield().AdversarialRowCount() == 1
+	}, "b's board to gain the one row a double owes")
+	time.Sleep(500 * time.Millisecond)
+	if got := b.Playfield().AdversarialRowCount(); got != 1 {
+		t.Fatalf("b has %d adversarial rows, want exactly 1", got)
+	}
+	reg, _ := fetchGarbageRegister(t, js, gameID, config.CompetitiveGarbageSubject(gameID, "p2"))
+	if reg.Total != 1 || reg.By != 0 {
+		t.Fatalf("b's garbage register = %+v, want total 1 by 0", reg)
 	}
 }

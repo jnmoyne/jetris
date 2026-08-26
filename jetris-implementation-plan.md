@@ -3719,6 +3719,104 @@ agent's own module (it is not part of the main module's `go build ./...` / `go t
 
 ---
 
+## Phase 18 — Garbage Holes (`garbage_holes`)
+
+**Goal:** a create-time rule for the garbage-raising modes (competitive, teams):
+how many empty cells every garbage row an attack lands is punched with, 0..4
+(`config.MaxGarbageHoles`, default 0). At 0 the raise is the classic solid,
+unclearable wall. With holes, garbage becomes playable: **a garbage row clears
+like any other line** once a player's locked cells have filled its holes — it
+scores, counts toward the level, and sends garbage back like a line built from
+scratch.
+
+**Data:** `GameMeta.GarbageHoles` (`garbage_holes`, omitempty — 0 is the
+pre-field behavior, so every older meta and agent-hosted meta reads as solid),
+mirrored as `GameListing.GarbageHoles` for the lobby row's `holes N` tag.
+`lobby.CreateGame(ctx, mode, playerCount, teamSize, maxAgents, nextCount,
+garbageHoles, ghost, inviteOnly)` clamps and writes both.
+
+**Rule (`internal/game`):** `Row.IsFull` becomes "every cell locked AND at least
+one of them non-adversarial" — the one-line change that keeps solid rows
+permanent and makes filled holed rows complete, with no second clearing rule,
+register, or transform: the existing completed-row scan at lock-in, the gated
+clear transform, the score and the ledger bump all just see another cleared
+line. `ProjectShrinkCascade(rowsToAdd, causerIdx, holes)` leaves the `holes`
+columns empty on each row of the raise (`holes[k]` per row); `RaiseHoles(width,
+holes, rows, random)` draws them via `RandomGarbageHoles(width, holes)` — one
+random, sorted, distinct column set shared by every row of the raise
+(Guideline-style "clean" garbage whose holes line up into a well), or one draw
+per row under the companion **`random_garbage_holes`** rule (a checkbox, unset
+by default, `GameMeta.RandomGarbageHoles`, mirrored on the listing, forced off
+at 0 holes: "messy" garbage whose holes wander) — clamped below the width so a
+garbage row always keeps adversarial cells (what `AdversarialRowCount`, the UI's
+landed-garbage strobe, and `garbageAttacker` rely on; the count can now drop,
+which the strobe reads as "nothing landed"). A falling piece hovering over the
+holes when the stack rises keeps its position and finds itself sitting in them —
+the existing minimum-lift cascade, no special case.
+
+**Engine:** captures `meta.GarbageHoles` and `meta.RandomGarbageHoles` at `Start`
+(`e.garbageHoles`/`e.randomGarbageHoles`, accessors `GarbageHoles()` /
+`RandomGarbageHoles()`); `applyOwedGarbage` passes `e.garbageRaiseHoles(width,
+holes, rows, random)` to the projection — `game.RaiseHoles` by default, pinned
+by tests (the draw is per attempt, so a gate-losing recompute simply redraws).
+
+**UI (`nativeui`):** the wizard's preview step grows a **garbage-holes editor**
+(`holesEd`, seeded "0") and a "Random hole positions" checkbox (`randomHolesCb`,
+off) for competitive/teams — retitled "PREVIEW, GHOST & GARBAGE" — and forces
+both to off for a cooperative game (no garbage there, no misleading tag); both
+create paths thread them to `lobby.CreateGame`; `gameRow` tags "· holes N" or
+"· random holes N".
+
+**Agents:** `golang-mk1` reads `garbage_holes` from the meta, punches the holes
+in its own raise (`garbageHoleColumns`, one draw per raise or per row under
+`random_garbage_holes`), and applies the new
+completion rule on both its live board and the planner grid (which now
+distinguishes garbage, value 2, from a foreign falling piece, value 3 — the
+latter still never completes a row); `--holes` / `--random-holes` host such a game.
+`agents/example-python` does the same in its `completed_rows` and
+`apply_owed_garbage`. The agent guide documents the rule, the meta field, and
+the raise shape (§4.2, §4.4, checklist).
+
+**Tests:** `Row.IsFull`/`CompletedRows` rule and `RandomGarbageHoles` clamps
+(`garbageholes_test.go`), the projection's hole punching and the
+piece-over-the-holes case (`cascadeshrink_test.go`), the end-to-end raise →
+fill → clear → counter-attack flow with a pinned draw
+(`TestGarbageHolesClearLikeAnyLine`), `CreateGame` storing and clamping the
+field on both records, the wizard step in every mode, and the agent's grid and
+live-board rule.
+
+## Phase 19 — Guideline Garbage (`guideline_garbage`)
+
+**Goal:** a create-time rule (off by default) for the garbage-raising modes that
+sizes an attack by the Tetris Guideline table instead of one row per cleared
+line: a **single sends nothing**, a double 1 row, a triple 2, a Tetris 4.
+Scoring and levels keep counting lines; only the rows owed change.
+
+**Data:** `GameMeta.GuidelineGarbage` (`guideline_garbage`, omitempty — absent
+and pre-field metas read as off), mirrored as `GameListing.GuidelineGarbage`
+for the lobby row's `guideline garbage` tag; `lobby.CreateGame` gains a
+`guidelineGarbage` bool (after `randomHoles`).
+
+**Rule (`internal/game/attack.go`):** `AttackRows(lines, guideline)` — `lines`
+by default, else `{1: 0, 2: 1, 3: 2, ≥4: 4}`. **Engine:** captures the flag at
+`Start` (`e.guidelineGarbage`, accessor `GuidelineGarbage()`); `handleLockIn`
+bumps the victims' ledgers with `game.AttackRows(clearedLines, ...)`, and
+`bumpVictimLedgers` already no-ops at 0 — the ledger, the gate, and every
+consumer are untouched.
+
+**UI:** a "Guideline garbage" checkbox (`guidelineCb`) on the wizard's preview
+step for competitive/teams, threaded through both create paths; `gameRow` tags
+"· guideline garbage". **Agents:** `golang-mk1` reads the meta flag and sizes
+its bump with `attackRows` (`--guideline-garbage` hosts such a game);
+`agents/example-python` does the same in `attack_rows`. The agent guide's §4.4
+attacking bullet and checklist carry the rule.
+
+**Tests:** the `AttackRows` table (`attack_test.go`, and the agent's
+`TestAttackRows`), `CreateGame` storing the flag on both records, and two
+end-to-end engine tests in a guideline game — a single leaves the victim's
+register unwritten (`TestGuidelineGarbageSingleSendsNothing`), a double owes
+exactly one row (`TestGuidelineGarbageDoubleSendsOne`).
+
 ## Cross-Cutting Implementation Rules
 
 These rules apply throughout all phases:

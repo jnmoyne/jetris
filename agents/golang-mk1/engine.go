@@ -1,9 +1,12 @@
 package main
 
 // grid is a settled-cells board used only for planning: one cell state per
-// square, no falling piece. 0 = empty, 1 = solid stack, 2 = permanent
-// adversarial garbage (counts as filled for every feature but can never
-// complete a row). It is a cheap value the planner clones per candidate.
+// square, no falling piece. 0 = empty, 1 = solid stack, 2 = adversarial
+// garbage (filled for every feature; a row of nothing but garbage can never
+// complete, a garbage row whose holes the stack has filled clears like any
+// other), 3 = another player's falling piece (filled for every feature, and
+// a row it crosses never completes). It is a cheap value the planner clones
+// per candidate.
 type grid struct {
 	h, w  int
 	cells []int8 // row-major, w columns per row
@@ -44,23 +47,26 @@ func (g *grid) dropRow(pt, orient, row, col int) int {
 }
 
 // completedRows returns the indices of full rows that can actually clear: every
-// column solid and no garbage cell (garbage rows are permanent).
+// column filled, at least one of them by the stack (a solid garbage row is
+// permanent), and no foreign falling piece in the row.
 func (g *grid) completedRows() []int {
 	var out []int
 	for r := 0; r < g.h; r++ {
-		full, garbage := true, false
+		full, stack, blocked := true, false, false
 		for c := 0; c < g.w; c++ {
 			switch g.at(r, c) {
 			case 0:
 				full = false
-			case 2:
-				garbage = true
+			case 1:
+				stack = true
+			case 3:
+				blocked = true
 			}
 			if !full {
 				break
 			}
 		}
-		if full && !garbage {
+		if full && stack && !blocked {
 			out = append(out, r)
 		}
 	}

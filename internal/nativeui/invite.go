@@ -108,8 +108,8 @@ func inviteSeatUsage(g lobby.GameListing, invites []lobby.Invitation, teams bool
 // they'll spectate once the game fills; select yourself to also take a seat.
 // No seat is taken at creation. Runs off the UI goroutine (create does a NATS
 // round trip).
-func (a *App) openInvitePicker(mode config.GameMode, count, nextCount int, ghost bool) {
-	gameID := a.createGame(mode, count, 0, nextCount, ghost, true) // invite-only: agent policy is per-invite
+func (a *App) openInvitePicker(mode config.GameMode, count, nextCount, holes int, randomHoles, guideline, ghost bool) {
+	gameID := a.createGame(mode, count, 0, nextCount, holes, randomHoles, guideline, ghost, true) // invite-only: agent policy is per-invite
 	if gameID == "" {
 		return
 	}

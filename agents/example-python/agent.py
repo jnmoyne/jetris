@@ -39,6 +39,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import random
 import re
 import secrets
 import signal
@@ -188,11 +189,13 @@ def drop_row(locked, height, pt, orient, row, col):
 
 
 def completed_rows(locked, height):
-    """Full rows: every cell settled and none adversarial (garbage never clears)."""
+    """Full rows that can clear: every cell settled and at least one of them a
+    player's. A solid garbage row is permanent; a garbage row raised with holes
+    clears like any other line once the holes are filled (gameplays §4)."""
     out = []
     for r in range(height):
         cells = [locked.get((r, c)) for c in range(WIDTH)]
-        if all(c is not None for c in cells) and not any(c.get("g") for c in cells):
+        if all(c is not None for c in cells) and any(not c.get("g") for c in cells):
             out.append(r)
     return out
 
@@ -912,7 +915,17 @@ class Game:
         self.score += cleared
         self.total_lines += cleared
         log(f"cleared {cleared} line(s), score {self.score}")
-        await self.bump_victim_ledgers(cleared)
+        rows = self.attack_rows(cleared)
+        if rows:
+            await self.bump_victim_ledgers(rows)
+
+    def attack_rows(self, lines):
+        """The garbage a clear owes: one row per line, or — when the meta's
+        guideline_garbage is set — the Guideline table: a single sends
+        nothing, a double 1 row, a triple 2, a Tetris 4."""
+        if not (self.meta or {}).get("guideline_garbage"):
+            return lines
+        return {1: 0, 2: 1, 3: 2}.get(lines, 4 if lines >= 4 else 0)
 
     async def bump_victim_ledgers(self, lines):
         """The attack: CAS-add `lines` to every surviving opponent's garbage
@@ -961,8 +974,9 @@ class Game:
 
     async def apply_owed_garbage(self):
         """Apply the outstanding deficit (owed − applied) as ONE gated cascade
-        transform: shift the stack up, fill the bottom with permanent
-        adversarial rows, keep the falling piece at its position unless the
+        transform: shift the stack up, fill the bottom with adversarial rows
+        (punched with the game's garbage_holes — the same columns on every row
+        of the raise), keep the falling piece at its position unless the
         risen stack overlaps it — then lift it the MINIMUM amount that clears
         the conflict, and top out if it's pushed off the board. Locked cells
         shoved past row 0 mean the whole board is full: also a top-out. The
@@ -977,14 +991,25 @@ class Game:
                 garbage = {"o": True, "t": 1, "g": True}
                 if causer_idx:
                     garbage["pi"] = causer_idx
+                # The game's garbage_holes (meta; absent = 0 = solid rows):
+                # empty cells in every raised row — one random column set for
+                # the whole raise, or one per row when random_garbage_holes is
+                # set — always leaving adversarial cells in the row.
+                meta = self.meta or {}
+                hole_count = min(max(int(meta.get("garbage_holes", 0)), 0), 4, WIDTH - 1)
+                per_row = bool(meta.get("random_garbage_holes"))
+                holes = set(random.sample(range(WIDTH), hole_count))
                 board_full = any(r < n for r, _c in self.locked)
                 new = {}
                 for (r, c), cell in self.locked.items():
                     if r - n >= 0:
                         new[(r - n, c)] = cell
-                for r in range(self.height - n, self.height):
+                for i, r in enumerate(range(self.height - n, self.height)):
+                    if per_row and i > 0:
+                        holes = set(random.sample(range(WIDTH), hole_count))
                     for c in range(WIDTH):
-                        new[(r, c)] = garbage
+                        if c not in holes:
+                            new[(r, c)] = garbage
                 old_wire = {rc: self.locked.get(rc) for rc in set(self.locked) | set(new)}
                 new_piece, squeezed = self.piece, False
                 if self.piece:

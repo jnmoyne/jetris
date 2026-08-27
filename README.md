@@ -24,9 +24,13 @@ If you enjoy the game, don't forget to give this repo a star! Thank you!
 
 ***How to play Jetris***
 
-To just play the game with others over the Internet, go ahead and download the latest release of the `jetris` binary for your platform (pick the right asset from https://github.com/jnmoyne/jetris/releases) and just run it, or clone this repo and build the binary yourself (e.g. `go build -o jetris ./cmd/jetris/`).
+To just play the game with others over the Internet you have two options:
+
+Option 1: Download and run the latest release of the `jetris` binary for your platform (pick the right asset from https://github.com/jnmoyne/jetris/releases) and just run it, or clone this repo and build the binary yourself (e.g. `go build -o jetris ./cmd/jetris/`).
 
 If you don't know how to run an unsigned binary you downloaded from GitHub don't worry it's very straightforward, see the following simple instructions for example: Mac OSX https://youtu.be/o4-sX9Tydz0, Windows https://share.google/aimode/MOdkf4QbNr2g9bhZB
+
+Option 2: checkout this repo and build the browser version using `./scripts/build-wasm.sh` then run a local HTTP server for the page (e.g. `python3 -m http.server -d dist/web 8080`), and finally open `localhost:8080` in your Web browser.
 
 Once you have started the `jetris` binary, you can then pick which NATS.io server to connect to right on the login screen's server browser: select one of your NATS CLI contexts from its CONTEXTS section (it starts on your currently selected context), pick a bookmarked URL from FAVORITES (stored in ~/.config/jetris/favorites.json and pre-populated), add your own, or switch to the **LAN party mode (embedded NATS server)** tab to have Jetris start a JetStream-enabled `nats-server` inside the game process itself (no auth, port of your choosing — 4222 by default — storage in a local `jetstream-data` directory) — the tab shows "Your server's URL is `nats://<ip>:<port>`" so you can share it with the people you want to play with, who just add it to their favorites. Clicking a server sizes it up on the spot — its core NATS ping and how many players are in its lobby right now — and its **↻** re-checks it whenever you like. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). And start playing (or spectating)!
 

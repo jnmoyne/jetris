@@ -185,7 +185,7 @@ const (
 // TestGameFocusFollowsClicks drives the real game screen through a Gio
 // input.Router: once the game is playable the board owns the keys; a press
 // inside the chat panel hands them to the chat editor, a press anywhere else
-// hands them back, and so does Escape while typing; Shift-Tab switches either
+// hands them back, and so does Escape while typing; Tab switches either
 // way. Before the start there is no contest (the chat editor is the only key
 // consumer), so no press moves the keys to the board.
 func TestGameFocusFollowsClicks(t *testing.T) {
@@ -240,10 +240,21 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 		t.Fatal("Escape in the chat did not hand the keys back to the board")
 	}
 
-	// Shift-Tab toggles. The window delivers Tab keys wrapped as an
-	// input.SystemEvent (so that, unclaimed, they drive Gio's generic focus
-	// traversal); the switch's explicit filters claim them.
+	// Tab toggles — a shifted Tab too. The window delivers Tab keys wrapped
+	// as an input.SystemEvent (so that, unclaimed, they drive Gio's generic
+	// focus traversal); the switch's explicit filters claim them.
+	tab := input.SystemEvent{Event: key.Event{Name: key.NameTab, State: key.Press}}
 	shiftTab := input.SystemEvent{Event: key.Event{Name: key.NameTab, Modifiers: key.ModShift, State: key.Press}}
+	r.Queue(tab)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("Tab on the board did not hand the keys to the chat editor")
+	}
+	r.Queue(tab)
+	gameFrame(a, &r)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("Tab in the chat did not hand the keys back to the board")
+	}
 	r.Queue(shiftTab)
 	gameFrame(a, &r)
 	if !r.Source().Focused(&a.gameChatEd) {

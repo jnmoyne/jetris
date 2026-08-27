@@ -342,7 +342,7 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 // a click into the panel hands them to the chat (handleGameFocus — the panel
 // is the chat's pointer area, a.chatTag) and the panel wears the white focus
 // ring; a click anywhere else, or Escape, hands them back to the board, and
-// Shift-Tab switches either way. The editor's hint says which way the keys
+// Tab switches either way. The editor's hint says which way the keys
 // currently go.
 func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	gameID := eng.GameID()
@@ -359,10 +359,10 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	ring := colorN{} // transparent: the ring shows only while the chat holds the keys
 	switch {
 	case view.chatFocused:
-		hint = "Message… (Esc, Shift-Tab or click the board to play again; @lobby messages the lobby)"
+		hint = "Message… (Esc, Tab or click the board to play again; @lobby messages the lobby)"
 		ring = colFocus
 	case view.boardFocused:
-		hint = "Click here to chat — the keys are driving your piece; Shift-Tab to switch focus"
+		hint = "Click here to chat — the keys are driving your piece; Tab to switch focus"
 	}
 
 	return pointerArea(gtx, &a.chatTag, func(gtx C) D {

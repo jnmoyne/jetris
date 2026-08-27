@@ -37,8 +37,8 @@ func boardKeyFilters(tag event.Tag) []event.Filter {
 //
 // ← / → move, ↓ soft drop, ↑ / X rotate clockwise, Z rotate counter-clockwise,
 // Space hard drop, C hold (the Guideline's key; a no-op in a game without the
-// hold rule — Shift, the Guideline's other hold key, is not mapped because
-// Shift-Tab is the board/chat focus switch).
+// hold rule — Shift, the Guideline's other hold key, is not mapped: it is a
+// modifier, and a shifted Tab is still the board/chat focus switch).
 func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 	switch name {
 	case key.NameLeftArrow:
@@ -97,11 +97,11 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 // the chat editor; any other press hands them back to the board — as does
 // Escape while typing, and the moment the game becomes playable (start,
 // rejoin) so the piece answers at once even if the player was mid-sentence
-// during the countdown. Shift-Tab switches either way without the mouse.
-// (Gio's window wraps Tab/Shift-Tab as an input.SystemEvent and cycles the
-// focus through EVERY focusable widget when no handler claims it; the
-// explicit filters here claim it, so mid-game it only ever toggles between
-// the board and the chat.)
+// during the countdown. Tab switches either way without the mouse — a
+// shifted Tab too, so an old habit never falls through. (Gio's window wraps
+// Tab/Shift-Tab as an input.SystemEvent and cycles the focus through EVERY
+// focusable widget when no handler claims it; the explicit filters here
+// claim it, so mid-game it only ever toggles between the board and the chat.)
 //
 // playing is "the keys drive the piece" (a seated player, game in progress,
 // not eliminated); outside it there is no contest — the chat editor is the
@@ -153,13 +153,14 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 			target = &a.boardTag
 		}
 	}
-	// Shift-Tab: from the board to the chat and from the chat to the board.
+	// Tab (shifted or not): from the board to the chat and from the chat to
+	// the board.
 	for _, sw := range []struct{ from, to event.Tag }{
 		{&a.boardTag, &a.gameChatEd},
 		{&a.gameChatEd, &a.boardTag},
 	} {
 		for {
-			ev, ok := gtx.Source.Event(key.Filter{Focus: sw.from, Name: key.NameTab, Required: key.ModShift})
+			ev, ok := gtx.Source.Event(key.Filter{Focus: sw.from, Name: key.NameTab, Optional: key.ModShift})
 			if !ok {
 				break
 			}

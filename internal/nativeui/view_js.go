@@ -70,7 +70,7 @@ func keepKeyboardFocus(cont js.Value) {
 		return nil
 	})
 	// Tab would walk the browser's focus out of the page (nothing else on it
-	// can take it), and Shift-Tab is the in-game board/chat switch. Gio's own
+	// can take it), and it is the in-game board/chat switch. Gio's own
 	// keydown listener was added first and still sees the key.
 	swallowTab := js.FuncOf(func(this js.Value, args []js.Value) any {
 		if ev := args[0]; ev.Get("key").String() == "Tab" {

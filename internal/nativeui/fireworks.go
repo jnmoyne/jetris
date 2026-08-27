@@ -19,7 +19,7 @@ import (
 // (competitive) or their team (teams) wins. A show is generated once, when
 // UpdateGameOver{Won: true} arrives, and every frame after that is a pure
 // function of gtx.Now — the countdown/CAS-flash idiom: layoutGame keeps
-// calling invalidate() while the show is active, and no per-frame state is
+// calling animate(gtx) while the show is active, and no per-frame state is
 // mutated. Rockets launch from the bottom edge, rise to a random apex, and
 // every one explodes into a small logo built from particles sampled off an
 // embedded icon — the NATS "N" (nats-icon.png), except one rocket in ten,

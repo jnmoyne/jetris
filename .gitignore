@@ -5,3 +5,4 @@ jetstream-data/
 /jetris
 /headless-player
 agents/golang-mk1/golang-mk1
+dist/

@@ -170,7 +170,7 @@ func (a *App) bufferedMovesStrip(gtx C, moves []engine.MoveType) D {
 	}
 	popping := now.Sub(a.bufGrewAt) < bufPopDur
 	if len(moves) > 0 || popping {
-		a.invalidate() // keep the chase glow / pop-in animating
+		animate(gtx) // keep the chase glow / pop-in animating
 	}
 
 	count, countCol := "EMPTY", colMuted

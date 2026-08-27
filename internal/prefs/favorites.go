@@ -7,9 +7,6 @@ package prefs
 
 import (
 	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -20,64 +17,62 @@ type Favorite struct {
 	URL   string `json:"url"`
 }
 
-// The bookmarks every fresh install starts with: the public nats.io demo
-// server (US central) and the Jetris servers in EU central and AP south.
+// The bookmarks every fresh install starts with: the Jetris servers in EU
+// central and AP south and the public nats.io demo server (US central), each
+// over WebSocket and over plain NATS.
 var (
-	DemoFavorite   = Favorite{Label: "Demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
-	DemoFavoriteEU = Favorite{Label: "Jetris (EU central)", URL: "nats://172.239.19.14:4222"}
-	DemoFavoriteAP = Favorite{Label: "Jetris (AP south)", URL: "nats://172.104.188.44:4222"}
+	JetrisEUWS = Favorite{Label: "Jetris EU central", URL: "ws://172.239.19.14:4223"}
+	JetrisAPWS = Favorite{Label: "Jetris AP south", URL: "ws://172.104.188.44:4223"}
+	JetrisUSWS = Favorite{Label: "Jetris US central (demo.nats.io)", URL: "wss://demo.nats.io:8443"}
+	JetrisEU   = Favorite{Label: "Jetris EU central", URL: "nats://172.239.19.14:4222"}
+	JetrisAP   = Favorite{Label: "Jetris AP south", URL: "nats://172.104.188.44:4222"}
+	JetrisUS   = Favorite{Label: "Jetris US central (demo.nats.io)", URL: "nats://demo.nats.io:4222"}
 )
 
-// DefaultFavorites is the pre-populated favorites list of a fresh install:
-// US, then EU, then AP.
+// DefaultFavorites is the pre-populated favorites list of a fresh install, in
+// display order: the three WebSocket entries, then their nats:// counterparts
+// — the same list on the desktop and in the browser. The desktop dials both
+// kinds (nats.go speaks WebSocket natively); a browser can only reach the
+// WebSocket rows, and lists the others greyed out (nats.Dialable), which is
+// why those come first: the first favorite the build can dial is the login
+// screen's default selection.
 func DefaultFavorites() []Favorite {
-	return []Favorite{DemoFavorite, DemoFavoriteEU, DemoFavoriteAP}
+	return []Favorite{JetrisEUWS, JetrisAPWS, JetrisUSWS, JetrisEU, JetrisAP, JetrisUS}
 }
 
-// favoritesFile is the on-disk favorites list, relative to the config parent.
-const favoritesFile = "jetris/favorites.json"
-
-// configParent resolves the directory preferences live under: $XDG_CONFIG_HOME,
-// else ~/.config — the same resolution the NATS CLI (and nats.ListContexts)
-// use for contexts.
-func configParent() (string, error) {
-	if p := os.Getenv("XDG_CONFIG_HOME"); p != "" {
-		return p, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config"), nil
-}
-
-// FavoritesPath is the absolute path of the favorites file.
-func FavoritesPath() (string, error) {
-	parent, err := configParent()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(parent, favoritesFile), nil
-}
-
-// LoadFavorites reads the saved favorites. A missing file is not an error: it
-// yields DefaultFavorites (a fresh install starts with the US, EU and AP
-// servers). A file that exists but lists nothing yields an empty list — the
-// player deleted every bookmark on purpose, and the defaults must not come
-// back.
-// Entries without a URL are dropped; a missing label falls back to the URL.
+// LoadFavorites reads the saved favorites — from ~/.config/jetris on the
+// desktop, from the browser's localStorage in the wasm build. A missing store
+// is not an error: it yields DefaultFavorites (a fresh install starts with
+// the default servers). A store that exists but lists nothing yields an empty
+// list — the player deleted every bookmark on purpose, and the defaults must
+// not come back. Entries without a URL are dropped; a missing label falls
+// back to the URL.
 func LoadFavorites() ([]Favorite, error) {
-	path, err := FavoritesPath()
+	data, found, err := loadFavoritesData()
 	if err != nil {
 		return DefaultFavorites(), err
 	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	if !found {
 		return DefaultFavorites(), nil
 	}
-	if err != nil {
-		return DefaultFavorites(), err
+	return decodeFavorites(data)
+}
+
+// SaveFavorites writes the favorites list. An empty (or nil) list is written
+// as "[]" so that LoadFavorites keeps it empty instead of reviving the
+// defaults.
+func SaveFavorites(favs []Favorite) error {
+	if favs == nil {
+		favs = []Favorite{}
 	}
+	data, err := json.MarshalIndent(favs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return saveFavoritesData(append(data, '\n'))
+}
+
+func decodeFavorites(data []byte) ([]Favorite, error) {
 	var favs []Favorite
 	if err := json.Unmarshal(data, &favs); err != nil {
 		return DefaultFavorites(), err
@@ -95,25 +90,4 @@ func LoadFavorites() ([]Favorite, error) {
 		out = append(out, f)
 	}
 	return out, nil
-}
-
-// SaveFavorites writes the favorites list, creating the jetris/ directory on
-// first use. An empty (or nil) list is written as "[]" so that LoadFavorites
-// keeps it empty instead of reviving the defaults.
-func SaveFavorites(favs []Favorite) error {
-	path, err := FavoritesPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if favs == nil {
-		favs = []Favorite{}
-	}
-	data, err := json.MarshalIndent(favs, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
 }

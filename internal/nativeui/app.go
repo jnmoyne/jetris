@@ -23,7 +23,6 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -130,7 +129,7 @@ type App struct {
 	// friends; picking a different port on a later login restarts it there.
 	// usingEmbedded marks the CURRENT connection as being to it, which is
 	// what gates the lobby's shareable-address line.
-	embSrv        *natsserver.Server
+	embSrv        natspkg.EmbeddedServer
 	embAddr       string // shareable "<lan-ip>:<port>"
 	usingEmbedded bool
 
@@ -264,6 +263,14 @@ type App struct {
 	lanIP          string                       // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
 	connRefreshBtn widget.Clickable             // browser: the selected row's ↻ (probe that server again)
 	connCheckBtn   widget.Clickable             // LAN mode: Check embedded server
+	// FAVORITES' trailing "Reset favorites…" row and its confirmation modal
+	// (connResetOpen while it is up): Yes puts prefs.DefaultFavorites back in
+	// place of whatever the list holds.
+	connResetRowBtn widget.Clickable
+	connResetOpen   bool
+	connResetYes    widget.Clickable
+	connResetNo     widget.Clickable
+	scrimTag        int // address used as the modal scrim's pointer-area tag (login screen)
 
 	// A browser row clicked while a probe was in flight: probed by
 	// drainQueuedProbe once the slot frees, if it is still the selection.
@@ -530,20 +537,39 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	// favorite — the bookmarks are the player's own list, so its head is the
 	// server they most likely want, ahead of whatever the nats CLI happens to
 	// have current — then the CLI's current context, then the first context
-	// (a machine with neither starts with nothing selected).
+	// (a machine with neither starts with nothing selected). A URL this build
+	// cannot dial (a nats:// one in the browser) is skipped: it is listed,
+	// greyed out, but never selected.
 	switch {
-	case cfg.NATSURL != "":
+	case cfg.NATSURL != "" && dialable(cfg.NATSURL):
 		a.connSel = urlKey(cfg.NATSURL)
 	case cfg.NATSContext != "":
 		a.connSel = ctxKey(cfg.NATSContext)
-	case len(a.favorites) > 0:
-		a.connSel = urlKey(a.favorites[0].URL)
+	case a.firstDialableFavorite() != "":
+		a.connSel = a.firstDialableFavorite()
 	case selected != "":
 		a.connSel = ctxKey(selected)
 	case len(a.connContexts) > 0:
 		a.connSel = ctxKey(a.connContexts[0])
 	}
 	return a
+}
+
+// dialable reports whether this build can dial a URL (natspkg.Dialable: on
+// the desktop everything, in the browser only ws:// and wss://). The server
+// browser lists the others greyed out and never selects them. A variable so
+// the desktop tests can play the browser.
+var dialable = natspkg.Dialable
+
+// firstDialableFavorite is the selection key of the first favorite this
+// build can dial, "" when there is none.
+func (a *App) firstDialableFavorite() string {
+	for _, f := range a.favorites {
+		if dialable(f.URL) {
+			return urlKey(f.URL)
+		}
+	}
+	return ""
 }
 
 // DrainConn drains the app-owned NATS connection, if any. Safe to call at any
@@ -601,6 +627,8 @@ func (a *App) Run(ctx context.Context) error {
 		case app.DestroyEvent:
 			a.teardown()
 			return e.Err
+		case app.ViewEvent:
+			a.attachView(e) // browser build: keep the keyboard on the game (view_js.go)
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
 			a.layout(gtx)
@@ -675,8 +703,26 @@ func (a *App) snapshotGamePlayers() []lobby.PlayerSummary {
 	return append([]lobby.PlayerSummary(nil), a.gamePlayers...)
 }
 
+// invalidate asks the window for a frame from OUTSIDE the UI goroutine: the
+// engine/lobby pumps, the lifecycle goroutines, a timer. Layout code that
+// keeps an effect moving must use animate instead. Gio arms window.Invalidate
+// only once the UI goroutine has gone idle (app/window.go, mayInvalidate), so
+// a call made DURING a frame that an external wake-up started is dropped —
+// and with it the next frame, ending the animation right there. On the
+// desktop backends the OS event thread re-arms it between frames so the drop
+// never shows; in the browser everything runs on one thread and every NATS
+// update or timer starts such a frame, which left every animation crawling
+// at one frame per wake-up.
 func (a *App) invalidate() {
 	if a.win != nil {
 		a.win.Invalidate()
 	}
+}
+
+// animate requests the next frame from within the current one — the in-frame
+// way to keep an animation running: op.InvalidateCmd rides the frame's own
+// state (Router.WakeupTime → Window.setNextFrame), so it is honoured on
+// every backend no matter what started this frame.
+func animate(gtx C) {
+	gtx.Execute(op.InvalidateCmd{})
 }

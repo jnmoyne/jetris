@@ -89,8 +89,8 @@ func adversarialRows(snap engine.BoardSnapshot) int {
 // rows in their attacker's color and kicks the impact shake. The first
 // observation of a game only seeds the count — a rejoin must not celebrate
 // the stack it finds. Runs on the UI goroutine each frame; the strobes land
-// next frame (hence the invalidate), which at frame cadence is imperceptible.
-func (a *App) detectGarbage(snap engine.BoardSnapshot) {
+// next frame (hence the animate), which at frame cadence is imperceptible.
+func (a *App) detectGarbage(gtx C, snap engine.BoardSnapshot) {
 	cur := adversarialRows(snap)
 	a.mu.Lock()
 	prev, seen := a.garbageRows, a.garbageSeen
@@ -110,7 +110,7 @@ func (a *App) detectGarbage(snap engine.BoardSnapshot) {
 	}
 	a.shakeStart = now
 	a.mu.Unlock()
-	a.invalidate()
+	animate(gtx)
 }
 
 // detectGarbageOn is detectGarbage for a SPECTATOR's watched board (keyed
@@ -118,7 +118,7 @@ func (a *App) detectGarbage(snap engine.BoardSnapshot) {
 // attacker's color, minus the shake — the impact is the victims' to feel. The
 // first sight of a board only seeds its count, so a spectator arriving
 // mid-game never strobes the garbage already on it.
-func (a *App) detectGarbageOn(board int, snap engine.BoardSnapshot) {
+func (a *App) detectGarbageOn(gtx C, board int, snap engine.BoardSnapshot) {
 	cur := adversarialRows(snap)
 	a.mu.Lock()
 	prev, seen := a.specGarbageRows[board]
@@ -141,7 +141,7 @@ func (a *App) detectGarbageOn(board int, snap engine.BoardSnapshot) {
 		m[r] = s
 	}
 	a.mu.Unlock()
-	a.invalidate()
+	animate(gtx)
 }
 
 // garbageAttacker returns the PlayerIdx stamped on the row's adversarial cells

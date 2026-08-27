@@ -17,19 +17,27 @@ type Favorite struct {
 	URL   string `json:"url"`
 }
 
-// The bookmarks every fresh install starts with: the public nats.io demo
-// server (US central) and the Jetris servers in EU central and AP south.
+// The bookmarks every fresh install starts with: the Jetris servers in EU
+// central and AP south and the public nats.io demo server (US central), each
+// over WebSocket and over plain NATS.
 var (
-	DemoFavorite   = Favorite{Label: "Demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
-	DemoFavoriteEU = Favorite{Label: "Jetris (EU central)", URL: "nats://172.239.19.14:4222"}
-	DemoFavoriteAP = Favorite{Label: "Jetris (AP south)", URL: "nats://172.104.188.44:4222"}
+	JetrisEUWS = Favorite{Label: "Jetris EU central", URL: "ws://172.239.19.14:4223"}
+	JetrisAPWS = Favorite{Label: "Jetris AP south", URL: "ws://172.104.188.44:4223"}
+	JetrisUSWS = Favorite{Label: "Jetris US central (demo.nats.io)", URL: "wss://demo.nats.io:8443"}
+	JetrisEU   = Favorite{Label: "Jetris EU central", URL: "nats://172.239.19.14:4222"}
+	JetrisAP   = Favorite{Label: "Jetris AP south", URL: "nats://172.104.188.44:4222"}
+	JetrisUS   = Favorite{Label: "Jetris US central (demo.nats.io)", URL: "nats://demo.nats.io:4222"}
 )
 
-// DefaultFavorites is the pre-populated favorites list of a fresh install:
-// US, then EU, then AP on the desktop; the browser build lists only the
-// servers reachable over WebSocket (see favorites_js.go).
+// DefaultFavorites is the pre-populated favorites list of a fresh install, in
+// display order: the three WebSocket entries, then their nats:// counterparts.
+// The list is the same on the desktop and in the browser. The desktop dials
+// both kinds (nats.go speaks WebSocket natively); a browser can only reach
+// the WebSocket rows (transport_js.go dials a nats:// URL as ws:// on the
+// same port, which the plain NATS listener does not speak), which is why they
+// come first — the first favorite is the login screen's default selection.
 func DefaultFavorites() []Favorite {
-	return defaultFavorites()
+	return []Favorite{JetrisEUWS, JetrisAPWS, JetrisUSWS, JetrisEU, JetrisAP, JetrisUS}
 }
 
 // LoadFavorites reads the saved favorites — from ~/.config/jetris on the

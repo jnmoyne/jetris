@@ -67,14 +67,14 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		// a machine with no favorites at all.
 		a := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connTab != connTabBrowser || a.connSel != urlKey(prefs.DemoFavorite.URL) {
+		if a.connTab != connTabBrowser || a.connSel != urlKey(prefs.JetrisEUWS.URL) {
 			t.Fatalf("default choice = %q/%q, want the browser tab with the first favorite", a.connTab, a.connSel)
 		}
 		cfg, err := a.pickerConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.NATSURL != prefs.DemoFavorite.URL || cfg.NATSContext != "" || cfg.RunEmbedded {
+		if cfg.NATSURL != prefs.JetrisEUWS.URL || cfg.NATSContext != "" || cfg.RunEmbedded {
 			t.Fatalf("pickerConfig = %+v, want the first favorite's URL only", cfg)
 		}
 		if b := NewWithPicker(config.Config{}, []string{"alpha", "beta"}, "beta", nil); b.connSel != ctxKey("beta") {
@@ -95,7 +95,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.connAddOpen = true
 		a.connAddScroll = true // just opened: the list scrolls the form into view
 		a.connProbing = ctxKey("beta")
-		a.connProbes[urlKey(prefs.DemoFavorite.URL)] = probeResult{ok: true, msg: "✓ ok", rtt: 12 * time.Millisecond, lobby: true, players: 2}
+		a.connProbes[urlKey(prefs.JetrisEUWS.URL)] = probeResult{ok: true, msg: "✓ ok", rtt: 12 * time.Millisecond, lobby: true, players: 2}
 		renderOnce(t, a)
 		if a.connAddScroll {
 			t.Fatal("the add-form scroll request should be consumed by the frame that lays out the form")
@@ -109,15 +109,15 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		// selected, and the CONTEXTS section shows its hint.
 		a := NewWithPicker(config.Config{}, nil, "", prefs.DefaultFavorites())
 		a.th = newTestApp().th
-		if a.connSel != urlKey(prefs.DemoFavorite.URL) {
-			t.Fatalf("default choice = %q, want the demo favorite when no contexts exist", a.connSel)
+		if a.connSel != urlKey(prefs.JetrisEUWS.URL) {
+			t.Fatalf("default choice = %q, want the first favorite when no contexts exist", a.connSel)
 		}
 		cfg, err := a.pickerConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.NATSURL != prefs.DemoFavorite.URL {
-			t.Fatalf("pickerConfig URL = %q, want %q", cfg.NATSURL, prefs.DemoFavorite.URL)
+		if cfg.NATSURL != prefs.JetrisEUWS.URL {
+			t.Fatalf("pickerConfig URL = %q, want %q", cfg.NATSURL, prefs.JetrisEUWS.URL)
 		}
 		renderOnce(t, a)
 
@@ -156,7 +156,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 
 		// A --server URL that IS a favorite selects the favorite instead.
-		a = NewWithPicker(config.Config{NATSURL: prefs.DemoFavorite.URL}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
+		a = NewWithPicker(config.Config{NATSURL: prefs.JetrisEUWS.URL}, []string{"alpha"}, "alpha", prefs.DefaultFavorites())
 		a.th = newTestApp().th
 		if secs := a.connSections(); len(secs) != 2 {
 			t.Fatalf("sections = %+v, want no COMMAND LINE section for a favorite URL", secs)
@@ -196,7 +196,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.th = newTestApp().th
 		a.connCtxURLs["beta"] = "nats://beta:4222"
 		for key, want := range map[string][2]string{
-			urlKey(prefs.DemoFavorite.URL): {prefs.DemoFavorite.Label, prefs.DemoFavorite.URL},
+			urlKey(prefs.JetrisEUWS.URL):   {prefs.JetrisEUWS.Label, prefs.JetrisEUWS.URL},
 			urlKey("nats://10.0.0.7:4222"): {"nats://10.0.0.7:4222", ""},
 			ctxKey("beta"):                 {"context beta", "nats://beta:4222"},
 			urlKey("nats://example:4222"):  {"nats://example:4222", "from --server"},
@@ -239,7 +239,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		// defaulting to the scheme-less URL); a duplicate just selects the
 		// existing row; deleting the selected one moves the selection on.
 		// Starts from a single bookmark so the counts below are exact.
-		a := NewWithPicker(config.Config{}, nil, "", []prefs.Favorite{prefs.DemoFavorite})
+		a := NewWithPicker(config.Config{}, nil, "", []prefs.Favorite{prefs.JetrisEUWS})
 		a.th = newTestApp().th
 		var saved [][]prefs.Favorite
 		a.favSave = func(f []prefs.Favorite) error { saved = append(saved, f); return nil }
@@ -264,9 +264,9 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		}
 
 		a.connSel = ctxKey("none")
-		a.connAddURLEd.SetText(prefs.DemoFavorite.URL)
+		a.connAddURLEd.SetText(prefs.JetrisEUWS.URL)
 		a.addFavorite()
-		if len(a.favorites) != 3 || a.connSel != urlKey(prefs.DemoFavorite.URL) || len(saved) != 2 {
+		if len(a.favorites) != 3 || a.connSel != urlKey(prefs.JetrisEUWS.URL) || len(saved) != 2 {
 			t.Fatalf("duplicate add: favorites=%d sel=%q saves=%d; want no new row, the existing one selected, no save", len(a.favorites), a.connSel, len(saved))
 		}
 

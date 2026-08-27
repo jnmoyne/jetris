@@ -38,14 +38,14 @@ func TestPickerSnapshots(t *testing.T) {
 		append(prefs.DefaultFavorites(), prefs.Favorite{Label: "home lab", URL: "nats://192.168.1.20:4222"}))
 	a.th = newTestApp().th
 	a.connCtxURLs["beta"] = "nats://beta.example.com:4222"
-	a.connProbes[urlKey(prefs.DemoFavorite.URL)] = probeResult{ok: true, msg: "✓ nats://demo.nats.io:4222 · Core NATS ping 38 ms · 3 players online", rtt: 38 * time.Millisecond, players: 3, lobby: true}
+	a.connProbes[urlKey(prefs.JetrisUS.URL)] = probeResult{ok: true, msg: "✓ nats://demo.nats.io:4222 · Core NATS ping 38 ms · 3 players online", rtt: 38 * time.Millisecond, players: 3, lobby: true}
 	a.connProbes[urlKey("nats://192.168.1.20:4222")] = probeResult{msg: "✗ dial tcp 192.168.1.20:4222: connection refused"}
 
 	for _, st := range []struct {
 		name  string
 		setup func()
 	}{
-		{"browser", func() { a.connSel = urlKey(prefs.DemoFavorite.URL) }},
+		{"browser", func() { a.connSel = urlKey(prefs.JetrisUS.URL) }},
 		{"browser_add", func() { a.connAddOpen = true; a.connSecClosed[secContexts] = true }},
 		{"lan", func() { a.connAddOpen = false; a.connSecClosed[secContexts] = false; a.connTab = connTabLAN }},
 		{"browser_update", func() {

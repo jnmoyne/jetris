@@ -1,8 +1,14 @@
+//go:build !js
+
+// The filesystem store (favorites_fs.go); the browser build keeps favorites
+// in localStorage and has no file to exercise.
+
 package prefs
 
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -15,11 +21,11 @@ func TestFavoritesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(favs) != 3 || favs[0] != DemoFavorite || favs[1] != DemoFavoriteEU || favs[2] != DemoFavoriteAP {
-		t.Fatalf("fresh favorites = %+v, want the US demo server then the EU and AP Jetris servers", favs)
+	if !slices.Equal(favs, DefaultFavorites()) {
+		t.Fatalf("fresh favorites = %+v, want the defaults %+v", favs, DefaultFavorites())
 	}
 
-	want := []Favorite{DemoFavorite, {Label: "home", URL: "nats://192.168.1.5:4222"}}
+	want := []Favorite{JetrisEUWS, {Label: "home", URL: "nats://192.168.1.5:4222"}}
 	if err := SaveFavorites(want); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +76,7 @@ func TestFavoritesTolerantLoad(t *testing.T) {
 	if err == nil {
 		t.Fatal("corrupt favorites file loaded without error")
 	}
-	if len(got) != 3 || got[0] != DemoFavorite || got[1] != DemoFavoriteEU || got[2] != DemoFavoriteAP {
+	if !slices.Equal(got, DefaultFavorites()) {
 		t.Fatalf("corrupt file fallback = %+v, want the defaults", got)
 	}
 }

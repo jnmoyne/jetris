@@ -10,11 +10,6 @@ import (
 
 // The desktop store: a JSON file under the config directory.
 
-// defaultFavorites: US, then EU, then AP.
-func defaultFavorites() []Favorite {
-	return []Favorite{DemoFavorite, DemoFavoriteEU, DemoFavoriteAP}
-}
-
 // favoritesFile is the on-disk favorites list, relative to the config parent.
 const favoritesFile = "jetris/favorites.json"
 

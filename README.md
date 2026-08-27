@@ -24,13 +24,15 @@ If you enjoy the game, don't forget to give this repo a star! Thank you!
 
 ***How to play Jetris***
 
-To just play the game with others over the Internet you have two options:
+To just play the game with others over the Internet you have three options:
 
-Option 1: Download and run the latest release of the `jetris` binary for your platform (pick the right asset from https://github.com/jnmoyne/jetris/releases) and just run it, or clone this repo and build the binary yourself (e.g. `go build -o jetris ./cmd/jetris/`).
+Option 1: Nothing to install — open **https://jnmoyne.github.io/jetris/** and hit **Play**: the browser version (WebAssembly) runs right on that page, always the latest release. That page is served over https, so the NATS server you pick on its login screen has to be reachable over `wss://` — the public `demo.nats.io` server is preselected, and favorites this page can't dial (`nats://`, and plain `ws://`) are greyed out.
+
+Option 2: Download and run the latest release of the `jetris` binary for your platform (pick the right asset from https://github.com/jnmoyne/jetris/releases) and just run it, or clone this repo and build the binary yourself (e.g. `go build -o jetris ./cmd/jetris/`).
 
 If you don't know how to run an unsigned binary you downloaded from GitHub don't worry it's very straightforward, see the following simple instructions for example: Mac OSX https://youtu.be/o4-sX9Tydz0, Windows https://share.google/aimode/MOdkf4QbNr2g9bhZB
 
-Option 2: checkout this repo and build the browser version using `./scripts/build-wasm.sh` then run a local HTTP server for the page (e.g. `python3 -m http.server -d dist/web 8080`), and finally open `localhost:8080` in your Web browser.
+Option 3: checkout this repo and build the browser version yourself using `./scripts/build-wasm.sh` then run a local HTTP server for the page (e.g. `python3 -m http.server -d dist/web 8080`), and finally open `localhost:8080` in your Web browser (served over plain http, that copy can also dial `ws://` servers).
 
 Once you have started the `jetris` binary, you can then pick which NATS.io server to connect to right on the login screen's server browser: select one of your NATS CLI contexts from its CONTEXTS section (it starts on your currently selected context), pick a bookmarked URL from FAVORITES (stored in ~/.config/jetris/favorites.json and pre-populated), add your own, or switch to the **LAN party mode (embedded NATS server)** tab to have Jetris start a JetStream-enabled `nats-server` inside the game process itself (no auth, port of your choosing — 4222 by default — storage in a local `jetstream-data` directory) — the tab shows "Your server's URL is `nats://<ip>:<port>`" so you can share it with the people you want to play with, who just add it to their favorites. Clicking a server sizes it up on the spot — its core NATS ping and how many players are in its lobby right now — and its **↻** re-checks it whenever you like. You can also use any existing JetStream-enabled server or cluster for which you have credentials (using `nats context` to create contexts for those credentials). And start playing (or spectating)!
 
@@ -353,20 +355,20 @@ go build -o jetris ./cmd/jetris
 (cd agents/golang-mk1 && go build .)          # optional: the headless computer player (its own module)
 ```
 
-Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`.
+Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`, which also builds the browser version, attaches it to the release as `jetris-<tag>-web.tar.gz` (for self-hosting) and deploys it to GitHub Pages at https://jnmoyne.github.io/jetris/.
 
 ### Browser build (WebAssembly)
 
-The same client also builds for the browser — Gio renders to a WebGL canvas and the game runs unchanged, as a wasm module:
+The same client also builds for the browser — Gio renders to a WebGL canvas and the game runs unchanged, as a wasm module. The latest release is hosted on GitHub Pages at **https://jnmoyne.github.io/jetris/**: a landing page with a **Play** button (`https://jnmoyne.github.io/jetris/#play` skips straight to the game), redeployed by the release workflow on every tag. To build and serve it yourself:
 
 ```sh
-./scripts/build-wasm.sh                      # → dist/web/{index.html,wasm_exec.js,jetris.wasm}
+./scripts/build-wasm.sh                      # → dist/web/{index.html,screenshot.png,wasm_exec.js,jetris.wasm}
 python3 -m http.server -d dist/web 8080      # wasm can't load from file://; serve it
 ```
 
 Open `http://localhost:8080/` (add `?server=wss://host:port` to preselect a server, the browser build's stand-in for `--server`; `user`/`password` work too). Differences from the desktop build, all behind `//go:build js` files:
 
-- **Transport is WebSocket.** A browser has no TCP sockets, so nats.go is given a custom dialer that speaks the raw NATS protocol over a browser `WebSocket` (`internal/nats/transport_js.go`, `wsconn_js.go`) — the same thing the official `nats.ws` client does. The server you connect to must have a `websocket {}` listener; `nats://` URLs are dialed as `ws://`, `tls://` as `wss://`, and `ws(s)://` as given. A page served over https may only open `wss://`. The favorites are the same six as on the desktop, but the `nats://` rows are greyed out and can't be selected (nor added): a browser can only dial `ws://` and `wss://`.
+- **Transport is WebSocket.** A browser has no TCP sockets, so nats.go is given a custom dialer that speaks the raw NATS protocol over a browser `WebSocket` (`internal/nats/transport_js.go`, `wsconn_js.go`) — the same thing the official `nats.ws` client does. The server you connect to must have a `websocket {}` listener; `nats://` URLs are dialed as `ws://`, `tls://` as `wss://`, and `ws(s)://` as given. A page served over https (the GitHub Pages site) may only open `wss://` — the browser refuses plain `ws://` from a secure page. The favorites are the same six as on the desktop, but the rows this build can't dial are greyed out and can't be selected (nor added): the `nats://` ones always, and on an https page the `ws://` ones too, so there `demo.nats.io` (`wss://`) is the default selection.
 - **No LAN party mode** — a wasm module can't listen for connections, so the tab is hidden and nats-server isn't linked in (the module is ~25 MB before compression).
 - **No NATS CLI contexts** (no filesystem); favorites persist in the page's `localStorage` instead of `~/.config/jetris/favorites.json`.
 

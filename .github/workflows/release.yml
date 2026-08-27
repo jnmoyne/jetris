@@ -1,6 +1,7 @@
 # Release pipeline: push a tag matching v* (e.g. v0.1.0) and this workflow
-# builds the jetris binary for every supported platform and publishes a
-# GitHub release with the archives and a SHA256SUMS file.
+# builds the jetris binary for every supported platform, publishes a GitHub
+# release with the archives and a SHA256SUMS file, and deploys the browser
+# (WebAssembly) build to GitHub Pages at https://jnmoyne.github.io/jetris/.
 #
 # Gio (gioui.org) constrains how we build:
 #   - Linux: cgo against X11/Wayland/EGL headers, so the build must run on a
@@ -8,8 +9,17 @@
 #   - macOS: cgo against Apple frameworks, so it must build on a macOS runner.
 #     Both arm64 and amd64 build there (the SDK is multi-arch).
 #   - Windows: pure Go (win32 syscalls), CGO_ENABLED=0.
+#   - Browser: GOOS=js GOARCH=wasm, no cgo, any runner (scripts/build-wasm.sh).
 # linux/arm64 builds on ubuntu-24.04-arm, which requires the repo to be public
 # (GitHub's free arm64 runners are public-repo only).
+#
+# The browser build is attached to the release as jetris-<tag>-web.tar.gz (for
+# self-hosting) and, once the release is published, deployed to GitHub Pages.
+# One-time repository setup for that deploy:
+#   - Settings > Pages: source "GitHub Actions".
+#   - The github-pages environment must allow deployments from tags: under its
+#     "Deployment branches and tags", add a tag rule "v*" (the default policy
+#     only allows the default branch, and this workflow runs on tags).
 
 name: Release
 
@@ -96,14 +106,42 @@ jobs:
             *.zip
           if-no-files-found: error
 
+  web:
+    name: Build browser (wasm)
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: VERSION="${GITHUB_REF_NAME}" ./scripts/build-wasm.sh
+      - name: Package
+        run: |
+          name="jetris-${GITHUB_REF_NAME}-web"
+          cp -r dist/web "$name"
+          tar czf "${name}.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jetris-web
+          path: "*.tar.gz"
+          if-no-files-found: error
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/web
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: jetris-*
           merge-multiple: true
       - name: Generate checksums
         run: |
@@ -113,3 +151,20 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  pages:
+    name: Deploy GitHub Pages
+    needs: [web, release]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

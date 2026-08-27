@@ -6,6 +6,7 @@ import (
 	"net"
 	neturl "net/url"
 	"strings"
+	"syscall/js"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -20,7 +21,8 @@ import (
 //
 // Scheme mapping: ws:// and wss:// are used as given; nats:// becomes ws://
 // and tls:// becomes wss://. Note a page served over https may only open
-// wss:// sockets, and the server needs a websocket {} listener.
+// wss:// sockets (SecurePage; Dialable greys the rest out before it gets
+// here), and the server needs a websocket {} listener.
 func transportOptions(rawURL string) (string, []nats.Option) {
 	scheme := "ws"
 	host := rawURL
@@ -42,11 +44,20 @@ func transportOptions(rawURL string) (string, []nats.Option) {
 }
 
 // Dialable reports whether this build can dial url. A browser has only the
-// WebSocket API: ws:// and wss:// URLs, nothing else — the login screen's
-// server browser greys out the rest.
+// WebSocket API: ws:// and wss:// URLs, nothing else — and from an https page
+// wss:// alone (browserDialable). The login screen's server browser greys out
+// the rest.
 func Dialable(rawURL string) bool {
-	s := strings.ToLower(strings.TrimSpace(rawURL))
-	return strings.HasPrefix(s, "ws://") || strings.HasPrefix(s, "wss://")
+	return browserDialable(SecurePage(), rawURL)
+}
+
+// SecurePage reports whether the page was served over https, in which case
+// the browser refuses plain ws:// sockets (mixed content) and only wss:// can
+// be dialed. The GitHub Pages site (https://jnmoyne.github.io/jetris/) is one
+// such page; a local http://localhost server is not.
+func SecurePage() bool {
+	loc := js.Global().Get("location")
+	return loc.Truthy() && loc.Get("protocol").String() == "https:"
 }
 
 // wsDialer is the nats.CustomDialer for the browser: it turns the

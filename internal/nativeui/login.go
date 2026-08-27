@@ -348,7 +348,7 @@ func (a *App) pickerConfig() (config.Config, error) {
 		return cfg, errors.New("select a server in the browser (or add one to your favorites)")
 	}
 	if !e.dialable {
-		return cfg, errors.New("a browser can only dial ws:// or wss:// URLs — pick another server")
+		return cfg, errors.New(undialableErr + " — pick another server")
 	}
 	if e.url != "" {
 		cfg.NATSURL = e.url
@@ -691,7 +691,7 @@ func (a *App) addFavorite() {
 		return
 	}
 	if !dialable(url) {
-		a.setLoginErr("a browser can only dial ws:// or wss:// URLs (" + addURLHint + ")")
+		a.setLoginErr(undialableErr + " (" + addURLHint + ")")
 		return
 	}
 	if a.isFavorite(url) {
@@ -1025,7 +1025,7 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 								layout.Rigid(func(gtx C) D {
 									txt, col := probeSummary(probes[e.key], probing == e.key)
 									if !e.dialable {
-										txt, col = "needs ws:// or wss://", withAlpha(colMuted, 0.8)
+										txt, col = undialableHint, withAlpha(colMuted, 0.8)
 									}
 									if txt == "" {
 										return D{}

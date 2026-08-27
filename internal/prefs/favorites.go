@@ -30,12 +30,12 @@ var (
 )
 
 // DefaultFavorites is the pre-populated favorites list of a fresh install, in
-// display order: the three WebSocket entries, then their nats:// counterparts.
-// The list is the same on the desktop and in the browser. The desktop dials
-// both kinds (nats.go speaks WebSocket natively); a browser can only reach
-// the WebSocket rows (transport_js.go dials a nats:// URL as ws:// on the
-// same port, which the plain NATS listener does not speak), which is why they
-// come first — the first favorite is the login screen's default selection.
+// display order: the three WebSocket entries, then their nats:// counterparts
+// — the same list on the desktop and in the browser. The desktop dials both
+// kinds (nats.go speaks WebSocket natively); a browser can only reach the
+// WebSocket rows, and lists the others greyed out (nats.Dialable), which is
+// why those come first: the first favorite the build can dial is the login
+// screen's default selection.
 func DefaultFavorites() []Favorite {
 	return []Favorite{JetrisEUWS, JetrisAPWS, JetrisUSWS, JetrisEU, JetrisAP, JetrisUS}
 }

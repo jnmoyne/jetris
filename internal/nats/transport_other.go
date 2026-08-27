@@ -10,3 +10,7 @@ import "github.com/nats-io/nats.go"
 func transportOptions(url string) (string, []nats.Option) {
 	return url, nil
 }
+
+// Dialable reports whether this build can dial url: on the desktop nats.go
+// speaks every scheme the app lists (nats://, tls://, ws://, wss://).
+func Dialable(string) bool { return true }

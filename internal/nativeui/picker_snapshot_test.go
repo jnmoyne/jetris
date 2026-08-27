@@ -11,6 +11,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,12 @@ func TestPickerSnapshots(t *testing.T) {
 		{"browser_update", func() {
 			a.connTab = connTabBrowser
 			a.NotifyUpdate("v0.6.0", "https://github.com/jnmoyne/jetris/releases/tag/v0.6.0")
+		}},
+		{"browser_reset", func() { a.connResetOpen = true }},
+		{"browser_undialable", func() {
+			// The browser build's view: nats:// rows greyed out.
+			a.connResetOpen = false
+			dialable = func(u string) bool { return strings.HasPrefix(u, "ws://") || strings.HasPrefix(u, "wss://") }
 		}},
 	} {
 		st.setup()

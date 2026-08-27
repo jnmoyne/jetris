@@ -3,6 +3,7 @@ package nativeui
 import (
 	"image"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -287,6 +288,94 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		}
 		if saved[len(saved)-1] == nil || len(saved[len(saved)-1]) != 0 {
 			t.Fatalf("last save = %#v, want an empty (non-nil) list so the demo server stays deleted", saved[len(saved)-1])
+		}
+		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-reset", func(t *testing.T) {
+		// Reset favorites: the defaults replace the list and are persisted;
+		// a selection the reset removed moves to the first default, one that
+		// survives it (a context) stays; the open add form is dropped; the
+		// confirmation modal renders over the login screen.
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha", []prefs.Favorite{{Label: "home", URL: "nats://10.0.0.7:4222"}})
+		a.th = newTestApp().th
+		var saved [][]prefs.Favorite
+		a.favSave = func(f []prefs.Favorite) error { saved = append(saved, f); return nil }
+		a.connSel = urlKey("nats://10.0.0.7:4222")
+		a.connAddOpen = true
+		a.connAddURLEd.SetText("nats://half-typed")
+		a.connResetOpen = true
+		renderOnce(t, a)
+
+		a.resetFavorites()
+		if !slices.Equal(a.favorites, prefs.DefaultFavorites()) || a.connSel != urlKey(prefs.JetrisEUWS.URL) {
+			t.Fatalf("after reset: favorites=%+v sel=%q; want the defaults with the first one selected", a.favorites, a.connSel)
+		}
+		if len(saved) != 1 || !slices.Equal(saved[0], prefs.DefaultFavorites()) {
+			t.Fatalf("saved = %+v, want one save of the defaults", saved)
+		}
+		if a.connAddOpen || a.connAddURLEd.Text() != "" {
+			t.Fatal("the add form should be closed and cleared by a reset")
+		}
+
+		a.connSel = ctxKey("alpha")
+		a.resetFavorites()
+		if a.connSel != ctxKey("alpha") {
+			t.Fatalf("a selected context was moved by the reset: sel=%q", a.connSel)
+		}
+		a.connResetOpen = false
+		renderOnce(t, a)
+	})
+
+	t.Run("login-picker-undialable", func(t *testing.T) {
+		// Playing the browser build, which can only dial ws/wss: other URL
+		// rows are listed greyed out and never selected — not at startup
+		// (--server and the first favorite alike fall through to the first
+		// dialable one), not after a delete or a reset — and the add form
+		// refuses them.
+		orig := dialable
+		dialable = func(u string) bool { return strings.HasPrefix(u, "ws://") || strings.HasPrefix(u, "wss://") }
+		defer func() { dialable = orig }()
+
+		favs := []prefs.Favorite{prefs.JetrisEU, prefs.JetrisEUWS, prefs.JetrisAP}
+		a := NewWithPicker(config.Config{NATSURL: prefs.JetrisAP.URL}, []string{"alpha"}, "alpha", favs)
+		a.th = newTestApp().th
+		var saved [][]prefs.Favorite
+		a.favSave = func(f []prefs.Favorite) error { saved = append(saved, f); return nil }
+		if a.connSel != urlKey(prefs.JetrisEUWS.URL) {
+			t.Fatalf("default selection = %q, want the first dialable favorite (an undialable --server and favorite skipped)", a.connSel)
+		}
+		secs := a.connSections()
+		if e := secs[0].entries; len(e) != 3 || e[0].dialable || !e[1].dialable || e[2].dialable {
+			t.Fatalf("favorites dialability = %+v, want only the ws:// row dialable", e)
+		}
+		if !secs[1].entries[0].dialable {
+			t.Fatal("a context row must always be dialable")
+		}
+		renderOnce(t, a) // greyed rows render
+
+		a.connAddURLEd.SetText("nats://10.0.0.7:4222")
+		a.addFavorite()
+		if len(a.favorites) != 3 || a.loginErr == "" || len(saved) != 0 {
+			t.Fatalf("an undialable URL was added (favorites=%d err=%q saves=%d)", len(a.favorites), a.loginErr, len(saved))
+		}
+
+		a.deleteFavorite(1) // the selected, only dialable favorite
+		if a.connSel != ctxKey("alpha") {
+			t.Fatalf("after deleting the last dialable favorite: sel=%q, want the context (the greyed rows skipped)", a.connSel)
+		}
+		a.connContexts = nil
+		a.connSel = urlKey(prefs.JetrisEU.URL) // as if a greyed row had been picked
+		a.resetFavorites()
+		if a.connSel != urlKey(prefs.JetrisEUWS.URL) {
+			t.Fatalf("after reset: sel=%q, want the first dialable default", a.connSel)
+		}
+		if _, err := a.pickerConfig(); err != nil {
+			t.Fatalf("pickerConfig on a dialable selection: %v", err)
+		}
+		a.connSel = urlKey(prefs.JetrisEU.URL)
+		if _, err := a.pickerConfig(); err == nil {
+			t.Fatal("pickerConfig accepted an undialable selection")
 		}
 		renderOnce(t, a)
 	})

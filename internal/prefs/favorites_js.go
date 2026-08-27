@@ -7,8 +7,7 @@ import (
 	"syscall/js"
 )
 
-// The browser store: window.localStorage, private to the page's origin. The
-// defaults are the shared DefaultFavorites (favorites.go).
+// The browser store: window.localStorage, private to the page's origin.
 
 // favoritesKey is the localStorage key holding the favorites JSON.
 const favoritesKey = "jetris.favorites"

@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"gioui.org/io/event"
 	"gioui.org/io/key"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
+	"gioui.org/op/clip"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -63,6 +66,9 @@ type connEntry struct {
 	url    string // dial target for URL entries
 	ctx    string // context name for context entries
 	fav    int    // index into a.favorites for deletable rows, -1 otherwise
+	// dialable is false for a URL this build cannot dial (a nats:// one in
+	// the browser): the row is listed greyed out and cannot be selected.
+	dialable bool
 }
 
 // connSection is one collapsible group of the browser tree.
@@ -70,7 +76,7 @@ type connSection struct {
 	title   string
 	entries []connEntry
 	hint    string // shown in place of entries when there are none
-	addRow  bool   // FAVORITES: ends with the "+ Add a NATS URL…" row
+	addRow  bool   // FAVORITES: ends with the "+ Add a NATS URL…" and "Reset favorites…" rows
 }
 
 func urlKey(url string) string  { return "url:" + url }
@@ -123,13 +129,14 @@ func (a *App) layoutLogin(gtx C) D {
 			a.loginCollision = false
 			a.mu.Unlock()
 		}
-	} else if submitted && !loggingIn {
+	} else if submitted && !loggingIn && !a.connResetOpen {
 		a.submitLogin()
 	}
 
 	// --- render ---
-	// The artwork fills the window behind the card.
-	return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+	// The artwork fills the window behind the card; the reset-favorites
+	// confirmation, when up, scrims both and sits on top.
+	layers := []layout.StackChild{
 		layout.Expanded(a.loginBackdrop),
 		layout.Stacked(func(gtx C) D {
 			gtx.Constraints.Max.X = gtx.Dp(loginCardW)
@@ -171,7 +178,68 @@ func (a *App) layoutLogin(gtx C) D {
 				layout.Rigid(a.updateNotice),
 			)
 		}),
-	)
+	}
+	if a.connResetOpen {
+		layers = append(layers,
+			layout.Expanded(a.modalScrim),
+			layout.Stacked(func(gtx C) D {
+				gtx.Constraints.Min = gtx.Constraints.Max
+				return a.confirmResetOverlay(gtx)
+			}),
+		)
+	}
+	return layout.Stack{Alignment: layout.Center}.Layout(gtx, layers...)
+}
+
+// modalScrim dims the screen under a modal and takes every press aimed at
+// what it covers: its window-sized pointer area is registered after the
+// screen's widgets, so it is the foremost handler under the pointer and Gio
+// hands it their presses; the modal's own buttons, laid out after it, stay
+// on top. The presses are drained and dropped.
+func (a *App) modalScrim(gtx C) D {
+	sz := gtx.Constraints.Max
+	fillRect(gtx.Ops, image.Rect(0, 0, sz.X, sz.Y), withAlpha(colBg, 0xc0))
+	defer clip.Rect{Max: sz}.Push(gtx.Ops).Pop()
+	event.Op(gtx.Ops, &a.scrimTag)
+	for {
+		if _, ok := gtx.Source.Event(pointer.Filter{Target: &a.scrimTag, Kinds: pointer.Press | pointer.Release}); !ok {
+			break
+		}
+	}
+	return D{Size: sz}
+}
+
+// confirmResetOverlay is the modal behind the FAVORITES section's "Reset
+// favorites…" row: it spells out that the current bookmarks go and the
+// fresh-install defaults come back, and asks before doing it.
+func (a *App) confirmResetOverlay(gtx C) D {
+	return layout.Center.Layout(gtx, func(gtx C) D {
+		gtx.Constraints.Max.X = gtx.Dp(460)
+		return hardShadow(gtx, func(gtx C) D {
+			return widget.Border{Color: colErr, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+				return background(gtx, colBg, func(gtx C) D {
+					return layout.UniformInset(unit.Dp(22)).Layout(gtx, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(a.pixel(unit.Sp(13), "RESET FAVORITES?", colErr).Layout),
+							layout.Rigid(spacer(10)),
+							layout.Rigid(a.body("This will reset the favorites to the defaults", colFg)),
+							layout.Rigid(a.body("and delete all the current favorites.", colFg)),
+							layout.Rigid(spacer(6)),
+							layout.Rigid(a.body("Are you sure you want to do that?", colFg)),
+							layout.Rigid(spacer(16)),
+							layout.Rigid(func(gtx C) D {
+								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.connResetYes, "Yes, reset") }),
+									layout.Rigid(hSpacer(10)),
+									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.connResetNo, "Cancel") }),
+								)
+							}),
+						)
+					})
+				})
+			})
+		})
+	})
 }
 
 // updateNotice, under the tagline, tells the player a newer release exists and
@@ -278,6 +346,9 @@ func (a *App) pickerConfig() (config.Config, error) {
 	e, ok := a.connEntry(a.connSel)
 	if !ok {
 		return cfg, errors.New("select a server in the browser (or add one to your favorites)")
+	}
+	if !e.dialable {
+		return cfg, errors.New("a browser can only dial ws:// or wss:// URLs — pick another server")
 	}
 	if e.url != "" {
 		cfg.NATSURL = e.url
@@ -417,7 +488,7 @@ func (a *App) connSections() []connSection {
 		if detail == f.Label {
 			detail = ""
 		}
-		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i})
+		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i, dialable: dialable(f.URL)})
 	}
 	ctxs := connSection{title: secContexts, hint: "no NATS CLI contexts on this machine (nats context add …)"}
 	for _, name := range a.connContexts {
@@ -427,12 +498,12 @@ func (a *App) connSections() []connSection {
 			// worded so it is never confused with the browser's selection.
 			label += " (nats CLI current)"
 		}
-		ctxs.entries = append(ctxs.entries, connEntry{key: ctxKey(name), label: label, detail: a.connCtxURLs[name], ctx: name, fav: -1})
+		ctxs.entries = append(ctxs.entries, connEntry{key: ctxKey(name), label: label, detail: a.connCtxURLs[name], ctx: name, fav: -1, dialable: true})
 	}
 	sections := []connSection{favs, ctxs}
 	if url := a.connCfg.NATSURL; url != "" && !a.isFavorite(url) {
 		sections = append(sections, connSection{title: secCLI, entries: []connEntry{
-			{key: urlKey(url), label: "--server", detail: url, url: url, fav: -1},
+			{key: urlKey(url), label: "--server", detail: url, url: url, fav: -1, dialable: dialable(url)},
 		}})
 	}
 	return sections
@@ -490,7 +561,7 @@ func (a *App) handleConnPage(gtx C) {
 			a.connSecClosed[sec.title] = !a.connSecClosed[sec.title]
 		}
 		for _, e := range sec.entries {
-			if clickable(a.connRowBtns, e.key).Clicked(gtx) {
+			if e.dialable && clickable(a.connRowBtns, e.key).Clicked(gtx) {
 				a.connSel = e.key
 				a.setLoginErr("")
 				a.probeRow(e.key)
@@ -523,6 +594,16 @@ func (a *App) handleConnPage(gtx C) {
 	}
 	if a.connAddCancel.Clicked(gtx) {
 		a.closeAddForm()
+	}
+	if a.connResetRowBtn.Clicked(gtx) {
+		a.connResetOpen = true
+	}
+	if a.connResetYes.Clicked(gtx) {
+		a.connResetOpen = false
+		a.resetFavorites()
+	}
+	if a.connResetNo.Clicked(gtx) {
+		a.connResetOpen = false
 	}
 
 	if a.connRefreshBtn.Clicked(gtx) && a.connTab == connTabBrowser {
@@ -609,6 +690,10 @@ func (a *App) addFavorite() {
 		a.setLoginErr("a NATS URL cannot contain spaces")
 		return
 	}
+	if !dialable(url) {
+		a.setLoginErr("a browser can only dial ws:// or wss:// URLs (" + addURLHint + ")")
+		return
+	}
 	if a.isFavorite(url) {
 		a.connSel = urlKey(url)
 		a.closeAddForm()
@@ -632,13 +717,35 @@ func (a *App) deleteFavorite(i int) {
 	key := urlKey(a.favorites[i].URL)
 	a.favorites = append(a.favorites[:i:i], a.favorites[i+1:]...)
 	if a.connSel == key {
-		a.connSel = ""
-		for _, sec := range a.connSections() {
-			if len(sec.entries) > 0 {
-				a.connSel = sec.entries[0].key
-				break
+		a.connSel = a.firstDialableEntry()
+	}
+	a.persistFavorites()
+}
+
+// firstDialableEntry is the key of the first browser row this build can
+// dial, section by section, "" when there is none.
+func (a *App) firstDialableEntry() string {
+	for _, sec := range a.connSections() {
+		for _, e := range sec.entries {
+			if e.dialable {
+				return e.key
 			}
 		}
+	}
+	return ""
+}
+
+// resetFavorites replaces the bookmarks with the fresh-install defaults
+// (prefs.DefaultFavorites) and persists the list. The selection stays where
+// it is if that row still exists and can be dialed (a context, a default
+// server); otherwise it moves to the first default this build can dial, as
+// on a fresh install. The add form, if open, is dropped with the list it was
+// extending.
+func (a *App) resetFavorites() {
+	a.favorites = prefs.DefaultFavorites()
+	a.closeAddForm()
+	if e, ok := a.connEntry(a.connSel); !ok || !e.dialable {
+		a.connSel = a.firstDialableFavorite()
 	}
 	a.persistFavorites()
 }
@@ -762,6 +869,7 @@ func (a *App) browserTab(gtx C) D {
 			} else {
 				rows = append(rows, a.addRow)
 			}
+			rows = append(rows, a.resetRow)
 		}
 	}
 
@@ -873,11 +981,23 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 		if selected {
 			bg, labelCol, detailCol, delCol = colAccent, colBg, withAlpha(colBg, 0.7), colBg
 		}
+		if !e.dialable {
+			// Out of this build's reach: greyed out, and not a button at all
+			// (no hover, no click) — only its ✕ still works.
+			labelCol, detailCol = colMuted, withAlpha(colMuted, 0.6)
+		}
+		// The row body is a button only when the row can be picked.
+		rowButton := func(gtx C, w layout.Widget) D {
+			if !e.dialable {
+				return w(gtx)
+			}
+			return material.Clickable(gtx, clickable(a.connRowBtns, e.key), w)
+		}
 		return background(gtx, bg, func(gtx C) D {
 			gtx.Constraints.Min.X = gtx.Constraints.Max.X
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D {
-					return material.Clickable(gtx, clickable(a.connRowBtns, e.key), func(gtx C) D {
+					return rowButton(gtx, func(gtx C) D {
 						gtx.Constraints.Min.X = gtx.Constraints.Max.X
 						return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -904,6 +1024,9 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 								}),
 								layout.Rigid(func(gtx C) D {
 									txt, col := probeSummary(probes[e.key], probing == e.key)
+									if !e.dialable {
+										txt, col = "needs ws:// or wss://", withAlpha(colMuted, 0.8)
+									}
 									if txt == "" {
 										return D{}
 									}
@@ -967,6 +1090,17 @@ func (a *App) addRow(gtx C) D {
 	})
 }
 
+// resetRow is the FAVORITES section's last row, "Reset favorites…": it only
+// opens the confirmation (confirmResetOverlay), so it is kept quiet — muted
+// type, the ellipsis promising the dialog.
+func (a *App) resetRow(gtx C) D {
+	return material.Clickable(gtx, &a.connResetRowBtn, func(gtx C) D {
+		gtx.Constraints.Min.X = gtx.Constraints.Max.X
+		return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(8), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx,
+			a.body("Reset favorites…", colMuted))
+	})
+}
+
 // addForm is the expanded add-favorite form: label + URL editors and
 // Add / Cancel, indented under the favorites.
 func (a *App) addForm(gtx C) D {
@@ -984,7 +1118,7 @@ func (a *App) addForm(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(a.body("URL:", colMuted)),
 					layout.Rigid(hSpacer(6)),
-					layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, &a.connAddURLEd, "nats://host:4222") }),
+					layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, &a.connAddURLEd, addURLHint) }),
 				)
 			}),
 			layout.Rigid(spacer(8)),

@@ -41,6 +41,14 @@ func transportOptions(rawURL string) (string, []nats.Option) {
 	}
 }
 
+// Dialable reports whether this build can dial url. A browser has only the
+// WebSocket API: ws:// and wss:// URLs, nothing else — the login screen's
+// server browser greys out the rest.
+func Dialable(rawURL string) bool {
+	s := strings.ToLower(strings.TrimSpace(rawURL))
+	return strings.HasPrefix(s, "ws://") || strings.HasPrefix(s, "wss://")
+}
+
 // wsDialer is the nats.CustomDialer for the browser: it turns the
 // "host:port" nats.go asks for into a <scheme>://host:port WebSocket.
 type wsDialer struct {

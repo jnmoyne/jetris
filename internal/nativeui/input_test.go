@@ -44,7 +44,7 @@ func TestBoardKeyFiltersIncludeFocusFilter(t *testing.T) {
 	}
 	for _, n := range []key.Name{
 		key.NameLeftArrow, key.NameRightArrow, key.NameDownArrow,
-		key.NameUpArrow, key.NameSpace, "Z", "X",
+		key.NameUpArrow, key.NameSpace, "Z", "X", "C",
 	} {
 		if !names[n] {
 			t.Errorf("boardKeyFilters missing key.Filter for %q", n)
@@ -66,6 +66,7 @@ func TestMoveForKey(t *testing.T) {
 		{key.NameSpace, (*engine.Engine).HardDrop},
 		{"Z", (*engine.Engine).RotateCCW},
 		{"X", (*engine.Engine).RotateCW},
+		{"C", (*engine.Engine).Hold},
 	}
 	for _, c := range cases {
 		got, ok := moveForKey(c.name)

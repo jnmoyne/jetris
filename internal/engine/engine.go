@@ -45,6 +45,22 @@ type Engine struct {
 	playerCount int  // number of players in the game
 	nextCount   int  // how many upcoming pieces this game reveals (from meta at Start; 0 = none)
 	noGhost     bool // this game hides the hard-drop ghost preview (GameMeta.NoGhost at Start)
+	// hold is whether this game has the Guideline hold queue (GameMeta.Hold
+	// at Start). The slot is local state — nothing of it is on the wire
+	// beyond the swap's own cell batch (the piece that comes out simply
+	// appears at the spawn point, like any spawn): heldPiece is the piece
+	// in the slot (meaningful while hasHeld), holdUsed that the piece in
+	// play already came out of a hold — one hold per piece, the allowance
+	// renewed by the next spawn from the queue (spawnPiece). Guarded by e.mu.
+	hold      bool
+	heldPiece game.PieceType
+	hasHeld   bool
+	holdUsed  bool
+	// spawnGen counts the pieces that entered play — every spawn and every
+	// hold swap — so the lock delay can tell a fresh piece from the one it
+	// was timing. pieceIdx alone cannot: a swap out of the hold slot puts a
+	// new piece in play without advancing the queue.
+	spawnGen atomic.Uint64
 	// garbageHoles is how many empty cells every garbage row this board
 	// raises is punched with (GameMeta.GarbageHoles at Start, clamped; 0 =
 	// solid rows that never clear); randomGarbageHoles makes every row of a
@@ -236,6 +252,7 @@ func (e *Engine) Start() error {
 	e.teamSize = meta.TeamSize
 	e.nextCount = meta.NextCount
 	e.noGhost = meta.NoGhost
+	e.hold = meta.Hold
 	e.garbageHoles = min(max(meta.GarbageHoles, 0), config.MaxGarbageHoles)
 	e.randomGarbageHoles = meta.RandomGarbageHoles && e.garbageHoles > 0
 	e.guidelineGarbage = meta.GuidelineGarbage
@@ -616,6 +633,12 @@ func (e *Engine) RotateCW()  { e.dispatch(RotateCW) }
 func (e *Engine) RotateCCW() { e.dispatch(RotateCCW) }
 func (e *Engine) HardDrop()  { e.dispatch(MoveHardDrop) }
 
+// Hold is the Guideline hold: swap the falling piece for the one in the hold
+// slot — or, with the slot empty, stash it and play the next piece of the
+// queue. A no-op in a game without the hold rule, and after a hold until the
+// next piece spawns from the queue (one hold per piece). See attemptHold.
+func (e *Engine) Hold() { e.dispatch(MoveHold) }
+
 // dispatch hands a player input to the engine's single input goroutine. Inputs
 // are SERIALIZED and BUFFERED: they queue on the buffered e.moves channel and
 // runInput processes them one at a time, and because each move's publish blocks
@@ -920,17 +943,7 @@ func (e *Engine) GameOutcome() (won, over bool) {
 // lock; Start spawns with the lock released) so the publish write-through can
 // avoid re-locking.
 func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
-	pt := e.seq.Piece(e.pieceIdx.Load())
-	p := game.SpawnPiece(pt, config.StandardWidth)
-
-	// On a shared board, offset spawn column to the player's section: coop
-	// sections are laid out by playerIdx, team boards by the slot within the team.
-	switch e.gameMode {
-	case config.ModeCooperative:
-		p.Col += e.playerIdx * config.StandardWidth
-	case config.ModeTeams:
-		p.Col += e.teamSlot * config.StandardWidth
-	}
+	p := e.spawnPosition(e.seq.Piece(e.pieceIdx.Load()))
 
 	if !locked {
 		e.mu.Lock()
@@ -972,6 +985,10 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 		return
 	}
 	e.spawnPending = false
+	// A piece from the queue renews the hold allowance (one hold per piece)
+	// and is a fresh piece for the lock delay.
+	e.holdUsed = false
+	e.spawnGen.Add(1)
 
 	// Here we compute the projection, diff it to cells, and publish; the
 	// publish write-through (applyPublishedCells) advances e.playfield on
@@ -1025,6 +1042,89 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	if !locked {
 		e.mu.Unlock()
 	}
+}
+
+// spawnPosition is where a piece of type pt enters play on this engine's
+// board: the standard spawn (game.SpawnPiece) offset, on a shared board, to
+// the player's own section — coop sections are laid out by playerIdx, team
+// boards by the slot within the team. Shared by the queue spawn and the hold.
+func (e *Engine) spawnPosition(pt game.PieceType) game.Piece {
+	p := game.SpawnPiece(pt, config.StandardWidth)
+	switch e.gameMode {
+	case config.ModeCooperative:
+		p.Col += e.playerIdx * config.StandardWidth
+	case config.ModeTeams:
+		p.Col += e.teamSlot * config.StandardWidth
+	}
+	return p
+}
+
+// attemptHold is the Guideline hold (MoveHold, on runInput's goroutine like
+// every move). The falling piece goes into the hold slot and the piece that
+// comes out enters play at the spawn point in its spawn orientation: the
+// slot's piece, or — the slot being empty — the next piece of the queue,
+// which then advances (pieceIdx++, exactly as a lock-in would; the NEXT
+// preview moves on with it). One hold per piece: the swapped-in piece
+// cannot be held again until a piece spawns from the queue (holdUsed).
+//
+// On the wire the swap is an ordinary CAS move batch — the outgoing cells
+// vacated, the incoming piece's cells placed, orderedCellKeys writing the new
+// active cells first so the lock-in edge detector never sees the player's
+// active-cell count hit zero — and, like every player move, it is simply
+// dropped and flashed if it loses its CAS race; the slot changes only once
+// the batch commits. A hold whose incoming piece cannot be placed — locked
+// cells in the spawn rows (the stack has reached the top: the Guideline's
+// block-out, left to the next spawn to call) or, on a shared board, another
+// player's piece crossing the spawn cells (a transient obstacle: the player
+// just tries again) — is a no-op.
+func (e *Engine) attemptHold(ctx context.Context) error {
+	e.mu.Lock()
+	if !e.hold || e.holdUsed || e.seq == nil {
+		e.mu.Unlock()
+		return nil
+	}
+	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
+	if p == nil {
+		e.mu.Unlock()
+		return nil
+	}
+	fromQueue := !e.hasHeld
+	incoming := e.heldPiece
+	if fromQueue {
+		incoming = e.seq.Piece(e.pieceIdx.Load() + 1)
+	}
+	np := e.spawnPosition(incoming)
+	var canPlace bool
+	if e.sharedBoard() {
+		canPlace = game.CanPlaceCoop(np, e.playfield, e.playerIdx)
+	} else {
+		canPlace = game.CanPlace(np, e.playfield)
+	}
+	if !canPlace {
+		e.mu.Unlock()
+		return nil
+	}
+	affected := affectedRowsUnion(p, &np)
+	rows := e.playfield.ProjectMove(affected, &np, e.playerIdx)
+	cells := diffCells(e.playfield.Rows, rows)
+	flashCells := p.Cells()
+	outgoing := p.Type
+	e.mu.Unlock()
+
+	if !e.publishProjectedCells(ctx, cells, flashCells, false) {
+		return nil // lost its CAS race: dropped and flashed, the slot untouched
+	}
+
+	e.mu.Lock()
+	e.heldPiece, e.hasHeld, e.holdUsed = outgoing, true, true
+	e.spawnGen.Add(1)
+	e.mu.Unlock()
+	if fromQueue {
+		e.pieceIdx.Add(1)
+		go e.publishPieceIdxUpdate(e.pieceIdx.Load())
+	}
+	e.emitUpdate(EngineUpdate{Kind: UpdateHold})
+	return nil
 }
 
 // retrySpawnIfPending re-attempts a spawn that was deferred because another
@@ -1103,6 +1203,27 @@ func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
 // NextCount reports how many upcoming pieces this game reveals
 // (GameMeta.NextCount, fixed at game creation; 0 = no preview).
 func (e *Engine) NextCount() int { return e.nextCount }
+
+// HoldEnabled reports whether this game has the Guideline hold queue
+// (GameMeta.Hold — a creation-time rule shared by every seat).
+func (e *Engine) HoldEnabled() bool { return e.hold }
+
+// HeldPiece returns the piece in this player's hold slot, and whether the
+// slot holds one at all (it is empty until the first hold of the game).
+func (e *Engine) HeldPiece() (game.PieceType, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.heldPiece, e.hasHeld
+}
+
+// HoldUsed reports whether the piece in play already came out of a hold —
+// the slot is locked until the next piece spawns from the queue (the UI dims
+// the HOLD box while it is).
+func (e *Engine) HoldUsed() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.holdUsed
+}
 
 // ShowGhost reports whether this game renders the hard-drop ghost preview
 // (GameMeta.NoGhost inverted — a creation-time rule shared by every player,
@@ -1276,16 +1397,17 @@ func (e *Engine) transitionGameToFinished(ctx context.Context) {
 // rainbow flash on flashCells (the dropped step's cells, precomputed by the
 // caller under e.mu) so they know the step was lost. This fires for every dropped
 // CAS write — player moves, gravity ticks, and spawns alike. Pass nil flashCells
-// to suppress the flash.
-func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool) {
+// to suppress the flash. Reports whether the batch committed (an empty batch
+// trivially did).
+func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool) bool {
 	if len(cells) == 0 {
-		return
+		return true
 	}
 	keys := orderedCellKeys(cells)
 	updates, err := e.buildBatchUpdates(keys, cells, locked)
 	if err != nil {
 		log.Printf("build batch: %v", err)
-		return
+		return false
 	}
 
 	t0 := time.Now()
@@ -1297,16 +1419,17 @@ func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellP
 		// waiting for the consumer echo. keys is in the same order as updates.
 		e.trackRTT(t0, seq, len(updates))
 		e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
-		return
+		return true
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
 		log.Printf("publish batch: %v", err)
-		return
+		return false
 	}
 
 	// CAS failure: drop the step. Signal the local player with a rainbow flash
 	// on the dropped cells. We do NOT publish anything to the other players —
 	// a CAS failure is information for the local player only.
 	e.emitCASFlash(flashCells)
+	return false
 }
 
 // applyPublishedCells write-throughs a successfully committed batch into

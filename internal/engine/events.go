@@ -26,6 +26,7 @@ const (
 	UpdateBufferedMoves    // the buffered-input queue changed (read via Engine.BufferedMoves)
 	UpdateTeamStats        // teams: a team's score or level changed (both teams' totals in TeamScores/TeamLevels)
 	UpdateRowsCleared      // a clear completed ChangedRows (pre-collapse indices) on this player's board — own lock, or a teammate's on a shared board — arcade feedback hook
+	UpdateHold             // the hold slot changed (read via Engine.HeldPiece / HoldUsed)
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -97,4 +98,5 @@ const (
 	RotateCW
 	RotateCCW
 	MoveHardDrop
+	MoveHold // the Guideline hold (Engine.Hold); a no-op unless the game has the hold rule
 )

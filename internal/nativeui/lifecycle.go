@@ -352,15 +352,12 @@ func (a *App) initLobby(name string) error {
 // createGame creates a game and returns its ID. For teams mode, count is the
 // number of players PER TEAM; for the other modes it is the total player
 // count. maxAgents is the agent policy — how many seats idle agent
-// players may take (0 = agents may not join). nextCount is how many upcoming
-// pieces the game reveals (0..config.MaxNextCount); holes is how many empty
-// cells every garbage row is raised with (0..config.MaxGarbageHoles, 0 =
-// solid rows that never clear), randomHoles whether each row draws its own
-// columns, and guideline whether attacks follow the Guideline table (0/1/2/4
-// rows for 1/2/3/4 lines) instead of one row per line; ghost is whether the
-// game draws the hard-drop ghost preview. inviteOnly restricts joining to
-// invited players (the invite flow sets it and then sends the invitations).
-func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount, holes int, randomHoles, guideline, ghost, inviteOnly bool) string {
+// players may take (0 = agents may not join). rules are the game's play
+// rules (config.GameRules: the piece preview, ghost, hold and garbage
+// settings — the wizard's Guideline preset or its custom read-out), clamped
+// for the mode by lobby.CreateGame. inviteOnly restricts joining to invited
+// players (the invite flow sets it and then sends the invitations).
+func (a *App) createGame(mode config.GameMode, count, maxAgents int, rules config.GameRules, inviteOnly bool) string {
 	lb := a.getLobby()
 	if lb == nil {
 		return ""
@@ -370,7 +367,7 @@ func (a *App) createGame(mode config.GameMode, count, maxAgents, nextCount, hole
 		teamSize = count
 		playerCount = config.TeamCount * count
 	}
-	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, nextCount, holes, randomHoles, guideline, ghost, inviteOnly)
+	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, maxAgents, rules, inviteOnly)
 	a.mu.Lock()
 	if err != nil {
 		a.lobbyErr = "Couldn't create the game: " + err.Error()

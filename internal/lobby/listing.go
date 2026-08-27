@@ -15,6 +15,8 @@ type GameListing struct {
 	TeamSize           int               `json:"team_size,omitempty"`            // teams mode: players per team
 	MaxAgents          int               `json:"max_agents,omitempty"`           // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
 	NextCount          int               `json:"next_count,omitempty"`           // how many upcoming pieces are shown (0..config.MaxNextCount); mirrors GameMeta.NextCount for the lobby row
+	NoGhost            bool              `json:"no_ghost,omitempty"`             // the hard-drop ghost is off; mirrors GameMeta.NoGhost (inverted like it) so the row's "guideline" tag matches the preset exactly
+	Hold               bool              `json:"hold,omitempty"`                 // the Guideline hold queue is on; mirrors GameMeta.Hold for the lobby row's "hold" tag
 	GarbageHoles       int               `json:"garbage_holes,omitempty"`        // holes per garbage row (0..config.MaxGarbageHoles); mirrors GameMeta.GarbageHoles for the lobby row's "holes N" tag
 	RandomGarbageHoles bool              `json:"random_garbage_holes,omitempty"` // each garbage row draws its own holes; mirrors GameMeta.RandomGarbageHoles for the lobby row's "random holes N" tag
 	GuidelineGarbage   bool              `json:"guideline_garbage,omitempty"`    // Guideline attack table (0/1/2/4 rows for 1/2/3/4 lines); mirrors GameMeta.GuidelineGarbage for the lobby row's "guideline garbage" tag
@@ -33,6 +35,18 @@ type PlayerSummary struct {
 	Team     int    `json:"team"`            // teams mode: 0 = A, 1 = B
 	TeamSlot int    `json:"team_slot"`       // teams mode: section index within the team board (join order)
 	Agent    bool   `json:"agent,omitempty"` // roster seat taken by an agent player (e.g. golang-mk1)
+}
+
+// Rules is the listing's mirror of the game's play rules.
+func (g GameListing) Rules() config.GameRules {
+	return config.GameRules{
+		NextCount:          g.NextCount,
+		Ghost:              !g.NoGhost,
+		Hold:               g.Hold,
+		GarbageHoles:       g.GarbageHoles,
+		RandomGarbageHoles: g.RandomGarbageHoles,
+		GuidelineGarbage:   g.GuidelineGarbage,
+	}
 }
 
 // TeamMemberCount returns how many roster members belong to the given team.

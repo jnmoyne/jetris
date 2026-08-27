@@ -278,8 +278,9 @@ type App struct {
 
 	// Create-game wizard: the lobby's single "Create a new game" button
 	// (createBtn) opens a modal that walks through the game's attributes one
-	// step at a time — 1: game type + seats, 2: next-piece preview, 3: open
-	// vs invite-only, 4: agent policy (open games only; an invite-only game
+	// step at a time — 1: game type + seats, 2: the play rules (the Guideline
+	// preset, or custom: preview, ghost, hold, garbage), 3: open vs
+	// invite-only, 4: agent policy (open games only; an invite-only game
 	// finishes at step 3 and hands off to the invitee picker). createWizStep
 	// is the current step, 0 while the wizard is closed.
 	createBtn      widget.Clickable
@@ -288,10 +289,13 @@ type App struct {
 	wizBackBtn     widget.Clickable // wizard: back one step
 	wizNextBtn     widget.Clickable // wizard: Next / Choose players… / Create game
 	wizCancelBtn   widget.Clickable // wizard: close without creating
+	wizList        widget.List      // wizard: the step's body, scrolling when the step is taller than the window leaves it (the custom rules step in a garbage mode at the minimum window height)
 	modeEnum       widget.Enum
 	countEd        widget.Editor
 	allowAgentsCb  widget.Bool   // wizard agents step: allow idle agents to take seats
 	maxAgentsEd    widget.Editor // wizard agents step: how many seats agents may take
+	rulesEnum      widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
+	holdCb         widget.Bool   // wizard (custom rules): the Guideline hold queue
 	nextCountEd    widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
 	holesEd        widget.Editor // wizard: holes per garbage row in competitive/teams (0..config.MaxGarbageHoles; 0 = solid, unclearable rows)
 	randomHolesCb  widget.Bool   // wizard: every garbage row draws its own hole columns (off = the rows of one attack share a draw)
@@ -384,8 +388,11 @@ type App struct {
 	playingSeenEng *engine.Engine
 
 	// On-screen arcade control pad (mouse play): rotate CCW/CW, shift
-	// left/down/right, hard drop. Clicks are dispatched by handlePadClicks.
-	padCCW, padLeft, padDown, padRight, padCW, padDrop widget.Clickable
+	// left/down/right, hard drop, and — in games with the hold rule — hold,
+	// which the HOLD box beside the playfield also triggers when tapped
+	// (holdBoxBtn). Clicks are dispatched by handlePadClicks.
+	padCCW, padLeft, padDown, padRight, padCW, padDrop, padHold widget.Clickable
+	holdBoxBtn                                                  widget.Clickable
 	// Move-buffer strip animation state (UI goroutine only): the queue length
 	// last laid out and when it last grew (drives the newest chip's pop-in).
 	bufN      int
@@ -457,6 +464,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.holesEd.Filter = "0123456789"
 	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
+	a.rulesEnum.Value = "guideline" // the Guideline preset until the creator asks for custom rules
 	a.createJoinEnum.Value = "open"
 	a.histSortEnum.Value = "score"
 	// Every crew composition is listed by default; each box hides its class.
@@ -464,6 +472,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.histMixedCb.Value = true
 	a.histAgentsOnlyCb.Value = true
 	a.inviteList.Axis = layout.Vertical
+	a.wizList.Axis = layout.Vertical
 	a.playerList.Axis = layout.Vertical
 	a.gameList.Axis = layout.Vertical
 	a.archiveLst.Axis = layout.Vertical

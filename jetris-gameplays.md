@@ -30,10 +30,22 @@ Each player has a color associated with it: used for the outline color of the pi
 
 ---
 
-## 1b. Piece Preview (the game's NEXT count)
+## 1b. Piece Preview (the game's NEXT count), Ghost, Hold, Garbage — the play rules
+
+**Every play rule below is chosen on one step of the create-game wizard (step 2,
+GAME RULES) by a single radio.** **Guideline** — the default — plays every rule at
+the setting closest to the Tetris Guideline this game can offer
+(`config.GuidelineRules`): `next_count` 4, the ghost piece, the `hold` queue and,
+for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
+sharing their hole column and `guideline_garbage`; the lobby row tags such a game
+`guideline`. **Custom** exposes each rule as its own editor or checkbox, with the
+classic defaults noted below, and the row tags every rule that differs from the
+classic game (`next N`, `hold`, `holes N` / `random holes N`, `guideline garbage`).
+Whichever way they were chosen, the rules are stored in the game's meta record —
+the rule book every engine reads at start — and bind every seat equally.
 
 **How many upcoming pieces a game reveals is a per-game attribute**: `next_count`,
-an integer 0-4 chosen in the create-game wizard (the **piece-preview step**, default 1)
+an integer 0-4 (the custom editor's default is 1)
 and fixed for the life of the game in its meta record (`GameMeta.NextCount`). It applies to
 every mode and to **everyone in the game equally — humans and agents**:
 
@@ -56,6 +68,28 @@ derived from committed board state, never published. Stored inverted in the meta
 games — show the ghost. Off means everyone eyeballs their drops; like the piece
 preview it is one rule for every eye (agents already compute their drop
 destinations, so the ghost only levels the field for humans either way).
+
+**The hold queue is a per-game attribute on the same step**: `hold`
+(`GameMeta.Hold`; the custom checkbox "Hold piece", off by default; on in the
+Guideline preset). With it on, **C** — or the control pad's HOLD button, or a tap
+on the HOLD box itself — sets the falling piece aside, as in the Guideline: with
+the slot **empty**, the falling piece goes in and the **next piece of the queue
+comes out** at the spawn point in its spawn orientation, and the queue advances
+(`pieceIdx` +1 exactly as a lock-in would, so the NEXT well moves on); with a
+piece **in the slot**, the two **trade places** and the queue stays where it is.
+**One hold per piece**: the piece that came out cannot be held again until the
+next piece spawns from the queue — the HOLD box dims its tile meanwhile. A hold
+whose incoming piece cannot be placed (locked cells in the spawn rows — the
+stack has reached the top, and the next spawn will call the top-out — or, on a
+shared board, another player's piece crossing the spawn cells, a transient
+obstacle) is a no-op. Every seat has its own slot. **The slot is never on the
+wire**: the swap is an ordinary CAS move batch — the outgoing piece's cells
+vacated, the incoming piece's placed, active cells first so no peer ever sees
+the player piece-less — dropped and flashed like any move if it loses its CAS
+race (the slot then stays as it was), so spectators, replays and agents simply
+see a new piece appear at the spawn point, and the lock delay starts afresh for
+it. Games created before the attribute have no hold. Agents may hold under the
+same rule; the reference agent does not.
 
 **Garbage holes are a per-game attribute on the same wizard step** (shown for the
 modes that raise garbage — competitive and teams): `garbage_holes`, an integer 0-4
@@ -167,6 +201,7 @@ over NATS — each move is a local intent that publishes the changed cells with 
 | ↑ or X | rotate clockwise | `RotateCW` |
 | Z | rotate counter-clockwise | `RotateCCW` |
 | Space | hard drop | `HardDrop` |
+| C | hold (games with the hold rule, §1b; the Guideline's Shift is not mapped — Shift-Tab is the chat switch) | `Hold` |
 
 These are dispatched from `internal/nativeui/input.go` (the board tag is kept focused
 with Gio's `key.FocusFilter` + `key.FocusCmd`).
@@ -370,7 +405,7 @@ A team **loses when ALL its members have topped out**. At that point every membe
 ### Visual Indicators
 
 - HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
-- When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles
+- When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles — and, in a game with the hold rule, the **HOLD box** above it, showing the set-aside piece (dimmed once the hold is spent for the piece in play)
 - Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
 - The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
 - Spectators see both team boards side by side
@@ -429,8 +464,10 @@ embossed bevel and a diagonal glint sweeping across it every few seconds, so
 the lobby's main call to action can't be missed) that opens a modal walking the creator through the
 game's attributes one step at a time — **1. game type & players** (co-op /
 competitive / teams radios and the seat count, per-team in teams mode),
-**2. piece preview & ghost** (the next-piece count, 0-4, default 1, and the
-"Show ghost piece" checkbox, on by default — see §1b),
+**2. game rules** (a single radio: the **Guideline** preset — the default,
+listed read-only — or **custom**: the next-piece count, 0-4, default 1, the
+"Show ghost piece" checkbox, on by default, the "Hold piece" checkbox, off by
+default, and the garbage rules for competitive/teams — see §1b),
 **3. who can join** (**open game** or **invite only**), and — open games only —
 **4. agents** (the agent policy below). Each step has Next/Back plus a Cancel
 that closes the wizard without creating anything, and the previous run's choices
@@ -814,12 +851,22 @@ board never jumps as it fills). Spectators have no input and never see it.
 ### Mouse controls
 
 Below the move-buffer strip sits an on-screen **arcade control pad** — the whole
-keyboard scheme as chunky 8-bit buttons: ↺ (rotate CCW), ←, ↓, →, ↻ (rotate CW) — the
-rotations drawn as blocky circular arrows, not text — and a wide accent-filled `DROP`
-bar — so the game is fully playable with the mouse alone, no keyboard needed.
-The pad is drawn dimmed before the countdown finishes (clicks made while it is dimmed
-are swallowed, never queued) and disappears with the rest of the play controls once the
-player is out. Clicking a pad button dispatches exactly the same engine move as its key.
+keyboard scheme as chunky 8-bit buttons, laid out like the touch controls of the
+phone versions of the game: one thumb cluster per hand with a wider gap between
+them. On the left, the **movement** cluster — ←, ↓, → — led, in a game with the hold
+rule, by a `HOLD` bar (a blocky ⇄ swap icon, the symbol the phone versions put on
+their hold button; it sits under the HOLD box it feeds, and is absent otherwise);
+on the right, the **action** cluster — ↺ and ↻ (the rotations drawn as blocky
+circular arrows, not text) and the wide accent-filled `DROP` bar, the one button
+that commits a piece. The HOLD box beside the playfield is itself tappable and
+holds too, as on a phone. So the game is fully playable with the mouse alone, no
+keyboard needed. When the board column is narrower than the pad (the minimum window
+with an opponent column beside the board), the whole pad scales down as one row —
+as a phone's controls shrink with its screen — rather than wrapping or clipping.
+The pad is drawn dimmed before the countdown finishes (clicks made
+while it is dimmed are swallowed, never queued) and disappears with the rest of
+the play controls once the player is out. Clicking a pad button dispatches exactly
+the same engine move as its key.
 
 ### Window-size reactivity
 

@@ -115,6 +115,11 @@ func (e *Engine) runInput(ctx context.Context) {
 // flashes the local player (see emitCASFlash); merge-retry flashes only after
 // all retries are exhausted.
 func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
+	if move == MoveHold {
+		// The hold is a swap at the spawn point, not a step of the piece:
+		// its own path, the same on every board (attemptHold locks e.mu itself).
+		return e.attemptHold(ctx)
+	}
 	e.mu.Lock()
 
 	if e.sharedBoard() {

@@ -10,6 +10,7 @@ import (
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
+	"jetris/internal/game"
 	"jetris/internal/lobby"
 )
 
@@ -29,7 +30,7 @@ func testCtx(w, h int) C {
 func TestGlyphBitmaps(t *testing.T) {
 	for name, bm := range map[string][]string{
 		"left": glyphLeft, "right": glyphRight, "down": glyphDown, "drop": glyphDrop,
-		"cw": glyphCW, "ccw": glyphCCW,
+		"cw": glyphCW, "ccw": glyphCCW, "hold": glyphHold,
 	} {
 		if len(bm) == 0 {
 			t.Fatalf("%s: empty bitmap", name)
@@ -107,7 +108,7 @@ func TestMoveGlyphAllMoves(t *testing.T) {
 	a := newTestApp()
 	for _, m := range []engine.MoveType{
 		engine.MoveLeft, engine.MoveRight, engine.MoveDown,
-		engine.RotateCW, engine.RotateCCW, engine.MoveHardDrop,
+		engine.RotateCW, engine.RotateCCW, engine.MoveHardDrop, engine.MoveHold,
 		engine.MoveType(99),
 	} {
 		if d := a.moveChip(testCtx(64, 64), m, 42, 1, colGold); d.Size.X == 0 {
@@ -120,15 +121,65 @@ func TestMoveGlyphAllMoves(t *testing.T) {
 	}
 }
 
-// TestControlPad renders the pad enabled and disabled at several window sizes.
+// looseCtx is testCtx with no minimum, so a widget's size is its own.
+func looseCtx(w, h int) C {
+	gtx := testCtx(w, h)
+	gtx.Constraints.Min = image.Point{}
+	return gtx
+}
+
+// TestControlPad renders the pad enabled and disabled at several window
+// sizes, with and without the HOLD bar — which is only there in a game with
+// the hold rule, and widens the pad when it is.
 func TestControlPad(t *testing.T) {
 	a := newTestApp()
 	for _, sz := range []image.Point{{X: 700, Y: 500}, {X: 1200, Y: 820}, {X: 2400, Y: 1500}} {
 		for _, enabled := range []bool{true, false} {
-			if d := a.controlPad(testCtx(sz.X, sz.Y), enabled); d.Size.X == 0 || d.Size.Y == 0 {
+			plain := a.controlPad(looseCtx(sz.X, sz.Y), enabled, false)
+			if plain.Size.X == 0 || plain.Size.Y == 0 {
 				t.Fatalf("pad (%v, enabled=%v) rendered zero-size", sz, enabled)
 			}
+			hold := a.controlPad(looseCtx(sz.X, sz.Y), enabled, true)
+			if hold.Size.X <= plain.Size.X || hold.Size.Y != plain.Size.Y {
+				t.Fatalf("pad with HOLD (%v, enabled=%v) = %v, want wider than %v at the same height", sz, enabled, hold.Size, plain.Size)
+			}
 		}
+	}
+	// A column narrower than the pad's natural width (the minimum window with
+	// an opponent column beside the board) shrinks the pad to fit — one row,
+	// never a clipped edge — while a roomy column leaves it at full size.
+	full := a.controlPad(looseCtx(1200, 820), true, true)
+	for _, w := range []int{380, 450} {
+		narrow := a.controlPad(looseCtx(w, 820), true, true)
+		if narrow.Size.X > w {
+			t.Fatalf("pad with HOLD in a %dpx column is %dpx wide: clipped", w, narrow.Size.X)
+		}
+		if narrow.Size.Y >= full.Size.Y {
+			t.Fatalf("pad in a %dpx column kept its full height %d (got %d): it should scale down, not wrap", w, full.Size.Y, narrow.Size.Y)
+		}
+	}
+}
+
+// TestHoldWell renders the HOLD box in each of its states — empty, holding a
+// piece, and holding a spent (dimmed) piece — at the well's footprint: every
+// state keeps the same size, so the box never shifts the NEXT well under it.
+func TestHoldWell(t *testing.T) {
+	a := newTestApp()
+	empty := a.holdWell(looseCtx(400, 400), game.PieceI, false, false, 24)
+	if empty.Size.X == 0 || empty.Size.Y == 0 {
+		t.Fatal("empty HOLD box rendered zero-size")
+	}
+	for _, pt := range []game.PieceType{game.PieceI, game.PieceO, game.PieceT} {
+		for _, used := range []bool{false, true} {
+			if d := a.holdWell(looseCtx(400, 400), pt, true, used, 24); d.Size != empty.Size {
+				t.Fatalf("HOLD box holding %v (used=%v) = %v, want the empty box's %v", pt, used, d.Size, empty.Size)
+			}
+		}
+	}
+	// The box is as wide as the NEXT well it sits over, at the same cell size.
+	next := a.nextWell(looseCtx(400, 400), []game.PieceType{game.PieceT}, 24)
+	if next.Size.X != empty.Size.X {
+		t.Fatalf("HOLD box width %d, want the NEXT well's %d", empty.Size.X, next.Size.X)
 	}
 }
 

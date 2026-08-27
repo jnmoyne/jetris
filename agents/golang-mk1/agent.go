@@ -62,6 +62,7 @@ type hosting struct {
 	holes     int  // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
 	random    bool // every garbage row draws its own hole columns (off = one draw per raise)
 	guideline bool // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
+	hold      bool // the Guideline hold queue (this agent never holds; humans in the game may)
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
@@ -768,6 +769,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.guideline {
 		meta.set("guideline_garbage", true)
 	}
+	if h.hold {
+		meta.set("hold", true)
+	}
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
 	meta.set("creator_id", a.name)
@@ -798,6 +802,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.guideline {
 		listing.set("guideline_garbage", true)
 	}
+	if h.hold {
+		listing.set("hold", true)
+	}
 	listing.set("creator_id", a.name)
 	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included
 	listing.set("created_at", nowRFC())
@@ -812,9 +819,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	})
 	_ = a.nc.Publish("jetris.lobby.event.game.created", ev)
 
-	log.Printf("created %s game %s for %d players (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v) — waiting for opponents",
+	log.Printf("created %s game %s for %d players (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v) — waiting for opponents",
 		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
-		gameID, players, maxAgents, next, holes, random, h.guideline)
+		gameID, players, maxAgents, next, holes, random, h.guideline, h.hold)
 	return gameID, nil
 }
 

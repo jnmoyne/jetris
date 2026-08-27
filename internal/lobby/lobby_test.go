@@ -54,7 +54,7 @@ func TestLobbyCreateGame(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, false, false, true, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 2, false, false, true, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 2}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Errorf("listing garbage_holes = %d, want 2", g.GarbageHoles)
 	}
 
-	over, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 1, 9, false, false, true, false)
+	over, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 9}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Error("random holes should be off unless asked for")
 	}
 
-	random, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 3, true, false, true, false)
+	random, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 3, RandomGarbageHoles: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 	}
 
 	// Random holes without holes is meaningless: stored off.
-	solidRandom, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 0, true, false, true, false)
+	solidRandom, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{NextCount: 1, Ghost: true, RandomGarbageHoles: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Error("random holes at 0 holes should be stored off")
 	}
 
-	under, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, -1, false, false, true, false)
+	under, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: -1}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 1, 0, false, false, true, false)
+	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 		t.Error("guideline garbage should be off unless asked for")
 	}
 
-	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 1, 0, false, true, true, false)
+	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, config.GameRules{NextCount: 1, Ghost: true, GuidelineGarbage: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,5 +324,76 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if g := lb.Games()[guideline]; !g.GuidelineGarbage {
 		t.Error("guideline garbage should be mirrored on the listing")
+	}
+}
+
+// TestLobbyCreateGameHoldAndGuidelinePreset: the hold rule is written to both
+// records, off unless asked for; the Guideline preset lands intact (clamped
+// for a cooperative game, which stores no garbage rules) and reads back as
+// the preset from either record; a meta written before the field has no
+// hold.
+func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{NextCount: 1, Ghost: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, js, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Hold {
+		t.Error("hold should be off unless asked for")
+	}
+	if meta.Rules().IsGuideline(config.ModeCompetitive) {
+		t.Error("next 1 / no hold is not the Guideline preset")
+	}
+
+	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, config.GuidelineRules(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, guideline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !meta.Hold || meta.NextCount != config.MaxNextCount || meta.NoGhost || meta.GarbageHoles != 1 || meta.RandomGarbageHoles || !meta.GuidelineGarbage {
+		t.Errorf("Guideline preset meta = %+v", meta.Rules())
+	}
+	if !meta.Rules().IsGuideline(config.ModeTeams) {
+		t.Error("the preset's meta should read back as the Guideline preset")
+	}
+	time.Sleep(300 * time.Millisecond)
+	g := lb.Games()[guideline]
+	if !g.Hold {
+		t.Error("hold should be mirrored on the listing")
+	}
+	if !g.Rules().IsGuideline(config.ModeTeams) {
+		t.Errorf("the preset's listing %+v should read back as the Guideline preset", g.Rules())
+	}
+
+	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, config.GuidelineRules(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err = natspkg.FetchGameMeta(ctx, js, coop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.GarbageHoles != 0 || meta.GuidelineGarbage || !meta.Hold {
+		t.Errorf("cooperative Guideline meta = %+v, want no garbage rules, hold on", meta.Rules())
+	}
+	if !meta.Rules().IsGuideline(config.ModeCooperative) {
+		t.Error("a cooperative preset game should still read as the Guideline preset")
+	}
+
+	var legacy config.GameMeta
+	if err := json.Unmarshal([]byte(`{"game_id":"x","mode":1,"player_count":2}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Hold {
+		t.Error("pre-field meta should have no hold")
 	}
 }

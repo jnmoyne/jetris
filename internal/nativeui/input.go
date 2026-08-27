@@ -28,6 +28,7 @@ func boardKeyFilters(tag event.Tag) []event.Filter {
 		key.Filter{Focus: tag, Name: key.NameSpace},
 		key.Filter{Focus: tag, Name: "Z"},
 		key.Filter{Focus: tag, Name: "X"},
+		key.Filter{Focus: tag, Name: "C"},
 	}
 }
 
@@ -35,7 +36,9 @@ func boardKeyFilters(tag event.Tag) []event.Filter {
 // the control scheme can be unit-tested. ok is false for unmapped keys.
 //
 // ← / → move, ↓ soft drop, ↑ / X rotate clockwise, Z rotate counter-clockwise,
-// Space hard drop.
+// Space hard drop, C hold (the Guideline's key; a no-op in a game without the
+// hold rule — Shift, the Guideline's other hold key, is not mapped because
+// Shift-Tab is the board/chat focus switch).
 func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 	switch name {
 	case key.NameLeftArrow:
@@ -52,6 +55,8 @@ func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 		return (*engine.Engine).RotateCCW, true
 	case "X":
 		return (*engine.Engine).RotateCW, true
+	case "C":
+		return (*engine.Engine).Hold, true
 	}
 	return nil, false
 }

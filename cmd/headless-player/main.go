@@ -78,7 +78,7 @@ func main() {
 	if *mode == "cooperative" {
 		gameMode, playerCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 1
 	}
-	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, maxAgents, 1, 0, false, false, true, false)
+	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, maxAgents, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -667,21 +667,16 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // may take (0 = agents may not join); enforced atomically by JoinGame's CAS
 // loop. inviteOnly restricts joining to invited players (and the creator) —
 // see Invite/JoinGame; invited agents are exempt from the maxAgents policy,
-// the invitation being explicit permission. nextCount is how many upcoming
-// pieces the game reveals (clamped to 0..config.MaxNextCount); it is stored in
-// GameMeta so every peer — human UI and agent alike — sees the same lookahead.
-// garbageHoles is how many empty cells every garbage row is raised with
-// (clamped to 0..config.MaxGarbageHoles; 0 = solid rows that never clear),
-// stored on both records like nextCount — the meta rules the raise, the
-// listing tags the lobby row. randomHoles makes every garbage row draw its
-// own hole columns instead of the rows of one raise sharing a draw (off by
-// default; stored on both records too, and moot at 0 holes). guidelineGarbage
-// makes a clear's attack follow the Guideline table (0/1/2/4 rows for 1/2/3/4
-// lines, game.AttackRows) instead of one row per line (off by default; both
-// records). ghost is whether the game renders the hard-drop ghost preview (on
-// by default in the UI); stored inverted as GameMeta.NoGhost so pre-field
-// metas keep the ghost shown.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents, nextCount, garbageHoles int, randomHoles, guidelineGarbage, ghost, inviteOnly bool) (string, error) {
+// the invitation being explicit permission. rules are the game's play rules
+// (config.GameRules — the piece preview, ghost, hold and garbage settings),
+// clamped to their legal ranges for the mode (GameRules.Normalized: a
+// cooperative game stores no garbage rules) and stored on BOTH records: the
+// meta is the rule book every peer — human UI and agent alike — reads at
+// Start, the listing tags the lobby row (next N, holes N, guideline garbage,
+// hold — or plain "guideline" when the rules are the Guideline preset). The
+// ghost rule is stored inverted as GameMeta.NoGhost so pre-field metas keep
+// the ghost shown.
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents int, rules config.GameRules, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	if maxAgents < 0 {
 		maxAgents = 0
@@ -689,14 +684,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	if maxAgents > playerCount {
 		maxAgents = playerCount
 	}
-	if nextCount < 0 {
-		nextCount = 0
-	}
-	if nextCount > config.MaxNextCount {
-		nextCount = config.MaxNextCount
-	}
-	garbageHoles = min(max(garbageHoles, 0), config.MaxGarbageHoles)
-	randomHoles = randomHoles && garbageHoles > 0
+	rules = rules.Normalized(mode)
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
@@ -707,11 +695,12 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Mode:               mode,
 		PlayerCount:        playerCount,
 		TeamSize:           teamSize,
-		NextCount:          nextCount,
-		NoGhost:            !ghost,
-		GarbageHoles:       garbageHoles,
-		RandomGarbageHoles: randomHoles,
-		GuidelineGarbage:   guidelineGarbage,
+		NextCount:          rules.NextCount,
+		NoGhost:            !rules.Ghost,
+		Hold:               rules.Hold,
+		GarbageHoles:       rules.GarbageHoles,
+		RandomGarbageHoles: rules.RandomGarbageHoles,
+		GuidelineGarbage:   rules.GuidelineGarbage,
 		Seed:               uint64(time.Now().UnixNano()),
 		Status:             config.GameStatusCreated,
 		CreatorID:          l.playerID,
@@ -733,10 +722,12 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		PlayerCount:        playerCount,
 		TeamSize:           teamSize,
 		MaxAgents:          maxAgents,
-		NextCount:          nextCount,
-		GarbageHoles:       garbageHoles,
-		RandomGarbageHoles: randomHoles,
-		GuidelineGarbage:   guidelineGarbage,
+		NextCount:          rules.NextCount,
+		NoGhost:            !rules.Ghost,
+		Hold:               rules.Hold,
+		GarbageHoles:       rules.GarbageHoles,
+		RandomGarbageHoles: rules.RandomGarbageHoles,
+		GuidelineGarbage:   rules.GuidelineGarbage,
 		InviteOnly:         inviteOnly,
 		CreatorID:          l.playerID,
 		Players:            nil,

@@ -87,9 +87,12 @@ Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--
 `golang-mk1`), `--difficulty` (`easy`/`medium`/`hard`), `--join`, `--create` (with
 `--mode`, `--players`, `--max-agents`, `--next`, `--holes` — holes per garbage row, 0-4,
 written to the meta as `garbage_holes` — `--random-holes`, each garbage row drawing
-its own columns, `random_garbage_holes` — and `--guideline-garbage`, the 0/1/2/4
-Guideline attack table, `guideline_garbage`), `--auto-join`, `--wait`, `--once`,
-`--selftest`.
+its own columns, `random_garbage_holes` — `--guideline-garbage`, the 0/1/2/4
+Guideline attack table, `guideline_garbage` — `--hold`, the Guideline hold queue,
+`hold`, which the agent itself never uses but the humans in its game may — and
+`--guideline`, the GUI wizard's Guideline preset in one flag: next 4, hold, 1 hole
+per garbage row, the Guideline attack table, overriding the individual rule flags),
+`--auto-join`, `--wait`, `--once`, `--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the
 GUI and create a game with agents allowed — or let one instance host for another:

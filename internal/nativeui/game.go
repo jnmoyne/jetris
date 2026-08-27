@@ -686,9 +686,13 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// Players with a piece preview get the NEXT well beside the playfield —
 	// per-seat queue, so spectators (no seat) never have one. Read the live
 	// queue (not just NextCount) so the space is only reserved once the
-	// engine's sequence is up and the well will actually render.
+	// engine's sequence is up and the well will actually render. In a game
+	// with the hold rule the HOLD box sits above it in the same column
+	// (empty until the first hold; the slot is per seat too).
 	nextPieces := eng.NextPieces()
 	showNext := mode == engine.ModePlayer && len(nextPieces) > 0
+	showHold := mode == engine.ModePlayer && eng.HoldEnabled()
+	showSide := showNext || showHold
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
 		// room below for the player's move-buffer strip and (while the game is
@@ -701,11 +705,11 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			}
 		}
 		reservedX, extraCols := gtx.Dp(24), 0
-		if showNext {
-			// The NEXT well's tiles use the board cell size, so the well is
-			// previewCols board cells wide: count it as extra board columns
-			// plus a fixed slice for its frame and the gap, so the pair
-			// always fits the window.
+		if showSide {
+			// The wells' tiles use the board cell size, so the side column
+			// is previewCols board cells wide: count it as extra board
+			// columns plus a fixed slice for its frame and the gap, so the
+			// pair always fits the window.
 			extraCols = previewCols
 			reservedX += gtx.Dp(18)
 		}
@@ -767,19 +771,42 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 						return D{}
 					}
 					return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
-						return a.controlPad(gtx, view.status == string(config.GameStatusInProgress))
+						return a.controlPad(gtx, view.status == string(config.GameStatusInProgress), eng.HoldEnabled())
 					})
 				}),
 			)
 		}
 		return layout.Center.Layout(gtx, func(gtx C) D {
-			if !showNext {
+			if !showSide {
 				return boardCol(gtx)
 			}
-			// NEXT well in its own sub-division hugging the playfield's
-			// top-left, classic arcade style.
+			// The HOLD box and the NEXT well in their own sub-divisions
+			// hugging the playfield's top-left, classic arcade style — the
+			// hold slot first, the queue under it.
 			return layout.Flex{Alignment: layout.Start}.Layout(gtx,
-				layout.Rigid(func(gtx C) D { return a.nextWell(gtx, nextPieces, cell) }),
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							if !showHold {
+								return D{}
+							}
+							held, has := eng.HeldPiece()
+							return a.holdWell(gtx, held, has, eng.HoldUsed(), cell)
+						}),
+						layout.Rigid(func(gtx C) D {
+							if !showHold || !showNext {
+								return D{}
+							}
+							return spacer(10)(gtx)
+						}),
+						layout.Rigid(func(gtx C) D {
+							if !showNext {
+								return D{}
+							}
+							return a.nextWell(gtx, nextPieces, cell)
+						}),
+					)
+				}),
 				layout.Rigid(hSpacer(12)),
 				layout.Rigid(boardCol),
 			)
@@ -1168,6 +1195,58 @@ func (a *App) nextWell(gtx C, pieces []game.PieceType, boardCellPx int) D {
 	fillRect(gtx.Ops, image.Rect(fw, fw, w-fw, h-fw), colPanel)
 	call.Add(gtx.Ops)
 	return dims
+}
+
+// holdWell is the player's hold slot beside the playfield, in the NEXT
+// well's idiom (the same frame, the same cell size) so the two read as one
+// sub-division: the HOLD label over one tile slot — two cells tall, the
+// tallest spawn tile — empty until the first hold, showing the set-aside
+// piece afterwards and dimming it while the piece in play already came out
+// of a hold (one hold per piece: the slot is locked until the next piece
+// spawns from the queue). Tapping the box holds, as on the phone versions
+// of the game (holdBoxBtn, dispatched by handlePadClicks).
+func (a *App) holdWell(gtx C, held game.PieceType, has, used bool, boardCellPx int) D {
+	cell := boardCellPx
+	fw := max(cell/8, 2)
+	gap := max(cell/3, 6)
+	slotH := 2 * cell
+
+	inner := func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.pixel(gtx.Metric.PxToSp(cell*11/20), "HOLD", colMuted).Layout),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: gtx.Metric.PxToDp(gap * 3 / 4)}.Layout(gtx, func(gtx C) D {
+					if has {
+						// The tile's own height is the piece's rows (1 for
+						// the I, 2 otherwise): center it in the fixed slot.
+						h := game.Piece{Type: held}.Cells()
+						rows := 1
+						for _, rc := range h {
+							rows = max(rows, rc[0]+1)
+						}
+						y := (slotH - rows*cell) / 2
+						drawMiniPiece(gtx.Ops, 0, y, cell, held)
+						if used {
+							// Spent for this piece: wash the tile out.
+							fillRect(gtx.Ops, image.Rect(0, 0, previewCols*cell, slotH), colorN{R: colPanel.R, G: colPanel.G, B: colPanel.B, A: 0xa0})
+						}
+					}
+					return D{Size: image.Pt(previewCols*cell, slotH)}
+				})
+			}),
+		)
+	}
+
+	return a.holdBoxBtn.Layout(gtx, func(gtx C) D {
+		macro := op.Record(gtx.Ops)
+		dims := layout.UniformInset(gtx.Metric.PxToDp(fw+gap)).Layout(gtx, inner)
+		call := macro.Stop()
+		w, h := dims.Size.X, dims.Size.Y
+		fillRect(gtx.Ops, image.Rect(0, 0, w, h), colBorder)
+		fillRect(gtx.Ops, image.Rect(fw, fw, w-fw, h-fw), colPanel)
+		call.Add(gtx.Ops)
+		return dims
+	})
 }
 
 // Every piece's spawn orientation fits a 4-wide bounding box (the I is 4x1,

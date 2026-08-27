@@ -18,7 +18,7 @@ import (
 // agent question — an invite-only game's agent policy is per-invite).
 const (
 	wizStepMode   = 1 // game type + seat count
-	wizStepNext   = 2 // next-piece preview count
+	wizStepNext   = 2 // the play rules: the Guideline preset, or custom (preview, ghost, hold, garbage)
 	wizStepJoin   = 3 // open vs invite-only
 	wizStepAgents = 4 // agent policy (open games only)
 )
@@ -76,42 +76,17 @@ func (a *App) finishCreateWizard() {
 	} else if err != nil || count < 2 {
 		count = 2
 	}
-	// Upcoming-piece preview: how many next pieces the game reveals to
-	// everyone (players, spectators, agents). Blank or junk falls back to
-	// the default of 1; clamped to 0..config.MaxNextCount.
-	nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
-	if err != nil {
-		nextCount = 1
+	// The play rules: the Guideline preset as chosen on step 2, or the
+	// custom editors' read-out; either way clamped for the mode (a
+	// cooperative game records no garbage rules — no misleading tag).
+	rules := config.GuidelineRules()
+	if a.rulesEnum.Value == "custom" {
+		rules = a.customRules()
 	}
-	if nextCount < 0 {
-		nextCount = 0
-	}
-	if nextCount > config.MaxNextCount {
-		nextCount = config.MaxNextCount
-	}
-	// The hard-drop ghost is a per-game rule like the preview: the creator's
-	// checkbox (on by default) decides it for every player.
-	ghost := a.ghostCb.Value
-	// Garbage holes: how many empty cells every garbage row is raised with,
-	// in the modes that raise garbage. Blank or junk falls back to the
-	// default of 0 (solid rows that never clear); clamped to
-	// 0..config.MaxGarbageHoles. A cooperative game raises no garbage, so
-	// its meta records 0 whatever the editor holds — no misleading tag.
-	holes, randomHoles, guideline := 0, false, false
-	if mode != config.ModeCooperative {
-		holes, err = strconv.Atoi(strings.TrimSpace(a.holesEd.Text()))
-		if err != nil {
-			holes = 0
-		}
-		holes = min(max(holes, 0), config.MaxGarbageHoles)
-		// Random hole positions only mean something once there are holes.
-		randomHoles = a.randomHolesCb.Value && holes > 0
-		// Guideline attack table (a single sends nothing) — off by default.
-		guideline = a.guidelineCb.Value
-	}
+	rules = rules.Normalized(mode)
 	a.createWizStep = 0
 	if a.createJoinEnum.Value == "invite" {
-		go a.openInvitePicker(mode, count, nextCount, holes, randomHoles, guideline, ghost)
+		go a.openInvitePicker(mode, count, rules)
 		return
 	}
 	// Agent policy: how many seats idle agent players may take.
@@ -131,7 +106,35 @@ func (a *App) finishCreateWizard() {
 			maxAgents = total
 		}
 	}
-	go func() { a.createGame(mode, count, maxAgents, nextCount, holes, randomHoles, guideline, ghost, false) }()
+	go func() { a.createGame(mode, count, maxAgents, rules, false) }()
+}
+
+// customRules reads the wizard's custom-rules widgets. The upcoming-piece
+// preview is how many next pieces the game reveals to everyone (players,
+// spectators, agents): blank or junk falls back to the default of 1. The
+// ghost and the hold are per-game rules like the preview — the creator's
+// checkboxes decide them for every seat. Garbage holes are how many empty
+// cells every garbage row is raised with in the modes that raise garbage
+// (blank or junk: the default of 0, solid rows that never clear), with the
+// random-positions and Guideline-attack-table checkboxes beside it. Ranges
+// are clamped by GameRules.Normalized.
+func (a *App) customRules() config.GameRules {
+	nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
+	if err != nil {
+		nextCount = 1
+	}
+	holes, err := strconv.Atoi(strings.TrimSpace(a.holesEd.Text()))
+	if err != nil {
+		holes = 0
+	}
+	return config.GameRules{
+		NextCount:          nextCount,
+		Ghost:              a.ghostCb.Value,
+		Hold:               a.holdCb.Value,
+		GarbageHoles:       holes,
+		RandomGarbageHoles: a.randomHolesCb.Value,
+		GuidelineGarbage:   a.guidelineCb.Value,
+	}
 }
 
 // createWizardOverlay renders the modal create-game wizard. All actions are
@@ -156,10 +159,7 @@ func (a *App) createWizardOverlay(gtx C) D {
 		stepTitle = "GAME TYPE & PLAYERS"
 		body = a.wizardModeStep
 	case wizStepNext:
-		stepTitle = "PIECE PREVIEW & GHOST"
-		if a.modeEnum.Value != "cooperative" {
-			stepTitle = "PREVIEW, GHOST & GARBAGE"
-		}
+		stepTitle = "GAME RULES"
 		body = a.wizardNextStep
 	case wizStepJoin:
 		stepTitle = "WHO CAN JOIN"
@@ -176,6 +176,11 @@ func (a *App) createWizardOverlay(gtx C) D {
 		nextLabel = "Create game"
 	}
 
+	// The body scrolls when the step is taller than the window leaves it
+	// (the custom rules step of a garbage mode at the minimum window
+	// height): the window height less the modal's header, footer and
+	// chrome is what it may take before scrolling.
+	bodyMaxY := max(gtx.Constraints.Max.Y-gtx.Dp(200), gtx.Dp(120))
 	return layout.Center.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Max.X = gtx.Dp(480)
 		return hardShadow(gtx, func(gtx C) D {
@@ -187,7 +192,11 @@ func (a *App) createWizardOverlay(gtx C) D {
 							layout.Rigid(spacer(6)),
 							layout.Rigid(a.pixel(unit.Sp(9), fmt.Sprintf("STEP %d OF %d — %s", step, total, stepTitle), colAccent).Layout),
 							layout.Rigid(spacer(14)),
-							layout.Rigid(body),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Min.Y = 0
+								gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, bodyMaxY)
+								return material.List(a.th, &a.wizList).Layout(gtx, 1, func(gtx C, _ int) D { return body(gtx) })
+							}),
 							layout.Rigid(spacer(18)),
 							layout.Rigid(func(gtx C) D {
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -256,16 +265,84 @@ func (a *App) wizardModeStep(gtx C) D {
 	)
 }
 
-// wizardNextStep is step 2: how much help the game gives every player — the
-// upcoming-piece preview count, whether the hard-drop ghost shows, and (in
-// the modes that raise garbage) how strong an attack is and how many holes
-// every garbage row comes with, each row drawing its own or not. All are game
-// rules fixed at creation, one setting for every eye.
+// wizardNextStep is step 2: the game's play rules, fixed at creation, one
+// setting for every seat. A single radio picks the Guideline preset — every
+// rule at the setting closest to the Tetris Guideline, listed read-only — or
+// custom rules: the upcoming-piece preview count, whether the hard-drop
+// ghost shows, whether the hold queue is on, and (in the modes that raise
+// garbage) how strong an attack is and how many holes every garbage row
+// comes with, each row drawing its own or not.
 func (a *App) wizardNextStep(gtx C) D {
+	custom := a.rulesEnum.Value == "custom"
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.wizardRadio(&a.rulesEnum, "guideline", "Guideline — every rule at its Tetris Guideline setting")),
+		layout.Rigid(a.wizardRadio(&a.rulesEnum, "custom", "Custom — set each rule yourself")),
+		layout.Rigid(spacer(10)),
+		layout.Rigid(func(gtx C) D {
+			if custom {
+				return a.wizardCustomRules(gtx)
+			}
+			return a.wizardGuidelineRules(gtx)
+		}),
+	)
+}
+
+// wizardGuidelineRules is the read-only view of the Guideline preset
+// (config.GuidelineRules) for the game type being created: one line per
+// rule, so the creator sees exactly what the game will play by.
+func (a *App) wizardGuidelineRules(gtx C) D {
+	mode := config.ModeCooperative
+	switch a.modeEnum.Value {
+	case "competitive":
+		mode = config.ModeCompetitive
+	case "teams":
+		mode = config.ModeTeams
+	}
+	kids := []layout.FlexChild{
+		layout.Rigid(a.body("The settings closest to the Tetris Guideline this game can offer:", colMuted)),
+		layout.Rigid(spacer(8)),
+	}
+	for _, row := range guidelineSummary(mode) {
+		label, value := row[0], row[1]
+		kids = append(kids, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Start}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Min.X = gtx.Dp(120)
+						return a.body(label, colAccent)(gtx)
+					}),
+					layout.Flexed(1, a.body(value, colFg)),
+				)
+			})
+		}))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+}
+
+// guidelineSummary lists the Guideline preset's rules as (rule, setting)
+// pairs for a game of mode — the garbage rules only for the modes that raise
+// garbage.
+func guidelineSummary(mode config.GameMode) [][2]string {
+	r := config.GuidelineRules().Normalized(mode)
+	rows := [][2]string{
+		{"Next pieces", fmt.Sprintf("%d — the NEXT well, and how far agents may look ahead", r.NextCount)},
+		{"Ghost piece", "on — the landing preview of every player's piece"},
+		{"Hold", "on — C or the HOLD button sets the falling piece aside for later, once per piece"},
+	}
+	if mode != config.ModeCooperative {
+		rows = append(rows,
+			[2]string{"Garbage", fmt.Sprintf("%d hole per row, the rows of one attack lined up into a well", r.GarbageHoles)},
+			[2]string{"Attacks", "the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4"},
+		)
+	}
+	return rows
+}
+
+// wizardCustomRules is the custom half of step 2: every rule as its own
+// editor or checkbox, garbage rules for the modes that raise garbage only.
+func (a *App) wizardCustomRules(gtx C) D {
 	garbage := a.modeEnum.Value != "cooperative"
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.body("How many upcoming pieces the game reveals — the NEXT panel every player sees, and exactly how far agents may look ahead.", colMuted)),
-		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(a.body(fmt.Sprintf("Next pieces (0–%d):", config.MaxNextCount), colMuted)),
@@ -277,23 +354,32 @@ func (a *App) wizardNextStep(gtx C) D {
 				}),
 			)
 		}),
-		layout.Rigid(spacer(8)),
-		layout.Rigid(a.body("0 hides the preview entirely — nobody (human or agent) sees what's coming.", colMuted)),
-		layout.Rigid(spacer(14)),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body("The NEXT well every player sees — and exactly how far agents may look ahead. 0 hides it: nobody sees what's coming.", colMuted)),
+		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
 			cb := material.CheckBox(a.th, &a.ghostCb, "Show ghost piece")
 			cb.Color = colFg
 			cb.IconColor = colAccent
 			return cb.Layout(gtx)
 		}),
-		layout.Rigid(spacer(8)),
-		layout.Rigid(a.body("The ghost previews where each player's piece would hard-drop. Off makes everyone eyeball their drops.", colMuted)),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body("Previews where each player's piece would hard-drop. Off, everyone eyeballs their drops.", colMuted)),
+		layout.Rigid(spacer(10)),
+		layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.holdCb, "Hold piece")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body("The Guideline hold: C or the HOLD button sets the falling piece aside and plays the next one, or swaps it back in later — once per piece.", colMuted)),
 		layout.Rigid(func(gtx C) D {
 			if !garbage {
 				return D{}
 			}
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(spacer(14)),
+				layout.Rigid(spacer(10)),
 				layout.Rigid(func(gtx C) D {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(a.body(fmt.Sprintf("Garbage holes (0–%d):", config.MaxGarbageHoles), colMuted)),
@@ -305,8 +391,8 @@ func (a *App) wizardNextStep(gtx C) D {
 						}),
 					)
 				}),
-				layout.Rigid(spacer(8)),
-				layout.Rigid(a.body("Empty cells in every garbage row an attack sends. 0 raises solid rows that can never be cleared; with holes, a garbage row clears like any other line once they're filled.", colMuted)),
+				layout.Rigid(spacer(4)),
+				layout.Rigid(a.body("Empty cells in every garbage row an attack sends. 0 raises solid rows that never clear; a holed row clears like any line once its holes are filled.", colMuted)),
 				layout.Rigid(spacer(10)),
 				layout.Rigid(func(gtx C) D {
 					cb := material.CheckBox(a.th, &a.randomHolesCb, "Random hole positions")
@@ -314,8 +400,8 @@ func (a *App) wizardNextStep(gtx C) D {
 					cb.IconColor = colAccent
 					return cb.Layout(gtx)
 				}),
-				layout.Rigid(spacer(8)),
-				layout.Rigid(a.body("Off: the rows of one attack share their hole columns, so the holes line up into a well. On: every garbage row draws its own — messier, harder to dig out.", colMuted)),
+				layout.Rigid(spacer(4)),
+				layout.Rigid(a.body("Off: the rows of one attack share their hole columns, lining up into a well. On: every row draws its own — harder to dig out.", colMuted)),
 				layout.Rigid(spacer(10)),
 				layout.Rigid(func(gtx C) D {
 					cb := material.CheckBox(a.th, &a.guidelineCb, "Guideline garbage")
@@ -323,8 +409,8 @@ func (a *App) wizardNextStep(gtx C) D {
 					cb.IconColor = colAccent
 					return cb.Layout(gtx)
 				}),
-				layout.Rigid(spacer(8)),
-				layout.Rigid(a.body("Off: every cleared line sends one garbage row. On: the Tetris Guideline table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4.", colMuted)),
+				layout.Rigid(spacer(4)),
+				layout.Rigid(a.body("Off: every cleared line sends one garbage row. On: the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4.", colMuted)),
 			)
 		}),
 	)

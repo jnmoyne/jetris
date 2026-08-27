@@ -575,12 +575,16 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.createJoinEnum.Value = "invite"
 		a.createWizStep = wizStepJoin
 		render(a.createWizardOverlay)
-		// Step 2 carries the garbage-holes editor for the modes that raise
-		// garbage (competitive, teams) and hides it for cooperative.
+		// Step 2 is the Guideline preset's read-only list or the custom
+		// editors; both carry the garbage rules for the modes that raise
+		// garbage (competitive, teams) and hide them for cooperative.
 		a.createWizStep = wizStepNext
-		for _, mode := range []string{"competitive", "cooperative"} {
-			a.modeEnum.Value = mode
-			render(a.createWizardOverlay)
+		for _, rules := range []string{"guideline", "custom"} {
+			a.rulesEnum.Value = rules
+			for _, mode := range []string{"competitive", "cooperative"} {
+				a.modeEnum.Value = mode
+				render(a.createWizardOverlay)
+			}
 		}
 
 		// The wizard also renders as the lobby's modal overlay.

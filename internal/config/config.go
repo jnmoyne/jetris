@@ -91,6 +91,7 @@ type GameMeta struct {
 	TeamSize           int        `json:"team_size,omitempty"`            // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
 	NextCount          int        `json:"next_count"`                     // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
 	NoGhost            bool       `json:"no_ghost,omitempty"`             // hard-drop ghost preview disabled for this game; inverted so the zero value — and metas written before the field — keep the ghost SHOWN (the default). Meta, not listing: like NextCount it is one rule for every player
+	Hold               bool       `json:"hold,omitempty"`                 // the Guideline hold queue is on: a player may swap the falling piece for a held one, once per piece, the piece coming out re-entering at the spawn point (see GameRules.Hold). Unset — the default, and every meta written before the field — no hold. One rule for every seat, like NextCount; agents may use it or ignore it
 	GarbageHoles       int        `json:"garbage_holes,omitempty"`        // holes punched in every garbage row a raise lands (0..MaxGarbageHoles; competitive/teams). 0 — the zero value, and every meta written before the field — raises solid rows that never clear; with holes, a garbage row clears like any other line once its holes are filled
 	RandomGarbageHoles bool       `json:"random_garbage_holes,omitempty"` // every garbage row draws its own hole columns ("messy" garbage); unset — the default, and every meta written before the field — every row of one raise shares a single draw, so its holes line up into a well ("clean" garbage). Moot at GarbageHoles 0
 	GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // attack strength follows the Tetris Guideline table — a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (game.AttackRows); unset — the default, and every meta written before the field — every cleared line sends one row
@@ -102,6 +103,70 @@ type GameMeta struct {
 	FinishedAt         time.Time  `json:"finished_at,omitempty"`
 	Abandoned          bool       `json:"abandoned,omitempty"`
 	PieceIdx           uint64     `json:"piece_idx"`
+}
+
+// GameRules are the per-game PLAY rules a creator picks in the create wizard,
+// bundled for the create paths (lobby.CreateGame and the UI's createGame /
+// openInvitePicker): every field lands in GameMeta — the rule book every
+// engine reads at Start — and is mirrored on the lobby listing for the row's
+// tags. The zero value is the pre-attribute Jetris game (no preview, no hold,
+// solid garbage, one row per line) except for Ghost, which the wizard defaults
+// on — the meta stores it inverted (NoGhost) for the same reason.
+type GameRules struct {
+	NextCount          int  // upcoming pieces the game reveals (0..MaxNextCount)
+	Ghost              bool // the hard-drop ghost preview (GameMeta.NoGhost, inverted)
+	Hold               bool // the Guideline hold queue (GameMeta.Hold): swap the falling piece for a held one, once per piece
+	GarbageHoles       int  // holes per garbage row in the modes that raise garbage (0..MaxGarbageHoles; 0 = solid rows that never clear)
+	RandomGarbageHoles bool // every garbage row draws its own hole columns (off: the rows of one attack share a draw)
+	GuidelineGarbage   bool // attack strength by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines (off: one row per line)
+}
+
+// GuidelineRules is the create wizard's "Guideline" preset: every rule at the
+// setting closest to the Tetris Guideline this game can offer — the longest
+// next queue the game reveals (MaxNextCount), the ghost piece, the hold queue,
+// and Guideline-style garbage: one hole per row, the rows of one attack
+// sharing it (clean garbage that digs out as a well), attacks by the
+// Guideline table.
+func GuidelineRules() GameRules {
+	return GameRules{
+		NextCount:        MaxNextCount,
+		Ghost:            true,
+		Hold:             true,
+		GarbageHoles:     1,
+		GuidelineGarbage: true,
+	}
+}
+
+// Normalized returns the rules clamped to their legal ranges as a game of
+// mode stores them: NextCount and GarbageHoles within their caps, random
+// holes only meaningful with holes — and, since a cooperative game raises no
+// garbage, its garbage rules zeroed so no listing tag misleads.
+func (r GameRules) Normalized(mode GameMode) GameRules {
+	r.NextCount = min(max(r.NextCount, 0), MaxNextCount)
+	if mode == ModeCooperative {
+		r.GarbageHoles, r.RandomGarbageHoles, r.GuidelineGarbage = 0, false, false
+	}
+	r.GarbageHoles = min(max(r.GarbageHoles, 0), MaxGarbageHoles)
+	r.RandomGarbageHoles = r.RandomGarbageHoles && r.GarbageHoles > 0
+	return r
+}
+
+// IsGuideline reports whether the rules are exactly the Guideline preset as a
+// game of mode stores it (a cooperative game has no garbage rules to match).
+func (r GameRules) IsGuideline(mode GameMode) bool {
+	return r.Normalized(mode) == GuidelineRules().Normalized(mode)
+}
+
+// Rules is the play-rule bundle of a game's meta record.
+func (m GameMeta) Rules() GameRules {
+	return GameRules{
+		NextCount:          m.NextCount,
+		Ghost:              !m.NoGhost,
+		Hold:               m.Hold,
+		GarbageHoles:       m.GarbageHoles,
+		RandomGarbageHoles: m.RandomGarbageHoles,
+		GuidelineGarbage:   m.GuidelineGarbage,
+	}
 }
 
 // PlayerResult captures per-player stats at game end.

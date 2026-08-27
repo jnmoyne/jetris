@@ -79,6 +79,20 @@ var (
 		"..XXXXX..",
 	}
 	glyphCCW = mirrored(glyphCW)
+	// glyphHold is the hold icon: two arrows trading places (⇄) — the swap
+	// symbol the phone versions of the game put on their hold button — as a
+	// blocky 9-row bitmap so it scales like the 8-row arrows.
+	glyphHold = []string{
+		".....XX.",
+		"XXXXXXXX",
+		"XXXXXXXX",
+		".....XX.",
+		"........",
+		".XX.....",
+		"XXXXXXXX",
+		"XXXXXXXX",
+		".XX.....",
+	}
 )
 
 // mirrored flips a glyph bitmap horizontally (derives the CCW rotate arrow
@@ -139,6 +153,8 @@ func (a *App) moveGlyph(m engine.MoveType, size unit.Dp, col colorN) layout.Widg
 		return glyphWidget(glyphCW, size, col)
 	case engine.RotateCCW:
 		return glyphWidget(glyphCCW, size, col)
+	case engine.MoveHold:
+		return glyphWidget(glyphHold, size, col)
 	}
 	return a.pixel(unit.Sp(11), "?", col).Layout
 }
@@ -240,43 +256,90 @@ func emptySlot(gtx C, sz int) D {
 }
 
 // controlPad is the mouse control row under the player's board — the whole
-// keyboard scheme as chunky arcade buttons (rotate CCW/CW, shift left / down /
-// right, and a wide DROP bar), so the game is fully playable without a
-// keyboard. It renders dimmed until the game is running; handlePadClicks does
-// the actual gating of clicks.
-func (a *App) controlPad(gtx C, enabled bool) D {
+// keyboard scheme as chunky arcade buttons, so the game is fully playable
+// without a keyboard. Its layout follows the touch controls of the phone
+// versions of the game: a thumb cluster per hand, a wider gap between them
+// — on the left the MOVEMENT cluster, ◀ ▼ ▶, led by the HOLD bar (a ⇄ swap
+// icon; it sits under the HOLD box it feeds, and only in games with the
+// hold rule); on the right the ACTION cluster, the two rotations ↺ ↻ and
+// the wide accent-filled DROP bar (⤓), the one button that commits a piece.
+// It renders dimmed until the game is running; handlePadClicks does the
+// actual gating of clicks.
+func (a *App) controlPad(gtx C, enabled, hold bool) D {
+	// The pad keeps its one row whatever the room: when the board column is
+	// narrower than the pad's natural width (the minimum window with an
+	// opponent column beside the board), every size scales down together
+	// — as a phone's controls shrink with the screen — never a clipped edge.
+	natural := 3*(padBtnW+padGap) + 2*(padBtnW+padGap) + padDropW + padClusterGap
+	if hold {
+		natural += padHoldW + padGap
+	}
+	scale := float32(1)
+	if avail, want := gtx.Constraints.Max.X, gtx.Dp(unit.Dp(natural)); avail < want {
+		scale = max(float32(avail)/float32(want), padMinScale)
+	}
+	dp := func(v int) unit.Dp { return unit.Dp(float32(v) * scale) }
+	px := func(v int) int { return gtx.Dp(dp(v)) }
+
 	glyphCol := colAccent
 	if !enabled {
 		glyphCol = colMuted
 	}
-	sq := func(btn *widget.Clickable, content layout.Widget) layout.FlexChild {
+	sq := func(btn *widget.Clickable, bm []string) layout.FlexChild {
 		return layout.Rigid(func(gtx C) D {
-			return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-				return a.padButton(gtx, btn, enabled, image.Pt(gtx.Dp(52), gtx.Dp(48)), colPanel, content)
+			return layout.Inset{Right: dp(padGap)}.Layout(gtx, func(gtx C) D {
+				return a.padButton(gtx, btn, enabled, image.Pt(px(padBtnW), px(padBtnH)), colPanel, glyphWidget(bm, dp(18), glyphCol))
 			})
 		})
+	}
+	// bar is a wide labelled button: a glyph beside its pixel-face word.
+	bar := func(btn *widget.Clickable, w int, bg, fg colorN, bm []string, label string) layout.Widget {
+		return func(gtx C) D {
+			return a.padButton(gtx, btn, enabled, image.Pt(px(w), px(padBtnH)), bg, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(glyphWidget(bm, dp(16), fg)),
+					layout.Rigid(hSpacer(int(dp(padGap)))),
+					layout.Rigid(a.pixel(unit.Sp(9*scale), label, fg).Layout),
+				)
+			})
+		}
 	}
 	dropBg, dropFg := colAccent, colBg
 	if !enabled {
 		dropBg, dropFg = colPanel, colMuted
 	}
+	movement := []layout.FlexChild{
+		sq(&a.padLeft, glyphLeft),
+		sq(&a.padDown, glyphDown),
+		sq(&a.padRight, glyphRight),
+	}
+	if hold {
+		movement = append([]layout.FlexChild{layout.Rigid(func(gtx C) D {
+			return layout.Inset{Right: dp(padGap)}.Layout(gtx, bar(&a.padHold, padHoldW, colPanel, glyphCol, glyphHold, "HOLD"))
+		})}, movement...)
+	}
+	actions := []layout.FlexChild{
+		sq(&a.padCCW, glyphCCW),
+		sq(&a.padCW, glyphCW),
+		layout.Rigid(bar(&a.padDrop, padDropW, dropBg, dropFg, glyphDrop, "DROP")),
+	}
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-		sq(&a.padCCW, glyphWidget(glyphCCW, 18, glyphCol)),
-		sq(&a.padLeft, glyphWidget(glyphLeft, 18, glyphCol)),
-		sq(&a.padDown, glyphWidget(glyphDown, 18, glyphCol)),
-		sq(&a.padRight, glyphWidget(glyphRight, 18, glyphCol)),
-		sq(&a.padCW, glyphWidget(glyphCW, 18, glyphCol)),
-		layout.Rigid(func(gtx C) D {
-			return a.padButton(gtx, &a.padDrop, enabled, image.Pt(gtx.Dp(104), gtx.Dp(48)), dropBg, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(glyphWidget(glyphDrop, 16, dropFg)),
-					layout.Rigid(hSpacer(8)),
-					layout.Rigid(a.pixel(unit.Sp(9), "DROP", dropFg).Layout),
-				)
-			})
-		}),
+		layout.Rigid(func(gtx C) D { return layout.Flex{Alignment: layout.Middle}.Layout(gtx, movement...) }),
+		layout.Rigid(hSpacer(int(dp(padClusterGap)))),
+		layout.Rigid(func(gtx C) D { return layout.Flex{Alignment: layout.Middle}.Layout(gtx, actions...) }),
 	)
 }
+
+// The pad's natural sizes in dp — a square button, the HOLD and DROP bars,
+// the gap after every button, and the extra gap between the two thumb
+// clusters — and how far the whole pad may shrink to fit a narrow column.
+const (
+	padBtnW, padBtnH   = 52, 48
+	padHoldW, padDropW = 96, 104
+	padGap             = 8
+	padClusterGap      = 16
+	padMinScale        = 0.55
+)
 
 // padButton renders one arcade pad button: hard shadow, chunky border, solid
 // fill, centered glyph. The border mutes while disabled.
@@ -297,10 +360,11 @@ func (a *App) padButton(gtx C, btn *widget.Clickable, enabled bool, sz image.Poi
 	})
 }
 
-// handlePadClicks drains the on-screen pad's clicks and dispatches them to the
-// engine while the game is actually being played. Draining is unconditional so
-// clicks made while the pad is disabled (pre-start, game over) die here
-// instead of firing as moves once the game starts.
+// handlePadClicks drains the on-screen pad's clicks — and the HOLD box's,
+// which holds when tapped like the phone versions' hold box — and dispatches
+// them to the engine while the game is actually being played. Draining is
+// unconditional so clicks made while the pad is disabled (pre-start, game
+// over) die here instead of firing as moves once the game starts.
 func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
 	pads := [...]struct {
 		btn  *widget.Clickable
@@ -312,6 +376,8 @@ func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
 		{&a.padRight, (*engine.Engine).MoveRight},
 		{&a.padCW, (*engine.Engine).RotateCW},
 		{&a.padDrop, (*engine.Engine).HardDrop},
+		{&a.padHold, (*engine.Engine).Hold},
+		{&a.holdBoxBtn, (*engine.Engine).Hold},
 	}
 	for i := range pads {
 		for pads[i].btn.Clicked(gtx) {

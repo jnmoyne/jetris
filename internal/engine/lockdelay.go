@@ -29,7 +29,7 @@ type lockDelayState struct {
 	timer    *time.Timer
 	fire     <-chan time.Time // nil while no lock is pending; runInput selects on it
 	tracking bool             // a piece is being timed (false between pieces)
-	pieceIdx uint64           // sequence index of the piece the counters describe
+	gen      uint64           // Engine.spawnGen of the piece the counters describe (a spawn or a hold swap starts a new one)
 	lowest   int              // lowest playfield row any cell of the piece has reached
 	resets   int              // timer restarts spent since lowest last advanced
 }
@@ -91,7 +91,7 @@ func (e *Engine) updateLockDelay(before pieceSnapshot) {
 		down.Row++
 		grounded = !game.CanPlace(down, e.playfield)
 	}
-	idx := e.pieceIdx.Load() // advanced under e.mu at lock-in, with the spawn
+	gen := e.spawnGen.Load() // bumped under e.mu by every spawn and hold swap
 	e.mu.Unlock()
 
 	if p == nil {
@@ -100,9 +100,10 @@ func (e *Engine) updateLockDelay(before pieceSnapshot) {
 		return
 	}
 	low := lowestRow(*p)
-	if !s.tracking || s.pieceIdx != idx {
-		// A new piece (or one the watchdog respawned): a fresh allowance.
-		s.tracking, s.pieceIdx, s.lowest, s.resets = true, idx, low, 0
+	if !s.tracking || s.gen != gen {
+		// A new piece (spawned, swapped in from the hold slot, or one the
+		// watchdog respawned): a fresh allowance.
+		s.tracking, s.gen, s.lowest, s.resets = true, gen, low, 0
 	} else if low > s.lowest {
 		s.lowest, s.resets = low, 0
 	}

@@ -21,12 +21,12 @@ type Favorite struct {
 // central and AP south and the public nats.io demo server (US central), each
 // over WebSocket and over plain NATS.
 var (
-	JetrisEUWS = Favorite{Label: "Jetris EU central", URL: "ws://172.239.19.14:4223"}
-	JetrisAPWS = Favorite{Label: "Jetris AP south", URL: "ws://172.104.188.44:4223"}
-	JetrisUSWS = Favorite{Label: "Jetris US central (demo.nats.io)", URL: "wss://demo.nats.io:8443"}
-	JetrisEU   = Favorite{Label: "Jetris EU central", URL: "nats://172.239.19.14:4222"}
-	JetrisAP   = Favorite{Label: "Jetris AP south", URL: "nats://172.104.188.44:4222"}
-	JetrisUS   = Favorite{Label: "Jetris US central (demo.nats.io)", URL: "nats://demo.nats.io:4222"}
+	JetrisEUWS = Favorite{Label: "Jetris EU central", URL: "wss://eu-central.jetris.johnnyxmas.com:4223"}
+	JetrisAPWS = Favorite{Label: "Jetris AP south", URL: "wss://ap-south.jetris.johnnyxmas.com:4223"}
+	JetrisUSWS = Favorite{Label: "Demo.nats.io (US central)", URL: "wss://demo.nats.io:8443"}
+	JetrisEU   = Favorite{Label: "Jetris EU central", URL: "nats://eu-central.jetris.johnnyxmas.com:4222"}
+	JetrisAP   = Favorite{Label: "Jetris AP south", URL: "nats://ap-south.jetris.johnnyxmas.com:4222"}
+	JetrisUS   = Favorite{Label: "Demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
 )
 
 // DefaultFavorites is the pre-populated favorites list of a fresh install, in

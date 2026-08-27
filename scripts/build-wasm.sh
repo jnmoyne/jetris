@@ -15,7 +15,9 @@ OUT=dist/web
 mkdir -p "$OUT"
 
 GOOS=js GOARCH=wasm go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$OUT/jetris.wasm" ./cmd/jetris
-cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$OUT/"
-cp web/index.html "$OUT/"
+# install(1) rather than cp: the toolchain copy of wasm_exec.js is read-only,
+# and a plain cp of it leaves a read-only file that the next build cannot overwrite.
+install -m 0644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$OUT/"
+install -m 0644 web/index.html "$OUT/"
 
 ls -lh "$OUT"

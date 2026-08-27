@@ -4,6 +4,7 @@ package main
 
 import (
 	"net/url"
+	"strings"
 	"syscall/js"
 
 	"jetris/internal/config"
@@ -18,7 +19,9 @@ func applyPageParams(cfg *config.Config) {
 	if !loc.Truthy() {
 		return
 	}
-	q, err := url.ParseQuery(loc.Get("search").String())
+	// location.search keeps its leading "?", which ParseQuery would fold
+	// into the first key.
+	q, err := url.ParseQuery(strings.TrimPrefix(loc.Get("search").String(), "?"))
 	if err != nil {
 		return
 	}

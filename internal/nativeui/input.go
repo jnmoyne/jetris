@@ -178,7 +178,7 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 		return
 	}
 	gtx.Source.Execute(key.FocusCmd{Tag: target})
-	a.invalidate() // repaint with the outline on its new owner
+	animate(gtx) // repaint with the outline on its new owner
 }
 
 // pointerArea lays out w and registers tag as a pointer-input area exactly

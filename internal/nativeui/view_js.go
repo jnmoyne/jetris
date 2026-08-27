@@ -1,0 +1,86 @@
+//go:build js
+
+package nativeui
+
+import (
+	"syscall/js"
+
+	"gioui.org/app"
+)
+
+// Browser keyboard focus.
+//
+// Gio's browser backend takes its key events from a hidden <input> it places
+// next to the canvas, and focuses that input only while a text editor has the
+// focus: every focus change to a non-editor tag (the board, a button) closes
+// the platform text input, which the backend answers by blurring the element
+// (io/input/key.go Focus → TextInputClose; app/os_js.go ShowTextInput(false)
+// → blur). Nothing focuses it again until the player clicks into an editor,
+// so the moment the board takes the keys — game start, Escape out of the
+// chat, or simply leaving the name field — the browser stops delivering
+// keystrokes to the game, and only the on-screen pad still works. The
+// desktop backends have no such step: keys arrive as long as the window is
+// active. That is the behaviour restored here: while this page is the active
+// document, the hidden input holds the browser's focus. Gio's own listeners
+// on it then see every key, and its bookkeeping (Config.Focused from the
+// focus/blur events, editor text through the input event) works as before.
+//
+// Touch-first devices are left alone: focusing the input there raises the
+// on-screen keyboard.
+
+// attachView receives the window's platform handles once the backend has
+// built its elements, and wires the focus keeper to them.
+func (a *App) attachView(e app.ViewEvent) {
+	je, ok := e.(app.JSViewEvent)
+	if !ok || !je.Valid() {
+		return
+	}
+	keepKeyboardFocus(je.Element)
+}
+
+// keepKeyboardFocus makes the hidden input inside Gio's container element
+// (the #giowindow div, to which the backend appends its canvas and input)
+// the page's standing focus target. The listeners live as long as the page.
+func keepKeyboardFocus(cont js.Value) {
+	doc := js.Global().Get("document")
+	win := js.Global().Get("window")
+	input := cont.Call("querySelector", "input")
+	canvas := cont.Call("querySelector", "canvas")
+	if !input.Truthy() || !canvas.Truthy() {
+		return
+	}
+	if win.Get("matchMedia").Truthy() {
+		if mq := win.Call("matchMedia", "(pointer: coarse)"); mq.Truthy() && mq.Get("matches").Bool() {
+			return
+		}
+	}
+	focusOpts := map[string]any{"preventScroll": true}
+	focus := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if doc.Call("hasFocus").Bool() && !doc.Get("activeElement").Equal(input) {
+			input.Call("focus", focusOpts)
+		}
+		return nil
+	})
+	// A blur — Gio closing its text input, or a click that landed off the
+	// canvas — is undone once it has settled, unless the page itself lost the
+	// focus (another window or tab); the window's focus event brings the keys
+	// back when the player returns.
+	refocus := js.FuncOf(func(this js.Value, args []js.Value) any {
+		win.Call("setTimeout", focus, 0)
+		return nil
+	})
+	// Tab would walk the browser's focus out of the page (nothing else on it
+	// can take it), and Shift-Tab is the in-game board/chat switch. Gio's own
+	// keydown listener was added first and still sees the key.
+	swallowTab := js.FuncOf(func(this js.Value, args []js.Value) any {
+		if ev := args[0]; ev.Get("key").String() == "Tab" {
+			ev.Call("preventDefault")
+		}
+		return nil
+	})
+	input.Call("addEventListener", "blur", refocus)
+	input.Call("addEventListener", "keydown", swallowTab)
+	canvas.Call("addEventListener", "mousedown", focus)
+	win.Call("addEventListener", "focus", focus)
+	focus.Invoke()
+}

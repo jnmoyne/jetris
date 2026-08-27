@@ -527,7 +527,7 @@ func (a *App) layoutReplay(gtx C) D {
 
 	reveal := done && errMsg == ""
 	if reveal {
-		a.invalidate() // keep the winner show animating while the screen is up
+		animate(gtx) // keep the winner show animating while the screen is up
 		a.crownWinners(boards, rv, doneAt, gtx.Now)
 	}
 

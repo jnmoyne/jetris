@@ -1263,7 +1263,7 @@ func (a *App) attractStyled(gtx C, b material.ButtonStyle) D {
 					fillRect(gtx.Ops, seg, glint)
 				}
 			}
-			a.invalidate() // keep the sweep animating
+			animate(gtx) // keep the sweep animating
 		} else {
 			// Idle between sweeps: wake up exactly when the next one is due
 			// instead of redrawing every frame.

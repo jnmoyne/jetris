@@ -184,19 +184,19 @@ func (a *App) layoutGame(gtx C) D {
 	}
 	a.handleGameChatSubmit(gtx, eng)
 	if view.flashActive {
-		a.invalidate() // keep animating the flash until it expires
+		animate(gtx) // keep animating the flash until it expires
 	}
 	if len(view.rowStrobes) > 0 || len(view.specRowStrobes) > 0 || gtx.Now.Sub(view.shakeStart) < shakeDur {
-		a.invalidate() // keep the row strobes / garbage impact shake animating
+		animate(gtx) // keep the row strobes / garbage impact shake animating
 	}
 	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
-		a.invalidate() // keep animating the countdown pop until it settles
+		animate(gtx) // keep animating the countdown pop until it settles
 	}
 	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
-		a.invalidate() // keep the victory fireworks animating until the show ends
+		animate(gtx) // keep the victory fireworks animating until the show ends
 	}
 	if view.outcome.decided {
-		a.invalidate() // keep the winner show animating while the screen is up
+		animate(gtx) // keep the winner show animating while the screen is up
 	}
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
@@ -671,7 +671,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if mode == engine.ModePlayer && (gmode == config.ModeCompetitive || gmode == config.ModeTeams) {
 		// Garbage that landed since the last frame strobes in the attacker's
 		// color and judders the board (competitive modes' arcade impact).
-		a.detectGarbage(snap)
+		a.detectGarbage(gtx, snap)
 	}
 	// Hard-drop ghost: where the falling piece would land if dropped right
 	// now, derived from the very snapshot being drawn — never published.
@@ -870,7 +870,7 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						a.detectGarbageOn(i, snap) // landed garbage strobes on this board
+						a.detectGarbageOn(gtx, i, snap) // landed garbage strobes on this board
 						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i], rows: view.specRowStrobes[i]}, gtx.Now)
 						switch {
 						case oc.wins(p.PlayerID):
@@ -1012,7 +1012,7 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 						if !b.ok {
 							return a.body("Loading…", colMuted)(gtx)
 						}
-						a.detectGarbageOn(b.team, b.snap) // landed garbage strobes on this board
+						a.detectGarbageOn(gtx, b.team, b.snap) // landed garbage strobes on this board
 						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], rows: view.specRowStrobes[b.team], tint: teamCol}, gtx.Now)
 						switch {
 						case won:

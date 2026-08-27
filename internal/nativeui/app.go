@@ -600,6 +600,8 @@ func (a *App) Run(ctx context.Context) error {
 		case app.DestroyEvent:
 			a.teardown()
 			return e.Err
+		case app.ViewEvent:
+			a.attachView(e) // browser build: keep the keyboard on the game (view_js.go)
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
 			a.layout(gtx)
@@ -674,8 +676,26 @@ func (a *App) snapshotGamePlayers() []lobby.PlayerSummary {
 	return append([]lobby.PlayerSummary(nil), a.gamePlayers...)
 }
 
+// invalidate asks the window for a frame from OUTSIDE the UI goroutine: the
+// engine/lobby pumps, the lifecycle goroutines, a timer. Layout code that
+// keeps an effect moving must use animate instead. Gio arms window.Invalidate
+// only once the UI goroutine has gone idle (app/window.go, mayInvalidate), so
+// a call made DURING a frame that an external wake-up started is dropped —
+// and with it the next frame, ending the animation right there. On the
+// desktop backends the OS event thread re-arms it between frames so the drop
+// never shows; in the browser everything runs on one thread and every NATS
+// update or timer starts such a frame, which left every animation crawling
+// at one frame per wake-up.
 func (a *App) invalidate() {
 	if a.win != nil {
 		a.win.Invalidate()
 	}
+}
+
+// animate requests the next frame from within the current one — the in-frame
+// way to keep an animation running: op.InvalidateCmd rides the frame's own
+// state (Router.WakeupTime → Window.setNextFrame), so it is honoured on
+// every backend no matter what started this frame.
+func animate(gtx C) {
+	gtx.Execute(op.InvalidateCmd{})
 }

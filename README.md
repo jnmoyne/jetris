@@ -2,7 +2,7 @@
 
 ![Jetris-screenshot-1.png](Jetris-screenshot-1.png)
 
-*Spectating a 2v2 teams game: Team A has just completed a line (flashing white) and the garbage line that clear sends is landing at the bottom of Team B's playfield (flashing in Alice's cyan). The greyed-out rows at the bottom of each playfield are garbage lines from earlier exchanges, each framed in the color of the player whose line clear sent it.*
+*Spectating a 2v2 teams game with Guideline garbage, a while in: Team A has just completed two lines at once (a double, flashing white) and the garbage line that clear sends under the Guideline table is landing at the bottom of Team B's playfield (flashing in Alice's cyan). The greyed-out rows at the bottom of each playfield are garbage lines from earlier exchanges, each framed in the color of the player whose line clear sent it. Every garbage line comes with one hole, and the lines of one attack line up their holes into a well — fill it and they clear like any other line.*
 
 **An example of a peer-to-peer distributed blackboard system built using 'nothing but [NATS](https://nats.io)' for humans or agents to cooperate or compete towards a common goal and disguised as a fun real-time, multiplayer, guideline-style cooperative/competitive block-stacking game**
 

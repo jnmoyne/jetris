@@ -1,13 +1,16 @@
 package nativeui
 
-// Opt-in README screenshot capture: runs a REAL 2v2 teams game against an
-// embedded JetStream server (four player engines plus a spectator, live
-// gravity, pre-filled stacks and garbage rows published cell by cell, a fresh
-// garbage row delivered through the real register → gated-shrink protocol)
+// Opt-in README screenshot capture: runs a REAL 2v2 teams game with
+// Guideline-style garbage — one hole per garbage row, clean (the rows of one
+// raise share their hole column, so a raise's holes line up into a well) and
+// attacks by the Guideline table — against an embedded JetStream server
+// (four player engines plus a spectator, live gravity, pre-filled stacks and
+// garbage raises published cell by cell, a fresh garbage row delivered
+// through the real register → gated-shrink protocol that punches its hole)
 // and renders the spectator and player game screens at 2x via a headless GPU
-// window, frozen on the moment Team A clears a line and Team B receives the
-// garbage row that clear sends. Skipped unless FW_SNAPSHOT_DIR is set (needs a
-// GPU):
+// window, frozen on the moment Team A clears a double and the garbage row
+// that clear sends lands on Team B. Skipped unless FW_SNAPSHOT_DIR is set
+// (needs a GPU):
 //
 //	FW_SNAPSHOT_DIR=. go test ./internal/nativeui/ -run TestCaptureREADMEScreenshots
 //
@@ -42,14 +45,32 @@ import (
 
 const shotW, shotH = 2400, 1640 // 1200x820 dp at 2x for crisp README images
 
-// The staged moment: Alice (team A, player 0) has just dropped an I piece flat
-// into the 4-wide slot at clearCol, completing the row right above team A's
-// garbage. That row strobes white on team A's board while the garbage row her
-// clear sends lands — and strobes in her color — on team B's board.
+// The staged moment: Alice (team A, player 0) has just dropped an O piece
+// into the two-wide, two-deep slot at clearCol, completing the two rows right
+// above team A's garbage — a double, the smallest clear that attacks under
+// the Guideline table (a single sends nothing). Both rows strobe white on
+// team A's board while the garbage row her double sends lands — and strobes
+// in her color — on team B's board.
 const (
-	clearCol   = 8 // first column of the slot the I piece drops into
-	clearWidth = 4
+	clearCol   = 8 // first column of the slot the O piece drops into
+	clearWidth = 2 // the slot is two columns wide...
+	clearRows  = 2 // ...and two rows deep: the O piece completes both, a double
 )
+
+// raise is one garbage attack from an earlier exchange as it sits on a team
+// board: rows rows sent by a clear of player by. The game raises clean
+// Guideline garbage — one hole per row — and the rows of one raise share
+// their hole column, so a raise's holes line up into a well.
+type raise struct{ by, rows int }
+
+// raisedRows is the number of garbage rows a list of raises stacks up.
+func raisedRows(raises []raise) int {
+	n := 0
+	for _, r := range raises {
+		n += r.rows
+	}
+	return n
+}
 
 // publishCell publishes one cell of a team board.
 func publishCell(t *testing.T, js jetstream.JetStream, gameID string, team, row, col int, c game.Cell) {
@@ -64,36 +85,53 @@ func publishCell(t *testing.T, js jetstream.JetStream, gameID string, team, row,
 }
 
 // prefillTeamBoard publishes a plausible mid-game state onto one team board:
-// permanent garbage rows at the bottom (one per entry of garbageBy, bottom
-// row first, each stamped with the attacker whose clear sent it) and, above
-// them, a ragged stack — per-column random heights with holes, random piece
-// colors, cells owned by that team's two players (global roster indices
-// team*2 and team*2+1). The lowest stack row never comes out complete on its
-// own: with slot set it is full except for the clearCol slot, which stays
-// open all the way up — the well the staged I piece drops into; without it, a
-// hole is forced somewhere along it.
-func prefillTeamBoard(t *testing.T, js jetstream.JetStream, gameID string, team int, garbageBy []int, slot bool, rng *rand.Rand) {
+// garbage raises at the bottom (bottom — the most recent — first, each
+// stamped with the attacker whose clear sent it, each of its rows punched
+// with the raise's one shared hole) and, above them, a ragged stack —
+// per-column random heights with holes, random piece colors, cells owned by
+// that team's two players (global roster indices team*2 and team*2+1). The
+// lowest stack rows never come out complete on their own: with slot set the
+// bottom clearRows rows are full except for the clearCol slot, which stays
+// open all the way up — the slot the staged O piece drops into; without it,
+// a hole is forced somewhere along the floor row.
+func prefillTeamBoard(t *testing.T, js jetstream.JetStream, gameID string, team int, raises []raise, slot bool, rng *rand.Rand) {
 	t.Helper()
 	width := config.TeamBoardWidth(2)
-	bottom := config.TeamTotalRows(2) - 1
-	for i, by := range garbageBy {
-		for col := 0; col < width; col++ {
-			publishCell(t, js, gameID, team, bottom-i, col, game.Cell{
-				Occupied: true, PieceType: game.PieceO, Adversarial: true, PlayerIdx: by,
-			})
+	row := config.TeamTotalRows(2) - 1 // the bottom row
+	prevHole := -1
+	for _, r := range raises {
+		// One hole column per raise — never the column of the raise right
+		// below it, so the per-raise draw shows, and on the slotted board
+		// outside the slot, so the staged piece lands on garbage, not over
+		// a hole.
+		hole := rng.Intn(width)
+		for hole == prevHole || (slot && hole >= clearCol && hole < clearCol+clearWidth) {
+			hole = rng.Intn(width)
+		}
+		prevHole = hole
+		for k := 0; k < r.rows; k++ {
+			for col := 0; col < width; col++ {
+				if col == hole {
+					continue
+				}
+				publishCell(t, js, gameID, team, row, col, game.Cell{
+					Occupied: true, PieceType: game.PieceO, Adversarial: true, PlayerIdx: r.by,
+				})
+			}
+			row--
 		}
 	}
-	floor := bottom - len(garbageBy) // lowest stack row, right above the garbage
+	floor := row // lowest stack row, right above the garbage
 	forcedHole := rng.Intn(width)
 	for col := 0; col < width; col++ {
 		if slot && col >= clearCol && col < clearCol+clearWidth {
 			continue
 		}
-		h := 2 + rng.Intn(5) // stack height 2..6 above the garbage
+		h := 3 + rng.Intn(5) // stack height 3..7 above the garbage: the game has been going on for a while
 		for d := 0; d < h; d++ {
 			switch {
-			case d == 0 && slot:
-				// the floor row is the one the I piece completes: no holes
+			case slot && d < clearRows:
+				// the slot rows are the ones the O piece completes: no holes
 			case d == 0 && col == forcedHole, rng.Intn(100) < 18:
 				continue // holes keep the rows incomplete and the stack ragged
 			}
@@ -213,7 +251,12 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	meta := config.GameMeta{
 		GameID: gameID, Mode: config.ModeTeams, PlayerCount: 4, TeamSize: 2,
 		NextCount: 3, // the player view shows the HUD's NEXT preview panel
-		Seed:      7, Status: config.GameStatusInProgress,
+		// Guideline-style garbage: every garbage row comes with one hole,
+		// the rows of one raise share it (RandomGarbageHoles off), and a
+		// clear attacks by the Guideline table — the victims' engines raise
+		// the staged attack's row under exactly these rules.
+		GarbageHoles: 1, GuidelineGarbage: true,
+		Seed: 7, Status: config.GameStatusInProgress,
 		CreatorID: "Alice", CreatedAt: time.Now(), StartedAt: time.Now(),
 	}
 	data, _ := json.Marshal(meta)
@@ -221,18 +264,20 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Both teams already carry a few rows of garbage from earlier exchanges:
-	// team A (Alice + Chris) three rows sent by team B — David's, Bob's and
-	// David's again, bottom up, so the per-sender framing shows — and team B
-	// (Bob + David) three rows, all sent by Chris, so the row about to land
-	// from Alice stands out in her color. Team A's stack keeps the slot open
-	// for the staged clear.
-	garbageA, garbageB := []int{3, 2, 3}, []int{1, 1, 1}
+	// Both teams already carry garbage from earlier exchanges, listed bottom
+	// (the most recent raise) up: team A (Alice + Chris) four rows — David's
+	// double, Bob's double, then David's triple, whose two rows share their
+	// hole — so the per-sender framing and the per-raise well both show; and
+	// team B (Bob + David) three rows, all Chris's — a double over a triple —
+	// so the row about to land from Alice stands out in her color. Team A's
+	// stack keeps the slot open for the staged double.
+	garbageA := []raise{{3, 1}, {2, 1}, {3, 2}}
+	garbageB := []raise{{1, 1}, {1, 2}}
 	rng := rand.New(rand.NewSource(3))
 	prefillTeamBoard(t, js, gameID, 0, garbageA, true, rng)
 	prefillTeamBoard(t, js, gameID, 1, garbageB, false, rng)
 	height := config.TeamTotalRows(2)
-	floorA := height - 1 - len(garbageA) // team A's lowest stack row: the one the I piece completes
+	floorA := height - 1 - raisedRows(garbageA) // team A's lowest stack row: the bottom row of the slot
 
 	// Four player engines (team A: Alice+Chris, team B: Bob+David) and a
 	// spectator engine, all consuming the real game stream.
@@ -295,9 +340,10 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	// Every replica we draw from must hold the pre-attack boards before the
 	// screens seed their garbage detection — and no row may be complete yet
 	// (the prefill is seeded, so a complete row here means the seed changed).
+	rowsA, rowsB := raisedRows(garbageA), raisedRows(garbageB)
 	waitFor(t, "pre-attack boards", func() bool {
-		return garbageRowsOf(spec, 0) == len(garbageA) && garbageRowsOf(spec, 1) == len(garbageB) &&
-			garbageRowsOf(bob, 0) == len(garbageA) && garbageRowsOf(bob, 1) == len(garbageB)
+		return garbageRowsOf(spec, 0) == rowsA && garbageRowsOf(spec, 1) == rowsB &&
+			garbageRowsOf(bob, 0) == rowsA && garbageRowsOf(bob, 1) == rowsB
 	})
 	for team := 0; team < config.TeamCount; team++ {
 		if rows := completedRowsOf(spec, team); len(rows) > 0 {
@@ -313,12 +359,15 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	}
 	chat := []lobby.ChatMessage{
 		{Name: "Erin", Text: "who's winning?"}, // lobby line, folded in as @lobby
-		{Name: "Bob", Text: "good luck!", GameID: gameID},
-		{Name: "Alice", Text: "you'll need it :)", GameID: gameID},
+		{Name: "Alice", Text: "we are :)", GameID: gameID},
+		{Name: "Bob", Text: "not for long", GameID: gameID},
 		{Name: "David", Text: "ouch!", GameID: gameID},
 	}
-	teamScores := [config.TeamCount]int{16, 9} // team A's clear just scored its two players
-	teamLevels := [config.TeamCount]int{1, 0}
+	// A game well under way: teams score two points a line (one per
+	// teammate) and climb a level every ten lines — team A is 34 lines in,
+	// its double just counted, team B 27.
+	teamScores := [config.TeamCount]int{68, 54}
+	teamLevels := [config.TeamCount]int{3, 2}
 
 	w, err := headless.NewWindow(shotW, shotH)
 	if err != nil {
@@ -346,26 +395,31 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	bobApp.gamePlayers = players
 	bobApp.teamScores = teamScores
 	bobApp.teamLevels = teamLevels
-	bobApp.level = 0
+	bobApp.level = teamLevels[1] // a team board's level is the team's
 	bobApp.rtt = 2500 * time.Microsecond
 	bobApp.chatLog = chat
 	layoutOnly(bobApp, time.Now())
 
-	// The moment. Alice's I piece lands flat in the slot and completes team
-	// A's floor row (its cells published locked, as her hard drop's lock
-	// would be), and her clear's attack advances team B's garbage register
-	// by one row — which Bob's and David's engines apply through the real
-	// gated shrink cascade: the stack rises, the new row fills the bottom.
-	for col := clearCol; col < clearCol+clearWidth; col++ {
-		publishCell(t, js, gameID, 0, floorA, col, game.Cell{Occupied: true, PieceType: game.PieceI, PlayerIdx: 0})
+	// The moment. Alice's O piece lands in the slot and completes both of
+	// team A's floor rows — a double (its cells published locked, as her
+	// hard drop's lock would be) — and the attack the Guideline table owes
+	// for it advances team B's garbage register by one row, which Bob's and
+	// David's engines apply through the real gated shrink cascade: the stack
+	// rises, the new row fills the bottom, minus the one hole the cascade
+	// punches in it.
+	for d := 0; d < clearRows; d++ {
+		for col := clearCol; col < clearCol+clearWidth; col++ {
+			publishCell(t, js, gameID, 0, floorA-d, col, game.Cell{Occupied: true, PieceType: game.PieceO, PlayerIdx: 0})
+		}
 	}
-	reg, _ := json.Marshal(engine.GarbageRegister{Total: 1, By: 0})
+	attack := game.AttackRows(clearRows, meta.GuidelineGarbage)
+	reg, _ := json.Marshal(engine.GarbageRegister{Total: attack, By: 0})
 	if _, err := js.Publish(ctx, config.TeamGarbageSubject(gameID, 1), reg); err != nil {
 		t.Fatal(err)
 	}
-	landedB := len(garbageB) + 1
+	landedB := rowsB + attack
 	waitFor(t, "the clear and the landed garbage row on every replica", func() bool {
-		return len(completedRowsOf(spec, 0)) == 1 && len(completedRowsOf(bob, 0)) == 1 &&
+		return len(completedRowsOf(spec, 0)) == clearRows && len(completedRowsOf(bob, 0)) == clearRows &&
 			garbageRowsOf(spec, 1) == landedB && garbageRowsOf(bob, 1) == landedB
 	})
 
@@ -374,13 +428,17 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	// (one layout pass to observe it, then the frame drawn at the strobe's
 	// epoch, i.e. lit). The line-clear strobe is the clearing team's own
 	// celebration — the screen only strobes it for players, never on a
-	// spectator's boards — so it is staged on the completed row for the
+	// spectator's boards — so it is staged on the completed rows for the
 	// picture.
 	layoutOnly(specApp, time.Now())
 	specApp.mu.Lock()
 	landed, ok := specApp.specRowStrobes[1][height-1]
 	if ok {
-		specApp.specRowStrobes[0] = map[int]rowStrobe{floorA: {start: landed.start, col: colStrobe}}
+		cleared := make(map[int]rowStrobe, clearRows)
+		for d := 0; d < clearRows; d++ {
+			cleared[floorA-d] = rowStrobe{start: landed.start, col: colStrobe}
+		}
+		specApp.specRowStrobes[0] = cleared
 	}
 	specApp.mu.Unlock()
 	if !ok {

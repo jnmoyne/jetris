@@ -387,12 +387,18 @@ type App struct {
 	playingSeen    bool
 	playingSeenEng *engine.Engine
 
-	// On-screen arcade control pad (mouse play): rotate CCW/CW, shift
-	// left/down/right, hard drop, and — in games with the hold rule — hold,
-	// which the HOLD box beside the playfield also triggers when tapped
-	// (holdBoxBtn). Clicks are dispatched by handlePadClicks.
-	padCCW, padLeft, padDown, padRight, padCW, padDrop, padHold widget.Clickable
-	holdBoxBtn                                                  widget.Clickable
+	// On-screen arcade control pad (mouse and touch play, controls.go): the
+	// D-pad's four arms (padUp rotates clockwise, like the ↑ key), the face
+	// buttons — rotate CCW/CW, hard drop, and in games with the hold rule
+	// hold, which the HOLD box beside the playfield also triggers when
+	// tapped (holdBoxBtn). Clicks are dispatched by handlePadClicks.
+	padUp, padLeft, padDown, padRight, padCCW, padCW, padDrop, padHold widget.Clickable
+	holdBoxBtn                                                         widget.Clickable
+	// touchUI: the player is on a touch screen, so the pad is laid out at
+	// thumb size (padTouch). Set by the browser build from the page's media
+	// queries (view_js.go) and, everywhere, by the first touch press on the
+	// game screen (handleGameFocus). UI goroutine only.
+	touchUI bool
 	// Move-buffer strip animation state (UI goroutine only): the queue length
 	// last laid out and when it last grew (drives the newest chip's pop-in).
 	bufN      int
@@ -611,10 +617,12 @@ func newUITheme() *material.Theme {
 }
 
 // minWinW/minWinH is the smallest size the OS lets the window shrink to:
-// wide enough for the HUD column (≥200 dp) plus the control pad / move-buffer
-// strip under the board (~430 dp) and the window insets; tall enough for a
+// wide enough for the HUD column (≥200 dp) plus the move-buffer strip under
+// the board (~400 dp) — or the control pad flanking a minimum-cell playfield,
+// scaled down to its floor — and the window insets; tall enough for a
 // minimum-cell playfield (24 visible rows at the 14 dp fitCellPx floor) plus
-// the move-buffer strip, the control pad, and the chat panel. Below this the
+// the move-buffer strip and the chat panel (fitBoardAndPad moves the pad
+// beside the board before it would cost the board its rows). Below this the
 // playfield and controls could no longer be displayed whole.
 const (
 	minWinW = unit.Dp(760)

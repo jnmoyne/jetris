@@ -131,6 +131,11 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 		}
 		if pe, ok := ev.(pointer.Event); ok && pe.Kind == pointer.Press {
 			target = &a.boardTag
+			if pe.Source == pointer.Touch {
+				// A finger on the game screen: from here on the control
+				// pad is laid out at thumb size (controls.go).
+				a.touchUI = true
+			}
 		}
 	}
 	for {

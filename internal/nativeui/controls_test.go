@@ -128,34 +128,112 @@ func looseCtx(w, h int) C {
 	return gtx
 }
 
-// TestControlPad renders the pad enabled and disabled at several window
-// sizes, with and without the HOLD bar — which is only there in a game with
-// the hold rule, and widens the pad when it is.
+// TestControlPad renders the pad at both metrics, enabled and disabled, with
+// and without the HOLD bar — which is only there in a game with the hold
+// rule, and adds a row to the face cluster when it is — and checks its
+// geometry: the D-pad is a square of three arms, the touch pad's arms are
+// thumb-sized (bigger than a move-buffer chip and past the 44 dp tap floor),
+// and HOLD makes the pad taller, never wider.
 func TestControlPad(t *testing.T) {
 	a := newTestApp()
-	for _, sz := range []image.Point{{X: 700, Y: 500}, {X: 1200, Y: 820}, {X: 2400, Y: 1500}} {
+	for _, m := range []padMetrics{padMouse, padTouch} {
+		p := padSizer{m: m, scale: 1}
 		for _, enabled := range []bool{true, false} {
-			plain := a.controlPad(looseCtx(sz.X, sz.Y), enabled, false)
-			if plain.Size.X == 0 || plain.Size.Y == 0 {
-				t.Fatalf("pad (%v, enabled=%v) rendered zero-size", sz, enabled)
+			gtx := looseCtx(1200, 820)
+			if d := a.dpad(gtx, p, enabled); d.Size.X != d.Size.Y || d.Size.X != 3*gtx.Dp(unit.Dp(m.btn)) {
+				t.Fatalf("D-pad (%+v, enabled=%v) = %v, want a %d square", m, enabled, d.Size, 3*m.btn)
 			}
-			hold := a.controlPad(looseCtx(sz.X, sz.Y), enabled, true)
-			if hold.Size.X <= plain.Size.X || hold.Size.Y != plain.Size.Y {
-				t.Fatalf("pad with HOLD (%v, enabled=%v) = %v, want wider than %v at the same height", sz, enabled, hold.Size, plain.Size)
+			plain := a.controlPad(looseCtx(1200, 820), p, enabled, false)
+			hold := a.controlPad(looseCtx(1200, 820), p, enabled, true)
+			if plain.Size.X == 0 || plain.Size.Y == 0 {
+				t.Fatalf("pad (%+v, enabled=%v) rendered zero-size", m, enabled)
+			}
+			if hold.Size.X != plain.Size.X || hold.Size.Y <= plain.Size.Y {
+				t.Fatalf("pad with HOLD (%+v, enabled=%v) = %v, want taller than %v at the same width", m, enabled, hold.Size, plain.Size)
+			}
+			if got, want := plain.Size, p.padSize(looseCtx(1200, 820), false); got != want {
+				t.Fatalf("pad (%+v) = %v, padSize says %v", m, got, want)
 			}
 		}
 	}
-	// A column narrower than the pad's natural width (the minimum window with
-	// an opponent column beside the board) shrinks the pad to fit — one row,
-	// never a clipped edge — while a roomy column leaves it at full size.
-	full := a.controlPad(looseCtx(1200, 820), true, true)
-	for _, w := range []int{380, 450} {
-		narrow := a.controlPad(looseCtx(w, 820), true, true)
-		if narrow.Size.X > w {
-			t.Fatalf("pad with HOLD in a %dpx column is %dpx wide: clipped", w, narrow.Size.X)
+	if padTouch.btn < 44 || padTouch.btn <= 42 {
+		t.Fatalf("touch arm = %d dp, want past the 44 dp tap floor and the 42 dp buffer chip", padTouch.btn)
+	}
+	if padTouch.btn <= padMouse.btn {
+		t.Fatalf("touch arm = %d dp, mouse arm = %d dp: touch should be the bigger", padTouch.btn, padMouse.btn)
+	}
+}
+
+// TestFitBoardAndPad exercises the pad's placement: a wide, short (landscape)
+// column flanks the playfield with the pad and keeps the board's cell bigger
+// than stacking would; a tall, narrow (portrait) column stacks it under the
+// board; a narrow column shrinks the pad, floored, never clipping; no pad —
+// a spectator, the game over — leaves the cell to the board alone; and the
+// touch pad's arms stay thumb-sized wherever an iPad's columns put them.
+func TestFitBoardAndPad(t *testing.T) {
+	const cols, rows = 10 + previewCols, 24
+	a := newTestApp()
+	landscape := a.fitBoardAndPad(looseCtx(1000, 560), cols, rows, true, true, true, true)
+	if !landscape.beside {
+		t.Fatalf("landscape column: pad under the board, want beside it (%+v)", landscape)
+	}
+	if landscape.scale != 1 {
+		t.Fatalf("landscape column: pad scaled to %v, want its natural size", landscape.scale)
+	}
+	noPad := a.fitBoardAndPad(looseCtx(1000, 560), cols, rows, true, true, false, true)
+	if noPad.cell < landscape.cell || noPad.beside {
+		t.Fatalf("no pad: cell %d beside=%v, want at least the flanked cell %d and no placement", noPad.cell, noPad.beside, landscape.cell)
+	}
+	portrait := a.fitBoardAndPad(looseCtx(560, 1000), cols, rows, true, true, true, true)
+	if portrait.beside {
+		t.Fatalf("portrait column: pad beside the board, want under it (%+v)", portrait)
+	}
+	if portrait.scale != 1 {
+		t.Fatalf("portrait column: pad scaled to %v, want its natural size", portrait.scale)
+	}
+	// Columns narrower than the pad's natural row: the pad scales down,
+	// floored, and its row still fits the column (a playfield at its cell
+	// floor is fitCellPx's own business).
+	for _, sz := range []image.Point{{X: 200, Y: 900}, {X: 240, Y: 900}} {
+		gtx := looseCtx(sz.X, sz.Y)
+		plan := a.fitBoardAndPad(gtx, cols, rows, true, true, true, true)
+		if plan.scale >= 1 || plan.scale < padMinScale {
+			t.Fatalf("%v column: pad scale %v, want shrunk within [%v, 1)", sz, plan.scale, padMinScale)
 		}
-		if narrow.Size.Y >= full.Size.Y {
-			t.Fatalf("pad in a %dpx column kept its full height %d (got %d): it should scale down, not wrap", w, full.Size.Y, narrow.Size.Y)
+		if plan.width > sz.X {
+			t.Fatalf("%v column: %+v is %d px wide", sz, plan, plan.width)
+		}
+	}
+	// The minimum window's competitive column (25 visible rows, the
+	// opponent column beside it): the pad shrinks to leave a minimum-cell
+	// playfield its rows, and nothing sticks out.
+	minGtx := looseCtx(387, 506)
+	minPlan := a.fitBoardAndPad(minGtx, cols, 25, true, true, true, true)
+	if minPlan.width > 387 {
+		t.Fatalf("minimum window: %+v is %d px wide", minPlan, minPlan.width)
+	}
+	if h := minPlan.cell*(8*25+2)/8 + minGtx.Dp(90) + minPlan.padSize(minGtx, true).Y + minGtx.Dp(13); !minPlan.beside && h > 506+minGtx.Dp(24) {
+		t.Fatalf("minimum window: the board and the pad under it stand %d px tall in a 506 px column", h)
+	}
+	if minPlan.scale < padMinScaleY {
+		t.Fatalf("minimum window: pad scale %v, under its floor %v", minPlan.scale, padMinScaleY)
+	}
+	// Touch: an iPad's board column — landscape competitive games (25 rows,
+	// the opponent column beside them, the browser's toolbar over them: an
+	// 11" and a 10.2") and portrait — the arms stay at their natural size
+	// and the row fits.
+	a.touchUI = true
+	for _, c := range []struct {
+		sz   image.Point
+		rows int
+	}{{image.Pt(759, 516), 25}, {image.Pt(702, 460), 25}, {image.Pt(447, 906), 24}} {
+		gtx := looseCtx(c.sz.X, c.sz.Y)
+		plan := a.fitBoardAndPad(gtx, cols, c.rows, true, true, true, true)
+		if plan.m != padTouch || plan.scale < 0.95 {
+			t.Fatalf("touch pad in a %v column: %+v, want the touch metrics at (about) their natural size", c.sz, plan)
+		}
+		if plan.width > c.sz.X {
+			t.Fatalf("touch pad in a %v column: %+v is %d px wide", c.sz, plan, plan.width)
 		}
 	}
 }

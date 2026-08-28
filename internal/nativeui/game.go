@@ -695,121 +695,180 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	showSide := showNext || showHold
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
-		// room below for the player's move-buffer strip and (while the game is
-		// still playable) the mouse control pad.
-		reserved := 0
-		if mode == engine.ModePlayer {
-			reserved = gtx.Dp(90)
-			if !view.gameOver {
-				reserved += gtx.Dp(80)
-			}
-		}
-		reservedX, extraCols := gtx.Dp(24), 0
+		// room for the player's move-buffer strip under it and (while the
+		// game is still playable) the control pad — beside the playfield or
+		// under it, whichever leaves the bigger board (fitBoardAndPad).
+		extraCols := 0
 		if showSide {
 			// The wells' tiles use the board cell size, so the side column
 			// is previewCols board cells wide: count it as extra board
-			// columns plus a fixed slice for its frame and the gap, so the
-			// pair always fits the window.
+			// columns (plus a fixed slice for its frame and the gap), so
+			// the pair always fits the window.
 			extraCols = previewCols
-			reservedX += gtx.Dp(18)
 		}
-		cell := fitCellPx(gtx, snap.Width+extraCols, snap.Height-snap.VisibleStart, 1, reservedX, reserved, 14, 56)
-		boardCol := func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+		player := mode == engine.ModePlayer
+		showPad := player && !view.gameOver
+		hold := eng.HoldEnabled()
+		plan := a.fitBoardAndPad(gtx, snap.Width+extraCols, snap.Height-snap.VisibleStart, showSide, player, showPad, hold)
+		cell := plan.cell
+		padEnabled := view.status == string(config.GameStatusInProgress)
+		// boardOnly is the playfield itself, with its effects and the
+		// pre-game countdown over it.
+		boardOnly := func(gtx C) D {
+			fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost}
+			if view.boardFocused {
+				fx.frame = colFocus // the well's frame lights up: the keys drive the piece
+			}
+			bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
+			if view.outcome.decided {
+				// The finished board wears the winner show: the crew's
+				// co-op board (a spectator's or a player's — the run's
+				// rank is the prize), or a winning player's own. Over
+				// the victory fireworks the show is painted last, so
+				// the crown floats above the rockets and bursts — but
+				// never above the leave-game modal.
+				crown := a.crownBoard
+				if view.fireworks != nil && view.fireworks.active(gtx.Now) && !a.confirmLeave {
+					crown = a.crownBoardOnTop
+				}
+				bw = crown(view.outcome.fx(), gtx.Now)(bw, cell)
+			}
+			if dx := boardShakeOffset(cell, gtx.Now.Sub(view.shakeStart)); dx != 0 {
+				// Garbage impact: judder the whole well sideways for a
+				// few decaying wobbles — pure paint offset, no layout.
+				inner := bw
+				bw = func(gtx C) D {
+					defer op.Offset(image.Pt(dx, 0)).Push(gtx.Ops).Pop()
+					return inner(gtx)
+				}
+			}
+			if !countdownVisible(view, mode) {
+				return bw(gtx)
+			}
+			// The pre-game countdown centers on the playfield itself
+			// (not the whole board area, which would drift it toward
+			// the NEXT well / surrounding whitespace).
+			return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+				layout.Stacked(bw),
+				layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
+			)
+		}
+		// wellsCol is the side wells' column: the HOLD box and the NEXT well
+		// in their own sub-divisions hugging the playfield's top-left,
+		// classic arcade style — the hold slot first, the queue under it.
+		// It keeps its size in wellsD for the flanked layout's geometry.
+		var wellsD D
+		wellsCol := func(gtx C) D {
+			wellsD = layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
-					fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost}
-					if view.boardFocused {
-						fx.frame = colFocus // the well's frame lights up: the keys drive the piece
-					}
-					bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
-					if view.outcome.decided {
-						// The finished board wears the winner show: the crew's
-						// co-op board (a spectator's or a player's — the run's
-						// rank is the prize), or a winning player's own. Over
-						// the victory fireworks the show is painted last, so
-						// the crown floats above the rockets and bursts — but
-						// never above the leave-game modal.
-						crown := a.crownBoard
-						if view.fireworks != nil && view.fireworks.active(gtx.Now) && !a.confirmLeave {
-							crown = a.crownBoardOnTop
-						}
-						bw = crown(view.outcome.fx(), gtx.Now)(bw, cell)
-					}
-					if dx := boardShakeOffset(cell, gtx.Now.Sub(view.shakeStart)); dx != 0 {
-						// Garbage impact: judder the whole well sideways for a
-						// few decaying wobbles — pure paint offset, no layout.
-						inner := bw
-						bw = func(gtx C) D {
-							defer op.Offset(image.Pt(dx, 0)).Push(gtx.Ops).Pop()
-							return inner(gtx)
-						}
-					}
-					if !countdownVisible(view, mode) {
-						return bw(gtx)
-					}
-					// The pre-game countdown centers on the playfield itself
-					// (not the whole board area, which would drift it toward
-					// the NEXT well / surrounding whitespace).
-					return layout.Stack{Alignment: layout.Center}.Layout(gtx,
-						layout.Stacked(bw),
-						layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
-					)
-				}),
-				layout.Rigid(func(gtx C) D {
-					if mode != engine.ModePlayer {
+					if !showHold {
 						return D{}
 					}
-					// Inputs queued behind the in-flight batch publish (very
-					// visible on a high-RTT server); the strip drains as each
-					// buffered move's own publish starts.
-					return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
-						return a.bufferedMovesStrip(gtx, eng.BufferedMoves())
-					})
+					held, has := eng.HeldPiece()
+					return a.holdWell(gtx, held, has, eng.HoldUsed(), cell)
 				}),
 				layout.Rigid(func(gtx C) D {
-					if mode != engine.ModePlayer || view.gameOver {
+					if !showHold || !showNext {
 						return D{}
 					}
-					return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
-						return a.controlPad(gtx, view.status == string(config.GameStatusInProgress), eng.HoldEnabled())
-					})
+					return spacer(10)(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					if !showNext {
+						return D{}
+					}
+					return a.nextWell(gtx, nextPieces, cell)
 				}),
 			)
+			return wellsD
+		}
+		// withWells puts the wells' column beside w (the playfield, with or
+		// without its strip), or leaves w alone without one.
+		withWells := func(w layout.Widget) layout.Widget {
+			if !showSide {
+				return w
+			}
+			return func(gtx C) D {
+				return layout.Flex{Alignment: layout.Start}.Layout(gtx,
+					layout.Rigid(wellsCol),
+					layout.Rigid(hSpacer(12)),
+					layout.Rigid(w),
+				)
+			}
+		}
+		strip := func(gtx C) D {
+			// Inputs queued behind the in-flight batch publish (very visible
+			// on a high-RTT server); the strip drains as each buffered
+			// move's own publish starts.
+			return a.bufferedMovesStrip(gtx, eng.BufferedMoves())
 		}
 		return layout.Center.Layout(gtx, func(gtx C) D {
-			if !showSide {
-				return boardCol(gtx)
+			if !player {
+				return withWells(boardOnly)(gtx)
 			}
-			// The HOLD box and the NEXT well in their own sub-divisions
-			// hugging the playfield's top-left, classic arcade style — the
-			// hold slot first, the queue under it.
-			return layout.Flex{Alignment: layout.Start}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
-						layout.Rigid(func(gtx C) D {
-							if !showHold {
-								return D{}
-							}
-							held, has := eng.HeldPiece()
-							return a.holdWell(gtx, held, has, eng.HoldUsed(), cell)
-						}),
-						layout.Rigid(func(gtx C) D {
-							if !showHold || !showNext {
-								return D{}
-							}
-							return spacer(10)(gtx)
-						}),
-						layout.Rigid(func(gtx C) D {
-							if !showNext {
-								return D{}
-							}
-							return a.nextWell(gtx, nextPieces, cell)
-						}),
+			if !showPad || !plan.beside {
+				// The playfield with its strip under it; in a tall, narrow
+				// column the pad follows in one row, centered on the block.
+				block := withWells(func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(boardOnly),
+						layout.Rigid(spacer(10)),
+						layout.Rigid(strip),
 					)
+				})
+				if !showPad {
+					return block(gtx)
+				}
+				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(block),
+					layout.Rigid(spacer(10)),
+					layout.Rigid(func(gtx C) D { return a.controlPad(gtx, plan.padSizer, padEnabled, hold) }),
+				)
+			}
+			// The pad flanks the playfield like a handheld's controls — the
+			// D-pad off its left, the face buttons off its right, both
+			// centered on it — and the strip hangs under the playfield,
+			// centered on it too: wider than the playfield, it runs on under
+			// the pads (flankGeom is this layout's model).
+			var dpadD, boardD D
+			rowMacro := op.Record(gtx.Ops)
+			rowD := layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					dpadD = a.dpad(gtx, plan.padSizer, padEnabled)
+					return dpadD
 				}),
-				layout.Rigid(hSpacer(12)),
-				layout.Rigid(boardCol),
+				layout.Rigid(hSpacer(padSideGap)),
+				layout.Rigid(withWells(func(gtx C) D {
+					boardD = boardOnly(gtx)
+					return boardD
+				})),
+				layout.Rigid(hSpacer(padSideGap)),
+				layout.Rigid(func(gtx C) D { return a.faceButtons(gtx, plan.padSizer, padEnabled, hold) }),
 			)
+			row := rowMacro.Stop()
+			stripMacro := op.Record(gtx.Ops)
+			stripD := strip(gtx)
+			stripCall := stripMacro.Stop()
+			// The row's Flex gives no positions back: the playfield's follow
+			// from the sizes ahead of it — with the wells, their column and
+			// the gap after it.
+			wellsW := 0
+			if showSide {
+				wellsW = wellsD.Size.X + gtx.Dp(12)
+			}
+			boardX := dpadD.Size.X + gtx.Dp(padSideGap) + wellsW
+			boardY := (rowD.Size.Y - max(boardD.Size.Y, wellsD.Size.Y)) / 2
+			stripX := boardX + boardD.Size.X/2 - stripD.Size.X/2
+			stripY := boardY + boardD.Size.Y + gtx.Dp(10)
+			shift := max(0, -stripX)
+			size := image.Pt(max(rowD.Size.X, stripX+stripD.Size.X)+shift, max(rowD.Size.Y, stripY+stripD.Size.Y))
+			func() {
+				defer op.Offset(image.Pt(shift, 0)).Push(gtx.Ops).Pop()
+				row.Add(gtx.Ops)
+			}()
+			defer op.Offset(image.Pt(stripX+shift, stripY)).Push(gtx.Ops).Pop()
+			stripCall.Add(gtx.Ops)
+			return D{Size: size}
 		})
 	}
 	switch {

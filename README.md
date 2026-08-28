@@ -26,7 +26,7 @@ If you enjoy the game, don't forget to give this repo a star! Thank you!
 
 To just play the game with others over the Internet you have three options:
 
-Option 1: Nothing to install — open **https://jnmoyne.github.io/jetris/** and hit **Play**: the browser version (WebAssembly) runs right on that page, always the latest release. That page is served over https, so the NATS server you pick on its login screen has to be reachable over `wss://` — the public `demo.nats.io` server is preselected, and favorites this page can't dial (`nats://`, and plain `ws://`) are greyed out.
+Option 1: Nothing to install — open **https://jnmoyne.github.io/jetris/** and hit **Play**: the browser version (WebAssembly) runs right on that page, always the latest release. It plays on a tablet too: on a touch screen the game lays out a thumb-sized D-pad and buttons beside the playfield, so you play by tapping. That page is served over https, so the NATS server you pick on its login screen has to be reachable over `wss://` — the public `demo.nats.io` server is preselected, and favorites this page can't dial (`nats://`, and plain `ws://`) are greyed out.
 
 Option 2: Download and run the latest release of the `jetris` binary for your platform (pick the right asset from https://github.com/jnmoyne/jetris/releases) and just run it, or clone this repo and build the binary yourself (e.g. `go build -o jetris ./cmd/jetris/`).
 

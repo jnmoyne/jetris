@@ -170,17 +170,54 @@ func press(r *input.Router, x, y float32) {
 // the bottom of the 1200×820 window (its pointer area includes the panel's
 // own inset, so a point right at the bottom edge is inside the panel yet over
 // no widget — it tests the panel area itself, not the editor's own click
-// handling), and the middle of the window is the playfield: pure paint, so a
-// press there falls through to the screen-wide board area.
+// handling), and the board area's top-left corner, beside the HUD column, is
+// empty space: pure paint, so a press there falls through to the screen-wide
+// board area. (The middle of the window is no longer safe: the control pad
+// flanks the playfield there, and a pad button — a Clickable — takes the keys
+// itself for the frame of its press, handleKeys handing them back on the
+// next.)
 const (
 	chatPressX, chatPressY   = 600, 816
-	boardPressX, boardPressY = 600, 350
+	boardPressX, boardPressY = 250, 40
 	// Inside the chat panel, on widgets that consume the press themselves:
 	// the editor and the Send button (the press still reaches the panel's
 	// area, which encloses them).
 	editorPressX, editorPressY = 600, 788
 	sendPressX, sendPressY     = 1147, 787
 )
+
+// TestTouchPressSizesPad checks the runtime half of the touch detection: the
+// first press from a touch screen anywhere on the game screen (here, on the
+// playfield's empty surroundings) switches the control pad to its thumb-sized
+// metrics for good; mouse presses never do.
+func TestTouchPressSizesPad(t *testing.T) {
+	a := newTestApp()
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	gameFrame(a, &r)
+	press(&r, boardPressX, boardPressY)
+	gameFrame(a, &r)
+	if a.touchUI {
+		t.Fatal("a mouse press switched the pad to touch size")
+	}
+	r.Queue(
+		pointer.Event{Kind: pointer.Press, Source: pointer.Touch, PointerID: 1, Position: f32.Pt(boardPressX, boardPressY)},
+		pointer.Event{Kind: pointer.Release, Source: pointer.Touch, PointerID: 1, Position: f32.Pt(boardPressX, boardPressY)},
+	)
+	gameFrame(a, &r)
+	if !a.touchUI {
+		t.Fatal("a touch press did not switch the pad to touch size")
+	}
+	press(&r, boardPressX, boardPressY)
+	gameFrame(a, &r)
+	if !a.touchUI {
+		t.Fatal("a later mouse press switched the pad back")
+	}
+}
 
 // TestGameFocusFollowsClicks drives the real game screen through a Gio
 // input.Router: once the game is playable the board owns the keys; a press

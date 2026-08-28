@@ -35,7 +35,24 @@ func (a *App) attachView(e app.ViewEvent) {
 	if !ok || !je.Valid() {
 		return
 	}
+	if mediaMatches("(any-pointer: coarse)") {
+		// A touch screen — a tablet's, a phone's, one beside a mouse too:
+		// the control pad is laid out at thumb size from the first frame
+		// (controls.go), rather than after the first tap reaches the game.
+		a.touchUI = true
+	}
 	keepKeyboardFocus(je.Element)
+}
+
+// mediaMatches evaluates a CSS media query against the page (false where the
+// browser has no matchMedia).
+func mediaMatches(query string) bool {
+	win := js.Global().Get("window")
+	if !win.Get("matchMedia").Truthy() {
+		return false
+	}
+	mq := win.Call("matchMedia", query)
+	return mq.Truthy() && mq.Get("matches").Bool()
 }
 
 // keepKeyboardFocus makes the hidden input inside Gio's container element
@@ -46,13 +63,8 @@ func keepKeyboardFocus(cont js.Value) {
 	win := js.Global().Get("window")
 	input := cont.Call("querySelector", "input")
 	canvas := cont.Call("querySelector", "canvas")
-	if !input.Truthy() || !canvas.Truthy() {
+	if !input.Truthy() || !canvas.Truthy() || mediaMatches("(pointer: coarse)") {
 		return
-	}
-	if win.Get("matchMedia").Truthy() {
-		if mq := win.Call("matchMedia", "(pointer: coarse)"); mq.Truthy() && mq.Get("matches").Bool() {
-			return
-		}
 	}
 	focusOpts := map[string]any{"preventScroll": true}
 	focus := js.FuncOf(func(this js.Value, args []js.Value) any {

@@ -2488,10 +2488,15 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   under the game info, so it never squeezes the info text
   (`confirmDeleteID` on the App, `del`/`delYes`/`delNo` in `gameRowBtns`);
   confirming dispatches `deleteGame` (`lifecycle.go`) → `lobby.DeleteGame`.
-- `controls.go` — the on-screen arcade control pad (↺/←/↓/→/↻ — rotations as blocky
-  circular-arrow bitmaps, `glyphCW`/`glyphCCW` — + wide DROP bar;
-  `handlePadClicks` dispatches clicks to the engine only while the game is playable,
-  draining them otherwise) and the animated MOVE BUFFER chip strip
+- `controls.go` — the on-screen arcade control pad, laid out like a handheld's
+  controls: a D-pad (`dpad`, one cross-shaped plate whose four arms are the arrow
+  keys — ▲ rotates clockwise like ↑) and the face buttons (`faceButtons`: ↺/↻ —
+  rotations as blocky circular-arrow bitmaps, `glyphCW`/`glyphCCW` — over the wide
+  DROP bar and, with the hold rule, the HOLD bar), at mouse or thumb size
+  (`padMouse`/`padTouch`, chosen by `App.touchUI`), flanking the playfield or under
+  it as `fitBoardAndPad` plans per frame; `handlePadClicks` dispatches clicks to the
+  engine only while the game is playable, draining them otherwise) and the animated
+  MOVE BUFFER chip strip
   (`bufferedMovesStrip`), both drawn as blocky `fillRect` bitmap glyphs in the 8-bit
   chrome. The game screen sizes itself to the window via `fitCellPx` (`board.go`):
   player-board cells clamp to 14–56 dp after reserving room for the strip/pad,

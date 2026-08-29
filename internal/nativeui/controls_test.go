@@ -319,3 +319,35 @@ func TestBufferedMovesStripInflightKeepsHeight(t *testing.T) {
 		}
 	}
 }
+
+// TestBufferedMovesStripWidthIsConstant: the strip is exactly the slot row
+// wide whatever it shows — empty, a few moves, grouped batches with an
+// in-flight count, a queue running past the slots — because the board is
+// centered on it and a wider caption or overflow marker used to shift the
+// whole playfield with every queued move.
+func TestBufferedMovesStripWidthIsConstant(t *testing.T) {
+	a := newTestApp()
+	ctx := func() C {
+		var ops op.Ops
+		return layout.Context{
+			Ops:         &ops,
+			Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+			Constraints: layout.Constraints{Max: image.Pt(1200, 820)},
+		}
+	}
+	many := make([][]engine.MoveType, 12)
+	for i := range many {
+		many[i] = []engine.MoveType{engine.MoveDown}
+	}
+	grouped := [][]engine.MoveType{{engine.MoveDown, engine.MoveDown, engine.MoveDown}, {engine.MoveLeft, engine.MoveLeft}, {engine.MoveDown}}
+	want := stripWidth(ctx())
+	for _, c := range []struct {
+		name     string
+		batches  [][]engine.MoveType
+		inflight int
+	}{{"empty", nil, 0}, {"few", grouped[:1], 0}, {"grouped, in flight", grouped, 1}, {"overflowing, in flight", many, 1}} {
+		if w := a.bufferedMovesStrip(ctx(), c.batches, c.inflight, 3).Size.X; w != want {
+			t.Fatalf("%s: strip width %d px, want the slot row's %d — the board over it would shift", c.name, w, want)
+		}
+	}
+}

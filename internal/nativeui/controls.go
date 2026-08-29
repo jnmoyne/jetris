@@ -183,8 +183,11 @@ func stripWidth(gtx C) int { return bufferedSlots * (gtx.Dp(42) + gtx.Dp(7)) }
 // successive colors of msgGroupPalette, numbered from the batches the
 // engine has taken so far (firstOrdinal) so a batch keeps its color as the
 // queue drains. The dim empty slots are always there while playing, so a
-// filling buffer is impossible to miss and the board never jumps as it
-// fills; a freshly queued glyph pops in with an overshoot.
+// filling buffer is impossible to miss, and the strip is always exactly as
+// wide as the slot row — the board is centered on it, and a caption or an
+// overflow count that changed its width would shift the playfield with
+// every queued move; past the slots the last one counts the rest — and a
+// freshly queued glyph pops in with an overshoot.
 func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, firstOrdinal int) D {
 	chip, gap := gtx.Dp(42), gtx.Dp(7)
 	now := gtx.Now
@@ -196,11 +199,7 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 		first, last bool
 	}
 	var slots []slot
-	grouped := 0
 	for i, b := range batches {
-		if len(b) > 1 {
-			grouped++
-		}
 		c := msgGroupPalette[(firstOrdinal+i)%len(msgGroupPalette)]
 		for j, m := range b {
 			slots = append(slots, slot{m: m, col: c, first: j == 0, last: j == len(b)-1})
@@ -221,9 +220,6 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 	count, countCol := "EMPTY", colMuted
 	if n > 0 {
 		count, countCol = fmt.Sprintf("%d QUEUED", n), colGold
-		if grouped > 0 {
-			count = fmt.Sprintf("%d QUEUED IN %d BATCHES", n, len(batches))
-		}
 	}
 	// Batches sent and not yet acked: one at most in sync mode (the strip's
 	// reason to exist), the whole burst in async mode (its reason to empty).
@@ -239,7 +235,13 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 	if inflight > 0 {
 		caption = append(caption, layout.Rigid(a.pixel(unit.Sp(9), fmt.Sprintf("  ·  %d IN FLIGHT", inflight), colAccent).Layout))
 	}
-	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+	// The strip is always exactly the slot row wide, its content centered in
+	// that width: the board over it is centered on the strip, and a caption
+	// or a count that widened the strip would shift the whole playfield
+	// with every move the player queues.
+	width := stripWidth(gtx)
+	macro := op.Record(gtx.Ops)
+	dims := layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx, caption...)
 		}),
@@ -277,17 +279,24 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 							fillRect(gtx.Ops, image.Rect(chip-th, chip-stub, chip, chip), withAlpha(s.col, 0.85))
 						}
 						gtx.Constraints = layout.Exact(image.Pt(chip, chip))
-						layout.Center.Layout(gtx, a.moveGlyph(s.m, unit.Dp(float32(24*clampF(scale, 0, 1.15))), colFg))
+						if i == bufferedSlots-1 && n > bufferedSlots {
+							// The queue runs past the strip: the last slot
+							// counts the rest instead of showing its move.
+							layout.Center.Layout(gtx, a.pixel(unit.Sp(11), fmt.Sprintf("+%d", n-bufferedSlots+1), colFg).Layout)
+						} else {
+							layout.Center.Layout(gtx, a.moveGlyph(s.m, unit.Dp(float32(24*clampF(scale, 0, 1.15))), colFg))
+						}
 						return D{Size: image.Pt(chip, chip)}
 					})
 				}))
 			}
-			if over := n - bufferedSlots; over > 0 {
-				kids = append(kids, layout.Rigid(a.pixel(unit.Sp(14), fmt.Sprintf("+%d", over), colFg).Layout))
-			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 		}),
 	)
+	call := macro.Stop()
+	defer op.Offset(image.Pt((width-dims.Size.X)/2, 0)).Push(gtx.Ops).Pop()
+	call.Add(gtx.Ops)
+	return D{Size: image.Pt(width, dims.Size.Y)}
 }
 
 // emptySlot draws a dim outlined square — a vacant position in the buffer strip.

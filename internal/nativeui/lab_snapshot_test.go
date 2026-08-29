@@ -142,4 +142,20 @@ func TestStripSnapshot(t *testing.T) {
 		layout.Center.Layout(gtx, func(gtx C) D { return a.bufferedMovesStrip(gtx, batches, 4, 2) })
 	})
 	w.Release()
+
+	// And a queue running past the slots: the last slot counts the rest, and
+	// the strip stays exactly as wide.
+	w, err = headless.NewWindow(size.X, size.Y)
+	if err != nil {
+		t.Fatalf("headless window: %v", err)
+	}
+	many := make([][]engine.MoveType, 0, 12)
+	for i := 0; i < 12; i++ {
+		many = append(many, []engine.MoveType{engine.MoveDown})
+	}
+	snapshotPNGSized(t, w, dir, "lab_strip_overflow", size, func(gtx C) {
+		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
+		layout.Center.Layout(gtx, func(gtx C) D { return a.bufferedMovesStrip(gtx, many, 1, 0) })
+	})
+	w.Release()
 }

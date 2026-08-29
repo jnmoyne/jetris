@@ -88,6 +88,10 @@ type Engine struct {
 	// is live). Off for an engine that was only constructed — the UI tests'
 	// transport-less ones.
 	started atomic.Bool
+	// watchdogSpawns counts the spawns the piece-less watchdog had to force
+	// (retrySpawnIfPending): each one is a piece that came a gravity tick or
+	// two late. A diagnostic (the browser page's touch badge shows it).
+	watchdogSpawns atomic.Int64
 
 	// wonGame records the engine's game-over verdict (0 = not over, 1 = won,
 	// 2 = lost) as set by transitionToSpectator; in teams an eliminated
@@ -416,6 +420,10 @@ func (e *Engine) Playfield() *game.Playfield {
 // Started reports whether Start has run: the engine's goroutines are up and
 // its board is live.
 func (e *Engine) Started() bool { return e.started.Load() }
+
+// WatchdogSpawns is how many pieces the piece-less watchdog had to force so
+// far — pieces that came late (retrySpawnIfPending).
+func (e *Engine) WatchdogSpawns() int64 { return e.watchdogSpawns.Load() }
 
 // HasActivePiece reports whether this player's falling piece is on the board
 // right now. It is not between a lock and the next spawn — a NATS round trip
@@ -1188,6 +1196,7 @@ func (e *Engine) retrySpawnIfPending(ctx context.Context) {
 	if e.pieceLessTicks >= 2 {
 		e.pieceLessTicks = 0
 		log.Printf("engine %s: piece-less watchdog forcing a spawn", e.playerID)
+		e.watchdogSpawns.Add(1)
 		e.spawnPiece(ctx, true)
 	}
 }

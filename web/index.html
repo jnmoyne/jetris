@@ -31,10 +31,19 @@
     .meta { margin-top: 32px; color: var(--muted); font-size: 14px; }
     .meta span + span::before { content: " · "; color: #3a4a47; }
 
-    /* The game: Gio renders into #giowindow, full viewport */
-    #giowindow { position: fixed; inset: 0; display: none; }
+    /* The game: Gio renders into #giowindow, full viewport. On a touch
+       screen the browser must keep its hands off the canvas: no scrolling,
+       rubber-banding, pinch/double-tap zoom, text selection or long-press
+       callout — each of those takes the finger's touches away from the game
+       until the gesture settles (Gio preventDefaults the touch events, but
+       touch-action is what iOS honours regardless of listener passivity). */
+    html, body { overscroll-behavior: none; }
+    html { touch-action: manipulation; } /* pan and pinch only: no double-tap zoom anywhere on the page */
+    body.playing { position: fixed; width: 100%; height: 100%; }
+    #giowindow { position: fixed; inset: 0; display: none;
+                 touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
     body.playing #giowindow { display: block; }
-    #giowindow canvas { display: block; width: 100%; height: 100%; }
+    #giowindow canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
     /* Download / start overlay */
     #loading { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
@@ -128,12 +137,255 @@
         console.error(err);
       }
 
+      // Touch diagnostic (?touchdebug=1): a badge that counts the raw DOM
+      // touch events the game's element receives (start/move/end/cancel)
+      // beside what the game itself reports (window.jetrisTouch, set every
+      // frame by the wasm build: touch presses that reached the game screen,
+      // frames laid out, moves queued), plus the page's zoom, selection and
+      // focused element — so a stall can be placed: touches not reaching the
+      // page (the browser took the gesture), not reaching the game, or
+      // reaching it and going nowhere.
+      const params = new URLSearchParams(location.search);
+
+      // WebKit workaround — iPad, Safari and Chrome alike (both are WebKit
+      // there). Gio's touch handlers call canvas.getBoundingClientRect() on
+      // every touch event: a synchronous layout in the middle of the
+      // gesture. After a fast flick — a 30-50 ms touch, the hard-drop
+      // gesture — that left WebKit delivering NO touch events to the page
+      // for several seconds, until the finger had stayed off the glass.
+      // Found by bisection on the game itself (Aug 2026): the same flicks
+      // with the call answered from a cache played fine, a plain page
+      // without the call never showed it, and deferring or swallowing Gio's
+      // handlers, the frame requests, the viewport, the drop's processing,
+      // the link and the engine were all cleared one by one. So while one of
+      // the canvas's touch handlers runs, getBoundingClientRect() answers
+      // from a cache, kept warm OUTSIDE the handlers: filled by any call
+      // made outside one (Gio's resize does one), refreshed on the next
+      // frame after a resize or an orientation change. The canvas fills the
+      // viewport, so the cached rectangle is exact. ?nocacherect=1 turns the
+      // cache off (the A/B that found it); ?touchdebug=1 shows the handler
+      // timings beside it.
+      const touchHandler = { inTouch: false, last: 0, max: 0, n: 0, cacheRect: !params.has("nocacherect"),
+        // Frames requested within delayFrame ms of a touch's start run
+        // after those ms instead: a fast flick's whole sequence (30-50 ms)
+        // then completes before Gio's frame — 15-40 ms of WebGL on an iPad,
+        // requested on every touch event — can land between its events and
+        // hold up their dispatch. With the cached rectangle above this took
+        // the remaining blackouts from seconds to under a second; taps and
+        // drags only see their first frame 60 ms later. ?delayframe=N
+        // changes it, 0 turns it off. ?nocursor=1: no cursor style writes
+        // on the canvas while a touch handler runs (a diagnostic).
+        delayFrame: params.has("delayframe") ? Number(params.get("delayframe")) : 60, lastTouchStartAt: 0,
+        noCursor: params.has("nocursor") };
+      window.jetrisTouchHandler = touchHandler;
+      {
+        const origRect = Element.prototype.getBoundingClientRect;
+        let cached = null;
+        const refresh = () => {
+          const cnv = document.querySelector("#giowindow canvas");
+          cached = cnv ? origRect.call(cnv) : null;
+        };
+        const invalidate = () => { cached = null; requestAnimationFrame(refresh); };
+        window.addEventListener("resize", invalidate);
+        window.addEventListener("orientationchange", invalidate);
+        if (window.visualViewport) window.visualViewport.addEventListener("resize", invalidate);
+        Element.prototype.getBoundingClientRect = function () {
+          if (this.tagName !== "CANVAS" || !touchHandler.cacheRect) return origRect.call(this);
+          if (touchHandler.inTouch && cached) return cached;
+          cached = origRect.call(this);
+          return cached;
+        };
+      }
+      // Every touch listener on an element (Gio's, on its canvas) is wrapped
+      // to mark the handler's span for the cache above — and timed, for the
+      // badge. Mouse and wheel listeners are wrapped for the frame hold
+      // below only.
+      //
+      // Frame hold. The game marks each frame's span (window.jetrisInFrame,
+      // nativeui/view_js.go). A frame can park mid-way on an engine lock held
+      // across a NATS round trip — the engine spawning the next piece after
+      // a lock does that — and a parked wasm frame hands the event loop back
+      // to the browser: an input event delivered then lands in Gio's router
+      // after the frame's handlers have drained, and Gio discards it at the
+      // frame's end. So an event arriving while a frame is in progress is
+      // answered at once (preventDefault) but handed to Gio only once the
+      // frame has ended, in order — the touch made right after a hard drop
+      // is no longer lost in the spawn's round trip.
+      const inFrameQueue = [];
+      let inFrameFlushPending = false;
+      const flushInFrameQueue = () => {
+        if (window.jetrisInFrame) { setTimeout(flushInFrameQueue, 1); return; }
+        inFrameFlushPending = false;
+        const batch = inFrameQueue.splice(0);
+        for (const [fn, self, e] of batch) fn.call(self, e);
+      };
+      const heldInFrame = { n: 0 };
+      window.jetrisHeldInFrame = heldInFrame;
+      const origAddEventListener = EventTarget.prototype.addEventListener;
+      EventTarget.prototype.addEventListener = function (type, fn, opts) {
+        if (this !== window && typeof fn === "function" && /^(mouse(down|move|up)|wheel)$/.test(type)) {
+          const wrapped = function (e) {
+            if (window.jetrisInFrame) {
+              if (e.cancelable) e.preventDefault();
+              inFrameQueue.push([fn, this, e]); heldInFrame.n++;
+              if (!inFrameFlushPending) { inFrameFlushPending = true; setTimeout(flushInFrameQueue, 0); }
+              return;
+            }
+            return fn.call(this, e);
+          };
+          return origAddEventListener.call(this, type, wrapped, opts);
+        }
+        if (this !== window && typeof fn === "function" && /^touch(start|move|end|cancel)$/.test(type)) {
+          const wrapped = function (e) {
+            if (window.jetrisInFrame) {
+              if (e.cancelable) e.preventDefault();
+              inFrameQueue.push([fn, this, e]); heldInFrame.n++;
+              if (!inFrameFlushPending) { inFrameFlushPending = true; setTimeout(flushInFrameQueue, 0); }
+              return;
+            }
+            const t = performance.now();
+            if (type === "touchstart") touchHandler.lastTouchStartAt = t;
+            touchHandler.inTouch = true;
+            try { return fn.call(this, e); } finally {
+              touchHandler.inTouch = false;
+              const d = performance.now() - t;
+              touchHandler.last = d; touchHandler.n++;
+              if (d > touchHandler.max) touchHandler.max = d;
+            }
+          };
+          return origAddEventListener.call(this, type, wrapped, opts);
+        }
+        return origAddEventListener.call(this, type, fn, opts);
+      };
+      // Gio's frames run inside requestAnimationFrame callbacks (the whole
+      // frame: layout, WebGL rendering); timed for the badge.
+      const raf = { last: 0, max: 0, n: 0, maxAt: 0 };
+      window.jetrisRAF = raf;
+      const origRAF = window.requestAnimationFrame.bind(window);
+      const timedRAF = (cb) => origRAF((ts) => {
+        const s = performance.now();
+        try { return cb(ts); } finally {
+          const d = performance.now() - s;
+          raf.last = d; raf.n++;
+          if (d > raf.max) { raf.max = d; raf.maxAt = s; }
+        }
+      });
+      window.requestAnimationFrame = (cb) => {
+        const wait = touchHandler.delayFrame ? touchHandler.lastTouchStartAt + touchHandler.delayFrame - performance.now() : 0;
+        if (wait > 0) { setTimeout(() => timedRAF(cb), wait); return 0; }
+        return timedRAF(cb);
+      };
+      if (touchHandler.noCursor) {
+        const desc = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, "cursor");
+        if (desc && desc.set) {
+          Object.defineProperty(CSSStyleDeclaration.prototype, "cursor", {
+            get: desc.get, configurable: true,
+            set(v) { if (!touchHandler.inTouch) desc.set.call(this, v); },
+          });
+        }
+      }
+      if (params.has("touchdebug")) {
+        window.jetrisTouchDebug = true;
+        // Counted at the window, capture phase: every event the page gets,
+        // whatever element it targets. WebKit sends a finger as both touch
+        // and pointer events; a pointercancel is its word for "a native
+        // gesture took this touch over", gesturestart for a second finger
+        // it reads as a pinch/rotate.
+        const counts = {};
+        const kinds = ["touchstart", "touchmove", "touchend", "touchcancel",
+          "pointerdown", "pointermove", "pointerup", "pointercancel",
+          "mousedown", "mouseup", "click", "gesturestart", "gestureend", "scroll", "blur", "focus"];
+        for (const k of kinds) counts[k] = 0;
+        const t0 = performance.now();
+        let lastTouch = 0, maxTouches = 0, lastPointerType = "-";
+        const trace = []; // the latest events, coalesced: "type×n@s"
+        // The visual viewport: a native pan or zoom that WebKit starts moves
+        // it even on a page that cannot scroll — the one trace such a
+        // gesture leaves on the page.
+        const vv = window.visualViewport;
+        const vvCounts = { scroll: 0, resize: 0 };
+        if (vv) for (const k of Object.keys(vvCounts)) vv.addEventListener(k, () => { vvCounts[k]++; });
+        // Per-touch shape: how long each finger stayed on the glass and how
+        // fast it moved — a hard-drop flick is a 30-50 ms contact, and the
+        // blackouts follow those.
+        const touchStarts = new Map();
+        let brief = 0, vmax = 0, lastDur = 0, lastV = 0;
+        // Where the last touch began (CSS px), and silent gaps: after a brief
+        // touch (a flick), no touch for over 2.5 s while the player keeps
+        // swiping is the blackout; briefGapAt records when it last began.
+        let lastStartX = 0, lastStartY = 0, lastEndAt = 0, lastWasBrief = false, gaps = 0, gapFlagged = false;
+        const shape = (k, ev) => {
+          const t = ev.changedTouches && ev.changedTouches[0];
+          if (!t) return;
+          if (k === "touchstart") { touchStarts.set(t.identifier, { x: t.clientX, y: t.clientY, at: performance.now() }); lastStartX = t.clientX; lastStartY = t.clientY; gapFlagged = false; return; }
+          if (k !== "touchend" && k !== "touchcancel") return;
+          const s = touchStarts.get(t.identifier); touchStarts.delete(t.identifier);
+          if (!s) return;
+          lastDur = performance.now() - s.at;
+          lastV = Math.hypot(t.clientX - s.x, t.clientY - s.y) / Math.max(lastDur, 1);
+          if (lastDur < 100) brief++;
+          lastEndAt = performance.now(); lastWasBrief = lastDur < 100;
+          if (lastV > vmax) vmax = lastV;
+          console.log(`[touch] ${k} duration ${lastDur.toFixed(0)}ms speed ${lastV.toFixed(2)}px/ms`);
+        };
+        const note = (k, ev) => {
+          counts[k]++;
+          const now = performance.now();
+          if (k.startsWith("touch")) shape(k, ev);
+          if (k !== "touchmove" && k !== "pointermove" && k !== "mousemove") console.log(`[touch] ${k} @${((now - t0) / 1000).toFixed(3)}s`);
+          if (k.startsWith("touch")) {
+            lastTouch = now;
+            if (ev.touches) maxTouches = Math.max(maxTouches, ev.touches.length);
+          }
+          if (k.startsWith("pointer") && ev.pointerType) lastPointerType = ev.pointerType;
+          if (k === "touchmove" || k === "pointermove") {
+            const last = trace[trace.length - 1];
+            if (last && last.k === k) { last.n++; return; }
+          }
+          trace.push({ k, n: 1, at: now });
+          if (trace.length > 14) trace.shift();
+        };
+        for (const k of kinds) window.addEventListener(k, (ev) => note(k, ev), { capture: true, passive: true });
+        const badge = document.createElement("div");
+        badge.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;padding:6px 8px;background:rgba(0,0,0,.75);" +
+          "color:#8fd;font:12px/1.4 ui-monospace,Menlo,monospace;pointer-events:none;white-space:pre";
+        document.body.appendChild(badge);
+        const short = { touchstart: "ts", touchmove: "tm", touchend: "te", touchcancel: "TC",
+          pointerdown: "pd", pointermove: "pm", pointerup: "pu", pointercancel: "PC",
+          mousedown: "md", mouseup: "mu", click: "ck", gesturestart: "GS", gestureend: "ge", scroll: "SC", blur: "bl", focus: "fo" };
+        setInterval(() => {
+          const g = window.jetrisTouch || {};
+          const sel = document.getSelection();
+          const now = performance.now();
+          const c = counts;
+          if (lastEndAt && lastWasBrief && !gapFlagged && now - lastEndAt > 2500) { gaps++; gapFlagged = true; console.log(`[touch] silent gap after a brief touch @${((lastEndAt - t0) / 1000).toFixed(1)}s`); }
+          badge.textContent =
+            `TOUCH start ${c.touchstart}  move ${c.touchmove}  end ${c.touchend}  cancel ${c.touchcancel}  fingers≤${maxTouches}  idle ${lastTouch ? ((now - lastTouch) / 1000).toFixed(1) : "-"}s  last ${lastDur.toFixed(0)}ms ${lastV.toFixed(1)}px/ms  brief ${brief}  vmax ${vmax.toFixed(1)}  at ${lastStartX.toFixed(0)},${lastStartY.toFixed(0)}  GAPS-after-flick ${gaps}${gapFlagged ? " NOW" : ""}\n` +
+            `PTR   down ${c.pointerdown}  move ${c.pointermove}  up ${c.pointerup}  CANCEL ${c.pointercancel}  type ${lastPointerType}  mouse ${c.mousedown}/${c.mouseup}/${c.click}  gesture ${c.gesturestart}/${c.gestureend}  scroll ${c.scroll}\n` +
+            `GAME  presses ${g.presses ?? "-"}  frames ${g.frames ?? "-"}  queued ${g.queued ?? "-"}  spawn gap last ${g.spawnGapLast ?? "-"}ms max ${g.spawnGapMax ?? "-"}ms  held ${g.held ?? "-"} (peak ${g.heldPeak ?? "-"})  CAS-drops ${g.casDrops ?? "-"}  watchdog ${g.watchdogSpawns ?? "-"}  zoom ${vv ? vv.scale.toFixed(2) : "?"}  sel ${sel ? sel.type : "?"}  focus ${document.activeElement ? document.activeElement.tagName : "-"}  hasFocus ${document.hasFocus()}  vis ${document.visibilityState}\n` +
+            `GIO   touch handler last ${touchHandler.last.toFixed(1)}ms  max ${touchHandler.max.toFixed(1)}ms  calls ${touchHandler.n}  rect cache ${touchHandler.cacheRect ? "on" : "OFF"}  delayframe ${touchHandler.delayFrame}ms  held-in-frame ${heldInFrame.n}  nocursor ${touchHandler.noCursor}\n` +
+            `RAF   frame last ${raf.last.toFixed(1)}ms  max ${raf.max.toFixed(1)}ms @${((raf.maxAt - t0) / 1000).toFixed(1)}s  frames ${raf.n}\n` +
+            `VIEW  vv scroll ${vvCounts.scroll}  resize ${vvCounts.resize}  offset ${vv ? vv.offsetLeft.toFixed(0) + "," + vv.offsetTop.toFixed(0) : "?"}  page ${vv ? vv.pageLeft.toFixed(0) + "," + vv.pageTop.toFixed(0) : "?"}  size ${vv ? vv.width.toFixed(0) + "x" + vv.height.toFixed(0) : "?"}  scrollY ${window.scrollY}  inner ${innerWidth}x${innerHeight}\n` +
+            `LAST  ` + trace.map((e) => `${short[e.k] || e.k}${e.n > 1 ? "×" + e.n : ""}@${((e.at - t0) / 1000).toFixed(1)}`).join(" ");
+        }, 250);
+      }
       async function play() {
         if (started) return;
         started = true;
         playBtn.blur();
         landing.hidden = true;
         document.body.classList.add("playing");
+        // From here on the page is a game surface, not a document: a
+        // viewport that forbids user scaling makes WebKit stand down its
+        // tap-zoom gesture recognizers altogether (two quick touches — a
+        // flick-drop followed at once by another — otherwise engage its
+        // double-tap machinery, which on iPad was seen to swallow every
+        // touch that followed until the finger stayed off the glass), and
+        // touch-action: none on the root leaves nothing for the browser to
+        // pan or zoom. The landing page keeps its zoomable viewport.
+        const viewport = document.querySelector('meta[name="viewport"]');
+        if (viewport) viewport.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
+        document.documentElement.style.touchAction = "none";
         try {
           const go = new Go();
           go.argv = ["jetris"];

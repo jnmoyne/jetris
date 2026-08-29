@@ -62,6 +62,7 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				}
 			case engine.UpdateCASFlash:
 				now := time.Now()
+				a.casFlashes.Add(1) // the touch diagnostic's count of rejected moves
 				if e.Mode() == engine.ModeSpectator {
 					// Spectator: a broadcast flash from some player. Key its
 					// board — the player's index (competitive) or team (teams).

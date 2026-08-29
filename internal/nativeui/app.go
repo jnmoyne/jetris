@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gioui.org/app"
@@ -405,12 +406,30 @@ type App struct {
 	// queries (view_js.go) and, everywhere, by the first touch press on the
 	// game screen (handleGameFocus). UI goroutine only.
 	touchUI bool
+	// Touch diagnostic (browser build, view_js.go; the page's ?touchdebug=1):
+	// touchDebug switches it on, touchPresses counts the touch presses that
+	// reached the game screen (handleGameFocus) and frames the frames laid
+	// out, both reported to the page every frame. UI goroutine only.
+	touchDebug           bool
+	touchPresses, frames int
+	// casFlashes counts the CAS-failure flashes received (pumpEngine): each
+	// is a move of ours the server rejected and the engine dropped. Written
+	// by the pump, read by the diagnostic on the UI goroutine.
+	casFlashes atomic.Int64
 	// gest is the playfield's touch-gesture recognizer (gesture.go): swipes,
 	// taps, drags and flicks on the board, fed by handleGestures every frame.
 	// UI goroutine only.
 	gest boardGesture
 	// heldMoves are gesture moves made while the board had no piece (the
+	// lock-to-spawn gap), dispatched the moment the next piece appears
+	// (handleGestures). UI goroutine only. pieceGapStart/spawnGapLast/
+	// spawnGapMax time the lock-to-spawn gap as the frames see it and
+	// heldPeak is the most moves held at once — the touch diagnostic's
+	// (view_js.go).
 	heldMoves                 []engine.MoveType
+	pieceGapStart             time.Time
+	spawnGapLast, spawnGapMax time.Duration
+	heldPeak                  int
 	// Move-buffer strip animation state (UI goroutine only): the queue length
 	// last laid out and when it last grew (drives the newest chip's pop-in).
 	bufN      int
@@ -659,9 +678,14 @@ func (a *App) Run(ctx context.Context) error {
 		case app.ViewEvent:
 			a.attachView(e) // browser build: keep the keyboard on the game (view_js.go)
 		case app.FrameEvent:
+			// frameBegin/frameEnd bracket the frame for the browser page
+			// (view_js.go): input the browser delivers while the frame is
+			// parked on an engine lock must wait for the frame to end.
+			a.frameBegin()
 			gtx := app.NewContext(&ops, e)
 			a.layout(gtx)
 			e.Frame(gtx.Ops)
+			a.frameEnd()
 		}
 	}
 }
@@ -671,6 +695,8 @@ func (a *App) layout(gtx C) D {
 	// screen measures a dp or an sp.
 	gtx = scaledContext(gtx)
 	paint.Fill(gtx.Ops, colBg)
+	a.frames++
+	a.touchDebugFrame()
 	var d D
 	switch a.getScreen() {
 	case screenLogin:

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Jetris touch test</title>
+  <!-- A plain page with the game page's CSS and Gio's touch handling (non-passive
+       touch listeners that preventDefault every touch event), and the game's
+       touch diagnostic badge — to tell whether a fast flick followed by more
+       touches loses the touches on a page without Gio, wasm or WebGL.
+       Variations by query: ?nopd=1 (no preventDefault), ?busy=200 (spin the main
+       thread 200 ms in the frame after every touchend, like a drop's frame),
+       ?pointer=1 (listen to pointer events instead of touch events); and the
+       game page's other ingredients, to bisect them: ?webgl=1 (the touched
+       canvas is a WebGL one, its own compositing layer, as Gio's is), ?anim=1
+       (a continuous requestAnimationFrame loop that redraws and measures the
+       canvas every frame, as Gio's does), ?input=1 (Gio's hidden 1x1 <input>
+       beside the canvas, blurred after every touch as Gio does on a button
+       press), ?listeners=1 (Gio's other listeners: mouse and wheel with
+       preventDefault, contextmenu prevented). ?all=1 turns those four on;
+       ?all=1&nowebgl=1 etc. turns one back off. -->
+  <style>
+    html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #000; color: #8fd;
+                 font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+    html { touch-action: manipulation; }
+    body { position: fixed; width: 100%; height: 100%; overflow: hidden; touch-action: none;
+           -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    .panel { position: fixed; left: 8px; padding: 6px 8px; background: rgba(0,0,0,.75); pointer-events: none; white-space: pre; z-index: 9; }
+    #mode { top: 8px; }
+    #badge { bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div id="stage" style="position:fixed;inset:0"><canvas id="c"></canvas></div>
+  <canvas id="trail" style="position:fixed;inset:0;pointer-events:none;width:100%;height:100%"></canvas>
+  <div id="mode" class="panel"></div>
+  <div id="badge" class="panel"></div>
+  <script>
+    (() => {
+      const q = new URLSearchParams(location.search);
+      const flag = (k) => q.has(k) && q.get(k) !== "0";
+      const all = flag("all");
+      const mode = { pd: !flag("nopd"), busy: Number(q.get("busy") || 0), pointer: flag("pointer"), heavy: Number(q.get("heavy") || 0),
+        webgl: (all || flag("webgl")) && !flag("nowebgl"), anim: (all || flag("anim")) && !flag("noanim"),
+        input: (all || flag("input")) && !flag("noinput"), listeners: (all || flag("listeners")) && !flag("nolisteners") };
+      document.getElementById("mode").textContent =
+        `touch test — preventDefault ${mode.pd}  busy ${mode.busy}ms  events ${mode.pointer ? "pointer" : "touch"}\n` +
+        `webgl ${mode.webgl}  anim ${mode.anim}  input ${mode.input}  listeners ${mode.listeners}  heavy ${mode.heavy}\n` +
+        `flick DOWN hard and short, as for a hard drop (a 30-50 ms touch: "brief" should count it), then keep swiping: do the trails keep drawing?`;
+      const cnv = document.getElementById("c");   // the touched canvas: 2D, or WebGL like Gio's
+      const trail = document.getElementById("trail"); // the trails, drawn over it
+      const ctx = trail.getContext("2d");
+      const gl = mode.webgl ? (cnv.getContext("webgl") || cnv.getContext("experimental-webgl")) : null;
+      const c2 = gl ? null : cnv.getContext("2d");
+      const fit = () => {
+        for (const c of [cnv, trail]) { c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio; }
+        if (gl) gl.viewport(0, 0, cnv.width, cnv.height);
+      };
+      fit(); addEventListener("resize", fit);
+      let frames = 0, tick = 0;
+      // ?heavy=N: N blended full-screen quads per frame on the WebGL canvas —
+      // GPU fill-rate load of the order of a busy game frame.
+      let heavyDraw = null;
+      if (gl && mode.heavy > 0) {
+        const compile = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
+        const prog = gl.createProgram();
+        gl.attachShader(prog, compile(gl.VERTEX_SHADER, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }"));
+        gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, "precision mediump float; uniform float t; void main() { gl_FragColor = vec4(0.02, 0.05 + 0.02 * sin(t + gl_FragCoord.x * 0.01), 0.04, 0.08); }"));
+        gl.linkProgram(prog);
+        const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+        const loc = gl.getAttribLocation(prog, "p"), tloc = gl.getUniformLocation(prog, "t");
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        heavyDraw = () => {
+          gl.useProgram(prog); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+          for (let i = 0; i < mode.heavy; i++) { gl.uniform1f(tloc, tick / 10 + i); gl.drawArrays(gl.TRIANGLES, 0, 6); }
+        };
+      }
+      const paint = () => {
+        // Something to look at on the touched canvas: a slowly breathing tint.
+        const v = 0.06 + 0.04 * Math.sin(tick / 20);
+        if (gl) { gl.clearColor(0, v, v * 0.8, 1); gl.clear(gl.COLOR_BUFFER_BIT); if (heavyDraw) heavyDraw(); }
+        else if (c2) { c2.fillStyle = `rgb(0 ${Math.round(v * 255)} ${Math.round(v * 200)})`; c2.fillRect(0, 0, cnv.width, cnv.height); }
+      };
+      paint();
+      if (mode.anim) {
+        const loop = () => { tick++; frames++; paint(); cnv.getBoundingClientRect(); const t = performance.now(); while (performance.now() - t < 2) {} requestAnimationFrame(loop); };
+        requestAnimationFrame(loop);
+      }
+      let hidden = null;
+      if (mode.input) {
+        hidden = document.createElement("input");
+        const st = hidden.style; st.width = "1px"; st.height = "1px"; st.opacity = "0"; st.border = "0"; st.padding = "0";
+        hidden.autocomplete = "off"; hidden.autocorrect = "off"; hidden.autocapitalize = "off"; hidden.spellcheck = false;
+        document.getElementById("stage").appendChild(hidden);
+      }
+      if (mode.listeners) {
+        const pd = (e) => { e.preventDefault(); };
+        cnv.addEventListener("mousedown", pd); cnv.addEventListener("mousemove", pd); cnv.addEventListener("mouseup", pd);
+        cnv.addEventListener("wheel", pd, { passive: false });
+        window.addEventListener("contextmenu", pd);
+      }
+      const dpr = () => devicePixelRatio;
+      let hue = 0, last = null, lastT = 0;
+      const dot = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x * dpr(), y * dpr(), r * dpr(), 0, Math.PI * 2); ctx.fill(); };
+      const line = (a, b, col) => { ctx.strokeStyle = col; ctx.lineWidth = 3 * dpr(); ctx.beginPath(); ctx.moveTo(a.x * dpr(), a.y * dpr()); ctx.lineTo(b.x * dpr(), b.y * dpr()); ctx.stroke(); };
+      const spin = (ms) => { const t = performance.now(); while (performance.now() - t < ms) {} };
+      let flicks = 0;
+      const began = (x, y, ev) => { if (mode.pd) ev.preventDefault(); hue = (hue + 47) % 360; last = { x, y }; lastT = performance.now(); dot(x, y, 10, `hsl(${hue} 90% 60%)`); };
+      const moved = (x, y, ev) => { if (mode.pd) ev.preventDefault(); const p = { x, y }; if (last) line(last, p, `hsl(${hue} 90% 60%)`); last = p; lastT = performance.now(); };
+      const ended = (x, y, ev) => {
+        if (mode.pd) ev.preventDefault();
+        if (last) { const dt = performance.now() - lastT; const d = Math.hypot(x - last.x, y - last.y); if (d / Math.max(dt, 1) > 1.2) { flicks++; } }
+        dot(x, y, 6, "#fff"); last = null;
+        if (hidden) hidden.blur();
+        if (mode.busy) requestAnimationFrame(() => spin(mode.busy));
+      };
+      const opts = { passive: false };
+      if (mode.pointer) {
+        cnv.addEventListener("pointerdown", (e) => began(e.clientX, e.clientY, e), opts);
+        cnv.addEventListener("pointermove", (e) => { if (e.buttons) moved(e.clientX, e.clientY, e); }, opts);
+        cnv.addEventListener("pointerup", (e) => ended(e.clientX, e.clientY, e), opts);
+        cnv.addEventListener("pointercancel", (e) => { last = null; }, opts);
+      } else {
+        const pt = (e) => e.changedTouches[0];
+        cnv.addEventListener("touchstart", (e) => began(pt(e).clientX, pt(e).clientY, e), opts);
+        cnv.addEventListener("touchmove", (e) => moved(pt(e).clientX, pt(e).clientY, e), opts);
+        cnv.addEventListener("touchend", (e) => ended(pt(e).clientX, pt(e).clientY, e), opts);
+        cnv.addEventListener("touchcancel", (e) => { if (mode.pd) e.preventDefault(); last = null; }, opts);
+      }
+
+      // The badge, as on the game page: every event the window receives.
+      const counts = {};
+      const kinds = ["touchstart", "touchmove", "touchend", "touchcancel",
+        "pointerdown", "pointermove", "pointerup", "pointercancel",
+        "mousedown", "mouseup", "click", "gesturestart", "gestureend", "scroll", "blur", "focus"];
+      for (const k of kinds) counts[k] = 0;
+      const t0 = performance.now();
+      let lastTouch = 0, maxTouches = 0;
+      const trace = [];
+      const touchStarts = new Map();
+      let brief = 0, vmax = 0, lastDur = 0, lastV = 0;
+      // Where the last touch began (CSS px), and silent gaps: after a brief
+      // touch (a flick), no touch for over 2.5 s while the player keeps
+      // swiping is the blackout; briefGapAt records when it last began.
+      let lastStartX = 0, lastStartY = 0, lastEndAt = 0, lastWasBrief = false, gaps = 0, gapFlagged = false;
+      const shape = (k, ev) => {
+        const t = ev.changedTouches && ev.changedTouches[0];
+        if (!t) return;
+        if (k === "touchstart") { touchStarts.set(t.identifier, { x: t.clientX, y: t.clientY, at: performance.now() }); lastStartX = t.clientX; lastStartY = t.clientY; gapFlagged = false; return; }
+        if (k !== "touchend" && k !== "touchcancel") return;
+        const s = touchStarts.get(t.identifier); touchStarts.delete(t.identifier);
+        if (!s) return;
+        lastDur = performance.now() - s.at;
+        lastV = Math.hypot(t.clientX - s.x, t.clientY - s.y) / Math.max(lastDur, 1);
+        if (lastDur < 100) brief++;
+        lastEndAt = performance.now(); lastWasBrief = lastDur < 100;
+        if (lastV > vmax) vmax = lastV;
+      };
+      const note = (k, ev) => {
+        counts[k]++;
+        const now = performance.now();
+        if (k.startsWith("touch")) shape(k, ev);
+        if (k.startsWith("touch")) { lastTouch = now; if (ev.touches) maxTouches = Math.max(maxTouches, ev.touches.length); }
+        if (k === "touchmove" || k === "pointermove") { const l = trace[trace.length - 1]; if (l && l.k === k) { l.n++; return; } }
+        trace.push({ k, n: 1, at: now });
+        if (trace.length > 14) trace.shift();
+      };
+      for (const k of kinds) window.addEventListener(k, (ev) => note(k, ev), { capture: true, passive: true });
+      const short = { touchstart: "ts", touchmove: "tm", touchend: "te", touchcancel: "TC", pointerdown: "pd", pointermove: "pm", pointerup: "pu", pointercancel: "PC",
+        mousedown: "md", mouseup: "mu", click: "ck", gesturestart: "GS", gestureend: "ge", scroll: "SC", blur: "bl", focus: "fo" };
+      const badge = document.getElementById("badge");
+      setInterval(() => {
+        const c = counts, now = performance.now();
+        if (lastEndAt && lastWasBrief && !gapFlagged && now - lastEndAt > 2500) { gaps++; gapFlagged = true; console.log(`[touch] silent gap after a brief touch @${((lastEndAt - t0) / 1000).toFixed(1)}s`); }
+        badge.textContent =
+          `TOUCH start ${c.touchstart}  move ${c.touchmove}  end ${c.touchend}  cancel ${c.touchcancel}  fingers≤${maxTouches}  idle ${lastTouch ? ((now - lastTouch) / 1000).toFixed(1) : "-"}s  last ${lastDur.toFixed(0)}ms ${lastV.toFixed(1)}px/ms  brief ${brief}  vmax ${vmax.toFixed(1)}  at ${lastStartX.toFixed(0)},${lastStartY.toFixed(0)}  GAPS-after-flick ${gaps}${gapFlagged ? " NOW" : ""}  frames ${frames}\n` +
+          `PTR   down ${c.pointerdown}  move ${c.pointermove}  up ${c.pointerup}  CANCEL ${c.pointercancel}  mouse ${c.mousedown}/${c.mouseup}/${c.click}  gesture ${c.gesturestart}/${c.gestureend}  scroll ${c.scroll}\n` +
+          `LAST  ` + trace.map((e) => `${short[e.k] || e.k}${e.n > 1 ? "×" + e.n : ""}@${((e.at - t0) / 1000).toFixed(1)}`).join(" ");
+      }, 250);
+    })();
+  </script>
+</body>
+</html>

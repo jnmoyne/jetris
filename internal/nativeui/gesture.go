@@ -452,6 +452,16 @@ func (a *App) handleGestures(gtx C, eng *engine.Engine, active bool) {
 	// the new piece where the finger already is. A hard drop is not held: a
 	// flick meant for the piece that just locked must not drop the next one.
 	noPiece := active && eng.Started() && !eng.HasActivePiece()
+	// The lock-to-spawn gap as the frames see it, for the touch diagnostic
+	// (view_js.go): how long the board went without a piece.
+	switch {
+	case noPiece && a.pieceGapStart.IsZero():
+		a.pieceGapStart = gtx.Now
+	case !noPiece && !a.pieceGapStart.IsZero():
+		a.spawnGapLast = gtx.Now.Sub(a.pieceGapStart)
+		a.spawnGapMax = max(a.spawnGapMax, a.spawnGapLast)
+		a.pieceGapStart = time.Time{}
+	}
 	if active && !noPiece && len(a.heldMoves) > 0 {
 		for _, m := range a.heldMoves {
 			moveFor(m)(eng)
@@ -465,6 +475,7 @@ func (a *App) handleGestures(gtx C, eng *engine.Engine, active bool) {
 		case noPiece:
 			if len(a.heldMoves) < maxHeldMoves {
 				a.heldMoves = append(a.heldMoves, m)
+				a.heldPeak = max(a.heldPeak, len(a.heldMoves))
 			}
 		default:
 			moveFor(m)(eng)

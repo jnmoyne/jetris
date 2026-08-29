@@ -26,6 +26,7 @@ GOOS=js GOARCH=wasm go build -trimpath -ldflags "-s -w -X main.version=$VERSION"
 # and a plain cp of it leaves a read-only file that the next build cannot overwrite.
 install -m 0644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$OUT/"
 install -m 0644 Jetris-screenshot-1.png "$OUT/screenshot.png"
+install -m 0644 web/touchtest.html "$OUT/" # the plain touch test page (see it for what it isolates)
 
 # The page shows the version, uses it to cache-bust wasm_exec.js and
 # jetris.wasm (they must come from the same build), and sizes its download

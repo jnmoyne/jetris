@@ -41,7 +41,49 @@ func (a *App) attachView(e app.ViewEvent) {
 		// (controls.go), rather than after the first tap reaches the game.
 		a.touchUI = true
 	}
+	// The page sets window.jetrisTouchDebug when opened with ?touchdebug=1:
+	// it then counts the raw DOM touch events itself and shows them beside
+	// the counts reported here (touchDebugFrame), so a stall can be placed —
+	// touches not reaching the page, not reaching the game, or reaching it
+	// and doing nothing.
+	a.touchDebug = js.Global().Get("jetrisTouchDebug").Truthy()
 	keepKeyboardFocus(je.Element)
+}
+
+// frameBegin and frameEnd tell the page (window.jetrisInFrame) when a frame
+// is in progress. A frame can park mid-way on an engine lock that is held
+// across a NATS round trip — the consumer spawning the next piece after a
+// lock does exactly that — and in the browser a parked frame hands the
+// event loop back to the browser: an input event delivered then lands in
+// Gio's router after this frame's handlers have drained, and Router.Frame
+// discards it. The page's touch shim holds such events until frameEnd
+// (web/index.html), so no touch made right after a drop is lost.
+func (a *App) frameBegin() { js.Global().Set("jetrisInFrame", true) }
+func (a *App) frameEnd()   { js.Global().Set("jetrisInFrame", false) }
+
+// touchDebugFrame reports the game's side of the touch diagnostic to the
+// page, once per frame while it is on: window.jetrisTouch = {presses,
+// frames, queued} — touch presses that reached the game screen, frames laid
+// out, and moves waiting in the engine's queue.
+func (a *App) touchDebugFrame() {
+	if !a.touchDebug {
+		return
+	}
+	queued, watchdog := 0, int64(0)
+	if eng := a.getEngine(); eng != nil {
+		queued = len(eng.BufferedMoves())
+		watchdog = eng.WatchdogSpawns()
+	}
+	js.Global().Set("jetrisTouch", map[string]any{
+		"presses": a.touchPresses, "frames": a.frames, "queued": queued,
+		// Moves of ours the server rejected (the rainbow flash) and pieces
+		// the watchdog had to force: a delivered input that did nothing.
+		"casDrops": a.casFlashes.Load(), "watchdogSpawns": watchdog,
+		// The lock-to-spawn gap (handleGestures): the board without a piece,
+		// the moves held for the next one.
+		"spawnGapLast": a.spawnGapLast.Milliseconds(), "spawnGapMax": a.spawnGapMax.Milliseconds(),
+		"held": len(a.heldMoves), "heldPeak": a.heldPeak,
+	})
 }
 
 // mediaMatches evaluates a CSS media query against the page (false where the

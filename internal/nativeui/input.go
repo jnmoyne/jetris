@@ -135,6 +135,7 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 				// A finger on the game screen: from here on the control
 				// pad is laid out at thumb size (controls.go).
 				a.touchUI = true
+				a.touchPresses++ // the touch diagnostic's count (view_js.go)
 			}
 		}
 	}

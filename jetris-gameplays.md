@@ -940,17 +940,63 @@ the start, after elimination, and under the leave-game modal; a board re-planned
 the finger (the first touch switching the pad to thumb size, a resize) drops the gesture
 in flight rather than mixing two coordinate frames.
 
+Which builds get touch: Gio reports touch pointers from the browser (the wasm build —
 every touch DOM event is `preventDefault`ed, so a swipe never scrolls the page),
 Wayland, Android and iOS; a touchscreen on X11, Windows or macOS arrives as a mouse,
+so there the pad is the touch control. The browser page also keeps the browser's own
+touch behaviours off the canvas (`web/index.html`: `touch-action: none`, no text
+selection or long-press callout, no overscroll, the body fixed while playing) — each
 of those would take the finger's touches away from the game until the gesture
 settled.
 
+One WebKit behaviour needed a workaround of its own. Gio's browser backend calls
+`canvas.getBoundingClientRect()` inside every touch event handler — a synchronous
+layout in the middle of the gesture. On iPad (Safari and Chrome alike, both WebKit),
+a fast flick — a 30–50 ms touch, the hard-drop gesture — then left WebKit delivering
+**no touch events at all** to the page for several seconds, until the finger had
+stayed off the glass; neither Gio nor the game ever saw those touches. It was found by
+bisection on the game itself (`?touchdebug=1` recordings): the link, the engine, the
+drop's processing, the frame requests, the viewport, and Gio's handlers deferred or
+swallowed were each cleared, a plain page with the same CSS and touch handling never
+showed it, and answering the layout call from a cache made it go away. So the page
+(`web/index.html`) wraps the canvas's touch listeners and, while one runs, answers
+`getBoundingClientRect()` from a cache kept warm outside the handlers (filled by Gio's
+own resize call, refreshed on the frame after a resize or orientation change); the
+canvas fills the viewport, so the cached rectangle is exact. That alone cut the
+blackouts to a rare residual; the rest came from Gio's frame itself — requested on
+every touch event, 15–40 ms of WebGL on an iPad — landing between a flick's events
+and holding up their dispatch, so the page also holds the frames requested during the
 first 60 ms of a touch until those 60 ms have passed (a flick is over by then; a tap or
+a drag merely sees its first frame 60 ms later). `?nocacherect=1` turns the cache off
+and `?delayframe=0` the hold. On the game's side, a swipe made while the next piece is
+still spawning is not lost either: the recognizer holds its steps back while the
 board has no active piece and lets them fly the moment one appears (`HasActivePiece`),
 so the piece lands where the finger already is.
 
+The last of it was Gio's own, and in the browser only. After a lock the engine's
+consumer spawns the next piece while holding the engine lock across the spawn's NATS
+round trip; a frame that runs during that round trip parks mid-way (its `Snapshot`
+needs the lock) — after its input handlers have already drained — and a parked wasm
+frame hands the event loop back to the browser, so a touch delivered then lands in
 Gio's router mid-frame and `Router.Frame` discards it at the frame's end: the swipe
 made right after a hard drop was lost whenever it coincided with the spawn's round
+trip. The game marks each frame's span for the page (`window.jetrisInFrame`,
+`frameBegin`/`frameEnd` in `view_js.go`), and the page's input shim answers an event
+that arrives inside a frame at once (`preventDefault`) but hands it to Gio only once the
+frame has ended, in order (`held-in-frame` on the badge counts them). Should touch still
+misbehave on some device, open the page with
+`?touchdebug=1`: a badge in the corner counts, at the window, every touch, pointer,
+mouse, Safari gesture and scroll event the page receives (a `pointercancel` is
+WebKit's word for a native gesture taking a touch over, a `gesturestart` for a second
+finger read as a pinch), the most fingers seen at once and the idle time since the last
+touch, beside what the game reports every frame (touch presses that reached the game
+screen, frames laid out, moves queued), the page's zoom, selection, focus and
+visibility, and a trace of the latest events — which places a stall: touches not
+reaching the page at all, reaching it as something other than touches, not reaching
+the game, or reaching it and going nowhere. `web/touchtest.html`, served beside the
+game, is the same badge on a plain page with the game page's CSS and Gio's touch
+handling (no wasm, no WebGL), with `?busy=200`, `?nopd=1` and `?pointer=1` variants,
+to tell a browser/OS behaviour from a game-page one. On the Go side, `rapidinput_test.go`
 drives the real router with taps and swipes as fast as the frames come and checks
 that every one lands.
 

@@ -2548,11 +2548,22 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   `gestureStill`); `handleGestures` drains the area
   every frame and dispatches (`moveFor`) only while the game is playable. In the
   browser, `web/index.html` wraps the canvas's touch listeners and answers Gio's
+  per-event `canvas.getBoundingClientRect()` from a cache while one runs — the
+  synchronous layout it forces mid-gesture made iPad WebKit stop delivering touch
   events for seconds after a fast flick, and holds the frames Gio requests in the
   first 60 ms of a touch until then, so a flick's events are delivered before a frame
+  can hold them up (`?nocacherect=1` disables the cache, `?delayframe=0` the hold;
+  `?touchdebug=1` shows the touch/handler/frame diagnostic badge; `touchtest.html`
+  is the plain-page control). Between a lock and the next spawn the board has no
   piece and a dispatched move is a no-op, so `handleGestures` holds the moves a
   gesture resolves to in that gap (`heldMoves`, `Engine.HasActivePiece`/`Started`)
   and dispatches them the moment the piece appears — a hard drop excepted, so a late
+  flick never drops the next piece. `frameBegin`/`frameEnd` (`view_js.go`) mark each
+  frame's span as `window.jetrisInFrame` for the page's input shim: a frame that parks
+  mid-way on the engine lock (the consumer spawns the next piece with it held across
+  the spawn's round trip) hands the wasm event loop back to the browser, and input
+  delivered then would land in the router after the handlers drained and be discarded
+  by `Router.Frame` — so the page holds it until the frame has ended.
 - `lifecycle.go` — `initLobby`, create/join/spectate engine wiring, `runCountdown`,
   `returnToLobby`, `teardown` (wires `engine.OnGameFinished` → `archive.ArchiveAndCleanup`,
   and `engine.OnStreamMsg` → `recordStreamMsg` for the NATS message panel).

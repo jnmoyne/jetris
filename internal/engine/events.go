@@ -27,6 +27,7 @@ const (
 	UpdateTeamStats        // teams: a team's score or level changed (both teams' totals in TeamScores/TeamLevels)
 	UpdateRowsCleared      // a clear completed ChangedRows (pre-collapse indices) on this player's board — own lock, or a teammate's on a shared board — arcade feedback hook
 	UpdateHold             // the hold slot changed (read via Engine.HeldPiece / HoldUsed)
+	UpdateStepAcked        // a step's batch was acknowledged (or a lost pipeline repaired): the acked board (Engine.Snapshot) moved on before the echo
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -41,7 +42,8 @@ type EngineUpdate struct {
 	EliminatedPlayerID string                // competitive/teams: which player was eliminated
 	Team               int                   // teams: team of the eliminated player (UpdatePlayerEliminated)
 	OpponentID         string                // which opponent's board changed (UpdateOpponentField)
-	FlashCells         [][2]int              // cells to flash (UpdateCASFlash)
+	FlashCells         [][2]int              // cells to flash (UpdateCASFlash): the piece as it stood when the step was lost
+	FlashTargetCells   [][2]int              // UpdateCASFlash, a lost step: where the piece wanted to be — the outline a UI that pre-renders the move flashes instead (nil for a lost spawn/lock, and on the spectator broadcast)
 	FlashPlayerIdx     int                   // player index for flash color
 	RTT                time.Duration         // latest publish→echo round trip (UpdateRTT)
 	TeamScores         [config.TeamCount]int // teams: both teams' scores (UpdateTeamStats)

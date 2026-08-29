@@ -126,6 +126,9 @@ func (e *Engine) bumpLedger(ctx context.Context, cacheKey, subject string, lines
 // replays, teams applier races, and reconnects comes from the txn gate plus
 // the cumulative registers — a loser's recompute sees deficit 0 and no-ops.
 func (e *Engine) applyOwedGarbage(ctx context.Context) {
+	// A barrier: the raise is computed from converged state, never over
+	// pipelined steps (pipeline.go).
+	e.settlePipeline(ctx)
 	var topped []int
 	var full bool
 	committed := e.publishGatedTransform(ctx, txnOpShrink, false, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {

@@ -36,8 +36,26 @@ func (e *Engine) runInput(ctx context.Context) {
 			// strip. One move per wake-up: the moves behind it re-arm the
 			// wake-up, so the lock timer, echoes and gravity get their turn
 			// between moves exactly as they did between channel receives.
-			move, ok, more := e.takeBufferedMove()
-			if !ok {
+			//
+			// A pipelined engine with its in-flight limit's worth of batches in
+			// flight holds the moves in the queue instead, and when a slot
+			// frees (resolveStep re-arms the wake-up) takes the run of steps
+			// at the queue's head as ONE batch — the moves that piled up
+			// while it waited go out together (pipeline.go). Unless a hard
+			// drop (or a hold) is waiting: the piece's fate is decided, so the
+			// steps ahead of it go out now, as one batch, and the barrier
+			// commits right behind them.
+			if e.pipelineFull() && !e.barrierQueued() {
+				continue
+			}
+			// A lost pipelined step is repaired BEFORE the queue is read: the
+			// repair puts the moves pipelined behind the loss back at its head
+			// (pipeline.go), and they go out ahead of what queued since.
+			if e.getMode() == ModePlayer {
+				e.settleIfBroken(ctx)
+			}
+			moves, more := e.takeMoveGroup(e.coalescing())
+			if len(moves) == 0 {
 				continue
 			}
 			if more {
@@ -48,8 +66,16 @@ func (e *Engine) runInput(ctx context.Context) {
 			}
 			// Player input — drop+flash on CAS failure.
 			before := e.activePieceSnapshot()
-			_ = e.attemptMove(ctx, move, false)
+			e.attemptMoves(ctx, moves)
 			e.updateLockDelay(before)
+		case <-e.pipeRepair:
+			// The last in-flight step of a broken pipeline resolved: put the
+			// piece back where the stream last agreed it was (pipeline.go).
+			if e.getMode() != ModePlayer {
+				continue
+			}
+			e.settlePipeline(ctx)
+			e.updateLockDelay(pieceSnapshot{})
 		case <-e.lockState.fire:
 			// Lock delay expired: lock the piece where it rests (or let it
 			// keep falling if the stack changed under it meanwhile).
@@ -86,6 +112,7 @@ func (e *Engine) runInput(ctx context.Context) {
 			// contention; it flashes only if the tick is ultimately dropped.
 			// Serialized with player input above (same goroutine), so it never
 			// races our own moves.
+			e.settleIfBroken(ctx)
 			before := e.activePieceSnapshot()
 			_ = e.attemptMove(ctx, MoveDown, true)
 			e.updateLockDelay(before)
@@ -139,6 +166,54 @@ func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) 
 	return e.attemptMoveStandard(ctx, move, internal)
 }
 
+// attemptMoves runs a group of player moves as ONE step: a single move is
+// attemptMove; several — the steps that piled up while the pipeline was
+// full (takeMoveGroup) — are played out one after another on the optimistic
+// board, each by the engine's rules (a blocked step is a no-op, a kicked
+// rotation kicks from where the previous step left the piece), and the
+// piece's whole journey is published as one batch: the diff between where
+// it stood and where the last step leaves it. A lost batch flashes that
+// destination and rolls the piece back to where it stood, like any step.
+// Groups never contain a hard drop or a hold (those are barriers of their
+// own, takeMoveGroup keeps them apart).
+func (e *Engine) attemptMoves(ctx context.Context, moves []MoveType) {
+	if len(moves) == 1 {
+		if !isStep(moves[0]) {
+			// A hard drop or a hold: the piece is shown where it stands,
+			// its ghost the landing, until the commit has taken it off the
+			// board — the keys pressed meanwhile are the next piece's.
+			e.freezePiece(moves[0])
+			defer e.freezePiece(MoveDown)
+		}
+		_ = e.attemptMove(ctx, moves[0], false)
+		return
+	}
+	e.mu.Lock()
+	base := e.projectionBase()
+	p := base.ActivePieceForPlayer(e.playerIdx)
+	if p == nil {
+		e.mu.Unlock()
+		return
+	}
+	cur := *p
+	shared := e.sharedBoard()
+	for _, m := range moves {
+		if next, ok, last := stepPiece(cur, m, base, shared, e.playerIdx); ok && !last {
+			cur = next
+		}
+	}
+	if cur == *p {
+		e.mu.Unlock()
+		return // every step blocked: nothing to publish
+	}
+	affected := affectedRowsUnion(p, &cur)
+	rows := base.ProjectMove(affected, &cur, e.playerIdx)
+	cells := diffCells(base.Rows, rows)
+	pre := *p
+	e.mu.Unlock()
+	e.publishStep(ctx, cells, pre, cur, moves)
+}
+
 // affectedRowsUnion returns the union of row indices touched by oldPiece and
 // newPiece (either may be nil).
 func affectedRowsUnion(oldPiece, newPiece *game.Piece) []int {
@@ -161,7 +236,11 @@ func affectedRowsUnion(oldPiece, newPiece *game.Piece) []int {
 }
 
 func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, internal bool) error {
-	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
+	// The step is projected from the optimistic board — the acked replica
+	// with every pipelined step applied (pipeline.go); with nothing in
+	// flight that is the replica itself.
+	base := e.projectionBase()
+	p := base.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {
 		e.mu.Unlock()
 		return nil
@@ -179,19 +258,19 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 	case MoveLeft:
 		newPiece = *p
 		newPiece.Col--
-		valid = game.CanPlace(newPiece, e.playfield)
+		valid = game.CanPlace(newPiece, base)
 	case MoveRight:
 		newPiece = *p
 		newPiece.Col++
-		valid = game.CanPlace(newPiece, e.playfield)
+		valid = game.CanPlace(newPiece, base)
 	case MoveDown:
 		newPiece = *p
 		newPiece.Row++
-		valid = game.CanPlace(newPiece, e.playfield)
+		valid = game.CanPlace(newPiece, base)
 	case RotateCW:
-		newPiece, valid = game.Rotate(*p, true, e.playfield)
+		newPiece, valid = game.Rotate(*p, true, base)
 	case RotateCCW:
-		newPiece, valid = game.Rotate(*p, false, e.playfield)
+		newPiece, valid = game.Rotate(*p, false, base)
 	}
 
 	if !valid {
@@ -203,24 +282,24 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 	}
 
 	affected := affectedRowsUnion(p, &newPiece)
-	rows := e.playfield.ProjectMove(affected, &newPiece, e.playerIdx)
-	cells := diffCells(e.playfield.Rows, rows)
-	// Cells to flash if the step is dropped by CAS (the piece stays put, so
-	// flash its current position). Computed under e.mu before unlocking.
-	flashCells := p.Cells()
+	rows := base.ProjectMove(affected, &newPiece, e.playerIdx)
+	cells := diffCells(base.Rows, rows)
+	pre := *p // the piece where it stands: what flashes if the step is dropped by CAS, what a lost pipeline rolls back to
 	e.mu.Unlock()
 	// In competitive mode each player owns their cell subjects, so this CAS
 	// publish cannot race with another player in practice; if it ever does,
 	// the dropped step flashes regardless of whether it was a player input or
 	// an internal gravity tick. orderedCellKeys writes the new (active) cells
 	// before the vacated ones, so the piece never transiently vanishes
-	// mid-relocate (single-row horizontal I included).
-	e.publishProjectedCells(ctx, cells, flashCells, false)
+	// mid-relocate (single-row horizontal I included). publishStep commits it
+	// the way the player's PublishMode says (pipeline.go).
+	e.publishStep(ctx, cells, pre, newPiece, playerMoves(move, internal))
 	return nil
 }
 
 func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bool) error {
-	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
+	base := e.projectionBase() // the optimistic board, see attemptMoveStandard
+	p := base.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {
 		e.mu.Unlock()
 		return nil
@@ -238,19 +317,19 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 	case MoveLeft:
 		newPiece = *p
 		newPiece.Col--
-		valid = game.CanPlaceCoop(newPiece, e.playfield, e.playerIdx)
+		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
 	case MoveRight:
 		newPiece = *p
 		newPiece.Col++
-		valid = game.CanPlaceCoop(newPiece, e.playfield, e.playerIdx)
+		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
 	case MoveDown:
 		newPiece = *p
 		newPiece.Row++
-		valid = game.CanPlaceCoop(newPiece, e.playfield, e.playerIdx)
+		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
 	case RotateCW:
-		newPiece, valid = game.RotateCoop(*p, true, e.playfield, e.playerIdx)
+		newPiece, valid = game.RotateCoop(*p, true, base, e.playerIdx)
 	case RotateCCW:
-		newPiece, valid = game.RotateCoop(*p, false, e.playfield, e.playerIdx)
+		newPiece, valid = game.RotateCoop(*p, false, base, e.playerIdx)
 	}
 
 	if !valid {
@@ -266,34 +345,33 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 	}
 
 	affected := affectedRowsUnion(p, &newPiece)
-	rows := e.playfield.ProjectMove(affected, &newPiece, e.playerIdx)
-	cells := diffCells(e.playfield.Rows, rows)
-	// Cells to flash if the step is dropped by CAS. Computed under e.mu.
-	flashCells := p.Cells()
+	rows := base.ProjectMove(affected, &newPiece, e.playerIdx)
+	cells := diffCells(base.Rows, rows)
+	pre := *p // what flashes if the step is dropped by CAS, what a lost pipeline rolls back to
 	e.mu.Unlock()
 
-	if internal {
-		// Gravity tick (engine-driven): the piece must keep falling even
-		// when the other player is concurrently writing the same shared
-		// cells. Use merge-retry — refetch+retry on CAS failure. If
-		// every retry is exhausted the tick is dropped and flashes, same as
-		// any other lost CAS step. orderedCellKeys writes the new active
-		// cells before the vacated ones, so a single-row (horizontal I)
-		// piece never transiently vanishes mid-move and triggers a spurious
-		// lock-in.
-		e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, false)
-		return nil
-	}
-	// Player-initiated move: CAS conflict (possible in coop when both
-	// players touch the same cell) drops the move and surfaces a local
-	// rainbow flash on the player's piece. We do not retry; the player
-	// must retry the input themselves, and we do NOT publish anything to
-	// the other players.
-	e.publishProjectedCells(ctx, cells, flashCells, false)
+	// A gravity tick (engine-driven) must keep falling even when the other
+	// player is concurrently writing the same shared cells: in sync mode
+	// publishStep gives it merge-retry — refetch+retry on CAS failure,
+	// flashing only if every retry is exhausted. A player-initiated move
+	// that loses its CAS race (possible in coop when both players touch the
+	// same cell) is dropped and flashed; we do not retry — the player retries
+	// the input themselves — and we do NOT publish anything to the other
+	// players. A pipelined step (async mode) is dropped and rolled back
+	// either way (pipeline.go). orderedCellKeys writes the new active cells
+	// before the vacated ones, so a single-row (horizontal I) piece never
+	// transiently vanishes mid-move and triggers a spurious lock-in.
+	e.publishStep(ctx, cells, pre, newPiece, playerMoves(move, internal))
 	return nil
 }
 
 func (e *Engine) publishHardDrop(ctx context.Context) error {
+	// A barrier: the drop lands the piece from where it has been acked to
+	// be, after every pipelined step landed — and after the moves a repair
+	// replayed, if a step was lost: the drop yields to them (pipeline.go).
+	if e.settleBarrier(ctx, MoveHardDrop) {
+		return nil
+	}
 	e.mu.Lock()
 	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {
@@ -316,6 +394,9 @@ func (e *Engine) publishHardDrop(ctx context.Context) error {
 }
 
 func (e *Engine) publishHardDropCoop(ctx context.Context) error {
+	if e.settleBarrier(ctx, MoveHardDrop) { // a barrier, see publishHardDrop
+		return nil
+	}
 	e.mu.Lock()
 	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {
@@ -344,4 +425,14 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 	// the drop is detected at this lock, not one piece later.
 	e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, false)
 	return nil
+}
+
+// playerMoves is the move list a step carries for the replay: the player's
+// move, or nil for an engine-driven step (a gravity tick), which is never
+// played again — the timer keeps ticking.
+func playerMoves(m MoveType, internal bool) []MoveType {
+	if internal {
+		return nil
+	}
+	return []MoveType{m}
 }

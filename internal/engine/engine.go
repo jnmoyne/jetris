@@ -207,6 +207,50 @@ type Engine struct {
 	rttPending  map[uint64]time.Time // batch first-seq → publish start time
 	lastEchoSeq uint64               // highest own-board seq seen by the consumer; guarded by rttMu
 	rttNanos    atomic.Int64         // latest measurement, for RTT()
+
+	// The step pipeline (pipeline.go). publishMode is how steps are
+	// committed (PublishMode); echoField the echo-only replica of the own
+	// board — the consumer's deliveries and nothing else, what EchoSnapshot
+	// shows (nil before Start). inflight lists the steps in flight, oldest
+	// first; inflightCells counts, per cell, the in-flight writes to it (an
+	// async step's expectation on such a cell can only be none); pipeTouched
+	// is every cell the episode's steps wrote since the pipeline was last
+	// idle — the repair re-projects them all; pipeBroken/pipeRollback mark a
+	// lost step and the piece as it stood before it. All guarded by e.mu.
+	// pipeChanged (cap 1) wakes settlePipeline when a step resolves,
+	// pipeRepair (cap 1) wakes runInput when a broken pipeline has drained.
+	publishMode   atomic.Int32
+	inflightLimit atomic.Int32 // how many batches may be in flight before the queued moves wait and coalesce (SetInflightLimit)
+	echoField     *game.Playfield
+	inflight      []*inflightStep
+	inflightCells map[game.CellPos]int
+	pipeTouched   map[game.CellPos]bool
+	pipeBroken    bool
+	pipeRollback  game.Piece
+	pipeHeld      bool         // runInput is holding the queued moves behind a full pipeline: they go out together (coalescing)
+	pieceFrozen   MoveType     // the barrier being committed (MoveHardDrop, MoveHold): the piece is shown where it stands, the queue behind it is the next piece's (IntentPiece); a step value means none
+	lastReplayLen int          // how many moves the last repair replayed: a barrier deferred by that repair goes back into the queue behind them
+	batchesTaken  atomic.Int64 // batches of player moves taken off the queue so far (BatchesTaken)
+	pipeReplay    []MoveType   // the player moves of the steps pipelined behind a lost one, in order: put back at the queue's head by the repair
+	pipeChanged   chan struct{}
+	pipeRepair    chan struct{}
+	// The optimistic mode's sequence prediction (PublishOptimistic):
+	// streamSeqSeen is the highest stream sequence any of this engine's
+	// consumers has delivered (tapMsg — together they cover the whole game
+	// stream, so it is the engine's best knowledge of the stream's end);
+	// inflightSeq is, per cell with an in-flight write, the sequence that
+	// write is predicted to get; pipePredictedEnd the predicted sequence of
+	// the last in-flight batch's last message. The latter two guarded by e.mu.
+	streamSeqSeen    atomic.Uint64
+	inflightSeq      map[game.CellPos]uint64
+	pipePredictedEnd uint64
+	// testHookBeforeStepSend runs on runInput after an async step's batch is
+	// built and before it is sent (with the batch); testHookBeforeStepResolve
+	// runs on the ack goroutine before the outcome is folded in. Seams for
+	// the pipeline tests to race a competing write and hold the acks. Nil in
+	// production.
+	testHookBeforeStepSend    func(updates []natspkg.CellUpdate)
+	testHookBeforeStepResolve func()
 }
 
 // New creates a new engine instance. Call Start() to begin. teamIdx/teamSlot
@@ -242,8 +286,14 @@ func New(
 		eventTotals:        make(map[string]struct{ score, lines int }),
 		rttPending:         make(map[uint64]time.Time),
 		lockDelay:          config.LockDelay,
+		inflightCells:      make(map[game.CellPos]int),
+		inflightSeq:        make(map[game.CellPos]uint64),
+		pipeTouched:        make(map[game.CellPos]bool),
+		pipeChanged:        make(chan struct{}, 1),
+		pipeRepair:         make(chan struct{}, 1),
 	}
 	e.setMode(mode)
+	e.inflightLimit.Store(DefaultInflightLimit)
 	return e
 }
 
@@ -313,6 +363,9 @@ func (e *Engine) Start() error {
 		)
 	}
 	e.metaSeq = metaSeq
+	// The echo-only replica mirrors the own board's dimensions; the snapshot
+	// below seeds it (stream truth), the consumer keeps it (consumer.go).
+	e.echoField = game.NewPlayfieldWithHeight(e.playfield.Width, e.playfield.Height)
 
 	// 2+3. Board state and its consumer. A PLAYER fetches a last-per-subject
 	// snapshot and tails the stream from just past it — the snapshot seeds the
@@ -344,6 +397,7 @@ func (e *Engine) Start() error {
 			}
 			data, _ := game.UnmarshalCell(c.Payload)
 			e.playfield.Apply(c.Row, c.Col, data, c.Seq)
+			e.echoField.Apply(c.Row, c.Col, data, c.Seq)
 		}
 
 		// Check if there's already an active piece for this player
@@ -912,12 +966,15 @@ func (e *Engine) emitUpdate(u EngineUpdate) {
 // stored message still carries the Nats-Batch-Id of the batch it committed in
 // (empty for a plain single-message publish).
 func (e *Engine) tapMsg(msg jetstream.Msg) {
-	if e.OnStreamMsg == nil {
-		return
-	}
 	var ts time.Time
 	if md, err := msg.Metadata(); err == nil {
 		ts = md.Timestamp
+		// Every consumer feeds the engine's knowledge of the stream's end —
+		// what the optimistic mode predicts its next sequences from.
+		e.noteStreamSeq(md.Sequence.Stream)
+	}
+	if e.OnStreamMsg == nil {
+		return
 	}
 	var batchID string
 	if h := msg.Headers(); h != nil {
@@ -1107,6 +1164,12 @@ func (e *Engine) spawnPosition(pt game.PieceType) game.Piece {
 // player's piece crossing the spawn cells (a transient obstacle: the player
 // just tries again) — is a no-op.
 func (e *Engine) attemptHold(ctx context.Context) error {
+	// A barrier: the swap vacates the piece where it has been acked to be,
+	// after every pipelined step landed — and after a repair's replay, to
+	// which it yields (pipeline.go).
+	if e.settleBarrier(ctx, MoveHold) {
+		return nil
+	}
 	e.mu.Lock()
 	if !e.hold || e.holdUsed || e.seq == nil {
 		e.mu.Unlock()
@@ -1430,6 +1493,14 @@ func (e *Engine) transitionGameToFinished(ctx context.Context) {
 // to suppress the flash. Reports whether the batch committed (an empty batch
 // trivially did).
 func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool) bool {
+	return e.publishProjectedCellsFlash(ctx, cells, flashCells, nil, locked)
+}
+
+// publishProjectedCellsFlash is publishProjectedCells for a STEP of the
+// piece: targetCells is where the piece wanted to be, carried on the flash
+// (EngineUpdate.FlashTargetCells) so a UI that pre-rendered the move can
+// flash that outline rather than the piece where it stood.
+func (e *Engine) publishProjectedCellsFlash(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells, targetCells [][2]int, locked bool) bool {
 	if len(cells) == 0 {
 		return true
 	}
@@ -1458,7 +1529,7 @@ func (e *Engine) publishProjectedCells(ctx context.Context, cells map[game.CellP
 	// CAS failure: drop the step. Signal the local player with a rainbow flash
 	// on the dropped cells. We do NOT publish anything to the other players —
 	// a CAS failure is information for the local player only.
-	e.emitCASFlash(flashCells)
+	e.emitCASFlash(flashCells, targetCells)
 	return false
 }
 
@@ -1643,7 +1714,7 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 			// Every cell we wanted to write is currently covered by the other
 			// player's mid-flight piece — nothing we may publish. Drop the step.
 			log.Printf("publish batch: all cells blocked by other player's piece, step dropped")
-			e.emitCASFlash(flashCells)
+			e.emitCASFlash(flashCells, nil)
 			return
 		}
 		t0 := time.Now()
@@ -1661,7 +1732,7 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 	}
 	log.Printf("publish batch: gave up after %d retries", maxRetries)
 	// Step dropped after exhausting retries — flash the local player.
-	e.emitCASFlash(flashCells)
+	e.emitCASFlash(flashCells, nil)
 }
 
 // refetchAndMerge fetches the latest stream message for every cell in keys (one
@@ -1728,18 +1799,21 @@ func (e *Engine) refetchAndMerge(ctx context.Context, keys []game.CellPos, cells
 // flashCells are the cells to highlight; the caller computes them while holding
 // e.mu (the publish helpers run with the lock released, and spawnPiece may invoke
 // them while the consumer already holds e.mu — so this method must NOT take the
-// lock). It pushes an EngineUpdate directly to e.Updates without publishing to
-// NATS: a CAS failure is information for the local player, not the others.
+// lock). targetCells, for a lost step, is where the piece wanted to be — the
+// outline a UI that pre-renders moves flashes instead (nil otherwise). It
+// pushes an EngineUpdate directly to e.Updates without publishing to NATS: a
+// CAS failure is information for the local player, not the others.
 // Spectators never flash.
-func (e *Engine) emitCASFlash(flashCells [][2]int) {
+func (e *Engine) emitCASFlash(flashCells, targetCells [][2]int) {
 	if e.getMode() != ModePlayer || len(flashCells) == 0 {
 		return
 	}
 	// Local feedback: the player sees their OWN dropped-write flash instantly.
 	e.emitUpdate(EngineUpdate{
-		Kind:           UpdateCASFlash,
-		FlashCells:     flashCells,
-		FlashPlayerIdx: e.playerIdx,
+		Kind:             UpdateCASFlash,
+		FlashCells:       flashCells,
+		FlashTargetCells: targetCells,
+		FlashPlayerIdx:   e.playerIdx,
 	})
 	// Broadcast it to spectators (who show every player's flashes). This is a
 	// CORE NATS publish — transient, not persisted in the game stream — so
@@ -1760,6 +1834,9 @@ type FlashMessage struct {
 // core NATS (fire-and-forget; a lost flash just isn't shown). Safe to call
 // with or without e.mu held — nc.Publish does its own synchronization.
 func (e *Engine) publishFlash(cells [][2]int) {
+	if e.js == nil {
+		return // a transport-less engine (UI tests, previews): nobody to tell
+	}
 	nc := e.js.Conn()
 	if nc == nil {
 		return

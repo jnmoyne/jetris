@@ -60,7 +60,7 @@ type pieceSnapshot struct {
 func (e *Engine) activePieceSnapshot() pieceSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if p := e.playfield.ActivePieceForPlayer(e.playerIdx); p != nil {
+	if p := e.projectionBase().ActivePieceForPlayer(e.playerIdx); p != nil {
 		return pieceSnapshot{p: *p, ok: true}
 	}
 	return pieceSnapshot{}
@@ -84,12 +84,16 @@ func lowestRow(p game.Piece) int {
 func (e *Engine) updateLockDelay(before pieceSnapshot) {
 	s := &e.lockState
 	e.mu.Lock()
-	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
+	// The piece where it is headed: with steps pipelined (pipeline.go) the
+	// acked replica lags the moves, and the delay times the piece the player
+	// is actually steering.
+	base := e.projectionBase()
+	p := base.ActivePieceForPlayer(e.playerIdx)
 	var grounded bool
 	if p != nil {
 		down := *p
 		down.Row++
-		grounded = !game.CanPlace(down, e.playfield)
+		grounded = !game.CanPlace(down, base)
 	}
 	gen := e.spawnGen.Load() // bumped under e.mu by every spawn and hold swap
 	e.mu.Unlock()
@@ -126,6 +130,13 @@ func (e *Engine) updateLockDelay(before pieceSnapshot) {
 // rows it stood on) and it can fall again, in which case gravity carries on.
 // The publish is the same in-place lock the blocked gravity step used to make.
 func (e *Engine) lockPieceIfGrounded(ctx context.Context) {
+	// A barrier: the lock is written where the piece has been acked to be,
+	// after every pipelined step landed (pipeline.go). A repair's replay
+	// goes first: the lock re-times behind it (runInput calls
+	// updateLockDelay right after).
+	if e.settlePipeline(ctx) {
+		return
+	}
 	e.mu.Lock()
 	p := e.playfield.ActivePieceForPlayer(e.playerIdx)
 	if p == nil {

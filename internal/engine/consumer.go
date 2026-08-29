@@ -74,6 +74,11 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 
 			e.mu.Lock()
 			pf.Apply(rowIdx, colIdx, cell, seq)
+			if !isOpponent && e.echoField != nil {
+				// The echo-only replica (EchoSnapshot): what the stream has
+				// delivered, and nothing the engine wrote through ahead of it.
+				e.echoField.Apply(rowIdx, colIdx, cell, seq)
+			}
 
 			if isOpponent {
 				e.mu.Unlock()
@@ -587,4 +592,3 @@ func (e *Engine) handleTeamGameOverEvent(ctx context.Context, ev GameEvent) {
 		}
 	}
 }
-

@@ -42,6 +42,9 @@ func (e *Engine) trackRTT(t0 time.Time, commitSeq uint64, n int) {
 	if commitSeq == 0 || n <= 0 {
 		return
 	}
+	// Every ack is also the earliest the engine learns where the stream's
+	// end is — ahead of its own echo (pipeline.go's sequence prediction).
+	e.noteStreamSeq(commitSeq)
 	firstSeq := commitSeq - uint64(n-1)
 	e.rttMu.Lock()
 	if e.lastEchoSeq >= firstSeq {

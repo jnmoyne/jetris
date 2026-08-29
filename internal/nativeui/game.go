@@ -27,6 +27,7 @@ type gameView struct {
 	teamScores           [config.TeamCount]int
 	teamLevels           [config.TeamCount]int
 	rtt                  time.Duration
+	linkDown             time.Duration // how long the NATS link has been down (0 = up) — the HUD's LINK stat
 	status               string
 	countdown            int
 	countdownAt          time.Time
@@ -108,6 +109,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		teamScores:     a.teamScores,
 		teamLevels:     a.teamLevels,
 		rtt:            a.rtt,
+		linkDown:       linkDownFor(a.linkDownAt, now),
 		status:         a.gameStatus,
 		countdown:      a.countdown,
 		countdownAt:    a.countdownAt,
@@ -483,6 +485,14 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	if mode == engine.ModePlayer {
 		children = append(children, layout.Rigid(a.hudStatColored("Batch RTT", formatRTT(view.rtt), rttColor(view.rtt))))
+	}
+	if view.linkDown > 0 {
+		// The NATS link is down (link.go): every move is waiting on it. Name
+		// the pause, and keep its clock ticking.
+		children = append(children, layout.Rigid(func(gtx C) D {
+			animate(gtx)
+			return a.hudStatColored("LINK", "LOST "+formatLinkDown(view.linkDown), colOrange)(gtx)
+		}))
 	}
 
 	if mode == engine.ModePlayer && !started && !view.gameOver {

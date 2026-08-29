@@ -835,6 +835,24 @@ no RTT readout.
 The readout is color-coded by latency: the normal text color up to 75 ms, then a warning
 blend that starts yellow at 75 ms and reaches orange at 150 ms, and red above 150 ms.
 
+### Link status
+
+Every move is a publish that waits for its commit ack, and the moves behind it wait
+in the engine's queue — so when the NATS connection drops (a tablet's WiFi blip), the
+piece freezes: gravity too, since it runs behind the moves on the same loop. nats.go
+reconnects on its own, and the in-flight publish waits out its ack timeout (jetstream's
+5 s default) before the queue moves on, so such a drop plays out as a freeze of a few
+seconds followed by the queued moves landing in a burst (nothing is lost — the queue is
+unbounded). The game says so: while the connection is down the HUD shows a **LINK**
+stat, `LOST 2.3s`, with a running clock (`internal/nativeui/link.go`, fed by the
+connection's disconnect / reconnect / close callbacks, installed when the app adopts
+its connection), and the "Show NATS messages" panel logs each `link` event —
+`connection lost: … — reconnecting`, `reconnected to … after 2.3s`. Every app
+connection is tuned for a flaky link (`linkOptions` in `internal/nats/connection.go`):
+a 500 ms reconnect wait instead of nats.go's 2 s, unlimited reconnect attempts instead
+of 60, and a 5 s ping (3 missed = dead) so a silently dead socket is noticed within
+seconds rather than minutes.
+
 ### Move-buffer strip
 
 Player inputs are serialized: each move's batch publish blocks on its commit ack before

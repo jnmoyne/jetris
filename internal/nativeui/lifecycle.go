@@ -89,6 +89,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config, favorite string)
 	a.usingEmbedded = cfg.RunEmbedded
 	a.connLabel = connectionLabel(cfg, nc.ConnectedUrl(), favorite)
 	a.mu.Unlock()
+	a.watchLink(nc)
 	a.doLogin(name, false)
 }
 

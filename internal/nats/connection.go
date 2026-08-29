@@ -18,6 +18,7 @@ import (
 // Connect establishes a NATS connection using the named NATS context.
 // An empty contextName uses the currently selected context.
 func Connect(contextName string, opts ...nats.Option) (*nats.Conn, jetstream.JetStream, natscontext.Settings, error) {
+	opts = append(linkOptions(), opts...)
 	nc, settings, err := natscontext.Connect(contextName, opts...)
 	if err != nil {
 		return nil, nil, settings, err
@@ -30,10 +31,28 @@ func Connect(contextName string, opts ...nats.Option) (*nats.Conn, jetstream.Jet
 	return nc, js, settings, nil
 }
 
+// linkOptions tune nats.go for a game played over a flaky link (a tablet's
+// WiFi): reconnect quickly and for as long as it takes rather than after a
+// 2 s wait and 60 tries, and notice a dead socket within seconds rather
+// than after nats.go's default minutes of missed pings. Every move waits
+// behind a stalled publish (its ack times out after jetstream's 5 s
+// default), so the sooner the link is back the shorter the freeze. Callers'
+// options come after these and win.
+func linkOptions() []nats.Option {
+	return []nats.Option{
+		nats.ReconnectWait(500 * time.Millisecond),
+		nats.ReconnectJitter(100*time.Millisecond, 500*time.Millisecond),
+		nats.MaxReconnects(-1),
+		nats.PingInterval(5 * time.Second),
+		nats.MaxPingsOutstanding(3),
+	}
+}
+
 // ConnectURL establishes a NATS connection directly to the given URL with
 // optional username/password credentials. Use this when no NATS context is
 // available.
 func ConnectURL(url, user, password string, opts ...nats.Option) (*nats.Conn, jetstream.JetStream, error) {
+	opts = append(linkOptions(), opts...)
 	if user != "" {
 		opts = append(opts, nats.UserInfo(user, password))
 	}

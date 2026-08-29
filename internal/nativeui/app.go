@@ -139,6 +139,11 @@ type App struct {
 	// server)"; see connectionLabel). Set on connect, cleared on disconnect;
 	// guarded by mu.
 	connLabel string
+	// NATS link health (link.go): linkDownAt is when the connection dropped
+	// (zero while it is up) and linkErr why; set by the connection's
+	// callbacks, shown as the game HUD's LINK stat. Guarded by mu.
+	linkDownAt time.Time
+	linkErr    string
 
 	win *app.Window
 	th  *material.Theme

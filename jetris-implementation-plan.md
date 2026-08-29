@@ -756,6 +756,16 @@ func Connect(contextName string, opts ...nats.Option) (*nats.Conn, jetstream.Jet
 }
 ```
 
+Both `Connect` and `ConnectURL` prepend `linkOptions()` — the flaky-link tuning
+every app connection carries (a tablet's WiFi): `ReconnectWait` 500 ms (nats.go's
+default is 2 s), `MaxReconnects(-1)` (default 60 tries), `PingInterval` 5 s with
+`MaxPingsOutstanding` 3 (default 2 min / 2, i.e. minutes before a silently dead
+socket is noticed). A caller's own options come after and win. The UI installs
+the connection's disconnect / reconnect / close callbacks when it adopts the
+connection (`nativeui/link.go`, `watchLink`) and shows the outage as the game
+HUD's `LINK LOST 2.3s` stat: every move waits behind the stalled publish
+(jetstream's 5 s ack timeout), then lands.
+
 #### `streams.go`
 
 `EnsureGameStream` creates a stream with these **required** config fields:
@@ -1184,6 +1194,7 @@ accessors that hand playfield state to the UI/tests (`Playfield`,
 result without the lock while the consumer and write-through keep mutating the
 live playfield. Player input is serialized and buffered on the engine's move
 queue, the `bufferedMu`-guarded FIFO `bufferedMoves` — **unbounded, never
+dropping a move** (a burst of gestures on a high-RTT server just makes it
 longer): `dispatch` appends and wakes `runInput` through the 1-slot `moveReady`
 channel; `runInput` takes one move per wake-up (`takeBufferedMove`, which
 re-arms the wake-up while more are queued, so the lock timer, echoes and

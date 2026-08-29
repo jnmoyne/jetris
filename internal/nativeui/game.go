@@ -160,6 +160,9 @@ func (a *App) layoutGame(gtx C) D {
 	// The on-screen pad mirrors the keyboard scheme; its clicks are drained
 	// every frame and only dispatched while the game is actually playable.
 	a.handlePadClicks(gtx, eng, playing)
+	// So are the touch gestures on the playfield (gesture.go) — after the
+	// pad's Clickables have drained, and never under the leave modal.
+	a.handleGestures(gtx, eng, playing && !a.confirmLeave)
 
 	if a.readyBtn.Clicked(gtx) {
 		go a.toggleReady()
@@ -742,6 +745,12 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					return inner(gtx)
 				}
 			}
+			// The playfield is the touch-gesture surface (gesture.go) —
+			// registered outside the shake, so a swipe in flight never
+			// judders with the well, and inside the countdown stack, so
+			// the overlay never widens it.
+			field := bw
+			bw = func(gtx C) D { return a.gestureArea(gtx, cell, field) }
 			if !countdownVisible(view, mode) {
 				return bw(gtx)
 			}

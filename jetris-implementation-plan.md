@@ -1610,7 +1610,7 @@ func New(
 
 ```go
 func (e *Engine) Start() error  // see consumer.go for startup sequence
-func (e *Engine) Stop()         // cancel context, drain moves channel
+func (e *Engine) Stop()         // cancel context
 func (e *Engine) MoveLeft()     { e.dispatch(MoveLeft) }
 func (e *Engine) MoveRight()    { e.dispatch(MoveRight) }
 func (e *Engine) MoveDown()     { e.dispatch(MoveDown) }
@@ -1620,7 +1620,6 @@ func (e *Engine) HardDrop()     { e.dispatch(MoveHardDrop) }
 
 func (e *Engine) dispatch(m MoveType) {
     if e.mode != ModePlayer { return }
-    select {
     e.bufferedMu.Lock()
     e.bufferedMoves = append(e.bufferedMoves, m) // unbounded: never dropped
     e.bufferedMu.Unlock()
@@ -2521,7 +2520,28 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   body text (chat, lists, editors) stays in the Go faces for readability.
 - `input.go` — keyboard → engine moves. The board tag registers `key.FocusFilter` +
   `key.Filter{Focus: tag, …}` each frame and is focused with `key.FocusCmd`; ←/→ move,
-  ↓ soft drop, ↑/X rotate CW, Z rotate CCW, Space hard drop.
+  ↓ soft drop, ↑/X rotate CW, Z rotate CCW, Space hard drop, C hold.
+- `gesture.go` — touch gestures on the playfield, the phone versions' scheme: swipe
+  left/right shifts a column per cell of travel, a tap on the left/right half rotates
+  CCW/CW, a drag down soft-drops a row per cell (still steerable), a flick down
+  hard-drops, a swipe up holds. `gestureArea` registers the playfield (and only it —
+  never a press a pad button, the HOLD box or the chat took) as the `fieldTag` pointer
+  area with a `playfield` semantic label; `boardGesture` is the router-free recognizer
+  (`feed` per pointer event, touch presses only, every finger its own
+  `fingerGesture`; `step`/`flush` emit toward targets set by the finger's whole
+  travel, never more than `gestureBufferCap` moves ahead of the engine — so the
+  piece tracks where the finger is, not where it has been — and not at all while a
+  flick is in progress, `fast`, so the release is a clean `HardDrop`; the flick rule
+  holds only for a gesture's first `flickWindow` (200 ms), past which a fast finger is
+  a fast drag that steps like any other, and a fast finger that stops is stopped after
+  `gestureStill`); `handleGestures` drains the area
+  every frame and dispatches (`moveFor`) only while the game is playable. In the
+  browser, `web/index.html` wraps the canvas's touch listeners and answers Gio's
+  events for seconds after a fast flick, and holds the frames Gio requests in the
+  first 60 ms of a touch until then, so a flick's events are delivered before a frame
+  piece and a dispatched move is a no-op, so `handleGestures` holds the moves a
+  gesture resolves to in that gap (`heldMoves`, `Engine.HasActivePiece`/`Started`)
+  and dispatches them the moment the piece appears — a hard drop excepted, so a late
 - `lifecycle.go` — `initLobby`, create/join/spectate engine wiring, `runCountdown`,
   `returnToLobby`, `teardown` (wires `engine.OnGameFinished` → `archive.ArchiveAndCleanup`,
   and `engine.OnStreamMsg` → `recordStreamMsg` for the NATS message panel).

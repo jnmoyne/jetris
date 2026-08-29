@@ -108,6 +108,7 @@ jetris/
 │   │   ├── bridge.go
 │   │   ├── fonts.go
 │   │   ├── game.go
+│   │   ├── gesture.go
 │   │   ├── input.go
 │   │   ├── lifecycle.go
 │   │   ├── lobby.go

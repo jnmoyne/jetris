@@ -84,6 +84,10 @@ type Engine struct {
 	// pre-game countdown — and an ungated watchdog would force-spawn pieces
 	// and start the game mid-countdown.
 	gameStarted atomic.Bool
+	// started: Start has run (the engine's goroutines are up and the board
+	// is live). Off for an engine that was only constructed — the UI tests'
+	// transport-less ones.
+	started atomic.Bool
 
 	// wonGame records the engine's game-over verdict (0 = not over, 1 = won,
 	// 2 = lost) as set by transitionToSpectator; in teams an eliminated
@@ -245,6 +249,7 @@ func (e *Engine) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.ctx = ctx
 	e.cancelFn = cancel
+	e.started.Store(true)
 
 	// 1. Fetch meta
 	meta, metaSeq, err := natspkg.FetchGameMeta(ctx, e.js, e.gameID)
@@ -406,6 +411,20 @@ func (e *Engine) Playfield() *game.Playfield {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.playfield.Clone()
+}
+
+// Started reports whether Start has run: the engine's goroutines are up and
+// its board is live.
+func (e *Engine) Started() bool { return e.started.Load() }
+
+// HasActivePiece reports whether this player's falling piece is on the board
+// right now. It is not between a lock and the next spawn — a NATS round trip
+// — when a move dispatched is a no-op; the UI holds gesture moves back in
+// that gap (nativeui/gesture.go). Cheaper than Playfield: no clone.
+func (e *Engine) HasActivePiece() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.playfield.ActivePieceForPlayer(e.playerIdx) != nil
 }
 
 // OpponentPlayfields returns race-free deep copies of all opponent playfields
@@ -650,6 +669,9 @@ func (e *Engine) Hold() { e.dispatch(MoveHold) }
 // taken, a new move issued while the previous one is still awaiting its commit
 // ack waits in the queue — the engine never has two of a player's input
 // batches in flight at once. The queue has no depth limit and never drops a
+// move: a player who outruns the ack round-trip (a burst of gestures on a
+// high-RTT server) sees the queue grow in the MOVE BUFFER strip and every
+// move land in order. Safe from any goroutine; never blocks.
 func (e *Engine) dispatch(m MoveType) {
 	if e.getMode() != ModePlayer {
 		return

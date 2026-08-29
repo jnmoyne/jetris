@@ -380,6 +380,7 @@ type App struct {
 	msgGrabY   float32
 	boardTag   int // address used as the key-input focus tag; its pointer area is the whole game screen
 	chatTag    int // address used as the chat panel's pointer-area tag (a press inside hands the keys to the chat)
+	fieldTag   int // address used as the playfield's pointer-area tag: the touch-gesture surface (gesture.go)
 	// playingSeen is last frame's "the keys drive the piece" state; its
 	// false→true edge (game start, rejoin) hands keyboard focus to the board.
 	// playingSeenEng is the engine it was observed for — a new engine (every
@@ -399,6 +400,12 @@ type App struct {
 	// queries (view_js.go) and, everywhere, by the first touch press on the
 	// game screen (handleGameFocus). UI goroutine only.
 	touchUI bool
+	// gest is the playfield's touch-gesture recognizer (gesture.go): swipes,
+	// taps, drags and flicks on the board, fed by handleGestures every frame.
+	// UI goroutine only.
+	gest boardGesture
+	// heldMoves are gesture moves made while the board had no piece (the
+	heldMoves                 []engine.MoveType
 	// Move-buffer strip animation state (UI goroutine only): the queue length
 	// last laid out and when it last grew (drives the newest chip's pop-in).
 	bufN      int

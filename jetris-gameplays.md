@@ -72,7 +72,8 @@ destinations, so the ghost only levels the field for humans either way).
 **The hold queue is a per-game attribute on the same step**: `hold`
 (`GameMeta.Hold`; the custom checkbox "Hold piece", off by default; on in the
 Guideline preset). With it on, **C** — or the control pad's HOLD button, or a tap
-on the HOLD box itself — sets the falling piece aside, as in the Guideline: with
+on the HOLD box itself, or an upward swipe on the playfield — sets the falling piece
+aside, as in the Guideline: with
 the slot **empty**, the falling piece goes in and the **next piece of the queue
 comes out** at the spawn point in its spawn orientation, and the queue advances
 (`pieceIdx` +1 exactly as a lock-in would, so the NEXT well moves on); with a
@@ -205,7 +206,9 @@ over NATS — each move is a local intent that publishes the changed cells with 
 | Tab | switch the keys between the piece and the chat (a shifted Tab too) | — |
 
 These are dispatched from `internal/nativeui/input.go` (the board tag is kept focused
-with Gio's `key.FocusFilter` + `key.FocusCmd`).
+with Gio's `key.FocusFilter` + `key.FocusCmd`). The on-screen control pad and, on a touch
+screen, the playfield's gestures dispatch the same engine methods (see *Mouse controls*
+and *Touch gestures* further down).
 
 ### Gravity
 
@@ -851,15 +854,15 @@ board never jumps as it fills). Spectators have no input and never see it.
 
 ### Mouse controls
 
-Below the move-buffer strip sits an on-screen **arcade control pad** — the whole
-keyboard scheme as chunky 8-bit buttons, laid out like the touch controls of the
-phone versions of the game: one thumb cluster per hand with a wider gap between
-them. On the left, the **movement** cluster — ←, ↓, → — led, in a game with the hold
-rule, by a `HOLD` bar (a blocky ⇄ swap icon, the symbol the phone versions put on
-their hold button; it sits under the HOLD box it feeds, and is absent otherwise);
-on the right, the **action** cluster — ↺ and ↻ (the rotations drawn as blocky
-circular arrows, not text) and the wide accent-filled `DROP` bar, the one button
-that commits a piece. The HOLD box beside the playfield is itself tappable and
+Flanking the playfield (or under it, in a tall, narrow column) sits an on-screen
+**arcade control pad** — the whole keyboard scheme as chunky 8-bit buttons, laid out
+like a handheld's controls: on the left a **D-pad**, one cross-shaped plate whose
+four arms are the arrow keys (▲ rotates clockwise like ↑, ◀ ▶ shift, ▼ soft-drops);
+on the right the **face buttons** — ↺ and ↻ (the rotations drawn as blocky circular
+arrows, not text) over the wide accent-filled `DROP` bar, the one button that
+commits a piece, and, in a game with the hold rule, a `HOLD` bar (a blocky ⇄ swap
+icon, the symbol the phone versions put on their hold button; absent otherwise).
+On a touch screen the pad is thumb-sized. The HOLD box beside the playfield is itself tappable and
 holds too, as on a phone. So the game is fully playable with the mouse alone, no
 keyboard needed. When the board column is narrower than the pad (the minimum window
 with an opponent column beside the board), the whole pad scales down as one row —
@@ -869,10 +872,70 @@ while it is dimmed are swallowed, never queued) and disappears with the rest of
 the play controls once the player is out. Clicking a pad button dispatches exactly
 the same engine move as its key.
 
+### Touch gestures
+
+On a touch screen the playfield itself is a gesture surface (`internal/nativeui/gesture.go`),
+driven the way the phone versions of the game are — a finger on the board rather than
+a thumb on the pad. The pad stays; both dispatch exactly the same engine moves:
+
+| Gesture | Action | Engine method |
+|---------|--------|---------------|
+| swipe left / right | shift the piece — a column per cell of travel, so the piece follows the finger | `MoveLeft` / `MoveRight` |
+| tap the left half of the playfield | rotate counter-clockwise | `RotateCCW` |
+| tap the right half | rotate clockwise | `RotateCW` |
+| press and drag down | soft drop — a row per cell of travel, the piece still steerable sideways; the drag itself never locks it (the lock delay decides, as for ↓) | `MoveDown` |
+| flick down | hard drop | `HardDrop` |
+| swipe up | hold (games with the hold rule; the HOLD box is tappable too) | `Hold` |
+
+Only touch presses gesture: a mouse click on the board stays what it is, the "keys back
+to the board" click. Every finger is its own gesture: a thumb resting on the board's
+edge blocks nothing, and a finger dragging the piece down while another taps a rotation
+does both. The **playfield**, not the whole screen, is the surface, deliberately: on a
+tablet the D-pad and face buttons flank the board, so a tap on "the left side of the
+screen" would land on the D-pad and fire twice; a pointer area exactly on the playfield
+can never receive a press that a pad button, the HOLD box, the chat or a HUD button
+took, and it measures positions in the board's own coordinates, so the rotate tap splits
+at the board's center.
+
+Two rules keep gestures honest to the engine's move path (every move is a NATS round
 trip — one publish in flight, the rest waiting in the engine's move queue, which has no
 depth limit and never drops a move): a drag steps the piece toward a target set by the
 finger's whole travel and queues at most a few moves ahead of the engine (6), catching
 up frame by frame as the queue drains — so the piece tracks where the finger *is*, and a
+swipe that turns back cancels the steps not yet queued instead of queuing them and
+their undo; and while the finger moves fast and downward — a flick in progress,
+≥ 1.2 dp/ms over the last 80 ms — nothing steps at all, so the release is a clean hard
+drop (which also needs ≥ 40 dp of downward travel) rather than a hard drop queued
+behind a burst of soft drops. That flick rule only holds for a gesture's first 200 ms:
+a flick is over in 30–100 ms, and past the window a fast finger is a fast *drag* — a
+soft drop swept top to bottom in under half a second — that steps like any other while
+it moves (it was held back for as long as it stayed fast before that bound existed,
+which read as the piece ignoring the finger until it slowed or lifted). A fast drag
+that slows to a stop before lifting is no flick either: once the finger has been still
+for 120 ms the rows it covered step after all, and the release soft-drops whatever is
+left. Drift is filtered by axis: a drag that began sideways shifts a column
+at half a cell of travel (responsive) but soft-drops only after a whole cell of droop;
+one that began downward shifts only after a whole cell of wobble. A tap is a press
+released within 300 ms and 12 dp; a held, still finger does nothing. Gestures fire only
+while the game is playable (as the pad's clicks do) and are dropped, not queued, before
+the start, after elimination, and under the leave-game modal; a board re-planned under
+the finger (the first touch switching the pad to thumb size, a resize) drops the gesture
+in flight rather than mixing two coordinate frames.
+
+every touch DOM event is `preventDefault`ed, so a swipe never scrolls the page),
+Wayland, Android and iOS; a touchscreen on X11, Windows or macOS arrives as a mouse,
+of those would take the finger's touches away from the game until the gesture
+settled.
+
+first 60 ms of a touch until those 60 ms have passed (a flick is over by then; a tap or
+board has no active piece and lets them fly the moment one appears (`HasActivePiece`),
+so the piece lands where the finger already is.
+
+Gio's router mid-frame and `Router.Frame` discards it at the frame's end: the swipe
+made right after a hard drop was lost whenever it coincided with the spawn's round
+drives the real router with taps and swipes as fast as the frames come and checks
+that every one lands.
+
 ### Window-size reactivity
 
 The game screen adapts to the window: the playfield's cell size is recomputed every

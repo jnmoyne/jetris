@@ -9,7 +9,6 @@ package nativeui
 import (
 	"fmt"
 	"image"
-	"math"
 	"time"
 
 	"gioui.org/layout"
@@ -174,37 +173,75 @@ const (
 func stripWidth(gtx C) int { return bufferedSlots * (gtx.Dp(42) + gtx.Dp(7)) }
 
 // bufferedMovesStrip is the player's move-buffer readout under the board: a
-// row of big chunky chip slots that fill with bright gold glyphs as inputs
-// queue behind the in-flight batch publish (very visible on a high-RTT
-// server) and drain as each buffered move's own publish starts. It behaves
-// like an arcade combo meter: a freshly queued chip pops in with an
-// overshoot, and while anything is queued a glow chases across the chips.
-// The dim empty slots are always there while playing, so a filling buffer is
-// impossible to miss and the board never jumps as it fills.
-func (a *App) bufferedMovesStrip(gtx C, moves []engine.MoveType) D {
-	chip := gtx.Dp(42)
+// row of chunky slots that fill with arrow glyphs as inputs queue behind the
+// in-flight batch publish (very visible on a high-RTT server) and drain as
+// each buffered move's own publish starts. The moves that will go out
+// together as one atomic batch (Engine.BufferedBatches) are shown the way
+// the NATS messages panel shows a transaction's rows: a wash of the batch's
+// color behind them, spanning the group, and a bracket in that color along
+// the bottom, closed by a stub at either end — successive batches taking
+// successive colors of msgGroupPalette, numbered from the batches the
+// engine has taken so far (firstOrdinal) so a batch keeps its color as the
+// queue drains. The dim empty slots are always there while playing, so a
+// filling buffer is impossible to miss and the board never jumps as it
+// fills; a freshly queued glyph pops in with an overshoot.
+func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, firstOrdinal int) D {
+	chip, gap := gtx.Dp(42), gtx.Dp(7)
 	now := gtx.Now
-	if n := len(moves); n != a.bufN {
+	// The queue flat: each move with its batch's color and whether it opens
+	// or closes its batch.
+	type slot struct {
+		m           engine.MoveType
+		col         colorN
+		first, last bool
+	}
+	var slots []slot
+	grouped := 0
+	for i, b := range batches {
+		if len(b) > 1 {
+			grouped++
+		}
+		c := msgGroupPalette[(firstOrdinal+i)%len(msgGroupPalette)]
+		for j, m := range b {
+			slots = append(slots, slot{m: m, col: c, first: j == 0, last: j == len(b)-1})
+		}
+	}
+	n := len(slots)
+	if n != a.bufN {
 		if n > a.bufN {
-			a.bufGrewAt = now // a new chip landed: run its pop-in
+			a.bufGrewAt = now // a new glyph landed: run its pop-in
 		}
 		a.bufN = n
 	}
 	popping := now.Sub(a.bufGrewAt) < bufPopDur
-	if len(moves) > 0 || popping {
-		animate(gtx) // keep the chase glow / pop-in animating
+	if popping {
+		animate(gtx) // keep the pop-in animating
 	}
 
 	count, countCol := "EMPTY", colMuted
-	if n := len(moves); n > 0 {
+	if n > 0 {
 		count, countCol = fmt.Sprintf("%d QUEUED", n), colGold
+		if grouped > 0 {
+			count = fmt.Sprintf("%d QUEUED IN %d BATCHES", n, len(batches))
+		}
+	}
+	// Batches sent and not yet acked: one at most in sync mode (the strip's
+	// reason to exist), the whole burst in async mode (its reason to empty).
+	// The label is laid out only when there is something to say: an EMPTY
+	// pixel label is not zero-height (an empty run takes the fallback face's
+	// line height, 11 px against the 9 px of real text, on another baseline)
+	// and would make the row — and the centered board over it — jump by
+	// two pixels every time the count came and went.
+	caption := []layout.FlexChild{
+		layout.Rigid(a.pixel(unit.Sp(9), "MOVE BUFFER  ", colMuted).Layout),
+		layout.Rigid(a.pixel(unit.Sp(9), count, countCol).Layout),
+	}
+	if inflight > 0 {
+		caption = append(caption, layout.Rigid(a.pixel(unit.Sp(9), fmt.Sprintf("  ·  %d IN FLIGHT", inflight), colAccent).Layout))
 	}
 	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-				layout.Rigid(a.pixel(unit.Sp(9), "MOVE BUFFER  ", colMuted).Layout),
-				layout.Rigid(a.pixel(unit.Sp(9), count, countCol).Layout),
-			)
+			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx, caption...)
 		}),
 		layout.Rigid(spacer(6)),
 		layout.Rigid(func(gtx C) D {
@@ -212,45 +249,45 @@ func (a *App) bufferedMovesStrip(gtx C, moves []engine.MoveType) D {
 			for i := 0; i < bufferedSlots; i++ {
 				i := i
 				kids = append(kids, layout.Rigid(func(gtx C) D {
-					return layout.Inset{Right: unit.Dp(7)}.Layout(gtx, func(gtx C) D {
-						if i >= len(moves) {
+					return layout.Inset{Right: gtx.Metric.PxToDp(gap)}.Layout(gtx, func(gtx C) D {
+						if i >= n {
 							return emptySlot(gtx, chip)
 						}
-						// Chase glow: a brightness wave runs left-to-right
-						// across the queued chips (phase offset per slot).
-						wave := 0.5 + 0.5*math.Sin(float64(now.UnixNano())/1e9*7-float64(i)*0.9)
-						col := lighten(colGold, 0.35*wave)
+						s := slots[i]
 						scale := 1.0
-						if popping && i == len(moves)-1 {
+						if popping && i == n-1 {
 							t := clampF(float64(now.Sub(a.bufGrewAt))/float64(bufPopDur), 0, 1)
 							scale = 0.4 + 0.6*easeOutBack(t)
 						}
-						return a.moveChip(gtx, moves[i], chip, scale, col)
+						// The batch under the glyph, the panel's way: its wash
+						// and its bottom bracket span the gap to the next slot
+						// while the batch continues there, and a stub closes
+						// the bracket at the batch's first and last glyph.
+						w := chip
+						if !s.last && i+1 < bufferedSlots {
+							w += gap
+						}
+						bar, stub, th := gtx.Dp(3), gtx.Dp(9), max(gtx.Dp(2), 2)
+						fillRect(gtx.Ops, image.Rect(0, 0, w, chip), withAlpha(s.col, 0.10))
+						fillRect(gtx.Ops, image.Rect(0, chip-bar, w, chip), withAlpha(s.col, 0.85))
+						if s.first {
+							fillRect(gtx.Ops, image.Rect(0, chip-stub, th, chip), withAlpha(s.col, 0.85))
+						}
+						if s.last {
+							fillRect(gtx.Ops, image.Rect(chip-th, chip-stub, chip, chip), withAlpha(s.col, 0.85))
+						}
+						gtx.Constraints = layout.Exact(image.Pt(chip, chip))
+						layout.Center.Layout(gtx, a.moveGlyph(s.m, unit.Dp(float32(24*clampF(scale, 0, 1.15))), colFg))
+						return D{Size: image.Pt(chip, chip)}
 					})
 				}))
 			}
-			if n := len(moves) - bufferedSlots; n > 0 {
-				kids = append(kids, layout.Rigid(a.pixel(unit.Sp(14), fmt.Sprintf("+%d", n), colGold).Layout))
+			if over := n - bufferedSlots; over > 0 {
+				kids = append(kids, layout.Rigid(a.pixel(unit.Sp(14), fmt.Sprintf("+%d", over), colFg).Layout))
 			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 		}),
 	)
-}
-
-// moveChip draws one queued move as a bright gold square with its glyph
-// punched out in the background color — unmissable against the dark chrome.
-// scale (0..1+, may overshoot past 1 during the pop-in) shrinks the chip
-// inside its fixed slot so an animating chip never shifts its neighbours; the
-// glyph appears once the chip has mostly landed.
-func (a *App) moveChip(gtx C, m engine.MoveType, slot int, scale float64, col colorN) D {
-	s := int(float64(slot)*clampF(scale, 0, 1.15) + 0.5)
-	off := (slot - s) / 2
-	fillRect(gtx.Ops, image.Rect(off, off, off+s, off+s), col)
-	if scale > 0.75 {
-		gtx.Constraints = layout.Exact(image.Pt(slot, slot))
-		layout.Center.Layout(gtx, a.moveGlyph(m, 24, colBg))
-	}
-	return D{Size: image.Pt(slot, slot)}
 }
 
 // emptySlot draws a dim outlined square — a vacant position in the buffer strip.

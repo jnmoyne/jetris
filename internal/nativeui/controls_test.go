@@ -80,18 +80,18 @@ func TestFitCellPx(t *testing.T) {
 // the filled one (slots plus the +N marker).
 func TestBufferedMovesStrip(t *testing.T) {
 	a := newTestApp()
-	empty := a.bufferedMovesStrip(testCtx(1200, 820), nil)
+	empty := a.bufferedMovesStrip(testCtx(1200, 820), nil, 0, 0)
 	if empty.Size.X == 0 || empty.Size.Y == 0 {
 		t.Fatal("empty strip rendered zero-size; the slot row must always be visible")
 	}
-	few := a.bufferedMovesStrip(testCtx(1200, 820), []engine.MoveType{
-		engine.MoveLeft, engine.RotateCW, engine.MoveHardDrop,
-	})
-	over := make([]engine.MoveType, 20)
+	few := a.bufferedMovesStrip(testCtx(1200, 820), [][]engine.MoveType{
+		{engine.MoveLeft}, {engine.RotateCW}, {engine.MoveHardDrop},
+	}, 0, 0)
+	over := make([][]engine.MoveType, 20)
 	for i := range over {
-		over[i] = engine.MoveDown
+		over[i] = []engine.MoveType{engine.MoveDown}
 	}
-	full := a.bufferedMovesStrip(testCtx(1200, 820), over)
+	full := a.bufferedMovesStrip(testCtx(1200, 820), over, 0, 0)
 	if full.Size.X < few.Size.X {
 		t.Fatalf("overflowing strip (%d px) narrower than part-filled (%d px)", full.Size.X, few.Size.X)
 	}
@@ -111,12 +111,8 @@ func TestMoveGlyphAllMoves(t *testing.T) {
 		engine.RotateCW, engine.RotateCCW, engine.MoveHardDrop, engine.MoveHold,
 		engine.MoveType(99),
 	} {
-		if d := a.moveChip(testCtx(64, 64), m, 42, 1, colGold); d.Size.X == 0 {
-			t.Fatalf("move %v rendered a zero-size chip", m)
-		}
-		// Mid-pop chips draw shrunk but keep their slot footprint.
-		if d := a.moveChip(testCtx(64, 64), m, 42, 0.5, colGold); d.Size.X != 42 {
-			t.Fatalf("move %v mid-pop chip footprint = %d, want the 42px slot", m, d.Size.X)
+		if d := a.moveGlyph(m, 24, colFg)(looseCtx(64, 64)); d.Size.X == 0 || d.Size.Y == 0 {
+			t.Fatalf("move %v rendered a zero-size glyph", m)
 		}
 	}
 }
@@ -289,6 +285,37 @@ func TestGameScreenReactive(t *testing.T) {
 		gtx := testCtx(sz.X, sz.Y)
 		if d := a.layout(gtx); d.Size.X == 0 || d.Size.Y == 0 {
 			t.Fatalf("game screen at %v rendered zero-size", sz)
+		}
+	}
+}
+
+// TestBufferedMovesStripInflightKeepsHeight: the IN FLIGHT count coming and
+// going must not change the strip's height — the board is centered over it,
+// and a two-pixel change re-centers the whole playfield on every key press.
+// (An empty pixel label is taller than a real one, which is exactly what
+// used to happen.) Checked at 1× and 2× (a HiDPI window).
+func TestBufferedMovesStripInflightKeepsHeight(t *testing.T) {
+	a := newTestApp()
+	for _, scale := range []float32{1, 2} {
+		ctx := func() C {
+			var ops op.Ops
+			return layout.Context{
+				Ops:         &ops,
+				Metric:      unit.Metric{PxPerDp: scale, PxPerSp: scale},
+				Constraints: layout.Constraints{Max: image.Pt(1200, 820)},
+			}
+		}
+		few := [][]engine.MoveType{{engine.MoveLeft}, {engine.MoveDown}}
+		grouped := [][]engine.MoveType{{engine.MoveLeft, engine.MoveDown, engine.RotateCW}, {engine.MoveHardDrop}, {engine.MoveDown, engine.MoveDown}}
+		idle := a.bufferedMovesStrip(ctx(), nil, 0, 0).Size.Y
+		for _, c := range []struct {
+			name     string
+			moves    [][]engine.MoveType
+			inflight int
+		}{{"idle, 1 in flight", nil, 1}, {"idle, 12 in flight", nil, 12}, {"queued, none in flight", few, 0}, {"queued, 3 in flight", few, 3}, {"grouped, 4 in flight", grouped, 4}} {
+			if h := a.bufferedMovesStrip(ctx(), c.moves, c.inflight, 3).Size.Y; h != idle {
+				t.Fatalf("at %vx, %s: strip height %d px, idle %d px — the board over it would jump", scale, c.name, h, idle)
+			}
 		}
 	}
 }

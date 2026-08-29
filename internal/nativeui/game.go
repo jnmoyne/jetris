@@ -205,11 +205,18 @@ func (a *App) layoutGame(gtx C) D {
 	}
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
-	// message tap (recordStreamMsg runs on the engine's consumer goroutines).
+	// message tap (recordStreamMsg runs on the engine's consumer goroutines),
+	// and the display position into the pump's (it picks a lost move's
+	// flash cells by it). The publish mode goes straight to the engine.
 	showMsgs := a.showMsgs.Value
 	a.mu.Lock()
 	a.msgShow = showMsgs
+	a.dispMode = int(a.displayMode())
 	a.mu.Unlock()
+	if mode == engine.ModePlayer {
+		eng.SetPublishMode(publishModeOf(a.labAsync()))
+		eng.SetInflightLimit(labInflight)
+	}
 
 	content := func(gtx C) D {
 		return layout.Flex{}.Layout(gtx,
@@ -510,6 +517,16 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			cb.IconColor = colAccent
 			return cb.Layout(gtx)
 		}),
+	)
+	if mode == engine.ModePlayer {
+		// The lab toggles (lab.go): how the moves are published, what the
+		// board paints while they round-trip. A player's, while playing.
+		children = append(children,
+			layout.Rigid(spacer(12)),
+			layout.Rigid(a.labToggles),
+		)
+	}
+	children = append(children,
 		layout.Rigid(spacer(18)),
 		layout.Rigid(func(gtx C) D {
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
@@ -770,7 +787,15 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		return content(gtx)
 	}
 
+	// Which board a player sees is the display position (lab.go): the
+	// consumer's echo — positions 1 and 2 — or the engine's acked replica,
+	// a delivery ahead of it (position 3). Everyone else sees the replica,
+	// as always.
+	display := a.displayMode()
 	snap := eng.Snapshot()
+	if mode == engine.ModePlayer && display != displayAck {
+		snap = eng.EchoSnapshot()
+	}
 	localIdx := eng.PlayerIdx()
 	if mode == engine.ModeSpectator {
 		localIdx = -1
@@ -781,12 +806,27 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// color and judders the board (competitive modes' arcade impact).
 		a.detectGarbage(gtx, snap)
 	}
+	// The pre-rendered move (lab.go): position 2 outlines where the piece is
+	// headed over the consumer's board; position 3 draws the piece there at
+	// once — colored, its ghost under it — and outlines where the acks have
+	// it so far (the outline moves as the commits ack; a lost step snaps the
+	// piece back onto it, and it flashes).
+	var intent, acked map[[2]int]bool
+	if mode == engine.ModePlayer && started && !view.gameOver {
+		switch display {
+		case displayOutline:
+			intent = intentCells(eng, snap, localIdx)
+		case displayAck:
+			snap, intent, acked = optimisticBoard(eng, snap, localIdx)
+		}
+	}
 	// Hard-drop ghost: where the falling piece would land if dropped right
-	// now, derived from the very snapshot being drawn — never published.
-	// Agents already plan with HardDropDestination, so the ghost only levels
-	// the field for humans. Whether it shows is the game's own rule, chosen
-	// at creation (GameMeta.NoGhost, on by default) — one setting for every
-	// player, like the piece preview.
+	// now, derived from the very snapshot being drawn (after position 3 moved
+	// the piece, so the ghost follows it) — never published. Agents already
+	// plan with HardDropDestination, so the ghost only levels the field for
+	// humans. Whether it shows is the game's own rule, chosen at creation
+	// (GameMeta.NoGhost, on by default) — one setting for every player, like
+	// the piece preview.
 	var ghost map[[2]int]game.PieceType
 	if eng.ShowGhost() && mode == engine.ModePlayer && started && !view.gameOver {
 		ghost = ghostCells(snap, localIdx, gmode)
@@ -837,7 +877,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// boardOnly is the playfield itself, with its effects and the
 		// pre-game countdown over it.
 		boardOnly := func(gtx C) D {
-			fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost}
+			fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost, intent: intent, acked: acked}
 			if view.boardFocused {
 				fx.frame = colFocus // the well's frame lights up: the keys drive the piece
 			}
@@ -892,8 +932,9 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		strip := func(gtx C) D {
 			// Inputs queued behind the in-flight batch publish (very visible
 			// on a high-RTT server); the strip drains as each buffered
-			// move's own publish starts.
-			return a.bufferedMovesStrip(gtx, eng.BufferedMoves())
+			// move's own publish starts — and, with the batches pipelined,
+			// counts the ones in flight instead.
+			return a.bufferedMovesStrip(gtx, eng.BufferedBatches(), eng.InflightSteps(), eng.BatchesTaken())
 		}
 		return layout.Center.Layout(gtx, func(gtx C) D {
 			// The playfield's columns: the HOLD box off its left, the NEXT

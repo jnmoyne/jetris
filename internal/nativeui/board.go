@@ -25,8 +25,18 @@ type boardFX struct {
 	flash map[[2]int]time.Time      // CAS-rejected cells → rainbow border
 	rows  map[int]rowStrobe         // absolute row index → strobe state
 	ghost map[[2]int]game.PieceType // hard-drop ghost cells (drawn on empty squares only)
-	tint  color.NRGBA               // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
-	frame color.NRGBA               // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
+	// intent is the pre-rendered move: the cells of the piece where the
+	// player is steering it (Engine.IntentPiece — the in-flight batches and
+	// the queued moves played out), drawn as a white outline over whatever
+	// is there, gone once the drawn board has the piece there itself
+	// (intentCells). Nil in the consumer-only display mode.
+	intent map[[2]int]bool
+	// acked is where the ACKS have the player's piece while the board draws
+	// it elsewhere (Optimistic async, optimisticBoard): outlined in grey, so
+	// the white outline on the piece being steered keeps the focus.
+	acked map[[2]int]bool
+	tint  color.NRGBA // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
+	frame color.NRGBA // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
 }
 
 // Board tint strength: how far an empty square's fill and its grid line are
@@ -207,6 +217,18 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 				}
 			}
 			outline, outlineW := ap.Outline, ap.OutlineW
+			if fx != nil && fx.acked[[2]int{r, c}] {
+				// Where the acks have the piece: a grey frame, trailing the
+				// piece being steered.
+				outline, outlineW = colAckedOutline, 2
+			}
+			if fx != nil && fx.intent[[2]int{r, c}] {
+				// The pre-rendered move: a white frame on the piece where the
+				// player is steering it (over the grey where the two meet). A
+				// CAS flash on the same cell (below) wins — the move it
+				// announced was just lost.
+				outline, outlineW = colIntent, 2
+			}
 			if fx != nil && fx.flash != nil {
 				if start, ok := fx.flash[[2]int{r, c}]; ok {
 					if el := now.Sub(start); el < flashDur {

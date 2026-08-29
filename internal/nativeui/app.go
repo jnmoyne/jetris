@@ -67,22 +67,24 @@ const (
 // The accent is the NATS brand blue, so the whole chrome carries the branding;
 // colNATSGreen is the logo's green, used for positive highlights.
 var (
-	colBg        = color.NRGBA{R: 0x0d, G: 0x0d, B: 0x16, A: 0xff}
-	colPanel     = color.NRGBA{R: 0x16, G: 0x16, B: 0x24, A: 0xff}
-	colBorder    = color.NRGBA{R: 0x2c, G: 0x2c, B: 0x44, A: 0xff} // panel frames
-	colShadow    = color.NRGBA{A: 0x8c}                            // hard offset shadow under buttons/dialogs
-	colFg        = color.NRGBA{R: 0xe6, G: 0xe6, B: 0xe6, A: 0xff}
-	colMuted     = color.NRGBA{R: 0x8a, G: 0x8a, B: 0x9e, A: 0xff}
-	colAccent    = color.NRGBA{R: 0x27, G: 0xaa, B: 0xe1, A: 0xff} // NATS brand blue
-	colNATSGreen = color.NRGBA{R: 0x8d, G: 0xc6, B: 0x3f, A: 0xff} // NATS brand green
-	colErr       = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
-	colGold      = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
-	colGo        = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
-	colWarn      = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
-	colOrange    = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
-	colLobby     = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
-	colStrobe    = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // line-clear row strobe (pure white)
-	colFocus     = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // keyboard-focus outline while playing: the board's frame or the chat's ring
+	colBg           = color.NRGBA{R: 0x0d, G: 0x0d, B: 0x16, A: 0xff}
+	colPanel        = color.NRGBA{R: 0x16, G: 0x16, B: 0x24, A: 0xff}
+	colBorder       = color.NRGBA{R: 0x2c, G: 0x2c, B: 0x44, A: 0xff} // panel frames
+	colShadow       = color.NRGBA{A: 0x8c}                            // hard offset shadow under buttons/dialogs
+	colFg           = color.NRGBA{R: 0xe6, G: 0xe6, B: 0xe6, A: 0xff}
+	colMuted        = color.NRGBA{R: 0x8a, G: 0x8a, B: 0x9e, A: 0xff}
+	colAccent       = color.NRGBA{R: 0x27, G: 0xaa, B: 0xe1, A: 0xff} // NATS brand blue
+	colNATSGreen    = color.NRGBA{R: 0x8d, G: 0xc6, B: 0x3f, A: 0xff} // NATS brand green
+	colErr          = color.NRGBA{R: 0xff, G: 0x55, B: 0x55, A: 0xff}
+	colGold         = color.NRGBA{R: 0xff, G: 0xcc, B: 0x00, A: 0xff} // countdown numbers (matches web)
+	colGo           = color.NRGBA{R: 0x00, G: 0xff, B: 0x88, A: 0xff} // countdown "GO!" (matches web)
+	colWarn         = color.NRGBA{R: 0xff, G: 0xdd, B: 0x00, A: 0xff} // RTT warning start (yellow, at 75 ms)
+	colOrange       = color.NRGBA{R: 0xff, G: 0x8c, B: 0x00, A: 0xff} // RTT warning end (orange, at 150 ms)
+	colLobby        = color.NRGBA{R: 0x7f, G: 0xb2, B: 0xff, A: 0xff} // lobby messages shown inside a game's chat (@lobby)
+	colStrobe       = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // line-clear row strobe (pure white)
+	colFocus        = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // keyboard-focus outline while playing: the board's frame or the chat's ring
+	colIntent       = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff} // the white outline on the piece being steered (the pre-rendered move)
+	colAckedOutline = color.NRGBA{R: 0x8a, G: 0x8a, B: 0x9e, A: 0xff} // the grey outline where the acks have the piece (Optimistic async)
 )
 
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
@@ -370,6 +372,11 @@ type App struct {
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable
 	showMsgs widget.Bool // "Show NATS messages" checkbox
+	// The LAB switch (lab.go): labEnum is labSync (Pessimistic sync ☹, the
+	// classic game) or labAsync (Optimistic async ☺, the default); dispMode
+	// mirrors its display position under mu each frame for the pump.
+	labEnum  widget.Enum
+	dispMode int
 	// ghostCb is the create wizard's "Show ghost piece" checkbox, ON by
 	// default: whether the game being created renders the hard-drop landing
 	// preview. A per-GAME rule stored in the meta (GameMeta.NoGhost,
@@ -484,7 +491,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		uninviteBtns:    map[string]*widget.Clickable{},
 		msgGroupOf:      map[string]int{},
 	}
-	a.ghostCb.Value = true // hard-drop ghost preview on by default
+	a.ghostCb.Value = true     // hard-drop ghost preview on by default
+	a.labEnum.Value = labAsync // Optimistic async, the default
+	a.dispMode = int(displayAck)
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
 	a.chatEd.SingleLine = true

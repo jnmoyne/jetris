@@ -79,8 +79,17 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 						m[[2]int{rc[0], rc[1]}] = now
 					}
 				} else {
-					// Player: our own dropped-write flash on our own board.
-					for _, rc := range u.FlashCells {
+					// Player: our own dropped-write flash on our own board —
+					// the piece where it stood (positions 1 and 3: in 3 that
+					// is the white outline the colored piece snaps back onto),
+					// or, when the board outlines where the piece is headed
+					// (position 2) and the engine knows where the lost step
+					// was going, that outline.
+					cells := u.FlashCells
+					if a.dispMode == int(displayOutline) && len(u.FlashTargetCells) > 0 {
+						cells = u.FlashTargetCells
+					}
+					for _, rc := range cells {
 						a.flash[[2]int{rc[0], rc[1]}] = now
 					}
 				}

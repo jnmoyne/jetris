@@ -298,12 +298,16 @@ var (
 // too short for both: the minimum window's competitive column, mouse play,
 // where the pad gives the minimum-cell playfield its rows first (small
 // buttons still click; a playfield under the chat panel does not play).
-// padSideGap (dp) is the gap between a flanking pad cluster and the
-// playfield.
+// padSideGap (dp) is the gap between a flanking column — a side well over
+// its pad — and the playfield; wellPadGap (dp) the gap between a well and
+// the pad under it; wellGap (dp) the gap between a well and the playfield
+// when no pad flanks it.
 const (
 	padMinScale  = 0.55
 	padMinScaleY = 0.4
 	padSideGap   = 24
+	wellPadGap   = 12
+	wellGap      = 12
 )
 
 // padSizer is the pad's metrics under the frame's scale factor: 1 at the
@@ -350,98 +354,190 @@ type padPlan struct {
 	width  int  // the pad's row per the plan's model, px: flanked, the whole row with the strip; under, the pad
 }
 
-// flankGeom is the flanked row's horizontal geometry — the D-pad, the wells
-// column (0 wide without one), the playfield and the face buttons, each
-// padSideGap from the next — and the move-buffer strip hung under the
-// playfield, centered on it: wider than the playfield, it runs on under the
-// pads. Everything in px; the pads' hard shadow excluded.
-type flankGeom struct {
-	dpadW, faceW, gap, wellsW, boardW, stripW int
+// sideWells is what flanks a player's playfield, for fitBoardAndPad's plan:
+// whether the HOLD box (off the playfield's left) and the NEXT well (off its
+// right) show, and each one's height at a given board cell — measured by
+// laying the well out (a label's font metrics are not worth guessing at),
+// so the pad placed under a well never runs past the playfield.
+type sideWells struct {
+	hold, next   bool
+	holdH, nextH func(cell int) int
 }
 
-func (g flankGeom) boardX() int { return g.dpadW + g.gap + g.wellsW }
+func (w sideWells) count() int {
+	n := 0
+	if w.hold {
+		n++
+	}
+	if w.next {
+		n++
+	}
+	return n
+}
+
+// flankGeom is the flanked layout's geometry: the playfield's left column
+// (the HOLD box over the D-pad), the playfield, its right column (the NEXT
+// well over the face buttons) — each column as wide as its wider member,
+// its well and pad centered on each other, a pad centered on the
+// playfield's height but never over its well — with a gap on either side
+// of the playfield and the strip under it. Its parts come from
+// fitBoardAndPad's plan; game.go's flanked layout realizes the same model
+// from the widgets' measured sizes.
+type flankGeom struct {
+	dpadW, dpadH, faceW, faceH int // the pads
+	holdW, holdH, nextW, nextH int // the wells (zero when not shown)
+	boardW, boardH, stripW     int
+	gap, vgap                  int // beside the playfield; between a well and its pad
+}
+
+func (g flankGeom) leftW() int  { return max(g.dpadW, g.holdW) }
+func (g flankGeom) rightW() int { return max(g.faceW, g.nextW) }
+func (g flankGeom) boardX() int { return g.leftW() + g.gap }
 func (g flankGeom) stripX() int { return g.boardX() + g.boardW/2 - g.stripW/2 }
-func (g flankGeom) rowW() int   { return g.boardX() + g.boardW + g.gap + g.faceW }
+func (g flankGeom) rowW() int   { return g.boardX() + g.boardW + g.gap + g.rightW() }
 
 // width is the whole layout's, the strip's spill past the row on either
 // side included.
 func (g flankGeom) width() int { return max(g.rowW(), g.stripX()+g.stripW) - min(0, g.stripX()) }
 
+// padTop is a pad's top under its well (wellH zero without one): centered
+// on the playfield, pushed down under the well when the two would overlap.
+func padTop(boardH, wellH, vgap, padH int) int {
+	y := max(0, (boardH-padH)/2)
+	if wellH > 0 {
+		y = max(y, wellH+vgap)
+	}
+	return y
+}
+
+// height is the columns' — the playfield's, or a pad's bottom past it.
+func (g flankGeom) height() int {
+	return max(g.boardH,
+		padTop(g.boardH, g.holdH, g.vgap, g.dpadH)+g.dpadH,
+		padTop(g.boardH, g.nextH, g.vgap, g.faceH)+g.faceH)
+}
+
+// besideScale is the largest pad scale, floored at padMinScale, at which
+// the layout (its pads at their natural size in g) fits: the row within
+// availX — each column as wide as its wider member, so a well wider than
+// its pad leaves the pad's scale alone — and each pad within the
+// playfield's height under its well.
+func (g flankGeom) besideScale(availX int) float32 {
+	room := float32(availX - g.boardW - 2*g.gap)
+	dpadW, faceW, holdW, nextW := float32(g.dpadW), float32(g.faceW), float32(g.holdW), float32(g.nextW)
+	rowW := func(s float32) float32 { return max(dpadW*s, holdW) + max(faceW*s, nextW) }
+	s := float32(1)
+	if rowW(1) > room {
+		// rowW is piecewise linear and nondecreasing in the scale: the
+		// largest scale that fits is where one of its pieces meets room.
+		s = 0
+		for _, c := range []float32{room / (dpadW + faceW), (room - holdW) / faceW, (room - nextW) / dpadW} {
+			if c > s && rowW(c) <= room+0.5 {
+				s = c
+			}
+		}
+	}
+	for _, col := range [][2]int{{g.holdH, g.dpadH}, {g.nextH, g.faceH}} {
+		wellH, padH := col[0], col[1]
+		roomH := g.boardH - wellH
+		if wellH > 0 {
+			roomH -= g.vgap
+		}
+		s = min(s, float32(roomH)/float32(padH))
+	}
+	return min(1, max(padMinScale, s))
+}
+
 // fitBoardAndPad picks the board cell size and the pad's placement for a
 // board column of the current constraints: the playfield of cols×rows
-// visible cells (cols counting the side wells' previewCols when showSide),
-// under it the move-buffer strip (player), and while the game is playable
-// (pad) the control pad. The pad goes wherever the playfield ends up bigger:
-// beside it, its whole height left to the board — the way a handheld keeps
-// its controls off the screen's sides, and the only fit for a wide, short
-// column — or under it in a tall, narrow (portrait) column. Either way it
-// scales down, floored at padMinScale, rather than clip: beside the board
-// the two share the width, the board's cell giving way to leave the pad its
-// room (and a column too narrow for even that keeps the pad under the
-// board); under it, the pad shrinks to the column's width and to whatever
-// height is left over a minimum-cell playfield.
-func (a *App) fitBoardAndPad(gtx C, cols, rows int, showSide, player, pad, hold bool) padPlan {
+// visible cells, the side wells beside it, under it the move-buffer strip
+// (player), and while the game is playable (pad) the control pad. The pad
+// goes wherever the playfield ends up bigger: beside it, its whole height
+// left to the board — the D-pad under the HOLD box off the playfield's
+// left, the face buttons under the NEXT well off its right, the way a
+// handheld keeps its controls off the screen's sides, and the only fit for
+// a wide, short column — or under it in a tall, narrow (portrait) column.
+// Either way it scales down, floored at padMinScale, rather than clip:
+// beside the board the pads take the width left by the playfield and the
+// height left under their wells, the board's cell giving way to leave the
+// pads their room (and a column too narrow for even that keeps the pad
+// under the board); under it, the pad shrinks to the column's width and to
+// whatever height is left over a minimum-cell playfield.
+func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad, hold bool) padPlan {
 	m := padMouse
 	if a.touchUI {
 		m = padTouch
 	}
 	plan := padPlan{padSizer: padSizer{m: m, scale: 1}}
-	reservedX := gtx.Dp(24)
-	extra := 0
-	if showSide {
-		reservedX += gtx.Dp(18) // the side column's frame and the gap
-		extra = previewCols
-	}
 	reservedY := 0
 	if player {
 		reservedY = gtx.Dp(90) // the move-buffer strip and its inset
 	}
-	fit := func(rx, ry int) int { return fitCellPx(gtx, cols, rows, 1, rx, ry, 14, 56) }
+	// The wells beside the playfield, at its cell size: previewCols board
+	// columns each, plus a slice for the frame and the gap after it.
+	wellCols, wellsX := wells.count()*previewCols, wells.count()*gtx.Dp(18)
+	fit := func(cols, rx, ry int) int { return fitCellPx(gtx, cols, rows, 1, gtx.Dp(24)+rx, ry, 14, 56) }
 	if !pad {
-		plan.cell = fit(reservedX, reservedY)
+		plan.cell = fit(cols+wellCols, wellsX, reservedY)
 		return plan
 	}
-	natural := padSizer{m: m, scale: 1}.padSize(gtx, hold)
+	natural := padSizer{m: m, scale: 1}
 	scaleFloored := func(room, size int, floor float32) float32 {
 		return min(1, max(floor, float32(room)/float32(size)))
 	}
-	scaleFor := func(room, size int) float32 { return scaleFloored(room, size, padMinScale) }
 	shadow := gtx.Dp(3)
-	availX := gtx.Constraints.Max.X - gtx.Dp(24)
+	availX, availY := gtx.Constraints.Max.X-gtx.Dp(24), gtx.Constraints.Max.Y-reservedY
 	// Under the playfield: the pad scales to the column's width and to the
 	// height left over a minimum-cell board, and takes its height (plus the
 	// inset over it) from the board's.
-	roomY := gtx.Constraints.Max.Y - reservedY - gtx.Dp(14)*(8*rows+2)/8 - shadow - gtx.Dp(10)
-	under := padSizer{m: m, scale: min(scaleFor(availX-shadow, natural.X), scaleFloored(roomY, natural.Y, padMinScaleY))}
+	naturalSz := natural.padSize(gtx, hold)
+	roomY := availY - gtx.Dp(14)*(8*rows+2)/8 - shadow - gtx.Dp(10)
+	under := padSizer{m: m, scale: min(scaleFloored(availX-shadow, naturalSz.X, padMinScale), scaleFloored(roomY, naturalSz.Y, padMinScaleY))}
 	underSz := under.padSize(gtx, hold)
-	cellUnder := fit(reservedX, reservedY+underSz.Y+shadow+gtx.Dp(10))
-	// Beside it: the board takes the column's height, the pad gets whatever
-	// width is left of the playfield and its wells (drawBoard's and
-	// holdWell/nextWell's frames) — and if the pad has to sit at its floor,
-	// the board's cell gives way instead.
+	cellUnder := fit(cols+wellCols, wellsX, reservedY+underSz.Y+shadow+gtx.Dp(10))
+	// Beside it: the board takes the column's height; the pads get the
+	// width left of the playfield and the height left under their wells
+	// (drawBoard's and holdWell/nextWell's frames counted).
 	geom := func(cell int, p padSizer) flankGeom {
-		g := flankGeom{dpadW: p.dpadSize(gtx), faceW: p.faceSize(gtx, hold).X, gap: gtx.Dp(padSideGap),
-			boardW: (cols-extra)*cell + 2*max(cell/8, 2), stripW: stripWidth(gtx)}
-		if showSide {
-			g.wellsW = previewCols*cell + 2*(max(cell/8, 2)+max(cell/3, 6)) + gtx.Dp(12)
+		fw := max(cell/8, 2)
+		face := p.faceSize(gtx, hold)
+		g := flankGeom{dpadW: p.dpadSize(gtx), dpadH: p.dpadSize(gtx), faceW: face.X, faceH: face.Y,
+			boardW: cols*cell + 2*fw, boardH: rows*cell + 2*fw, stripW: stripWidth(gtx),
+			gap: gtx.Dp(padSideGap), vgap: gtx.Dp(wellPadGap)}
+		wellW := previewCols*cell + 2*(fw+max(cell/3, 6))
+		if wells.hold {
+			g.holdW, g.holdH = wellW, wells.holdH(cell)
+		}
+		if wells.next {
+			g.nextW, g.nextH = wellW, wells.nextH(cell)
 		}
 		return g
 	}
-	gaps := 2*gtx.Dp(padSideGap) + shadow
-	g := geom(fit(reservedX, reservedY), padSizer{m: m, scale: 1})
-	beside := padSizer{m: m, scale: scaleFor(availX-g.wellsW-g.boardW-gaps-gtx.Dp(2), natural.X)}
-	cellBeside := fit(reservedX+gaps+beside.padSize(gtx, hold).X, reservedY)
-	g = geom(cellBeside, beside)
+	// The pads' scale and the board's cell depend on each other — bigger
+	// pads leave the board less width, a smaller board leaves the pads less
+	// height under the wells — so plan from the board alone and settle over
+	// a few rounds; the exact geometry has the last word.
+	cell := fit(cols+wellCols, wellsX, reservedY)
+	beside := natural
+	var g flankGeom
+	for range 3 {
+		beside.scale = geom(cell, natural).besideScale(availX - shadow)
+		g = geom(cell, beside)
+		cell = fit(cols, g.leftW()+g.rightW()+2*g.gap+shadow, reservedY)
+	}
+	g = geom(cell, beside)
 	if over := g.width() + shadow - availX; over > 0 && beside.scale > padMinScale {
 		// The pads' px rounding, or a cell at its floor: shave the scale by
 		// the overflow (and a little), once.
-		padW := beside.padSize(gtx, hold).X
+		padW := g.dpadW + g.faceW
 		beside.scale = max(padMinScale, beside.scale*float32(padW-over-gtx.Dp(2))/float32(padW))
-		cellBeside = fit(reservedX+gaps+beside.padSize(gtx, hold).X, reservedY)
-		g = geom(cellBeside, beside)
+		g = geom(cell, beside)
 	}
-	if fits := g.width()+shadow <= availX; fits && cellBeside >= cellUnder {
-		plan.padSizer, plan.beside, plan.cell, plan.width = beside, true, cellBeside, g.width()+shadow
+	// The row within the column's width, the pads within the playfield's
+	// height (a playfield at its cell floor may run past the column on its
+	// own; that is no reason to move the pad).
+	if fits := g.width()+shadow <= availX && g.height() <= max(availY, g.boardH); fits && cell >= cellUnder {
+		plan.padSizer, plan.beside, plan.cell, plan.width = beside, true, cell, g.width()+shadow
 	} else {
 		plan.padSizer, plan.cell, plan.width = under, cellUnder, underSz.X+shadow
 	}

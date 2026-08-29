@@ -409,7 +409,7 @@ A team **loses when ALL its members have topped out**. At that point every membe
 ### Visual Indicators
 
 - HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
-- When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles — and, in a game with the hold rule, the **HOLD box** above it, showing the set-aside piece (dimmed once the hold is spent for the piece in play)
+- When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles — and, in a game with the hold rule, the **HOLD box** off the playfield's other side (HOLD left of the playfield, NEXT right of it — and the on-screen pad's D-pad and buttons under them), showing the set-aside piece (dimmed once the hold is spent for the piece in play)
 - Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
 - The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
 - Spectators see both team boards side by side

@@ -514,11 +514,106 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		layout.Rigid(func(gtx C) D {
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
 		}),
-		layout.Rigid(spacer(20)),
-		layout.Rigid(a.natsTag(22, 10)),
 	)
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	// The column's fixed part first; under it, for a player, the controls
+	// legend — as much of it as the column has room for (controlsLegend) —
+	// and the NATS tag at the column's foot, on the move-buffer strip's
+	// line just over the chat.
+	// The column fills its slot (an exact height): lay its parts out at
+	// their own heights (the button and the checkbox still span the
+	// width) and return the slot's size.
+	slot := gtx.Constraints.Max
+	gtx.Constraints.Min.Y = 0
+	macro := op.Record(gtx.Ops)
+	topD := layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	topCall := macro.Stop()
+	macro = op.Record(gtx.Ops)
+	tagD := a.natsTag(22, 10)(gtx)
+	tagCall := macro.Stop()
+	tagY := max(topD.Size.Y+gtx.Dp(20), slot.Y-tagD.Size.Y)
+	bottom := topD.Size.Y
+	if mode == engine.ModePlayer {
+		bottom = a.controlsLegend(gtx, topD.Size.Y+gtx.Dp(18), tagY-gtx.Dp(16), eng.HoldEnabled())
+	}
+	topCall.Add(gtx.Ops)
+	func() {
+		defer op.Offset(image.Pt(0, tagY)).Push(gtx.Ops).Pop()
+		tagCall.Add(gtx.Ops)
+	}()
+	return D{Size: image.Pt(slot.X, max(bottom, tagY+tagD.Size.Y))}
+}
+
+// controlsLegend draws the HUD's controls legend from y down: the keys and
+// the touch gestures, this screen's own scheme first, each section a header
+// over rows of a key (or gesture) beside the move it makes. A section is
+// drawn only if it ends above limit, so a short column loses the legend
+// rather than running it over the NATS tag and the chat under it. Returns
+// the y under the last section drawn.
+func (a *App) controlsLegend(gtx C, y, limit int, hold bool) int {
+	gtx.Constraints.Min = image.Point{} // the legend's parts at their own sizes, not the column's
+	keys := [][2]string{{"← →", "move"}, {"↓", "soft drop"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
+	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
+	if hold {
+		keys = append(keys, [2]string{"C", "hold"})
+		touch = append(touch, [2]string{"swipe ↑", "hold"})
+	}
+	keys = append(keys, [2]string{"TAB", "chat / board"})
+	sections := []struct {
+		header string
+		rows   [][2]string
+	}{{"KEYS", keys}, {"TOUCH", touch}}
+	if a.touchUI {
+		sections[0], sections[1] = sections[1], sections[0]
+	}
+	for _, s := range sections {
+		macro := op.Record(gtx.Ops)
+		d := a.controlsHint(gtx, s.header, s.rows)
+		call := macro.Stop()
+		if y+d.Size.Y > limit {
+			continue
+		}
+		func() {
+			defer op.Offset(image.Pt(0, y)).Push(gtx.Ops).Pop()
+			call.Add(gtx.Ops)
+		}()
+		y += d.Size.Y + gtx.Dp(12)
+	}
+	return y
+}
+
+// controlsHint is one section of the controls legend: the header, then a
+// row per mapping — the key or gesture in the foreground color, the move in
+// the muted one — in the small pixel face, the moves lined up in a column
+// past the widest key.
+func (a *App) controlsHint(gtx C, header string, rows [][2]string) D {
+	const size = unit.Sp(8)
+	keyW := 0
+	for _, r := range rows {
+		macro := op.Record(gtx.Ops)
+		keyW = max(keyW, a.pixel(size, r[0], colFg).Layout(gtx).Size.X)
+		macro.Stop()
+	}
+	keyW += gtx.Sp(size) // a glyph's worth of air before the move
+	kids := []layout.FlexChild{
+		layout.Rigid(a.pixel(unit.Sp(9), header, colAccent).Layout),
+		layout.Rigid(spacer(2)),
+	}
+	for _, r := range rows {
+		key, move := r[0], r[1]
+		kids = append(kids, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Min.X = keyW
+						return a.pixel(size, key, colFg).Layout(gtx)
+					}),
+					layout.Rigid(a.pixel(size, move, colMuted).Layout),
+				)
+			})
+		}))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 }
 
 func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.GameMode) D {
@@ -700,29 +795,43 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// per-seat queue, so spectators (no seat) never have one. Read the live
 	// queue (not just NextCount) so the space is only reserved once the
 	// engine's sequence is up and the well will actually render. In a game
-	// with the hold rule the HOLD box sits above it in the same column
+	// with the hold rule the HOLD box flanks the playfield's other side
 	// (empty until the first hold; the slot is per seat too).
 	nextPieces := eng.NextPieces()
 	showNext := mode == engine.ModePlayer && len(nextPieces) > 0
 	showHold := mode == engine.ModePlayer && eng.HoldEnabled()
-	showSide := showNext || showHold
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
-		// room for the player's move-buffer strip under it and (while the
-		// game is still playable) the control pad — beside the playfield or
-		// under it, whichever leaves the bigger board (fitBoardAndPad).
-		extraCols := 0
-		if showSide {
-			// The wells' tiles use the board cell size, so the side column
-			// is previewCols board cells wide: count it as extra board
-			// columns (plus a fixed slice for its frame and the gap), so
-			// the pair always fits the window.
-			extraCols = previewCols
-		}
+		// room for the wells beside it, the player's move-buffer strip under
+		// it and (while the game is still playable) the control pad — beside
+		// the playfield or under it, whichever leaves the bigger board
+		// (fitBoardAndPad).
 		player := mode == engine.ModePlayer
 		showPad := player && !view.gameOver
 		hold := eng.HoldEnabled()
-		plan := a.fitBoardAndPad(gtx, snap.Width+extraCols, snap.Height-snap.VisibleStart, showSide, player, showPad, hold)
+		wells := sideWells{hold: showHold, next: showNext}
+		// The wells' tiles use the board cell size; the plan measures a well
+		// at a candidate cell by laying it out — at its content's size, not
+		// the slot's — into a macro that is never played (the HOLD box
+		// without its Clickable: laid out twice a frame, that would eat its
+		// taps).
+		loose := gtx
+		loose.Constraints.Min = image.Point{}
+		measure := func(w func(gtx C, cell int) D) func(int) int {
+			return func(cell int) int {
+				m := op.Record(loose.Ops)
+				d := w(loose, cell)
+				m.Stop()
+				return d.Size.Y
+			}
+		}
+		if showHold {
+			wells.holdH = measure(func(gtx C, cell int) D { return a.holdWellBox(gtx, game.PieceI, false, false, cell) })
+		}
+		if showNext {
+			wells.nextH = measure(func(gtx C, cell int) D { return a.nextWell(gtx, nextPieces, cell) })
+		}
+		plan := a.fitBoardAndPad(gtx, snap.Width, snap.Height-snap.VisibleStart, wells, player, showPad, hold)
 		cell := plan.cell
 		padEnabled := view.status == string(config.GameStatusInProgress)
 		// boardOnly is the playfield itself, with its effects and the
@@ -772,49 +881,14 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
 			)
 		}
-		// wellsCol is the side wells' column: the HOLD box and the NEXT well
-		// in their own sub-divisions hugging the playfield's top-left,
-		// classic arcade style — the hold slot first, the queue under it.
-		// It keeps its size in wellsD for the flanked layout's geometry.
-		var wellsD D
-		wellsCol := func(gtx C) D {
-			wellsD = layout.Flex{Axis: layout.Vertical, Alignment: layout.Start}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					if !showHold {
-						return D{}
-					}
-					held, has := eng.HeldPiece()
-					return a.holdWell(gtx, held, has, eng.HoldUsed(), cell)
-				}),
-				layout.Rigid(func(gtx C) D {
-					if !showHold || !showNext {
-						return D{}
-					}
-					return spacer(10)(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					if !showNext {
-						return D{}
-					}
-					return a.nextWell(gtx, nextPieces, cell)
-				}),
-			)
-			return wellsD
+		// The side wells, in their own sub-divisions hanging from the
+		// playfield's top edge: the HOLD box off its left, the NEXT well off
+		// its right, classic arcade style.
+		holdBox := func(gtx C) D {
+			held, has := eng.HeldPiece()
+			return a.holdWell(gtx, held, has, eng.HoldUsed(), cell)
 		}
-		// withWells puts the wells' column beside w (the playfield, with or
-		// without its strip), or leaves w alone without one.
-		withWells := func(w layout.Widget) layout.Widget {
-			if !showSide {
-				return w
-			}
-			return func(gtx C) D {
-				return layout.Flex{Alignment: layout.Start}.Layout(gtx,
-					layout.Rigid(wellsCol),
-					layout.Rigid(hSpacer(12)),
-					layout.Rigid(w),
-				)
-			}
-		}
+		nextBox := func(gtx C) D { return a.nextWell(gtx, nextPieces, cell) }
 		strip := func(gtx C) D {
 			// Inputs queued behind the in-flight batch publish (very visible
 			// on a high-RTT server); the strip drains as each buffered
@@ -822,71 +896,85 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			return a.bufferedMovesStrip(gtx, eng.BufferedMoves())
 		}
 		return layout.Center.Layout(gtx, func(gtx C) D {
-			if !player {
-				return withWells(boardOnly)(gtx)
-			}
-			if !showPad || !plan.beside {
-				// The playfield with its strip under it; in a tall, narrow
-				// column the pad follows in one row, centered on the block.
-				block := withWells(func(gtx C) D {
-					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(boardOnly),
-						layout.Rigid(spacer(10)),
-						layout.Rigid(strip),
-					)
-				})
-				if !showPad {
-					return block(gtx)
+			// The playfield's columns: the HOLD box off its left, the NEXT
+			// well off its right, both hanging from its top edge — and, with
+			// the pad flanking it like a handheld's controls, the D-pad
+			// under the HOLD box and the face buttons under the NEXT well:
+			// each column as wide as its wider member, well and pad centered
+			// on each other, the pad centered on the playfield's height but
+			// never over its well. The strip hangs under the playfield,
+			// centered on it: wider than the playfield, it runs on under the
+			// columns, and under whatever in them reaches past the
+			// playfield's bottom. A pad that does not flank the playfield (a
+			// tall, narrow column) follows under the strip, centered on the
+			// playfield. flankGeom is the flanked layout's model; here every
+			// part is recorded first, the positions following from the
+			// sizes (a part not shown is a zero size and a no-op call).
+			rec := func(show bool, w layout.Widget) (D, op.CallOp) {
+				if !show {
+					return D{}, op.CallOp{}
 				}
-				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(block),
-					layout.Rigid(spacer(10)),
-					layout.Rigid(func(gtx C) D { return a.controlPad(gtx, plan.padSizer, padEnabled, hold) }),
-				)
+				m := op.Record(gtx.Ops)
+				d := w(gtx)
+				return d, m.Stop()
 			}
-			// The pad flanks the playfield like a handheld's controls — the
-			// D-pad off its left, the face buttons off its right, both
-			// centered on it — and the strip hangs under the playfield,
-			// centered on it too: wider than the playfield, it runs on under
-			// the pads (flankGeom is this layout's model).
-			var dpadD, boardD D
-			rowMacro := op.Record(gtx.Ops)
-			rowD := layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					dpadD = a.dpad(gtx, plan.padSizer, padEnabled)
-					return dpadD
-				}),
-				layout.Rigid(hSpacer(padSideGap)),
-				layout.Rigid(withWells(func(gtx C) D {
-					boardD = boardOnly(gtx)
-					return boardD
-				})),
-				layout.Rigid(hSpacer(padSideGap)),
-				layout.Rigid(func(gtx C) D { return a.faceButtons(gtx, plan.padSizer, padEnabled, hold) }),
-			)
-			row := rowMacro.Stop()
-			stripMacro := op.Record(gtx.Ops)
-			stripD := strip(gtx)
-			stripCall := stripMacro.Stop()
-			// The row's Flex gives no positions back: the playfield's follow
-			// from the sizes ahead of it — with the wells, their column and
-			// the gap after it.
-			wellsW := 0
-			if showSide {
-				wellsW = wellsD.Size.X + gtx.Dp(12)
+			flank := showPad && plan.beside
+			boardD, boardCall := rec(true, boardOnly)
+			holdD, holdCall := rec(showHold, holdBox)
+			nextD, nextCall := rec(showNext, nextBox)
+			dpadD, dpadCall := rec(flank, func(gtx C) D { return a.dpad(gtx, plan.padSizer, padEnabled) })
+			faceD, faceCall := rec(flank, func(gtx C) D { return a.faceButtons(gtx, plan.padSizer, padEnabled, hold) })
+			padD, padCall := rec(showPad && !flank, func(gtx C) D { return a.controlPad(gtx, plan.padSizer, padEnabled, hold) })
+			stripD, stripCall := rec(player, strip)
+			gap, vgap := gtx.Dp(wellGap), gtx.Dp(wellPadGap)
+			if flank {
+				gap = gtx.Dp(padSideGap)
 			}
-			boardX := dpadD.Size.X + gtx.Dp(padSideGap) + wellsW
-			boardY := (rowD.Size.Y - max(boardD.Size.Y, wellsD.Size.Y)) / 2
+			leftW, rightW := max(holdD.Size.X, dpadD.Size.X), max(nextD.Size.X, faceD.Size.X)
+			boardX := leftW
+			if leftW > 0 {
+				boardX += gap
+			}
+			rightX := boardX + boardD.Size.X
+			if rightW > 0 {
+				rightX += gap
+			}
+			dpadY := padTop(boardD.Size.Y, holdD.Size.Y, vgap, dpadD.Size.Y)
+			faceY := padTop(boardD.Size.Y, nextD.Size.Y, vgap, faceD.Size.Y)
+			leftBottom, rightBottom := holdD.Size.Y, nextD.Size.Y
+			if flank {
+				leftBottom, rightBottom = max(leftBottom, dpadY+dpadD.Size.Y), max(rightBottom, faceY+faceD.Size.Y)
+			}
 			stripX := boardX + boardD.Size.X/2 - stripD.Size.X/2
-			stripY := boardY + boardD.Size.Y + gtx.Dp(10)
-			shift := max(0, -stripX)
-			size := image.Pt(max(rowD.Size.X, stripX+stripD.Size.X)+shift, max(rowD.Size.Y, stripY+stripD.Size.Y))
-			func() {
-				defer op.Offset(image.Pt(shift, 0)).Push(gtx.Ops).Pop()
-				row.Add(gtx.Ops)
-			}()
-			defer op.Offset(image.Pt(stripX+shift, stripY)).Push(gtx.Ops).Pop()
-			stripCall.Add(gtx.Ops)
+			stripBase := boardD.Size.Y
+			if stripX < leftW {
+				stripBase = max(stripBase, leftBottom)
+			}
+			if stripX+stripD.Size.X > rightX {
+				stripBase = max(stripBase, rightBottom)
+			}
+			stripY := stripBase + gtx.Dp(10)
+			bottom := max(boardD.Size.Y, leftBottom, rightBottom)
+			if player {
+				bottom = max(bottom, stripY+stripD.Size.Y)
+			}
+			padX, padY := boardX+boardD.Size.X/2-padD.Size.X/2, bottom+gtx.Dp(10)
+			if padD.Size.Y > 0 {
+				bottom = padY + padD.Size.Y
+			}
+			shift := max(0, -stripX, -padX)
+			size := image.Pt(max(rightX+rightW, stripX+stripD.Size.X, padX+padD.Size.X)+shift, bottom)
+			place := func(x, y int, c op.CallOp) {
+				defer op.Offset(image.Pt(x+shift, y)).Push(gtx.Ops).Pop()
+				c.Add(gtx.Ops)
+			}
+			place((leftW-holdD.Size.X)/2, 0, holdCall)
+			place((leftW-dpadD.Size.X)/2, dpadY, dpadCall)
+			place(boardX, 0, boardCall)
+			place(rightX+(rightW-nextD.Size.X)/2, 0, nextCall)
+			place(rightX+(rightW-faceD.Size.X)/2, faceY, faceCall)
+			place(stripX, stripY, stripCall)
+			place(padX, padY, padCall)
 			return D{Size: size}
 		})
 	}
@@ -1276,14 +1364,23 @@ func (a *App) nextWell(gtx C, pieces []game.PieceType, boardCellPx int) D {
 }
 
 // holdWell is the player's hold slot beside the playfield, in the NEXT
-// well's idiom (the same frame, the same cell size) so the two read as one
-// sub-division: the HOLD label over one tile slot — two cells tall, the
-// tallest spawn tile — empty until the first hold, showing the set-aside
-// piece afterwards and dimming it while the piece in play already came out
-// of a hold (one hold per piece: the slot is locked until the next piece
-// spawns from the queue). Tapping the box holds, as on the phone versions
-// of the game (holdBoxBtn, dispatched by handlePadClicks).
+// well's idiom (the same frame, the same cell size) so the two read as a
+// pair across the playfield: the HOLD label over one tile slot — two cells
+// tall, the tallest spawn tile — empty until the first hold, showing the
+// set-aside piece afterwards and dimming it while the piece in play already
+// came out of a hold (one hold per piece: the slot is locked until the next
+// piece spawns from the queue). Tapping the box holds, as on the phone
+// versions of the game (holdBoxBtn, dispatched by handlePadClicks).
 func (a *App) holdWell(gtx C, held game.PieceType, has, used bool, boardCellPx int) D {
+	return a.holdBoxBtn.Layout(gtx, func(gtx C) D {
+		return a.holdWellBox(gtx, held, has, used, boardCellPx)
+	})
+}
+
+// holdWellBox is the HOLD box itself, without its Clickable — what the
+// layout plan measures (a Clickable laid out twice a frame would eat its
+// taps).
+func (a *App) holdWellBox(gtx C, held game.PieceType, has, used bool, boardCellPx int) D {
 	cell := boardCellPx
 	fw := max(cell/8, 2)
 	gap := max(cell/3, 6)
@@ -1315,16 +1412,14 @@ func (a *App) holdWell(gtx C, held game.PieceType, has, used bool, boardCellPx i
 		)
 	}
 
-	return a.holdBoxBtn.Layout(gtx, func(gtx C) D {
-		macro := op.Record(gtx.Ops)
-		dims := layout.UniformInset(gtx.Metric.PxToDp(fw+gap)).Layout(gtx, inner)
-		call := macro.Stop()
-		w, h := dims.Size.X, dims.Size.Y
-		fillRect(gtx.Ops, image.Rect(0, 0, w, h), colBorder)
-		fillRect(gtx.Ops, image.Rect(fw, fw, w-fw, h-fw), colPanel)
-		call.Add(gtx.Ops)
-		return dims
-	})
+	macro := op.Record(gtx.Ops)
+	dims := layout.UniformInset(gtx.Metric.PxToDp(fw+gap)).Layout(gtx, inner)
+	call := macro.Stop()
+	w, h := dims.Size.X, dims.Size.Y
+	fillRect(gtx.Ops, image.Rect(0, 0, w, h), colBorder)
+	fillRect(gtx.Ops, image.Rect(fw, fw, w-fw, h-fw), colPanel)
+	call.Add(gtx.Ops)
+	return dims
 }
 
 // Every piece's spawn orientation fits a 4-wide bounding box (the I is 4x1,

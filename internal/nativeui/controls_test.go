@@ -171,20 +171,27 @@ func TestControlPad(t *testing.T) {
 // a spectator, the game over — leaves the cell to the board alone; and the
 // touch pad's arms stay thumb-sized wherever an iPad's columns put them.
 func TestFitBoardAndPad(t *testing.T) {
-	const cols, rows = 10 + previewCols, 24
+	const cols, rows = 10, 24
 	a := newTestApp()
-	landscape := a.fitBoardAndPad(looseCtx(1000, 560), cols, rows, true, true, true, true)
+	// The HOLD box and a three-piece NEXT well flank the playfield.
+	wells := sideWells{hold: true, next: true,
+		holdH: func(cell int) int { return a.holdWellBox(looseCtx(400, 400), game.PieceI, false, false, cell).Size.Y },
+		nextH: func(cell int) int {
+			return a.nextWell(looseCtx(400, 400), []game.PieceType{game.PieceT, game.PieceT, game.PieceT}, cell).Size.Y
+		},
+	}
+	landscape := a.fitBoardAndPad(looseCtx(1000, 560), cols, rows, wells, true, true, true)
 	if !landscape.beside {
 		t.Fatalf("landscape column: pad under the board, want beside it (%+v)", landscape)
 	}
 	if landscape.scale != 1 {
 		t.Fatalf("landscape column: pad scaled to %v, want its natural size", landscape.scale)
 	}
-	noPad := a.fitBoardAndPad(looseCtx(1000, 560), cols, rows, true, true, false, true)
+	noPad := a.fitBoardAndPad(looseCtx(1000, 560), cols, rows, wells, true, false, true)
 	if noPad.cell < landscape.cell || noPad.beside {
 		t.Fatalf("no pad: cell %d beside=%v, want at least the flanked cell %d and no placement", noPad.cell, noPad.beside, landscape.cell)
 	}
-	portrait := a.fitBoardAndPad(looseCtx(560, 1000), cols, rows, true, true, true, true)
+	portrait := a.fitBoardAndPad(looseCtx(560, 1000), cols, rows, wells, true, true, true)
 	if portrait.beside {
 		t.Fatalf("portrait column: pad beside the board, want under it (%+v)", portrait)
 	}
@@ -196,7 +203,7 @@ func TestFitBoardAndPad(t *testing.T) {
 	// floor is fitCellPx's own business).
 	for _, sz := range []image.Point{{X: 200, Y: 900}, {X: 240, Y: 900}} {
 		gtx := looseCtx(sz.X, sz.Y)
-		plan := a.fitBoardAndPad(gtx, cols, rows, true, true, true, true)
+		plan := a.fitBoardAndPad(gtx, cols, rows, wells, true, true, true)
 		if plan.scale >= 1 || plan.scale < padMinScale {
 			t.Fatalf("%v column: pad scale %v, want shrunk within [%v, 1)", sz, plan.scale, padMinScale)
 		}
@@ -208,7 +215,7 @@ func TestFitBoardAndPad(t *testing.T) {
 	// opponent column beside it): the pad shrinks to leave a minimum-cell
 	// playfield its rows, and nothing sticks out.
 	minGtx := looseCtx(387, 506)
-	minPlan := a.fitBoardAndPad(minGtx, cols, 25, true, true, true, true)
+	minPlan := a.fitBoardAndPad(minGtx, cols, 25, wells, true, true, true)
 	if minPlan.width > 387 {
 		t.Fatalf("minimum window: %+v is %d px wide", minPlan, minPlan.width)
 	}
@@ -220,16 +227,18 @@ func TestFitBoardAndPad(t *testing.T) {
 	}
 	// Touch: an iPad's board column — landscape competitive games (25 rows,
 	// the opponent column beside them, the browser's toolbar over them: an
-	// 11" and a 10.2") and portrait — the arms stay at their natural size
-	// and the row fits.
+	// 11" and a 10.2") and portrait — the arms stay at (about) their
+	// natural size and the row fits: under a three-piece NEXT well, the
+	// face cluster with its HOLD bar is a few percent short of the 10.2"
+	// column's 25-row playfield height at full size.
 	a.touchUI = true
 	for _, c := range []struct {
 		sz   image.Point
 		rows int
 	}{{image.Pt(759, 516), 25}, {image.Pt(702, 460), 25}, {image.Pt(447, 906), 24}} {
 		gtx := looseCtx(c.sz.X, c.sz.Y)
-		plan := a.fitBoardAndPad(gtx, cols, c.rows, true, true, true, true)
-		if plan.m != padTouch || plan.scale < 0.95 {
+		plan := a.fitBoardAndPad(gtx, cols, c.rows, wells, true, true, true)
+		if plan.m != padTouch || plan.scale < 0.9 {
 			t.Fatalf("touch pad in a %v column: %+v, want the touch metrics at (about) their natural size", c.sz, plan)
 		}
 		if plan.width > c.sz.X {
@@ -240,7 +249,7 @@ func TestFitBoardAndPad(t *testing.T) {
 
 // TestHoldWell renders the HOLD box in each of its states — empty, holding a
 // piece, and holding a spent (dimmed) piece — at the well's footprint: every
-// state keeps the same size, so the box never shifts the NEXT well under it.
+// state keeps the same size, so the box never shifts the D-pad under it.
 func TestHoldWell(t *testing.T) {
 	a := newTestApp()
 	empty := a.holdWell(looseCtx(400, 400), game.PieceI, false, false, 24)
@@ -254,7 +263,8 @@ func TestHoldWell(t *testing.T) {
 			}
 		}
 	}
-	// The box is as wide as the NEXT well it sits over, at the same cell size.
+	// The box is as wide as the NEXT well across the playfield, at the same
+	// cell size.
 	next := a.nextWell(looseCtx(400, 400), []game.PieceType{game.PieceT}, 24)
 	if next.Size.X != empty.Size.X {
 		t.Fatalf("HOLD box width %d, want the NEXT well's %d", empty.Size.X, next.Size.X)

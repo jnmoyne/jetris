@@ -1411,30 +1411,19 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 				step = g.gravityNow()
 			}
 			nextGravity = nextGravity.Add(step)
-		} else if p.orient != plan.orient {
-			st := active{p.pt, (p.orient + 1) & 3, p.row, p.col}
-			scs := pieceCells(st.pt, st.orient, st.row, st.col)
+		} else if p.orient != plan.orient || p.col != plan.col {
+			// The whole walk to the plan — the rotations, then the shifts —
+			// as ONE batch: every step is validated on the local board, and
+			// the piece goes as far along the path as it can. A step blocked
+			// by a transient piece ends the walk there (the rest resumes once
+			// it falls away); one blocked by the stack, before any step could
+			// be made, locks the piece where it stands.
+			to, transient := g.walk(p, plan)
 			switch {
-			case g.canMove(scs):
-				g.publishPieceMove(ctx, st)
-			case g.canPlace(scs):
-				// a transient piece is in the way: wait it out
-			default:
-				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowShared(p), p.col})
-				locked = true
-			}
-		} else if p.col != plan.col {
-			d := 1
-			if plan.col < p.col {
-				d = -1
-			}
-			st := active{p.pt, p.orient, p.row, p.col + d}
-			scs := pieceCells(st.pt, st.orient, st.row, st.col)
-			switch {
-			case g.canMove(scs):
-				g.publishPieceMove(ctx, st)
-			case g.canPlace(scs):
-				// wait for the crossing piece to fall away
+			case to != p:
+				g.publishPieceMove(ctx, to)
+			case transient:
+				// a crossing piece is in the way: wait it out
 			default:
 				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowShared(p), p.col})
 				locked = true
@@ -1461,6 +1450,38 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return
 		}
 	}
+}
+
+// walk is the path from p to the plan's orientation and column played out
+// on the local board — the rotations first, one at a time in place, then
+// the shifts, one column at a time — and returns the furthest position it
+// reaches: the plan itself when every step is free, or the position before
+// the first blocked step, with transient reporting that the blocker is
+// another player's falling piece (worth waiting for) rather than the stack.
+// The caller publishes the whole walk as one batch. Call with g.mu held.
+func (g *Game) walk(p active, plan placement) (to active, transient bool) {
+	to = p
+	for to.orient != plan.orient {
+		st := active{to.pt, (to.orient + 1) & 3, to.row, to.col}
+		scs := pieceCells(st.pt, st.orient, st.row, st.col)
+		if !g.canMove(scs) {
+			return to, g.canPlace(scs)
+		}
+		to = st
+	}
+	for to.col != plan.col {
+		d := 1
+		if plan.col < to.col {
+			d = -1
+		}
+		st := active{to.pt, to.orient, to.row, to.col + d}
+		scs := pieceCells(st.pt, st.orient, st.row, st.col)
+		if !g.canMove(scs) {
+			return to, g.canPlace(scs)
+		}
+		to = st
+	}
+	return to, false
 }
 
 func (g *Game) winCheck() bool {

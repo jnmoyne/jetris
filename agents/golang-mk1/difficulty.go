@@ -8,7 +8,7 @@ import (
 
 // tuning holds the per-difficulty knobs, inherited from the retired in-repo
 // mk1 agent. pieceDelay is the "think" pause after a new
-// piece appears; moveDelay paces dispatched moves; the blunder knobs model
+// piece appears; moveDelay paces the walks (a whole path to the planned column goes out as one batch); the blunder knobs model
 // weaker play; lookahead caps how many revealed preview pieces the planner uses
 // (further bounded by what the game actually reveals — a no-preview game yields
 // none at any level).

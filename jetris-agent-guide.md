@@ -255,6 +255,14 @@ must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
   (`Nats-Expected-Last-Subject-Sequence` = the last sequence you have seen for
   each cell). Order cells within the batch by their new content: active first,
   locked second, empties last.
+- **A batch can carry the whole walk.** Nothing limits a batch to one step:
+  validate the path to your planned orientation and column step by step on your
+  local board (each rotation in place, each shift one column), and publish the
+  diff from where the piece stands to where the path ends as ONE batch — one
+  round trip for the walk instead of one per step. A step blocked by another
+  player's falling piece ends the walk there (wait, it falls away); one blocked
+  by the stack at the very first step means the piece locks where it stands.
+  Humans' clients merge the moves queued during a round trip the same way.
 - **Player moves that lose CAS are dropped** — never retried. Re-observe, re-plan.
   On a dropped move, **broadcast a CAS-failure flash** so spectators can see it (see
   below).

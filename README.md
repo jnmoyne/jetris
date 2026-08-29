@@ -362,6 +362,7 @@ Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on 
 The same client also builds for the browser — Gio renders to a WebGL canvas and the game runs unchanged, as a wasm module. The latest release is hosted on GitHub Pages at **https://jnmoyne.github.io/jetris/**: a landing page with a **Play** button (`https://jnmoyne.github.io/jetris/#play` skips straight to the game), redeployed by the release workflow on every tag. To build and serve it yourself:
 
 ```sh
+./scripts/build-wasm.sh                      # → dist/web/{index.html,wasm_exec.js,jetris.wasm,screenshot.png,favicon.ico,apple-touch-icon.png,touchtest.html}
 python3 -m http.server -d dist/web 8080      # wasm can't load from file://; serve it
 ```
 

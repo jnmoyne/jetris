@@ -27,6 +27,7 @@ GOOS=js GOARCH=wasm go build -trimpath -ldflags "-s -w -X main.version=$VERSION"
 install -m 0644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" "$OUT/"
 install -m 0644 Jetris-screenshot-1.png "$OUT/screenshot.png"
 install -m 0644 web/touchtest.html "$OUT/" # the plain touch test page (see it for what it isolates)
+install -m 0644 web/favicon.ico web/apple-touch-icon.png "$OUT/" # the tab and home-screen icons (scripts/gen-icons.go)
 
 # The page shows the version, uses it to cache-bust wasm_exec.js and
 # jetris.wasm (they must come from the same build), and sizes its download

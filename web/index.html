@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Jetris: a real-time multiplayer, guideline-style cooperative/competitive block-stacking game — and a peer-to-peer blackboard system built with nothing but NATS.io JetStream. Play it in your browser.">
   <title>Jetris — play in your browser</title>
+  <!-- The tab icon and the home-screen / bookmark icon iOS asks for (a
+       bevelled J tetromino, scripts/gen-icons.go); without them Safari
+       requests /favicon.ico and /apple-touch-icon*.png on every load. -->
+  <link rel="icon" href="favicon.ico?v=__JETRIS_VERSION__">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=__JETRIS_VERSION__">
   <style>
     :root { color-scheme: dark; --bg: #000; --fg: #e8f4f2; --muted: #8aa39e; --line: #1f2d2a; --accent: #8fd; --link: #5cc8ff; --err: #ff7b7b; }
     html, body { margin: 0; padding: 0; min-height: 100%; background: var(--bg); color: var(--fg);

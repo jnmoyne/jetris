@@ -869,6 +869,10 @@ while it is dimmed are swallowed, never queued) and disappears with the rest of
 the play controls once the player is out. Clicking a pad button dispatches exactly
 the same engine move as its key.
 
+trip — one publish in flight, the rest waiting in the engine's move queue, which has no
+depth limit and never drops a move): a drag steps the piece toward a target set by the
+finger's whole travel and queues at most a few moves ahead of the engine (6), catching
+up frame by frame as the queue drains — so the piece tracks where the finger *is*, and a
 ### Window-size reactivity
 
 The game screen adapts to the window: the playfield's cell size is recomputed every

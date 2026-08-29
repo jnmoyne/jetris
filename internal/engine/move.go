@@ -30,10 +30,19 @@ func (e *Engine) runInput(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case move := <-e.moves:
-			// The move leaves the buffer the moment its processing (and batch
-			// publish) starts — keep the under-board buffered line in sync.
-			e.popBufferedMove()
+		case <-e.moveReady:
+			// The move leaves the queue the moment its processing (and batch
+			// publish) starts — that is when its chip leaves the MOVE BUFFER
+			// strip. One move per wake-up: the moves behind it re-arm the
+			// wake-up, so the lock timer, echoes and gravity get their turn
+			// between moves exactly as they did between channel receives.
+			move, ok, more := e.takeBufferedMove()
+			if !ok {
+				continue
+			}
+			if more {
+				e.signalMoves()
+			}
 			if e.getMode() != ModePlayer {
 				continue
 			}

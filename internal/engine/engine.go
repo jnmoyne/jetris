@@ -161,10 +161,12 @@ type Engine struct {
 	// It is called from the consumer goroutines and must not block.
 	OnStreamMsg func(ts time.Time, subject string, payload []byte, batchID string)
 
-	js          jetstream.JetStream
-	ctx         context.Context
-	cancelFn    context.CancelFunc
-	moves       chan MoveType
+	js       jetstream.JetStream
+	ctx      context.Context
+	cancelFn context.CancelFunc
+	// moveReady (cap 1) wakes runInput when the move queue (bufferedMoves)
+	// has something for it.
+	moveReady   chan struct{}
 	cellUpdated chan struct{}
 
 	// applyGarbage (cap 1) signals runInput to run one garbage-application
@@ -184,8 +186,10 @@ type Engine struct {
 	lockDelay time.Duration
 	lockState lockDelayState
 
-	// Buffered-moves mirror of the e.moves channel, for the line under the
-	// board: dispatch appends on enqueue, runInput pops when it dequeues.
+	// The player's move queue, oldest first, UNBOUNDED: dispatch appends,
+	// runInput takes from the front one move at a time (takeBufferedMove),
+	// and nothing is ever dropped — the UI's MOVE BUFFER strip shows the
+	// first eight and a +N marker for the rest. Guarded by bufferedMu.
 	bufferedMu    sync.Mutex
 	bufferedMoves []MoveType
 
@@ -220,7 +224,7 @@ func New(
 		opponentPlayfields: make(map[string]*game.Playfield),
 		Updates:            make(chan EngineUpdate, 64),
 		js:                 js,
-		moves:              make(chan MoveType, 8),
+		moveReady:          make(chan struct{}, 1),
 		cellUpdated:        make(chan struct{}, 1),
 		applyGarbage:       make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
@@ -640,59 +644,54 @@ func (e *Engine) HardDrop()  { e.dispatch(MoveHardDrop) }
 func (e *Engine) Hold() { e.dispatch(MoveHold) }
 
 // dispatch hands a player input to the engine's single input goroutine. Inputs
-// are SERIALIZED and BUFFERED: they queue on the buffered e.moves channel and
-// runInput processes them one at a time, and because each move's publish blocks
-// on its batch commit ack (and applies the write-through) before the next move
-// is dequeued, a new move issued while the previous one is still awaiting its
-// commit ack waits in the buffer — the engine never has two of a player's input
-// batches in flight at once. The non-blocking send means that if a player
-// somehow outruns the ack round-trip by more than the buffer depth the excess
-// input is dropped rather than blocking the UI goroutine (never reached at human
-// input rates).
+// are SERIALIZED and BUFFERED: they queue on e.bufferedMoves and runInput
+// processes them one at a time, and because each move's publish blocks on its
+// batch commit ack (and applies the write-through) before the next move is
+// taken, a new move issued while the previous one is still awaiting its commit
+// ack waits in the queue — the engine never has two of a player's input
+// batches in flight at once. The queue has no depth limit and never drops a
 func (e *Engine) dispatch(m MoveType) {
 	if e.getMode() != ModePlayer {
 		return
 	}
-	// Mirror the enqueue in the buffered-moves list shown under the board
-	// (visible when a high RTT makes inputs queue behind an in-flight
-	// publish). The mirror entry MUST be appended BEFORE the channel send:
-	// runInput pops the mirror the moment it dequeues a move, and on a fast
-	// ack round-trip it wins that race — a mirror appended after the send can
-	// be popped before it exists, stranding a phantom chip in the strip.
-	// Before the send our entry cannot be popped (it is not in the channel
-	// yet, and runInput pops only after a dequeue), so the mirror stays a
-	// faithful FIFO image of e.moves.
 	e.bufferedMu.Lock()
 	e.bufferedMoves = append(e.bufferedMoves, m)
 	e.bufferedMu.Unlock()
-	select {
-	case e.moves <- m:
-		e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
-	default:
-		// Buffer full — the move is dropped, so take the mirror entry back.
-		// dispatch is the only producer, so ours is still the last element;
-		// concurrent pops only ever remove from the front.
-		e.bufferedMu.Lock()
-		if n := len(e.bufferedMoves); n > 0 {
-			e.bufferedMoves = e.bufferedMoves[:n-1]
-		}
-		e.bufferedMu.Unlock()
-	}
-}
-
-// popBufferedMove removes the oldest entry of the buffered-moves mirror; called
-// by runInput the moment it dequeues a move (its batch publish is starting).
-func (e *Engine) popBufferedMove() {
-	e.bufferedMu.Lock()
-	if len(e.bufferedMoves) > 0 {
-		e.bufferedMoves = e.bufferedMoves[1:]
-	}
-	e.bufferedMu.Unlock()
+	e.signalMoves()
 	e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
 }
 
+// signalMoves wakes runInput to take the next queued move; a wake-up already
+// pending is enough.
+func (e *Engine) signalMoves() {
+	select {
+	case e.moveReady <- struct{}{}:
+	default:
+	}
+}
+
+// takeBufferedMove removes and returns the oldest queued move (ok false when
+// the queue is empty) and whether more are queued behind it; called by
+// runInput the moment it starts processing a move (its batch publish is
+// starting), which is when the move leaves the MOVE BUFFER strip.
+func (e *Engine) takeBufferedMove() (m MoveType, ok, more bool) {
+	e.bufferedMu.Lock()
+	if len(e.bufferedMoves) > 0 {
+		m, ok = e.bufferedMoves[0], true
+		e.bufferedMoves = e.bufferedMoves[1:]
+		if more = len(e.bufferedMoves) > 0; !more {
+			e.bufferedMoves = nil // let a drained burst's backing array go
+		}
+	}
+	e.bufferedMu.Unlock()
+	if ok {
+		e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
+	}
+	return m, ok, more
+}
+
 // BufferedMoves returns the moves currently queued behind the in-flight
-// publish, oldest first — the dispatch-side mirror of the e.moves buffer.
+// publish, oldest first.
 func (e *Engine) BufferedMoves() []MoveType {
 	e.bufferedMu.Lock()
 	defer e.bufferedMu.Unlock()

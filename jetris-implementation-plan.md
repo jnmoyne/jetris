@@ -1182,16 +1182,14 @@ accessors that hand playfield state to the UI/tests (`Playfield`,
 `OpponentPlayfields`, `Snapshot`, `OpponentSnapshots`) return **deep copies**
 (`Playfield.Clone` / `CloneRows`) taken under `e.mu`, so a caller can read the
 result without the lock while the consumer and write-through keep mutating the
-live playfield. Player input is serialized and buffered on the `e.moves` channel:
-`runInput` processes one at a time and each publish blocks on its commit ack
-before the next is dequeued, so a player never has two input batches in flight.
-The engine mirrors that buffer in a `bufferedMu`-guarded FIFO (`bufferedMoves`):
-`dispatch` appends BEFORE the channel send (and takes the entry back if the
-full buffer drops the move) — appending after the send loses a race on a fast
-ack round-trip, where `runInput` pops the not-yet-appended entry as a no-op
-and the append then strands a phantom chip in the strip forever — `runInput`
-pops (`popBufferedMove`) the moment it dequeues a move (its batch publish is
-starting), and
+live playfield. Player input is serialized and buffered on the engine's move
+queue, the `bufferedMu`-guarded FIFO `bufferedMoves` — **unbounded, never
+longer): `dispatch` appends and wakes `runInput` through the 1-slot `moveReady`
+channel; `runInput` takes one move per wake-up (`takeBufferedMove`, which
+re-arms the wake-up while more are queued, so the lock timer, echoes and
+gravity interleave between moves) and each publish blocks on its commit ack
+before the next is taken, so a player never has two input batches in flight.
+A move leaves the queue the moment its batch publish starts, and
 `Engine.BufferedMoves()` returns a copy for the UI, which draws the queued moves
 as the animated MOVE BUFFER chip strip under the player's board
 (`bufferedMovesStrip` in `internal/nativeui/controls.go`: eight big slots that
@@ -1623,9 +1621,11 @@ func (e *Engine) HardDrop()     { e.dispatch(MoveHardDrop) }
 func (e *Engine) dispatch(m MoveType) {
     if e.mode != ModePlayer { return }
     select {
-    case e.moves <- m:
-    default: // drop if channel full
-    }
+    e.bufferedMu.Lock()
+    e.bufferedMoves = append(e.bufferedMoves, m) // unbounded: never dropped
+    e.bufferedMu.Unlock()
+    e.signalMoves() // non-blocking send on the 1-slot moveReady wake-up
+    e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
 }
 
 func (e *Engine) transitionToSpectator(won bool) {
@@ -1989,8 +1989,10 @@ func (e *Engine) runInput(ctx context.Context) {
         select {
         case <-ctx.Done():
             return
-        case move := <-e.moves:
-            e.popBufferedMove() // keep the under-board buffered strip in sync
+        case <-e.moveReady:
+            move, ok, more := e.takeBufferedMove() // leaves the MOVE BUFFER strip now
+            if !ok { continue }
+            if more { e.signalMoves() } // one move per wake-up: the other cases get their turn
             if e.mode != ModePlayer { continue }
             // Player input — drop+flash on CAS failure (internal=false).
             _ = e.attemptMove(ctx, move, false)
@@ -3392,7 +3394,7 @@ Hard: 100 ms, 30 ms, no blunders, lookahead `config.MaxNextCount`. `Lookahead` i
 max preview pieces used in planning and is always further capped by the game's own
 `next_count` (Phase 14) — agents decide only on UI-visible state, so in a no-preview
 game every difficulty plans one piece at a time. MoveDelay also
-guarantees the engine's 8-deep input buffer (silent drop on overflow) never fills.
+keeps the engine's move queue (unbounded; nothing is ever dropped) short.
 
 ### 12.2 Planner + eval (`planner.go`, `eval.go`)
 

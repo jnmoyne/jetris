@@ -330,9 +330,9 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 // Tab switches either way. The editor's hint says which way the keys
 // currently go.
 //
-// It is a drawer over the board (compact.go), opened by the bar's chat
-// button, so it takes every row it is given rather than a slice of the
-// window.
+// It is a strip along the bottom of the screen, shown and hidden by the
+// bar's chat button (gamescreen.go) and never over the board: while it is up
+// the playfield simply has that many fewer rows.
 func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	msgs := a.gameChatLog(eng.GameID())
 	a.chatSeen = len(msgs) // seen: the bar's unread dot goes out (compact.go)
@@ -357,9 +357,12 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 
 	log := func(gtx C) D {
 		return bordered(gtx, func(gtx C) D {
-			// The log takes every row the drawer gives it — it IS the
-			// screen while it is open.
-			gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+			// Height-reactive: at least 96 dp of conversation, growing with
+			// the window (12% of the room the strip is given) so a taller
+			// screen shows more of it without eating the board.
+			if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
+				gtx.Constraints.Max.Y = maxH
+			}
 			return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
 				txt, col := chatLine(msgs[i])
 				return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
@@ -379,10 +382,10 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 		return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(a.header("CHAT")),
-				layout.Flexed(1, func(gtx C) D {
+				layout.Rigid(func(gtx C) D {
 					return focusRing(gtx, ring, func(gtx C) D {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Flexed(1, log),
+							layout.Rigid(log),
 							layout.Rigid(spacer(6)),
 							layout.Rigid(composer),
 						)

@@ -183,14 +183,11 @@ const (
 	// this sits in the strip left above it.
 	chatBtnPressX, chatBtnPressY = 1200 - 6 - (gameBarH-14)/2, gameBarH / 2
 	boardPressX, boardPressY     = 250, gameBarH + 40
-	// Inside the open chat panel, on widgets that consume the press
-	// themselves: the editor and the Send button (the press still reaches the
-	// panel's area, which encloses them). The panel is drawerMaxW wide,
-	// centred, and sits on the window's bottom edge, so its composer row is a
-	// little over 30 px up and Send is at its right end.
-	drawerRight                = (1200 + drawerMaxW) / 2
-	editorPressX, editorPressY = 600, 820 - 32
-	sendPressX, sendPressY     = drawerRight - 56, 820 - 34
+	// Inside the chat strip, on widgets that consume the press themselves:
+	// the editor and the Send button (the press still reaches the strip's
+	// area, which encloses them). The strip spans the window's foot.
+	editorPressX, editorPressY = 600, 788
+	sendPressX, sendPressY     = 1147, 787
 )
 
 // TestTouchPressSizesPad checks the runtime half of the touch detection: the
@@ -258,52 +255,62 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 		t.Fatal("board did not take the keys when the game became playable")
 	}
 
-	// The chat is a panel over the board, opened from the bar (compact.go):
-	// opening it hands the keys to its editor, and a press inside it keeps
-	// them there.
-	openChat := func() {
+	// This window has room, so the chat strip is up from the start and the
+	// bar's button is a hide/show for it — never a focus change: the keys
+	// stay with the board until a click or a Tab moves them.
+	if !a.chatVisible() {
+		t.Fatal("a 1200x820 window does not show the chat strip by default")
+	}
+	toggleChat := func() {
 		press(&r, chatBtnPressX, chatBtnPressY)
 		gameFrame(a, &r)
 		gameFrame(a, &r)
 	}
-	openChat()
-	if !a.chatDrawer {
-		t.Fatal("the bar's chat button did not open the chat panel")
+	toggleChat()
+	if a.chatVisible() {
+		t.Fatal("the bar's chat button did not hide the strip")
 	}
+	toggleChat()
+	if !a.chatVisible() {
+		t.Fatal("the bar's chat button did not show the strip again")
+	}
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("showing and hiding the chat strip moved the keys off the board")
+	}
+
+	press(&r, editorPressX, editorPressY)
+	gameFrame(a, &r)
+	gameFrame(a, &r)
 	if !r.Source().Focused(&a.gameChatEd) {
-		t.Fatal("opening the chat panel did not hand the keys to its editor")
+		t.Fatal("a click in the chat strip did not hand it the keys")
 	}
 	if r.Source().Focused(&a.boardTag) {
 		t.Fatal("board kept the keys while the chat panel was open")
 	}
-	press(&r, editorPressX, editorPressY)
-	gameFrame(a, &r)
-	if !r.Source().Focused(&a.gameChatEd) {
-		t.Fatal("a press inside the open chat panel took the keys off its editor")
-	}
-
-	// A press on the board beside the panel closes it and takes the keys back.
+	// A press on the board takes the keys back, and leaves the strip up: the
+	// bar shows and hides it, nothing else does.
 	press(&r, boardPressX, boardPressY)
 	gameFrame(a, &r)
-	gameFrame(a, &r)
-	if a.chatDrawer {
-		t.Fatal("a press beside the chat panel did not close it")
-	}
 	if !r.Source().Focused(&a.boardTag) {
-		t.Fatal("closing the chat panel did not hand the keys back to the board")
+		t.Fatal("a press on the board did not hand the keys back to it")
+	}
+	if !a.chatVisible() {
+		t.Fatal("a press on the board hid the chat strip")
 	}
 
-	openChat()
+	press(&r, editorPressX, editorPressY)
+	gameFrame(a, &r)
+	gameFrame(a, &r)
 	if !r.Source().Focused(&a.gameChatEd) {
-		t.Fatal("second open did not hand the keys to the chat editor")
+		t.Fatal("a second click in the chat strip did not hand it the keys")
 	}
 	r.Queue(key.Event{Name: key.NameEscape, State: key.Press})
 	gameFrame(a, &r)
-	if a.chatDrawer {
-		t.Fatal("Escape did not close the chat panel")
-	}
 	if !r.Source().Focused(&a.boardTag) {
 		t.Fatal("Escape in the chat did not hand the keys back to the board")
+	}
+	if !a.chatVisible() {
+		t.Fatal("Escape hid the chat strip; it only moves the keys")
 	}
 
 	// Tab toggles — a shifted Tab too. The window delivers Tab keys wrapped
@@ -313,13 +320,13 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 	shiftTab := input.SystemEvent{Event: key.Event{Name: key.NameTab, Modifiers: key.ModShift, State: key.Press}}
 	r.Queue(tab)
 	gameFrame(a, &r)
-	if !r.Source().Focused(&a.gameChatEd) || !a.chatDrawer {
-		t.Fatal("Tab on the board did not open the chat panel and hand it the keys")
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("Tab on the board did not hand the keys to the chat editor")
 	}
 	r.Queue(tab)
 	gameFrame(a, &r)
-	if !r.Source().Focused(&a.boardTag) || a.chatDrawer {
-		t.Fatal("Tab in the chat did not close the panel and hand the keys back")
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("Tab in the chat did not hand the keys back to the board")
 	}
 	r.Queue(shiftTab)
 	gameFrame(a, &r)
@@ -342,19 +349,15 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 		name string
 		x, y float32
 	}{{"editor", editorPressX, editorPressY}, {"Send button", sendPressX, sendPressY}} {
-		// From the board each time: open the panel, then press the widget.
+		// From the board each time, then press the widget.
 		press(&r, boardPressX, boardPressY)
 		gameFrame(a, &r)
 		gameFrame(a, &r)
-		openChat()
 		press(&r, pt.x, pt.y)
 		gameFrame(a, &r)
 		gameFrame(a, &r)
 		if !r.Source().Focused(&a.gameChatEd) {
 			t.Fatalf("a press on the %s did not leave the keys with the chat editor", pt.name)
-		}
-		if !a.chatDrawer {
-			t.Fatalf("a press on the %s closed the chat panel", pt.name)
 		}
 		gameFrame(a, &r)
 		if !r.Source().Focused(&a.gameChatEd) {

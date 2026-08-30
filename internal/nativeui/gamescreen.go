@@ -65,54 +65,65 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 	}
 	children = append(children, layout.Flexed(1, func(gtx C) D {
 		return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
-			if !a.oppVisible() || !a.hasOpponents(eng, mode, gmode) {
-				return a.gameBoardArea(gtx, eng, view, mode, gmode)
-			}
-			// The opponents stand beside the board, and the two are centred
-			// TOGETHER: a playfield is portrait and a screen is not, so on a
-			// wide one the board cannot use all the width whatever it does
-			// (its cell is bound by the height) — and a board centred in
-			// what is left over, with the opponents pinned out at the edge,
-			// reads as two things that missed each other rather than as one
-			// row. The column's width is taken off the board area BEFORE it
-			// fits itself, so nothing is squeezed after the fact.
-			oppW := min(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMaxW))
-			return layout.Center.Layout(gtx, func(gtx C) D {
-				gtx.Constraints.Min = image.Point{}
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						gtx.Constraints.Max.X = max(0, gtx.Constraints.Max.X-oppW)
-						return a.gameBoardArea(gtx, eng, view, mode, gmode)
-					}),
-					layout.Rigid(func(gtx C) D {
-						gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
-						return a.opponentBoards(gtx, eng)
-					}),
-				)
+			// The board area never reports more than its slot. Its cell has a
+			// floor (fitCellPx), so a column too short for a whole playfield
+			// gets one that overflows — and a Flex places the next child after
+			// whatever size this one CLAIMS, which would push the chat strip
+			// clean off the bottom of the screen rather than merely crowd it.
+			// Overflow is the board's own problem to draw; it is not the
+			// chat's to be shoved out by.
+			return clampH(gtx, func(gtx C) D {
+				if !a.oppVisible() || !a.hasOpponents(eng, mode, gmode) {
+					return a.gameBoardArea(gtx, eng, view, mode, gmode)
+				}
+				// The opponents stand beside the board, and the two are centred
+				// TOGETHER: a playfield is portrait and a screen is not, so on a
+				// wide one the board cannot use all the width whatever it does
+				// (its cell is bound by the height) — and a board centred in
+				// what is left over, with the opponents pinned out at the edge,
+				// reads as two things that missed each other rather than as one
+				// row. The column's width is taken off the board area BEFORE it
+				// fits itself, so nothing is squeezed after the fact.
+				oppW := min(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMaxW))
+				return layout.Center.Layout(gtx, func(gtx C) D {
+					gtx.Constraints.Min = image.Point{}
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							gtx.Constraints.Max.X = max(0, gtx.Constraints.Max.X-oppW)
+							return a.gameBoardArea(gtx, eng, view, mode, gmode)
+						}),
+						layout.Rigid(func(gtx C) D {
+							gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
+							return a.opponentBoards(gtx, eng)
+						}),
+					)
+				})
 			})
 		})
 	}))
+	// The chat is a strip along the bottom, in the flow rather than over the
+	// board: the bar's chat button shows and hides it, and while it is up the
+	// board simply has that much less room. It is not something to dismiss —
+	// a conversation you are half-watching while you play — so it has no
+	// close button of its own and nothing about the board shuts it.
+	if a.chatVisible() {
+		children = append(children, layout.Rigid(func(gtx C) D {
+			return a.gameChatPanel(gtx, eng, view)
+		}))
+	}
 	if showMsgs {
 		children = append(children, layout.Rigid(a.natsMsgSection))
 	}
 	body := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
 
-	// A panel opens UNDER the bar, never over it: the bar is this screen's
-	// navigation, so the button that opened a panel is always there to shut
-	// it again, and tapping the other one swaps panels in one go.
-	switch {
-	case a.hudDrawer:
+	// The HUD is the other kind of panel: a page of reference you open, read
+	// and dismiss. It opens UNDER the bar, never over it, so the button that
+	// opened it is always there to shut it again.
+	if a.hudDrawer {
 		inner := body
 		body = func(gtx C) D {
 			return a.drawer(gtx, inner, layout.W, func(gtx C) D {
 				return a.gameHUD(gtx, eng, view, mode, gmode)
-			})
-		}
-	case a.chatDrawer:
-		inner := body
-		body = func(gtx C) D {
-			return a.drawer(gtx, inner, layout.S, func(gtx C) D {
-				return a.gameChatPanel(gtx, eng, view)
 			})
 		}
 	}
@@ -132,13 +143,19 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 		// from the last one, and its chat is a different conversation, so the
 		// unread mark starts from nothing rather than from what was read
 		// there. The pad switch is the player's own and does carry over.
-		a.drawerEng, a.hudDrawer, a.chatDrawer, a.chatSeen = eng, false, false, 0
+		a.drawerEng, a.hudDrawer, a.chatSeen = eng, false, 0
 	}
 	for a.barHudBtn.Clicked(gtx) {
-		a.hudDrawer, a.chatDrawer = !a.hudDrawer, false
+		a.hudDrawer = !a.hudDrawer
 	}
 	for a.barChatBtn.Clicked(gtx) {
-		a.chatDrawer, a.hudDrawer = !a.chatDrawer, false
+		// Showing the chat and typing into it are separate: this only puts
+		// the strip on screen. The keys move on a click or Tab (input.go).
+		if a.chatVisible() {
+			a.chatPref = -1
+		} else {
+			a.chatPref = 1
+		}
 	}
 	for a.barOppBtn.Clicked(gtx) {
 		if a.oppVisible() {
@@ -157,10 +174,10 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 		}
 	}
 	for a.drawerCloseBtn.Clicked(gtx) {
-		a.hudDrawer, a.chatDrawer = false, false
+		a.hudDrawer = false
 	}
 	for a.drawerScrim.Clicked(gtx) {
-		a.hudDrawer, a.chatDrawer = false, false
+		a.hudDrawer = false
 	}
 }
 
@@ -258,10 +275,10 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 	kids = append(kids, layout.Rigid(func(gtx C) D {
 		return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-			d := a.barButton(gtx, &a.barChatBtn, glyphChat, a.chatDrawer)
+			d := a.barButton(gtx, &a.barChatBtn, glyphChat, a.chatVisible())
 			// Unread mark: messages have arrived since the panel last showed
 			// them (gameChatPanel records what it showed in chatSeen).
-			if n := a.gameChatCount(eng.GameID()); n > a.chatSeen && !a.chatDrawer {
+			if n := a.gameChatCount(eng.GameID()); n > a.chatSeen && !a.chatVisible() {
 				dot := gtx.Dp(7)
 				fillRect(gtx.Ops, image.Rect(d.Size.X-dot, 0, d.Size.X, dot), colGold)
 			}
@@ -299,6 +316,14 @@ func (a *App) barButton(gtx C, btn *widget.Clickable, bm []string, on bool) D {
 			})
 		})
 	})
+}
+
+// clampH lays w out and reports its height capped at the room it was given,
+// so an oversized child crowds its siblings rather than displacing them.
+func clampH(gtx C, w layout.Widget) D {
+	d := w(gtx)
+	d.Size.Y = min(d.Size.Y, gtx.Constraints.Max.Y)
+	return d
 }
 
 // hasOpponents reports whether this game has other playfields for the local

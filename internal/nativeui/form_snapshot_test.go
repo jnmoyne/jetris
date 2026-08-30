@@ -59,7 +59,7 @@ func TestFormSnapshots(t *testing.T) {
 		{name: "form_phone_portrait_hud", size: image.Pt(390, 844), device: devicePhone,
 			tweak: func(a *App) { a.hudDrawer = true }},
 		{name: "form_phone_portrait_chat", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.chatDrawer = true }},
+			tweak: func(a *App) { a.chatPref = 1 }},
 		{name: "form_phone_portrait_opps", size: image.Pt(390, 844), device: devicePhone,
 			tweak: func(a *App) { a.oppPref = 1 }},
 		{name: "form_phone_portrait_opps_pad", size: image.Pt(390, 844), device: devicePhone,

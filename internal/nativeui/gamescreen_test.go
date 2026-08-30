@@ -341,16 +341,21 @@ func TestCompactBarOpensAndClosesThePanels(t *testing.T) {
 		t.Fatalf("the closing tap also queued %v", got[queued:])
 	}
 
-	// The chat button swaps panels rather than stacking them, and closes
-	// the one it opened.
-	g.tap(barMenuX(), barCenterY())
-	g.tap(barChatX(w), barCenterY())
-	if g.a.hudDrawer || !g.a.chatDrawer {
-		t.Fatalf("chat button: hud=%v chat=%v, want only the chat open", g.a.hudDrawer, g.a.chatDrawer)
+	// The chat button shows and hides the strip. It is not a panel over the
+	// board — the HUD can be open at the same time, and neither blocks play.
+	if g.a.chatVisible() {
+		t.Fatal("the chat strip is up by default on a phone")
 	}
 	g.tap(barChatX(w), barCenterY())
+	if !g.a.chatVisible() {
+		t.Fatal("the chat button did not show the strip")
+	}
 	if g.a.drawerOpen() {
-		t.Fatal("the chat button did not close the panel it had opened")
+		t.Fatal("the chat strip counts as a panel over the board")
+	}
+	g.tap(barChatX(w), barCenterY())
+	if g.a.chatVisible() {
+		t.Fatal("the chat button did not hide the strip again")
 	}
 }
 
@@ -464,10 +469,13 @@ func TestCompactScreensLayoutWithoutPanic(t *testing.T) {
 						a.screen = screenGame
 						a.gameStatus = string(st)
 						a.gameOver = st == config.GameStatusFinished
-						// The panels shut themselves on a screen's first frame, so
+						// The HUD shuts itself on a screen's first frame, so
 						// this one has to look like a screen already up.
 						a.drawerEng = a.eng
-						a.hudDrawer, a.chatDrawer = panel == "hud", panel == "chat"
+						a.hudDrawer = panel == "hud"
+						if panel == "chat" {
+							a.chatPref = 1
+						}
 						a.showMsgs.Value = true
 						if d := a.layout(testCtx(sz.X, sz.Y)); d.Size.X == 0 || d.Size.Y == 0 {
 							t.Fatalf("%v %s %v %v panel=%q: zero-size screen", sz, st, gmode, m, panel)
@@ -493,9 +501,9 @@ func TestCompactChatUnreadMark(t *testing.T) {
 	a.chatLog = []lobby.ChatMessage{{GameID: "g1", Name: "bob", Text: "gl hf"}}
 	a.layout(testCtx(390, 844))
 	if a.chatSeen != 0 {
-		t.Fatalf("chatSeen = %d with the panel shut, want 0 — the dot would never show", a.chatSeen)
+		t.Fatalf("chatSeen = %d with the strip hidden, want 0 — the dot would never show", a.chatSeen)
 	}
-	a.chatDrawer = true
+	a.chatPref = 1
 	a.layout(testCtx(390, 844))
 	if a.chatSeen != 1 {
 		t.Fatalf("chatSeen = %d after showing the panel, want the 1 message it showed", a.chatSeen)
@@ -536,10 +544,10 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.chatLog = []lobby.ChatMessage{{GameID: "g1", Name: "bob", Text: "gl hf"}}
 	a.layout(testCtx(390, 844)) // the game screen's first frame
-	a.chatDrawer = true
+	a.hudDrawer, a.chatPref = true, 1
 	a.layout(testCtx(390, 844))
-	if !a.chatDrawer || a.chatSeen != 1 {
-		t.Fatalf("first game: chat panel open=%v seen=%d, want open with its one message read", a.chatDrawer, a.chatSeen)
+	if !a.hudDrawer || a.chatSeen != 1 {
+		t.Fatalf("first game: HUD open=%v seen=%d, want open with the one message read", a.hudDrawer, a.chatSeen)
 	}
 	// A second game: a new engine, so a new screen.
 	a.eng = engine.New(nil, "g2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
@@ -550,7 +558,10 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	if a.chatSeen != 0 {
 		t.Errorf("chatSeen = %d on the new game, want 0", a.chatSeen)
 	}
-	// The pad switch is the player's own and survives the move.
+	// The bar's switches are the player's own and survive the move.
+	if !a.chatVisible() {
+		t.Error("the player's chat choice did not carry into the next game")
+	}
 	a.padPref = 1
 	a.eng = engine.New(nil, "g3", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	a.layout(testCtx(390, 844))

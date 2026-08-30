@@ -100,8 +100,9 @@ func TestDrawerOpen(t *testing.T) {
 	if !a.drawerOpen() {
 		t.Fatal("the HUD panel is open and drawerOpen says otherwise")
 	}
-	a.hudDrawer, a.chatDrawer = false, true
-	if !a.drawerOpen() {
-		t.Fatal("the chat panel is open and drawerOpen says otherwise")
+	// The chat strip is in the flow, not over the board: it never blocks play.
+	a.hudDrawer, a.chatPref = false, 1
+	if a.drawerOpen() {
+		t.Fatal("the chat strip counts as a panel over the board")
 	}
 }

@@ -157,17 +157,13 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 		}
 		if ke, ok := ev.(key.Event); ok && ke.State == key.Press {
 			target = &a.boardTag
-			a.chatDrawer = false // and on the compact screen, out of the chat panel too
 		}
 	}
 	// Tab (shifted or not): from the board to the chat and from the chat to
 	// the board.
-	for _, sw := range []struct {
-		from, to event.Tag
-		open     bool // the chat panel this Tab moves into, or out of
-	}{
-		{&a.boardTag, &a.gameChatEd, true},
-		{&a.gameChatEd, &a.boardTag, false},
+	for _, sw := range []struct{ from, to event.Tag }{
+		{&a.boardTag, &a.gameChatEd},
+		{&a.gameChatEd, &a.boardTag},
 	} {
 		for {
 			ev, ok := gtx.Source.Event(key.Filter{Focus: sw.from, Name: key.NameTab, Optional: key.ModShift})
@@ -175,28 +171,26 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 				break
 			}
 			if ke, ok := ev.(key.Event); ok && ke.State == key.Press {
-				// The chat is a panel over the board (compact.go), so Tab
-				// opens and shuts it as well as moving the keys: typing into
-				// a chat nobody can see would be no use.
-				target, a.chatDrawer = sw.to, sw.open
+				// Tab moves the keys and nothing else. Into a chat that is
+				// not on screen it moves nothing: the strip is shown and
+				// hidden from the bar (gamescreen.go), never by typing.
+				if sw.to == &a.gameChatEd && !a.chatVisible() {
+					continue
+				}
+				target = sw.to
 			}
 		}
 	}
 	if playing && !a.playingSeen {
 		target = &a.boardTag
 	}
-	// The keys follow the chat panel: opening it (the bar's button) hands
-	// them to the editor, closing it any way at all — its ✕, a tap on the
-	// scrim beside it, Escape — hands them back to the board. Only when
-	// nothing louder happened this frame, so a press that landed somewhere
-	// specific still wins.
-	if target == nil {
-		switch {
-		case a.chatDrawer && !gtx.Source.Focused(&a.gameChatEd):
-			target = &a.gameChatEd
-		case !a.chatDrawer && gtx.Source.Focused(&a.gameChatEd):
-			target = &a.boardTag
-		}
+	// A chat that has just been hidden cannot keep the keys: they go back to
+	// the board. (The other way round is not automatic — showing the strip
+	// only puts it on screen, and the player takes the keys when they mean
+	// to type.) Only when nothing louder happened this frame, so a press
+	// that landed somewhere specific still wins.
+	if target == nil && !a.chatVisible() && gtx.Source.Focused(&a.gameChatEd) {
+		target = &a.boardTag
 	}
 	a.playingSeen = playing
 	act := playing

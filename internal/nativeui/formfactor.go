@@ -126,7 +126,24 @@ func (a *App) oppVisible() bool {
 	return !a.narrowWells()
 }
 
-// drawerOpen reports whether one of the screen's panels is over the
-// board — the frame's presses belong to it, not to the game (the pad's
-// clicks and the playfield's gestures are gated on this).
-func (a *App) drawerOpen() bool { return a.hudDrawer || a.chatDrawer }
+// chatVisible reports whether the chat strip shows under the board. The
+// bar's chat button is the player's say (chatPref) and holds for the
+// session; until they use it the screen decides, as it does for the pad and
+// the opponents: a screen with room keeps the conversation up, the way this
+// game always has on a desktop, and a narrow one gives those rows to the
+// playfield until asked.
+func (a *App) chatVisible() bool {
+	switch {
+	case a.chatPref > 0:
+		return true
+	case a.chatPref < 0:
+		return false
+	}
+	return !a.form.compact
+}
+
+// drawerOpen reports whether a panel is over the board — the frame's presses
+// belong to it, not to the game (the pad's clicks and the playfield's
+// gestures are gated on this). Only the HUD is such a panel; the chat strip
+// is in the flow beside the board, not over it, and never blocks play.
+func (a *App) drawerOpen() bool { return a.hudDrawer }

@@ -440,12 +440,12 @@ type App struct {
 	// board, and the player's standing answer on the on-screen pad — 0 for
 	// the device's default (padVisible), ±1 once they have tapped the bar's
 	// pad button. UI goroutine only.
-	hudDrawer, chatDrawer bool
-	padPref               int8
-	// oppPref is the player's standing answer on the opponents' playfields
-	// beside the board — 0 for the screen's own default (oppVisible), ±1
-	// once they have tapped the bar's boards button, like padPref.
-	oppPref int8
+	hudDrawer bool
+	padPref   int8
+	// oppPref and chatPref are the same for the opponents' playfields beside
+	// the board (oppVisible) and the chat strip under it (chatVisible): 0 for
+	// the screen's own default, ±1 once the player has used that bar button.
+	oppPref, chatPref int8
 	// Its chrome: the bar's menu / pad / chat buttons, the scrim that closes
 	// a panel when tapped beside it, and the panels' own close button.
 	barHudBtn, barPadBtn, barChatBtn, barOppBtn widget.Clickable

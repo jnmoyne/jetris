@@ -20,6 +20,15 @@
 #   - The github-pages environment must allow deployments from tags: under its
 #     "Deployment branches and tags", add a tag rule "v*" (the default policy
 #     only allows the default branch, and this workflow runs on tags).
+#
+# Every Go job downloads the module graph in a step of its own, retried, before
+# it builds or tests anything. A release fans out over seven runners and any one
+# of them can lose a coin flip with the module proxy — v0.11.1's darwin/arm64
+# build died on "github.com/klauspost/compress@v1.19.2: ... net/http: TLS
+# handshake timeout" while the other six were fine — and with the download
+# folded into `go build` that one blip fails the whole release, artifacts and
+# Pages deploy included, until someone re-runs the job by hand. Pulled out and
+# retried, a blip costs ten seconds instead.
 
 name: Release
 
@@ -39,6 +48,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Download modules
+        shell: bash
+        run: |
+          # The module proxy is a network service and occasionally times out on
+          # one runner. Retry rather than lose a release to it.
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "go mod download failed (attempt $attempt of 3); retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "go mod download failed three times — the module proxy is not reachable from this runner"
+          exit 1
       - name: Install Gio build dependencies
         run: |
           sudo apt-get update
@@ -66,6 +89,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Download modules
+        shell: bash
+        run: |
+          # The module proxy is a network service and occasionally times out on
+          # one runner. Retry rather than lose a release to it.
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "go mod download failed (attempt $attempt of 3); retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "go mod download failed three times — the module proxy is not reachable from this runner"
+          exit 1
       - name: Install Gio build dependencies
         if: matrix.goos == 'linux'
         run: |
@@ -117,6 +154,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Download modules
+        shell: bash
+        run: |
+          # The module proxy is a network service and occasionally times out on
+          # one runner. Retry rather than lose a release to it.
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "go mod download failed (attempt $attempt of 3); retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "go mod download failed three times — the module proxy is not reachable from this runner"
+          exit 1
       - name: Build
         run: VERSION="${GITHUB_REF_NAME}" ./scripts/build-wasm.sh
       - name: Package

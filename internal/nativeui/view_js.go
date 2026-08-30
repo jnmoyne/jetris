@@ -10,10 +10,11 @@ import (
 
 // Browser keyboard focus.
 //
-// Gio's browser backend takes its key events from a hidden <input> it places
-// next to the canvas, and focuses that input only while a text editor has the
-// focus: every focus change to a non-editor tag (the board, a button) closes
-// the platform text input, which the backend answers by blurring the element
+// Gio's browser backend takes its key events from a hidden text element it
+// places next to the canvas (a <textarea> since Gio v0.10; an <input> before),
+// and focuses that element only while a text editor has the focus: every
+// focus change to a non-editor tag (the board, a button) closes the platform
+// text input, which the backend answers by blurring the element
 // (io/input/key.go Focus → TextInputClose; app/os_js.go ShowTextInput(false)
 // → blur). Nothing focuses it again until the player clicks into an editor,
 // so the moment the board takes the keys — game start, Escape out of the
@@ -122,13 +123,19 @@ func mediaMatches(query string) bool {
 	return mq.Truthy() && mq.Get("matches").Bool()
 }
 
-// keepKeyboardFocus makes the hidden input inside Gio's container element
-// (the #giowindow div, to which the backend appends its canvas and input)
-// the page's standing focus target. The listeners live as long as the page.
+// keepKeyboardFocus makes the hidden key-input element inside Gio's container
+// element (the #giowindow div, to which the backend appends its canvas and
+// that element) the page's standing focus target. The listeners live as long
+// as the page.
 func keepKeyboardFocus(cont js.Value) {
 	doc := js.Global().Get("document")
 	win := js.Global().Get("window")
-	input := cont.Call("querySelector", "input")
+	// The element by either tag: Gio v0.10 made it a <textarea> (v0.8 had an
+	// <input>), and it is the only one of its kind in the container. Looking
+	// for one tag alone is how the keys died at the v0.8 → v0.10 jump — the
+	// query missed, the keeper stood down, and the board went deaf the moment
+	// it took the focus.
+	input := cont.Call("querySelector", "textarea, input")
 	canvas := cont.Call("querySelector", "canvas")
 	if !input.Truthy() || !canvas.Truthy() || mediaMatches("(pointer: coarse)") {
 		return

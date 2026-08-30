@@ -436,25 +436,21 @@ type App struct {
 	deviceHint   deviceKind
 	deviceHinted bool
 	form         screenForm
-	// The compact game screen's state (compact.go): which panel is over the
-	// board, and the player's standing answer on the on-screen pad — 0 for
-	// the device's default (padVisible), ±1 once they have tapped the bar's
-	// pad button. UI goroutine only.
-	hudDrawer bool
-	padPref   int8
-	// oppPref and chatPref are the same for the opponents' playfields beside
-	// the board (oppVisible) and the chat strip under it (chatVisible): 0 for
-	// the screen's own default, ±1 once the player has used that bar button.
-	oppPref, chatPref int8
-	// Its chrome: the bar's menu / pad / chat buttons, the scrim that closes
-	// a panel when tapped beside it, and the panels' own close button.
+	// The game screen's switches (gamescreen.go), each the player's standing
+	// answer on one thing that costs the playfield room: 0 for the screen's
+	// own default, ±1 once they have used that bar button. hudPref is the
+	// menu column (hudVisible), padPref the on-screen pad (padVisible),
+	// oppPref the opponents' playfields beside the board (oppVisible) and
+	// chatPref the chat strip under it (chatVisible). UI goroutine only.
+	hudPref, padPref, oppPref, chatPref int8
+	// Its chrome: the bar's menu / pad / boards / chat switches. Every one of
+	// them is a switch and nothing more — no scrim, no close button.
 	barHudBtn, barPadBtn, barChatBtn, barOppBtn widget.Clickable
-	drawerScrim, drawerCloseBtn                 widget.Clickable
-	drawerTag                                   int // address used as the open panel's pointer-area tag: presses inside it are its own
+	hudTag                                      int // pointer-area tag of a menu column drawn OVER the board: its presses are its own, not the gesture surface's
 	chatSeen                                    int // messages the chat panel last showed: the bar's unread dot
-	// drawerEng is the engine the panel state above belongs to; a new one
-	// (every game entry makes one) shuts the panels and forgets what was read.
-	drawerEng *engine.Engine
+	// screenEng is the engine the screen state above belongs to; a new one
+	// (every game entry makes one) shuts the menu and forgets what was read.
+	screenEng *engine.Engine
 	// Touch diagnostic (browser build, view_js.go; the page's ?touchdebug=1):
 	// touchDebug switches it on, touchPresses counts the touch presses that
 	// reached the game screen (handleGameFocus) and frames the frames laid

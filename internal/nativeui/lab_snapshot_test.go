@@ -118,8 +118,8 @@ func TestLabSnapshots(t *testing.T) {
 }
 
 // TestStripSnapshot renders the MOVE BUFFER strip alone with a coalesced
-// queue — two multi-move batches around a hard drop, four batches in flight
-// — for a look at the fused plates. Same opt-in as TestLabSnapshots.
+// queue — two multi-move batches around a hard drop — for a look at the fused
+// plates. Same opt-in as TestLabSnapshots.
 func TestStripSnapshot(t *testing.T) {
 	dir := os.Getenv("FW_SNAPSHOT_DIR")
 	if dir == "" {
@@ -139,7 +139,7 @@ func TestStripSnapshot(t *testing.T) {
 	}
 	snapshotPNGSized(t, w, dir, "lab_strip_batches", size, func(gtx C) {
 		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
-		layout.Center.Layout(gtx, func(gtx C) D { return a.bufferedMovesStrip(gtx, batches, 4, 2) })
+		layout.Center.Layout(gtx, func(gtx C) D { return a.bufferedMovesStrip(gtx, batches, 2) })
 	})
 	w.Release()
 
@@ -155,7 +155,7 @@ func TestStripSnapshot(t *testing.T) {
 	}
 	snapshotPNGSized(t, w, dir, "lab_strip_overflow", size, func(gtx C) {
 		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
-		layout.Center.Layout(gtx, func(gtx C) D { return a.bufferedMovesStrip(gtx, many, 1, 0) })
+		layout.Center.Layout(gtx, func(gtx C) D { return a.bufferedMovesStrip(gtx, many, 0) })
 	})
 	w.Release()
 }

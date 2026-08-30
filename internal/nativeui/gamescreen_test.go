@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"gioui.org/io/input"
+	"gioui.org/io/key"
 	"gioui.org/io/pointer"
+	"gioui.org/io/semantic"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -104,6 +106,15 @@ func (g *screenRig) frame() {
 func (g *screenRig) tap(x, y float32) {
 	touch(g.r, pointer.Press, 1, x, y, 0)
 	touch(g.r, pointer.Release, 1, x, y, 60*time.Millisecond)
+	g.frame()
+	g.frame()
+}
+
+// press queues a key press and release and runs the frames that dispatch it —
+// the keyboard's half of driving the screen, against whichever widget the
+// screen has given the keys to.
+func (g *screenRig) press(name key.Name) {
+	g.r.Queue(key.Event{Name: name, State: key.Press}, key.Event{Name: name, State: key.Release})
 	g.frame()
 	g.frame()
 }
@@ -308,41 +319,34 @@ func TestSwipeSurfaceRotateSplitFollowsTheWell(t *testing.T) {
 	}
 }
 
-// TestCompactBarOpensAndClosesThePanels drives the bar's buttons for real:
-// the menu opens the HUD panel, the chat button swaps to the chat panel, a
-// tap on the board beside a panel closes it, a tap inside the panel does not
-// — and no gesture under an open panel ever reaches the piece.
-func TestCompactBarOpensAndClosesThePanels(t *testing.T) {
+// TestBarSwitchesShowAndHideTheColumns drives the bar's buttons for real: the
+// menu button shows the menu column and hides it again — nothing else does —
+// and the chat button the same for the chat strip. Neither is a window over
+// the board: no tap on the playfield puts one away.
+func TestBarSwitchesShowAndHideTheColumns(t *testing.T) {
 	const w, h = 390, 844
 	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-panels", config.ModeCompetitive))
-	field := g.field(t)
-	fieldY := float32(field.Min.Y + field.Dy()/2)
-
+	if g.a.hudVisible() {
+		t.Fatal("the menu column is up by default on a phone, where it covers the board")
+	}
 	g.tap(barMenuX(), barCenterY())
-	if !g.a.hudDrawer {
-		t.Fatal("the menu button did not open the HUD panel")
+	if !g.a.hudVisible() {
+		t.Fatal("the menu button did not show the menu column")
 	}
-	// A tap on the board under the open panel neither moves the piece nor
-	// (the panel covers that point) closes anything.
-	queued := len(g.a.eng.BufferedMoves())
-	g.tap(float32(field.Min.X+field.Dx()/4), fieldY)
-	if got := g.a.eng.BufferedMoves(); len(got) != queued {
-		t.Fatalf("a tap under the open panel queued %v", got[queued:])
+	// A tap on the playfield leaves the menu exactly where the player put it:
+	// there is no scrim to tap through and nothing about the board shuts it.
+	field := g.field(t)
+	g.tap(float32(field.Max.X-6), float32(field.Min.Y+field.Dy()/2))
+	if !g.a.hudVisible() {
+		t.Fatal("a tap on the board closed the menu column")
 	}
-	if !g.a.hudDrawer {
-		t.Fatal("a tap inside the panel closed it")
-	}
-	// A tap on the board BESIDE the panel closes it, and still queues nothing.
-	g.tap(float32(w)-6, fieldY)
-	if g.a.hudDrawer {
-		t.Fatal("a tap beside the panel did not close it")
-	}
-	if got := g.a.eng.BufferedMoves(); len(got) != queued {
-		t.Fatalf("the closing tap also queued %v", got[queued:])
+	g.tap(barMenuX(), barCenterY())
+	if g.a.hudVisible() {
+		t.Fatal("the menu button did not hide the column it showed")
 	}
 
-	// The chat button shows and hides the strip. It is not a panel over the
-	// board — the HUD can be open at the same time, and neither blocks play.
+	// The chat button shows and hides the strip. Both can be up at once, and
+	// neither blocks play.
 	if g.a.chatVisible() {
 		t.Fatal("the chat strip is up by default on a phone")
 	}
@@ -350,12 +354,169 @@ func TestCompactBarOpensAndClosesThePanels(t *testing.T) {
 	if !g.a.chatVisible() {
 		t.Fatal("the chat button did not show the strip")
 	}
-	if g.a.drawerOpen() {
-		t.Fatal("the chat strip counts as a panel over the board")
+	g.tap(barMenuX(), barCenterY())
+	if !g.a.chatVisible() || !g.a.hudVisible() {
+		t.Fatalf("menu and chat cannot be up together: chat=%v menu=%v", g.a.chatVisible(), g.a.hudVisible())
 	}
 	g.tap(barChatX(w), barCenterY())
 	if g.a.chatVisible() {
 		t.Fatal("the chat button did not hide the strip again")
+	}
+}
+
+// TestMenuColumnLeavesTheGamePlayable is the whole point of the menu being a
+// switch and not a window: with it open the piece still takes moves, from a
+// tap on the playfield and from the keys alike — a player flips a lab switch
+// mid-game without handing the game over to a panel.
+func TestMenuColumnLeavesTheGamePlayable(t *testing.T) {
+	const w, h = 1280, 820
+	// A transport-less engine: it never drains its queue, so BufferedMoves is
+	// exactly what the screen fed it. And no on-screen pad: its buttons are
+	// laid out over the gesture surface, and a tap meant for the playfield
+	// would be one of theirs.
+	eng := engine.New(nil, "menu-playable", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g := newScreenRig(t, image.Pt(w, h), deviceDesktop, eng)
+	g.a.padPref = -1
+	g.frame()
+	if !g.a.hudVisible() {
+		t.Fatal("a wide window does not start with the menu column up")
+	}
+	// A wide window has room for the menu beside the board, so the board area
+	// — and the surface a swipe lands on — starts clear of the column.
+	field := g.field(t)
+	if !g.a.hudBeside(boardAreaCtx(w, h)) {
+		t.Fatalf("a %dx%d window has no room for the menu beside the board", w, h)
+	}
+	if want := g.a.hudColW(boardAreaCtx(w, h)); field.Min.X < want {
+		t.Errorf("the swipe surface starts at x=%d, inside the %d px menu column", field.Min.X, want)
+	}
+	before := len(eng.BufferedMoves())
+	g.tap(float32(field.Min.X+field.Dx()/4), float32(field.Min.Y+field.Dy()/2))
+	got := eng.BufferedMoves()
+	if len(got) == before {
+		t.Fatal("a tap on the playfield beside the open menu queued no move")
+	}
+	if got[len(got)-1] != engine.RotateCCW {
+		t.Fatalf("tap left of the well's middle queued %v, want a counter-clockwise rotation", got[len(got)-1])
+	}
+	// And the keys are still the board's: nothing in the menu claimed them.
+	before = len(eng.BufferedMoves())
+	g.press(key.NameLeftArrow)
+	if got := eng.BufferedMoves(); len(got) == before || got[len(got)-1] != engine.MoveLeft {
+		t.Fatalf("the arrow key queued %v with the menu open, want a left move", got[before:])
+	}
+}
+
+// TestLabSwitchFlipsWithoutTakingTheKeys is the scenario the menu became a
+// switch for: mid-game, the player flips MOVE PUBLISHING from Optimistic
+// async to Pessimistic sync in the open menu and plays straight on. The radio
+// is a Clickable and takes the keys for the frame of its press (Gio keyboard
+// navigation); the board area — the whole screen — must hand them back on the
+// next, or the arrows would stop driving the piece the moment a switch is
+// touched.
+func TestLabSwitchFlipsWithoutTakingTheKeys(t *testing.T) {
+	eng := engine.New(nil, "lab-switch", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
+	if !g.a.hudVisible() {
+		t.Fatal("a wide window does not start with the menu column up")
+	}
+	if g.a.labEnum.Value == labSync {
+		t.Fatal("the lab switch starts on Pessimistic sync; this test flips onto it")
+	}
+	r, ok := semanticClassBounds(g.r, semantic.RadioButton)
+	if !ok {
+		t.Fatal("no radio button in the open menu — the lab switches are not on screen")
+	}
+	g.tap(float32(r.Min.X+r.Dx()/2), float32(r.Min.Y+r.Dy()/2))
+	if g.a.labEnum.Value != labSync {
+		t.Fatalf("the lab switch reads %q after a click on its first radio, want %q", g.a.labEnum.Value, labSync)
+	}
+	if !g.a.hudVisible() {
+		t.Fatal("flipping a switch inside the menu closed it")
+	}
+	before := len(eng.BufferedMoves())
+	g.press(key.NameLeftArrow)
+	if got := eng.BufferedMoves(); len(got) == before || got[len(got)-1] != engine.MoveLeft {
+		t.Fatalf("after flipping a lab switch the arrow key queued %v, want a left move — the menu kept the keys", got[before:])
+	}
+}
+
+// semanticClassBounds is the window-px rectangle of the first widget of a
+// semantic class in the router's tree of the last frame (the labelled lookup
+// is semanticBounds; a radio button carries its label as a child).
+func semanticClassBounds(r *input.Router, class semantic.ClassOp) (image.Rectangle, bool) {
+	var find func([]input.SemanticNode) (image.Rectangle, bool)
+	find = func(nodes []input.SemanticNode) (image.Rectangle, bool) {
+		for _, n := range nodes {
+			if n.Desc.Class == class {
+				return n.Desc.Bounds, true
+			}
+			if b, ok := find(n.Children); ok {
+				return b, true
+			}
+		}
+		return image.Rectangle{}, false
+	}
+	return find(r.AppendSemantics(nil))
+}
+
+// boardAreaCtx is the context the board area is laid out in on a window of
+// this size: the screen less the bar and the area's own inset, which is what
+// the menu column's own arithmetic (hudBeside, hudColW) measures.
+func boardAreaCtx(w, h int) C { return testCtx(w-8, h-gameBarH-8) }
+
+// TestMenuColumnNeverPushesTheBoardOffScreen: on a screen with room the menu
+// takes its width off the board, and on one without (a phone held portrait,
+// where what was left would be narrower than the move-buffer strip the board
+// is centred on) it is drawn OVER the board instead — the playfield keeping
+// the size, the cell and the place it had. Either way nothing lands outside
+// the window.
+func TestMenuColumnNeverPushesTheBoardOffScreen(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		sz     image.Point
+		dev    deviceKind
+		beside bool
+	}{
+		{"phone portrait", image.Pt(390, 844), devicePhone, false},
+		{"phone landscape", image.Pt(844, 390), devicePhone, true},
+		{"tablet portrait", image.Pt(820, 1180), deviceTablet, true},
+		{"desktop", image.Pt(1280, 820), deviceDesktop, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			eng := engine.New(nil, "menu-fit", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+			g := newScreenRig(t, c.sz, c.dev, eng)
+			// From the board as it is with no menu — which on a screen roomy
+			// enough is not how it starts (hudVisible), so switch it away.
+			g.a.hudPref = -1
+			g.frame()
+			was, wasCell := g.field(t), g.a.gest.cell
+			gtx := boardAreaCtx(c.sz.X, c.sz.Y)
+			if got := g.a.hudBeside(gtx); got != c.beside {
+				t.Fatalf("hudBeside = %v, want %v (column %d px of %d, strip %d px)",
+					got, c.beside, g.a.hudColW(gtx), gtx.Constraints.Max.X, g.a.stripWidth(gtx))
+			}
+			g.tap(barMenuX(), barCenterY())
+			now := g.field(t)
+			// Across the window, not down it: a board column too short for a
+			// whole playfield has always overflowed downwards (fitCellPx's
+			// floor), and that is the board's own business. Off the SIDE of
+			// the screen is the menu's doing and is not allowed.
+			if now.Min.X < 0 || now.Max.X > c.sz.X {
+				t.Errorf("with the menu open the playfield surface spans x %d..%d, outside the %d px window", now.Min.X, now.Max.X, c.sz.X)
+			}
+			switch {
+			case c.beside:
+				if now.Min.X <= was.Min.X || now.Dx() >= was.Dx() {
+					t.Errorf("the menu stands beside the board and took nothing off it: surface %v, was %v", now, was)
+				}
+			default:
+				if now != was || g.a.gest.cell != wasCell {
+					t.Errorf("the menu drawn over the board moved it: surface %v (cell %d), was %v (cell %d)",
+						now, g.a.gest.cell, was, wasCell)
+				}
+			}
+		})
 	}
 }
 
@@ -387,25 +548,29 @@ func TestCompactPadButtonTogglesThePad(t *testing.T) {
 }
 
 // TestOneScreenEverywhere: a desktop window gets the same screen a phone
-// does — the bar on top, the HUD and the chat behind it — and no permanent
-// side columns. What differs is only what the screen can afford: a wide one
-// is not "compact", so its opponents show by default and its wells draw at
-// the board's own cell.
+// does — the bar on top, every column and strip on one of its switches. What
+// differs is only what the screen can afford: a wide one is not "compact", so
+// its menu column and its opponents show by default and its wells draw at the
+// board's own cell.
 func TestOneScreenEverywhere(t *testing.T) {
 	eng := liveEngine(t, "one-screen", config.ModeCompetitive)
 	wide := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
 	if wide.a.form.compact {
 		t.Fatal("a 1280x820 window reports itself as compact")
 	}
-	// The bar is there: its menu button opens the HUD panel, exactly as on a
-	// phone, and the board is reachable again once it closes.
+	// The menu column stands beside the board from the first frame here — a
+	// wide window can afford it — and the bar's button takes it away and
+	// brings it back, exactly as it does on a phone.
+	if !wide.a.hudVisible() {
+		t.Fatal("a wide window does not start with the menu column up")
+	}
 	wide.tap(barMenuX(), barCenterY())
-	if !wide.a.hudDrawer {
+	if wide.a.hudVisible() {
 		t.Fatal("the desktop window has no working menu button")
 	}
 	wide.tap(barMenuX(), barCenterY())
-	if wide.a.drawerOpen() {
-		t.Fatal("the menu button did not close the panel it opened")
+	if !wide.a.hudVisible() {
+		t.Fatal("the menu button did not bring back the column it hid")
 	}
 	// Room to spare: the opponents show without being asked, and the wells
 	// draw at the board's own cell rather than the narrow screen's fraction.
@@ -433,7 +598,7 @@ func TestCompactStripFitsTheScreen(t *testing.T) {
 		}
 		// The strip itself is exactly the row's width, caption or no.
 		batches := [][]engine.MoveType{{engine.MoveLeft, engine.MoveDown}, {engine.MoveHardDrop}}
-		if d := a.bufferedMovesStrip(testCtx(w, 780), batches, 2, 1); d.Size.X != a.stripWidth(gtx) {
+		if d := a.bufferedMovesStrip(testCtx(w, 780), batches, 1); d.Size.X != a.stripWidth(gtx) {
 			t.Errorf("compact strip laid out %d px wide, want %d", d.Size.X, a.stripWidth(gtx))
 		}
 	}
@@ -449,8 +614,8 @@ func TestCompactStripFitsTheScreen(t *testing.T) {
 
 // TestCompactScreensLayoutWithoutPanic walks the compact screen through the
 // states a game passes — pre-start (the ready bar), playing, over — as a
-// player and as a spectator, in every mode, with either panel open, in both
-// orientations and with the NATS message panel showing.
+// player and as a spectator, in every mode, with the menu column or the chat
+// strip up, in both orientations and with the NATS message panel showing.
 func TestCompactScreensLayoutWithoutPanic(t *testing.T) {
 	players := []lobby.PlayerSummary{
 		{PlayerID: "alice", Name: "alice", Ready: true},
@@ -469,10 +634,13 @@ func TestCompactScreensLayoutWithoutPanic(t *testing.T) {
 						a.screen = screenGame
 						a.gameStatus = string(st)
 						a.gameOver = st == config.GameStatusFinished
-						// The HUD shuts itself on a screen's first frame, so
-						// this one has to look like a screen already up.
-						a.drawerEng = a.eng
-						a.hudDrawer = panel == "hud"
+						// The menu shuts itself on a screen's first frame,
+						// so this one has to look like a screen already up.
+						a.screenEng = a.eng
+						a.hudPref = -1
+						if panel == "hud" {
+							a.hudPref = 1
+						}
 						if panel == "chat" {
 							a.chatPref = 1
 						}
@@ -530,9 +698,9 @@ func TestGameChatLogFolds(t *testing.T) {
 	}
 }
 
-// TestPanelsResetOnANewGame: a panel left open when the player walks out of
-// a game must not be over the board of the next one, and the unread mark
-// starts over — the chat there is a different conversation.
+// TestPanelsResetOnANewGame: entering a new game starts the unread mark over
+// — the chat there is a different conversation — while the bar's switches,
+// the menu column among them, are the player's own and carry across.
 func TestPanelsResetOnANewGame(t *testing.T) {
 	a := newTestApp()
 	a.touchUI = true
@@ -544,19 +712,19 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.chatLog = []lobby.ChatMessage{{GameID: "g1", Name: "bob", Text: "gl hf"}}
 	a.layout(testCtx(390, 844)) // the game screen's first frame
-	a.hudDrawer, a.chatPref = true, 1
+	a.hudPref, a.chatPref = 1, 1
 	a.layout(testCtx(390, 844))
-	if !a.hudDrawer || a.chatSeen != 1 {
-		t.Fatalf("first game: HUD open=%v seen=%d, want open with the one message read", a.hudDrawer, a.chatSeen)
+	if !a.hudVisible() || a.chatSeen != 1 {
+		t.Fatalf("first game: menu up=%v seen=%d, want up with the one message read", a.hudVisible(), a.chatSeen)
 	}
 	// A second game: a new engine, so a new screen.
 	a.eng = engine.New(nil, "g2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	a.layout(testCtx(390, 844))
-	if a.drawerOpen() {
-		t.Error("the panel from the last game is over the new one's board")
-	}
 	if a.chatSeen != 0 {
 		t.Errorf("chatSeen = %d on the new game, want 0", a.chatSeen)
+	}
+	if !a.hudVisible() {
+		t.Error("the player's menu choice did not carry into the next game")
 	}
 	// The bar's switches are the player's own and survive the move.
 	if !a.chatVisible() {

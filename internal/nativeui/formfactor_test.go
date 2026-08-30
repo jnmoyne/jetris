@@ -89,20 +89,3 @@ func TestPadVisibleDefaults(t *testing.T) {
 		t.Error("desktop, pad switched off: still shown")
 	}
 }
-
-// TestDrawerOpen: either panel counts, and both closed is a reachable board.
-func TestDrawerOpen(t *testing.T) {
-	a := newTestApp()
-	if a.drawerOpen() {
-		t.Fatal("a fresh screen has a panel open")
-	}
-	a.hudDrawer = true
-	if !a.drawerOpen() {
-		t.Fatal("the HUD panel is open and drawerOpen says otherwise")
-	}
-	// The chat strip is in the flow, not over the board: it never blocks play.
-	a.hudDrawer, a.chatPref = false, 1
-	if a.drawerOpen() {
-		t.Fatal("the chat strip counts as a panel over the board")
-	}
-}

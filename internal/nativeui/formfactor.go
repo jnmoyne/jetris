@@ -3,17 +3,18 @@ package nativeui
 // Form factor — which device the game is being played on, which way it is
 // held, and how much room there is to spend.
 //
-// There is ONE game screen (compact.go): a slim bar across the top carrying
-// the score and the switches for everything that costs the playfield room,
-// the board with all the rest, and the HUD and the chat behind a tap —
-// panels that slide over the board only while they are wanted. A phone and a
-// desktop get the same screen; what changes between them is what that screen
-// can afford, which is what this file works out.
+// There is ONE game screen (gamescreen.go): a slim bar across the top
+// carrying the score and the switches for everything that costs the playfield
+// room, and the board with all the rest. Every switch is just that — the menu
+// column, the opponents' boards, the chat strip, the on-screen pad show or
+// they do not, and none of them takes the game away while it is up. A phone
+// and a desktop get the same screen; what changes between them is what that
+// screen can afford, which is what this file works out.
 //
 // `compact` is that affordability, not a second layout: a phone always, a
 // tablet held portrait, and any window too small to spend freely — the
 // desktop app dragged down to its minimum size included. Under it the
-// move-buffer chips shrink, captions abbreviate, the pads move to the
+// move-buffer chips shrink, captions run smaller, the pads move to the
 // playfield's bottom edge where the thumbs are, and the boxes that sit
 // beside the board stack under it instead.
 //
@@ -142,8 +143,21 @@ func (a *App) chatVisible() bool {
 	return !a.form.compact
 }
 
-// drawerOpen reports whether a panel is over the board — the frame's presses
-// belong to it, not to the game (the pad's clicks and the playfield's
-// gestures are gated on this). Only the HUD is such a panel; the chat strip
-// is in the flow beside the board, not over it, and never blocks play.
-func (a *App) drawerOpen() bool { return a.hudDrawer }
+// hudVisible reports whether the menu column (the stats, the controls legend,
+// the lab switches, Back to Lobby) stands beside the board. The bar's menu
+// button is the player's say (hudPref) and holds for the session; until they
+// use it the screen decides, as it does for the others. A screen with room
+// keeps the column up — it is where the lab switches live and the game plays
+// on beside it, which is how this game looked on a desktop before the column
+// went behind a button — while a compact one starts without it, because there
+// the menu has to be drawn OVER the board (hudBeside) and the game would
+// begin with the playfield covered.
+func (a *App) hudVisible() bool {
+	switch {
+	case a.hudPref > 0:
+		return true
+	case a.hudPref < 0:
+		return false
+	}
+	return !a.form.compact
+}

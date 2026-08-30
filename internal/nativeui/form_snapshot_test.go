@@ -1,10 +1,12 @@
 package nativeui
 
 // Opt-in visual verification of the responsive game screen (formfactor.go,
-// compact.go): the compact screen on a phone in both orientations and on a
-// tablet held portrait, its two panels open, the on-screen pad switched back
-// on, and — for comparison — the full screen on a tablet held landscape and
-// with both its panels folded away. Renders a real competitive game
+// gamescreen.go): the screen on a phone in both orientations and on a tablet
+// held portrait — where the menu column starts off and comes up OVER the
+// board — with the chat strip and the on-screen pad switched on, and the same
+// screen on a tablet held landscape and on a desktop, where the menu stands
+// beside the board from the first frame and can be switched away. Renders a
+// real competitive game
 // consuming a real stream on an embedded server, through a headless GPU
 // window, and writes PNGs for inspection. Skipped unless FW_SNAPSHOT_DIR is
 // set (needs a GPU):
@@ -57,7 +59,7 @@ func TestFormSnapshots(t *testing.T) {
 		{name: "form_phone_portrait_pad", size: image.Pt(390, 844), device: devicePhone,
 			tweak: func(a *App) { a.padPref = 1 }},
 		{name: "form_phone_portrait_hud", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.hudDrawer = true }},
+			tweak: func(a *App) { a.hudPref = 1 }},
 		{name: "form_phone_portrait_chat", size: image.Pt(390, 844), device: devicePhone,
 			tweak: func(a *App) { a.chatPref = 1 }},
 		{name: "form_phone_portrait_opps", size: image.Pt(390, 844), device: devicePhone,
@@ -67,9 +69,11 @@ func TestFormSnapshots(t *testing.T) {
 		{name: "form_phone_landscape", size: image.Pt(844, 390), device: devicePhone},
 		{name: "form_tablet_portrait", size: image.Pt(820, 1180), device: deviceTablet},
 		{name: "form_tablet_landscape", size: image.Pt(1180, 740), device: deviceTablet},
-		{name: "form_tablet_landscape_hud", size: image.Pt(1180, 740), device: deviceTablet,
-			tweak: func(a *App) { a.hudDrawer = true }},
+		{name: "form_tablet_landscape_nomenu", size: image.Pt(1180, 740), device: deviceTablet,
+			tweak: func(a *App) { a.hudPref = -1 }},
 		{name: "form_desktop", size: image.Pt(1280, 820), device: deviceDesktop},
+		{name: "form_desktop_nomenu", size: image.Pt(1280, 820), device: deviceDesktop,
+			tweak: func(a *App) { a.hudPref = -1 }},
 	}
 	for i, c := range cases {
 		gameID := fmt.Sprintf("form-shots-%d", i)
@@ -106,10 +110,10 @@ func TestFormSnapshots(t *testing.T) {
 			{GameID: gameID, Name: "bob", Text: "gl hf"},
 			{GameID: "", Name: "carol", Text: "who's winning?"},
 		}
-		// The panels shut themselves on a game screen's first frame (a new
-		// engine — handleFormClicks); this IS that first frame, so the tweak
-		// opens one against an already-established screen.
-		a.drawerEng = e
+		// The unread chat mark starts over on a game screen's first frame (a
+		// new engine — handleFormClicks); this IS that first frame, so say
+		// the screen is already established.
+		a.screenEng = e
 		if c.tweak != nil {
 			c.tweak(a)
 		}

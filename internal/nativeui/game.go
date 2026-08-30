@@ -159,13 +159,15 @@ func (a *App) layoutGame(gtx C) D {
 	if mode == engine.ModePlayer && started {
 		a.handleKeys(gtx, eng)
 	}
-	// The screen's own chrome first (compact.go — the compact screen's bar
-	// and panels, the full screen's fold handles): a panel opened or closed
-	// this frame decides whether the board is reachable at all.
+	// The screen's own chrome first (gamescreen.go — the bar's switches), so
+	// a column shown or hidden this frame is already in the layout the pad
+	// and the gestures measure.
 	a.handleFormClicks(gtx, eng)
-	// A panel over the board owns the frame's presses, as the leave modal
-	// does: neither the pad nor the playfield may act under one.
-	reachable := playing && !a.confirmLeave && !a.drawerOpen()
+	// Only the leave modal takes the game away: it scrims the screen and
+	// swallows the frame's presses, so neither the pad nor the playfield may
+	// act under it. The bar's columns — the menu among them — sit BESIDE the
+	// board and never stop play.
+	reachable := playing && !a.confirmLeave
 	// The on-screen pad mirrors the keyboard scheme; its clicks are drained
 	// every frame and only dispatched while the game is actually playable.
 	a.handlePadClicks(gtx, eng, reachable)
@@ -335,7 +337,7 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 // the playfield simply has that many fewer rows.
 func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	msgs := a.gameChatLog(eng.GameID())
-	a.chatSeen = len(msgs) // seen: the bar's unread dot goes out (compact.go)
+	a.chatSeen = len(msgs) // seen: the bar's unread dot goes out (gamescreen.go)
 
 	// The hints spell the keyboard's board/chat switch out at full width and
 	// abbreviate on the compact screen, where the editor is a phone's wide
@@ -502,7 +504,8 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
-			// The panel closes by its own button; this line just names the game.
+			// The column is hidden by the same bar button that showed it; this
+			// line just names the game.
 			return a.pixelLabelFit(gtx, unit.Sp(11), modeLabel, colAccent)
 		}),
 		layout.Rigid(func(gtx C) D { return a.sessionLine(gtx) }),
@@ -1013,9 +1016,8 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		strip := func(gtx C) D {
 			// Inputs queued behind the in-flight batch publish (very visible
 			// on a high-RTT server); the strip drains as each buffered
-			// move's own publish starts — and, with the batches pipelined,
-			// counts the ones in flight instead.
-			return a.bufferedMovesStrip(gtx, eng.BufferedBatches(), eng.InflightSteps(), eng.BatchesTaken())
+			// move's own publish starts.
+			return a.bufferedMovesStrip(gtx, eng.BufferedBatches(), eng.BatchesTaken())
 		}
 		// What layout.Center will stretch the column to (a Flexed slot's Min
 		// is its Max on the main axis): the room left over on either side of

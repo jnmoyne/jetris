@@ -9,6 +9,7 @@ package nativeui
 import (
 	"fmt"
 	"image"
+	"strconv"
 	"time"
 
 	"gioui.org/layout"
@@ -93,10 +94,11 @@ var (
 		"XXXXXXXX",
 		".XX.....",
 	}
-	// The compact screen's bar icons (compact.go), in the same blocky
-	// language: the three-bar menu that opens the HUD, a speech bubble for
-	// the chat, the D-pad cross for the on-screen pad's on/off, and the
-	// cross that closes an open panel.
+	// The game bar's switch icons (gamescreen.go), in the same blocky
+	// language: the three-bar menu that shows the menu column, a speech
+	// bubble for the chat strip, the D-pad cross for the on-screen pad. None
+	// of them closes a window — every one is a switch that shows what it
+	// hides, so there is no ✕ among them.
 	glyphMenu = []string{
 		"XXXXXXXX",
 		"XXXXXXXX",
@@ -127,16 +129,6 @@ var (
 		"..XXXX..",
 		"..XXXX..",
 	}
-	glyphClose = []string{
-		"XX....XX",
-		"XXX..XXX",
-		".XXXXXX.",
-		"..XXXX..",
-		"..XXXX..",
-		".XXXXXX.",
-		"XXX..XXX",
-		"XX....XX",
-	}
 	// glyphTrophy marks a winner (winnerMark, lobby.go). Drawn rather than
 	// typed: a text trophy needs a font that has U+1F3C6, and since Gio
 	// v0.10 none within reach does — it shapes to .notdef and comes out a
@@ -155,7 +147,7 @@ var (
 		"..XXXXX..",
 		".XXXXXXX.",
 	}
-	// glyphBoards switches the opponents' playfields on and off (compact.go):
+	// glyphBoards switches the opponents' playfields on and off (gamescreen.go):
 	// two wells side by side, the second one part-filled, which is what the
 	// strip it opens actually shows.
 	glyphBoards = []string{
@@ -250,6 +242,9 @@ func (a *App) moveGlyph(m engine.MoveType, size unit.Dp, col colorN) layout.Widg
 const (
 	bufferedSlots = 8
 	bufPopDur     = 200 * time.Millisecond
+	// capCountGap is the gap in dp between the strip's centered MOVE BUFFER
+	// label and the count that hangs off its right.
+	capCountGap = 8
 )
 
 // stripChip is the move-buffer strip's chip side and inter-chip gap in px.
@@ -296,8 +291,9 @@ func (a *App) stripReservedY(gtx C) int {
 // wide as the slot row — the board is centered on it, and a caption or an
 // overflow count that changed its width would shift the playfield with
 // every queued move; past the slots the last one counts the rest — and a
-// freshly queued glyph pops in with an overshoot.
-func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, firstOrdinal int) D {
+// freshly queued glyph pops in with an overshoot. Over the slots sits the
+// one caption the strip ever shows: MOVE BUFFER and the number queued.
+func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, firstOrdinal int) D {
 	chip, gap := a.stripChip(gtx)
 	now := gtx.Now
 	// The queue flat: each move with its batch's color and whether it opens
@@ -326,31 +322,27 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 		animate(gtx) // keep the pop-in animating
 	}
 
-	count, countCol := "EMPTY", colMuted
-	if n > 0 {
-		count, countCol = fmt.Sprintf("%d QUEUED", n), colGold
-	}
-	// Batches sent and not yet acked: one at most in sync mode (the strip's
-	// reason to exist), the whole burst in async mode (its reason to empty).
-	// The label is laid out only when there is something to say: an EMPTY
-	// pixel label is not zero-height (an empty run takes the fallback face's
-	// line height, 11 px against the 9 px of real text, on another baseline)
-	// and would make the row — and the centered board over it — jump by
-	// two pixels every time the count came and went.
-	//
-	// The caption abbreviates on the compact screen: the full one runs wider
-	// than a phone's slot row, and the strip is only ever as wide as that row.
-	head, capSp, inflightTxt := "MOVE BUFFER  ", unit.Sp(9), "  ·  %d IN FLIGHT"
+	// The caption says the same thing whatever the queue is doing — the label,
+	// then how many moves are buffered, "0" when none. The LABEL is what is
+	// centered on the slot row, and the count hangs off its right, outside
+	// that centering: the words never move, and a queue going from 9 to 10
+	// merely reaches a glyph further right. (Centering the line as a whole
+	// would shift the words half a glyph on every tenth move, and wording
+	// that came and went — "EMPTY" against "3 QUEUED", an IN FLIGHT count
+	// behind them — used to slide them about on every key press.) The count
+	// is never empty either: an empty pixel run takes the fallback face's
+	// line height (11 px against the 9 px of real text, on another baseline),
+	// which used to make the row — and the centered board over it — jump by
+	// two pixels.
+	capSp := unit.Sp(9)
 	if a.form.compact {
-		head, capSp, inflightTxt = "BUF  ", unit.Sp(8), "  ·  %d FLYING"
+		capSp = unit.Sp(8)
 	}
-	caption := []layout.FlexChild{
-		layout.Rigid(a.pixel(capSp, head, colMuted).Layout),
-		layout.Rigid(a.pixel(capSp, count, countCol).Layout),
+	countCol := colMuted
+	if n > 0 {
+		countCol = colGold
 	}
-	if inflight > 0 {
-		caption = append(caption, layout.Rigid(a.pixel(capSp, fmt.Sprintf(inflightTxt, inflight), colAccent).Layout))
-	}
+	head, count := bufferedCaption(n)
 	// The strip is always exactly the slot row wide, its content centered in
 	// that width: the board over it is centered on the strip, and a caption
 	// or a count that widened the strip would shift the whole playfield
@@ -359,7 +351,20 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 	macro := op.Record(gtx.Ops)
 	dims := layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx, caption...)
+			// The caption row claims the whole strip width, and the label is
+			// laid in at the offset that centers IT on the row — so the count
+			// after it grows to the right without ever moving the words.
+			gtx.Constraints.Max.X = max(gtx.Constraints.Max.X, width)
+			gtx.Constraints.Min.X = width
+			lead := max(0, (width-a.pixelWidth(gtx, capSp, head))/2)
+			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: gtx.Metric.PxToDp(lead)}.Layout(gtx, a.pixel(capSp, head, colMuted).Layout)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: unit.Dp(capCountGap)}.Layout(gtx, a.pixel(capSp, count, countCol).Layout)
+				}),
+			)
 		}),
 		layout.Rigid(spacer(6)),
 		layout.Rigid(func(gtx C) D {
@@ -416,6 +421,16 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 	defer op.Offset(image.Pt((width-dims.Size.X)/2, 0)).Push(gtx.Ops).Pop()
 	call.Add(gtx.Ops)
 	return D{Size: image.Pt(width, dims.Size.Y)}
+}
+
+// bufferedCaption is everything the strip's caption ever says for a queue of
+// n moves: the fixed label, then the count — "0" when nothing is queued. It
+// takes no other state on purpose. Wording that varied with the queue moved
+// the line about under a board that has to sit still. The label is centered
+// on the slot row and the count sits capCountGap to its right, so only the
+// count's own width ever changes.
+func bufferedCaption(n int) (head, count string) {
+	return "MOVE BUFFER", strconv.Itoa(n)
 }
 
 // emptySlot draws a dim outlined square — a vacant position in the buffer strip.

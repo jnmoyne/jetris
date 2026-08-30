@@ -861,9 +861,11 @@ publish wait in the engine's move buffer. A prominent **MOVE BUFFER** strip dire
 below the playfield shows that queue like an arcade combo meter, oldest first: a row of
 eight big chunky chip slots (dim outlines while vacant) that fill with bright gold chips
 — blocky pixel-art arrows for the shifts and hard drop, blocky circular arrows (↻/↺)
-for the rotations — as inputs queue, alongside an `N QUEUED` counter (muted `EMPTY`
-otherwise)
-and a gold `+N` overflow marker beyond eight. The strip is animated in the video-game
+for the rotations — as inputs queue, and a gold `+N` overflow marker beyond eight. Over
+the slots is one unchanging caption, pinned to the left of the row: `MOVE BUFFER` and
+the number queued, `0` when nothing is. It never re-words and never moves — wording that
+came and went (`EMPTY` against `3 QUEUED`, an `IN FLIGHT` count behind them) slid the
+line about under a board that has to sit still. The strip is animated in the video-game
 idiom: a freshly queued chip **pops in** with a scale overshoot, and while anything is
 queued a **glow chases** left-to-right across the chips. Each chip appears when the
 input is accepted into the buffer and vanishes the moment its own batch publish starts,

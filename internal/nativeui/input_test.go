@@ -170,17 +170,16 @@ func press(r *input.Router, x, y float32) {
 // the bottom of the 1200×820 window (its pointer area includes the panel's
 // own inset, so a point right at the bottom edge is inside the panel yet over
 // no widget — it tests the panel area itself, not the editor's own click
-// handling), and the board area's top-left corner, beside the HUD column, is
-// empty space: pure paint, so a press there falls through to the screen-wide
-// board area. (The middle of the window is no longer safe: the control pad
-// flanks the playfield there, and a pad button — a Clickable — takes the keys
-// itself for the frame of its press, handleKeys handing them back on the
-// next.)
+// handling), and the board area's top-left corner is empty space: pure paint,
+// so a press there falls through to the screen-wide board area. (The middle
+// of the window is no longer safe: the control pad flanks the playfield
+// there, and a pad button — a Clickable — takes the keys itself for the frame
+// of its press, handleKeys handing them back on the next.)
 const (
 	// The bar's chat button, at the top right of the game screen; and a point
-	// on the board that is clear of it AND clear of the chat panel when that
-	// is open — the panel takes the bottom drawerFrac of the body, so
-	// this sits in the strip left above it.
+	// on the board that is clear of it AND clear of the chat strip when that
+	// is up — the strip takes the foot of the body, so this sits well above
+	// it.
 	chatBtnPressX, chatBtnPressY = 1200 - 6 - (gameBarH-14)/2, gameBarH / 2
 	boardPressX, boardPressY     = 250, gameBarH + 40
 	// Inside the chat strip, on widgets that consume the press themselves:

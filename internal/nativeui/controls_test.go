@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"image"
+	"strconv"
 	"testing"
 
 	"gioui.org/layout"
@@ -31,7 +32,7 @@ func TestGlyphBitmaps(t *testing.T) {
 	for name, bm := range map[string][]string{
 		"left": glyphLeft, "right": glyphRight, "down": glyphDown, "drop": glyphDrop,
 		"cw": glyphCW, "ccw": glyphCCW, "hold": glyphHold,
-		"menu": glyphMenu, "chat": glyphChat, "pad": glyphPad, "close": glyphClose,
+		"menu": glyphMenu, "chat": glyphChat, "pad": glyphPad,
 		"boards": glyphBoards, "trophy": glyphTrophy,
 	} {
 		if len(bm) == 0 {
@@ -82,18 +83,18 @@ func TestFitCellPx(t *testing.T) {
 // the filled one (slots plus the +N marker).
 func TestBufferedMovesStrip(t *testing.T) {
 	a := newTestApp()
-	empty := a.bufferedMovesStrip(testCtx(1200, 820), nil, 0, 0)
+	empty := a.bufferedMovesStrip(testCtx(1200, 820), nil, 0)
 	if empty.Size.X == 0 || empty.Size.Y == 0 {
 		t.Fatal("empty strip rendered zero-size; the slot row must always be visible")
 	}
 	few := a.bufferedMovesStrip(testCtx(1200, 820), [][]engine.MoveType{
 		{engine.MoveLeft}, {engine.RotateCW}, {engine.MoveHardDrop},
-	}, 0, 0)
+	}, 0)
 	over := make([][]engine.MoveType, 20)
 	for i := range over {
 		over[i] = []engine.MoveType{engine.MoveDown}
 	}
-	full := a.bufferedMovesStrip(testCtx(1200, 820), over, 0, 0)
+	full := a.bufferedMovesStrip(testCtx(1200, 820), over, 0)
 	if full.Size.X < few.Size.X {
 		t.Fatalf("overflowing strip (%d px) narrower than part-filled (%d px)", full.Size.X, few.Size.X)
 	}
@@ -291,12 +292,13 @@ func TestGameScreenReactive(t *testing.T) {
 	}
 }
 
-// TestBufferedMovesStripInflightKeepsHeight: the IN FLIGHT count coming and
-// going must not change the strip's height — the board is centered over it,
-// and a two-pixel change re-centers the whole playfield on every key press.
-// (An empty pixel label is taller than a real one, which is exactly what
-// used to happen.) Checked at 1× and 2× (a HiDPI window).
-func TestBufferedMovesStripInflightKeepsHeight(t *testing.T) {
+// TestBufferedMovesStripCaptionKeepsHeight: the queue filling and draining
+// must not change the strip's height — the board is centered over it, and a
+// two-pixel change re-centers the whole playfield on every key press. (An
+// empty pixel label is taller than a real one, which is exactly what used to
+// happen when the caption dropped a run.) Checked at 1× and 2× (a HiDPI
+// window).
+func TestBufferedMovesStripCaptionKeepsHeight(t *testing.T) {
 	a := newTestApp()
 	for _, scale := range []float32{1, 2} {
 		ctx := func() C {
@@ -309,16 +311,54 @@ func TestBufferedMovesStripInflightKeepsHeight(t *testing.T) {
 		}
 		few := [][]engine.MoveType{{engine.MoveLeft}, {engine.MoveDown}}
 		grouped := [][]engine.MoveType{{engine.MoveLeft, engine.MoveDown, engine.RotateCW}, {engine.MoveHardDrop}, {engine.MoveDown, engine.MoveDown}}
-		idle := a.bufferedMovesStrip(ctx(), nil, 0, 0).Size.Y
+		many := make([][]engine.MoveType, 12)
+		for i := range many {
+			many[i] = []engine.MoveType{engine.MoveDown}
+		}
+		idle := a.bufferedMovesStrip(ctx(), nil, 0).Size.Y
 		for _, c := range []struct {
-			name     string
-			moves    [][]engine.MoveType
-			inflight int
-		}{{"idle, 1 in flight", nil, 1}, {"idle, 12 in flight", nil, 12}, {"queued, none in flight", few, 0}, {"queued, 3 in flight", few, 3}, {"grouped, 4 in flight", grouped, 4}} {
-			if h := a.bufferedMovesStrip(ctx(), c.moves, c.inflight, 3).Size.Y; h != idle {
+			name  string
+			moves [][]engine.MoveType
+		}{{"one batch", few[:1]}, {"queued", few}, {"grouped", grouped}, {"two digits queued", many}} {
+			if h := a.bufferedMovesStrip(ctx(), c.moves, 3).Size.Y; h != idle {
 				t.Fatalf("at %vx, %s: strip height %d px, idle %d px — the board over it would jump", scale, c.name, h, idle)
 			}
 		}
+	}
+}
+
+// TestBufferedCaption: the caption is the same label plus the plain count for
+// every queue depth — "0" when empty, never a word that comes and goes. It
+// used to read EMPTY against "3 QUEUED" with an IN FLIGHT tail behind them,
+// re-centering the line on every key press. The label is what the strip
+// centres, and the count hangs off its right, so a three-digit queue must
+// still land inside the narrowest strip (the compact screen's) — the strip is
+// only ever as wide as its slot row.
+func TestBufferedCaption(t *testing.T) {
+	head, empty := bufferedCaption(0)
+	if empty != "0" {
+		t.Fatalf("empty buffer's count is %q, want %q", empty, "0")
+	}
+	for _, n := range []int{1, 3, 8, 12, 137} {
+		h, c := bufferedCaption(n)
+		if h != head {
+			t.Fatalf("caption label changed at %d queued: %q, want %q", n, h, head)
+		}
+		if c != strconv.Itoa(n) {
+			t.Fatalf("count at %d queued is %q, want %q", n, c, strconv.Itoa(n))
+		}
+	}
+	a := newTestApp()
+	a.form.compact = true
+	gtx := testCtx(390, 780)
+	strip := a.stripWidth(gtx)
+	headW := a.pixelWidth(gtx, unit.Sp(8), head)
+	lead := (strip - headW) / 2 // where the centred label starts
+	if lead < 0 {
+		t.Fatalf("compact label %d px wide, past the %d px strip it sits on", headW, strip)
+	}
+	if end := lead + headW + gtx.Dp(capCountGap) + a.pixelWidth(gtx, unit.Sp(8), "137"); end > strip {
+		t.Fatalf("compact caption ends at %d px with a three-digit count, past the %d px strip", end, strip)
 	}
 }
 
@@ -344,11 +384,10 @@ func TestBufferedMovesStripWidthIsConstant(t *testing.T) {
 	grouped := [][]engine.MoveType{{engine.MoveDown, engine.MoveDown, engine.MoveDown}, {engine.MoveLeft, engine.MoveLeft}, {engine.MoveDown}}
 	want := a.stripWidth(ctx())
 	for _, c := range []struct {
-		name     string
-		batches  [][]engine.MoveType
-		inflight int
-	}{{"empty", nil, 0}, {"few", grouped[:1], 0}, {"grouped, in flight", grouped, 1}, {"overflowing, in flight", many, 1}} {
-		if w := a.bufferedMovesStrip(ctx(), c.batches, c.inflight, 3).Size.X; w != want {
+		name    string
+		batches [][]engine.MoveType
+	}{{"empty", nil}, {"few", grouped[:1]}, {"grouped", grouped}, {"overflowing", many}} {
+		if w := a.bufferedMovesStrip(ctx(), c.batches, 3).Size.X; w != want {
 			t.Fatalf("%s: strip width %d px, want the slot row's %d — the board over it would shift", c.name, w, want)
 		}
 	}

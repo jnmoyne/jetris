@@ -3,22 +3,28 @@ package nativeui
 // The game screen — the same one on a phone, a tablet and a desktop.
 //
 // The rule is that nothing permanent stands between the player and the
-// playfield. One slim bar runs across the top: the score, and a switch for
-// each thing that costs the board room. Everything else is behind a tap —
-// the HUD (players, stats, the controls legend, the lab switches, Back to
-// Lobby) opens as a panel over the board, the chat as another, and each
-// closes on the button that opened it, on its own ✕, or on a tap anywhere
-// beside it. The playfield gets all the rest, with the HOLD box and the NEXT
-// well flanking it as they always have, and the touch gestures (gesture.go)
-// get its whole width — the surface a swipe lands on runs edge to edge, well
-// past the board's own columns.
+// playfield, and that nothing on this screen ever takes the game away from
+// the player. One slim bar runs across the top: the score, and a switch for
+// each thing that costs the board room. Every one of them is a switch and
+// not a window — the menu column (players, stats, the controls legend, the
+// lab switches, Back to Lobby), the opponents' boards, the chat strip, the
+// on-screen pad. They show or they do not; there is no scrim over the board,
+// nothing to dismiss, and no panel that swallows the keys, so the piece keeps
+// falling and keeps taking moves while the menu is open — which is the point
+// of having the lab switches in there at all. The playfield gets all the rest,
+// with the HOLD box and the NEXT well flanking it as they always have, and the
+// touch gestures (gesture.go) get its whole width — the surface a swipe lands
+// on runs edge to edge of the board area, well past the board's own columns.
 //
-// The bar's switches are the on-screen pad and the opponents' boards. Each
-// starts wherever the screen can afford it (padVisible, oppVisible) and
-// stays wherever the player last put it: on a phone held portrait the pad
-// stacks UNDER the playfield and takes about a third of its rows, so it
-// starts off there, while on any screen with width to spare the opponents
-// start on, as they always were on a desktop.
+// The bar's switches are the menu, the opponents' boards, the on-screen pad
+// and the chat. Each starts wherever the screen can afford it (hudVisible,
+// padVisible, oppVisible, chatVisible) and stays wherever the player last put
+// it: on a phone held portrait the pad stacks UNDER the playfield and takes
+// about a third of its rows, so it starts off there, while on any screen with
+// width to spare the opponents start on and the menu column stands beside the
+// board from the first frame, as they both did on a desktop before either went
+// behind a button. A compact screen starts without the menu, because there it
+// has to be drawn over the board.
 
 import (
 	"fmt"
@@ -38,14 +44,17 @@ const (
 	// gameBarH is the top bar's height in dp — a comfortable touch target
 	// for the buttons in it, and room for a two-cell preview tile.
 	gameBarH = 54
-	// drawerFrac is how much of the screen an open panel takes, in
-	// percent of its long axis: the HUD panel's width, the chat panel's
-	// height. The rest stays board, so the game is still visible behind the
-	// panel and closing it is one tap on what you can see.
-	drawerFrac = 78
-	// drawerMaxH/drawerMaxW cap a bottom drawer on a big screen (see above).
-	drawerMaxH = 420
-	drawerMaxW = 820
+	// hudColPct/hudColMaxW/hudColMinW bound the menu column where it stands
+	// beside the board: a slice of the screen, never wider than a column of
+	// text and switches wants, never narrower than one can be read at, and
+	// never more than half of what there is. Every dp of it comes off the
+	// playfield, as the opponents' column does. hudOverPct is its share where
+	// the screen is too narrow for that (hudBeside) and it is drawn over the
+	// board instead, costing the playfield nothing.
+	hudColPct  = 40
+	hudColMaxW = 340
+	hudColMinW = 240
+	hudOverPct = 78
 	// oppColPct/oppColMaxW bound the opponents' column when it is shown: a
 	// slice of the screen, never more than a thumbnail's worth. Every dp of
 	// it comes off the playfield.
@@ -53,8 +62,9 @@ const (
 	oppColMaxW = 150
 )
 
-// gameScreen is THE game screen, on every display: the bar, the board with
-// everything left over, and whichever panel is open over them.
+// gameScreen is THE game screen, on every display: the bar, whichever columns
+// and strips are switched on beside and under the board, and the board with
+// everything they leave.
 func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, showMsgs bool) D {
 	started := view.status == string(config.GameStatusInProgress)
 	var children []layout.FlexChild
@@ -73,31 +83,77 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 			// Overflow is the board's own problem to draw; it is not the
 			// chat's to be shoved out by.
 			return clampH(gtx, func(gtx C) D {
-				if !a.oppVisible() || !a.hasOpponents(eng, mode, gmode) {
-					return a.gameBoardArea(gtx, eng, view, mode, gmode)
+				opps := a.oppVisible() && a.hasOpponents(eng, mode, gmode)
+				// The board, with the opponents' column beside it when it is
+				// switched on. The two are centred TOGETHER: a playfield is
+				// portrait and a screen is not, so on a wide one the board
+				// cannot use all the width whatever it does (its cell is bound
+				// by the height) — and a board centred in what is left over,
+				// with the opponents pinned out at the edge, reads as two
+				// things that missed each other rather than as one row. The
+				// column's width is taken off the board BEFORE it fits itself,
+				// so nothing is squeezed after the fact.
+				board := func(gtx C) D {
+					if !opps {
+						return a.gameBoardArea(gtx, eng, view, mode, gmode)
+					}
+					oppW := min(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMaxW))
+					return layout.Center.Layout(gtx, func(gtx C) D {
+						gtx.Constraints.Min = image.Point{}
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Max.X = max(0, gtx.Constraints.Max.X-oppW)
+								return a.gameBoardArea(gtx, eng, view, mode, gmode)
+							}),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
+								return a.opponentBoards(gtx, eng)
+							}),
+						)
+					})
 				}
-				// The opponents stand beside the board, and the two are centred
-				// TOGETHER: a playfield is portrait and a screen is not, so on a
-				// wide one the board cannot use all the width whatever it does
-				// (its cell is bound by the height) — and a board centred in
-				// what is left over, with the opponents pinned out at the edge,
-				// reads as two things that missed each other rather than as one
-				// row. The column's width is taken off the board area BEFORE it
-				// fits itself, so nothing is squeezed after the fact.
-				oppW := min(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMaxW))
-				return layout.Center.Layout(gtx, func(gtx C) D {
-					gtx.Constraints.Min = image.Point{}
+				hudW := a.hudColW(gtx)
+				menu := func(gtx C) D {
+					gtx.Constraints.Min.X, gtx.Constraints.Max.X = hudW, hudW
+					gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+					return a.hudColumn(gtx, eng, view, mode, gmode)
+				}
+				switch {
+				case !a.hudVisible():
+					return board(gtx)
+				case a.hudBeside(gtx):
+					// Room for both: the menu stands against the screen's edge
+					// and the board takes what is left, the way the opponents'
+					// column has always worked.
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(func(gtx C) D {
-							gtx.Constraints.Max.X = max(0, gtx.Constraints.Max.X-oppW)
-							return a.gameBoardArea(gtx, eng, view, mode, gmode)
+						layout.Rigid(menu),
+						layout.Flexed(1, board),
+					)
+				default:
+					// No room to stand beside it (a phone held portrait): the
+					// menu is drawn OVER the board rather than squeezing it off
+					// the screen — the playfield keeps its size and its cell,
+					// the part of it the menu does not cover still takes a
+					// swipe, and the keys still play. Its own pointer area
+					// keeps its presses off the gesture surface underneath;
+					// there is no scrim, and nothing here closes it.
+					return layout.Stack{}.Layout(gtx,
+						layout.Expanded(func(gtx C) D {
+							// The slot the board area has when no menu is up:
+							// a Stack hands its expanded children a zero
+							// minimum, and the board laid out to its own size
+							// instead of the screen's would jump the moment
+							// the menu came over it.
+							gtx.Constraints.Min = gtx.Constraints.Max
+							return board(gtx)
 						}),
-						layout.Rigid(func(gtx C) D {
-							gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
-							return a.opponentBoards(gtx, eng)
+						layout.Expanded(func(gtx C) D {
+							return layout.W.Layout(gtx, func(gtx C) D {
+								return pointerArea(gtx, &a.hudTag, menu)
+							})
 						}),
 					)
-				})
+				}
 			})
 		})
 	}))
@@ -115,38 +171,33 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 		children = append(children, layout.Rigid(a.natsMsgSection))
 	}
 	body := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
-
-	// The HUD is the other kind of panel: a page of reference you open, read
-	// and dismiss. It opens UNDER the bar, never over it, so the button that
-	// opened it is always there to shut it again.
-	if a.hudDrawer {
-		inner := body
-		body = func(gtx C) D {
-			return a.drawer(gtx, inner, layout.W, func(gtx C) D {
-				return a.gameHUD(gtx, eng, view, mode, gmode)
-			})
-		}
-	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D { return a.gameBar(gtx, eng, view, mode, gmode) }),
 		layout.Flexed(1, body),
 	)
 }
 
-// handleFormClicks drains the compact screen's chrome and the full screen's
-// fold handles. Called at the top of the game frame, before the pad and the
-// gestures, so a panel opened or closed this frame already counts when they
-// decide whether the board is reachable (drawerOpen).
+// handleFormClicks drains the bar's switches. Called at the top of the game
+// frame, before the pad and the gestures, so a column shown or hidden this
+// frame is already in the layout they measure.
 func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
-	if a.drawerEng != eng {
-		// A fresh game screen (join, rejoin, spectate): no panel carries over
-		// from the last one, and its chat is a different conversation, so the
-		// unread mark starts from nothing rather than from what was read
-		// there. The pad switch is the player's own and does carry over.
-		a.drawerEng, a.hudDrawer, a.chatSeen = eng, false, 0
+	if a.screenEng != eng {
+		// A fresh game screen (join, rejoin, spectate): its chat is a
+		// different conversation, so the unread mark starts from nothing
+		// rather than from what was read there. The switches are the
+		// player's own and do carry over.
+		a.screenEng, a.chatSeen = eng, 0
 	}
 	for a.barHudBtn.Clicked(gtx) {
-		a.hudDrawer = !a.hudDrawer
+		// The menu is a switch like the others: the button that shows the
+		// column is the button that hides it, and nothing else does — no
+		// scrim to tap through, no ✕ in a corner, and no press on the board
+		// that puts it away while the player meant to play.
+		if a.hudVisible() {
+			a.hudPref = -1
+		} else {
+			a.hudPref = 1
+		}
 	}
 	for a.barChatBtn.Clicked(gtx) {
 		// Showing the chat and typing into it are separate: this only puts
@@ -173,73 +224,51 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 			a.padPref = 1
 		}
 	}
-	for a.drawerCloseBtn.Clicked(gtx) {
-		a.hudDrawer = false
-	}
-	for a.drawerScrim.Clicked(gtx) {
-		a.hudDrawer = false
-	}
 }
 
-// drawer lays the screen out with panel over it, against the given edge, and
-// a scrim over the rest — tinted, so the board still reads through it, and
-// clickable, so a tap beside the panel closes it. The panel takes
-// drawerFrac of the axis it slides in along.
-func (a *App) drawer(gtx C, base layout.Widget, edge layout.Direction, panel layout.Widget) D {
-	return layout.Stack{}.Layout(gtx,
-		layout.Expanded(base),
-		layout.Expanded(func(gtx C) D {
-			gtx.Constraints.Min = gtx.Constraints.Max
-			return a.drawerScrim.Layout(gtx, func(gtx C) D {
-				// Dimmed, not blacked out: the board stays visible behind the
-				// panel, so what closing it goes back to is never in doubt.
-				fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0.62))
-				return D{Size: gtx.Constraints.Max}
-			})
-		}),
-		layout.Expanded(func(gtx C) D {
-			return edge.Layout(gtx, func(gtx C) D {
-				switch edge {
-				case layout.W, layout.E:
-					w := min(gtx.Constraints.Max.X*drawerFrac/100, gtx.Dp(340))
-					gtx.Constraints.Min.X, gtx.Constraints.Max.X = w, w
-					gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
-				default:
-					// A share of the height, but never more than a panel's
-					// worth: on a phone drawerFrac IS the panel, while on a
-					// desktop the same fraction would hand a whole screen to
-					// one line of chat. Capped, and no wider than a column of
-					// text wants to be — layout.S centres what it is given, so
-					// the narrower panel sits centred over the board.
-					h := min(gtx.Constraints.Max.Y*drawerFrac/100, gtx.Dp(drawerMaxH))
-					gtx.Constraints.Min.Y, gtx.Constraints.Max.Y = h, h
-					w := min(gtx.Constraints.Max.X, gtx.Dp(drawerMaxW))
-					gtx.Constraints.Min.X, gtx.Constraints.Max.X = w, w
-				}
-				// The panel's own pointer area, over the scrim's: a press
-				// inside the panel — on a widget or on its empty space
-				// alike — is the panel's, so nothing about it closes it by
-				// accident. Only a press BESIDE it reaches the scrim.
-				return pointerArea(gtx, &a.drawerTag, func(gtx C) D {
-					return background(gtx, colPanel, func(gtx C) D {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx C) D {
-								// The panel's own way out, at its top right.
-								return layout.Inset{Top: unit.Dp(6), Right: unit.Dp(6), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
-									return layout.E.Layout(gtx, func(gtx C) D {
-										return a.barButton(gtx, &a.drawerCloseBtn, glyphClose, false)
-									})
-								})
-							}),
-							layout.Flexed(1, func(gtx C) D {
-								return layout.UniformInset(unit.Dp(10)).Layout(gtx, panel)
-							}),
-						)
-					})
-				})
-			})
-		}),
-	)
+// hudColBesideW is the menu column's width where it stands beside the board:
+// a slice of the board area, capped at the width the menu wants and floored at
+// a readable column, but never past half of what there is.
+func (a *App) hudColBesideW(gtx C) int {
+	w := min(gtx.Constraints.Max.X*hudColPct/100, gtx.Dp(hudColMaxW))
+	return min(max(w, gtx.Dp(hudColMinW)), gtx.Constraints.Max.X/2)
+}
+
+// hudBeside reports whether the menu column can stand beside the board in the
+// board area gtx measures: only where what is left of it still holds the
+// playfield's own floor, which is the move-buffer strip the board is centred
+// on (stripWidth) — squeeze the board under that and it hangs off the side of
+// the screen. Where it cannot, the menu is drawn over the board instead, which
+// costs the playfield nothing.
+func (a *App) hudBeside(gtx C) bool {
+	return gtx.Constraints.Max.X-a.hudColBesideW(gtx) >= a.stripWidth(gtx)
+}
+
+// hudColW is the width the menu column is actually laid out at: its share of
+// the board area beside the board, and a wider one over it — over the board
+// the width costs the playfield nothing, so the menu takes what it reads best
+// at, which is the width it had as a panel.
+func (a *App) hudColW(gtx C) int {
+	if a.hudBeside(gtx) {
+		return a.hudColBesideW(gtx)
+	}
+	return min(gtx.Constraints.Max.X*hudOverPct/100, gtx.Dp(hudColMaxW))
+}
+
+// hudColumn is the menu (gameHUD) as a column beside the board: its own panel
+// ground, a hairline down the edge it meets the board on, and nothing else —
+// no scrim behind it, no close button in it. It is laid out in the flow, so
+// its presses are its own and the board's area (the whole screen, game.go)
+// still hands the keys back to the piece the frame after one: a lab switch is
+// flipped and the game plays on, which is the reason the menu is a switch.
+func (a *App) hudColumn(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
+	return background(gtx, colPanel, func(gtx C) D {
+		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
+			return a.gameHUD(gtx, eng, view, mode, gmode)
+		})
+		fillRect(gtx.Ops, image.Rect(d.Size.X-gtx.Dp(2), 0, d.Size.X, d.Size.Y), colBorder)
+		return d
+	})
 }
 
 // gameBar is the screen's one permanent row: the menu button, the score
@@ -252,7 +281,7 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	player := mode == engine.ModePlayer
 
 	kids := []layout.FlexChild{
-		layout.Rigid(func(gtx C) D { return a.barButton(gtx, &a.barHudBtn, glyphMenu, a.hudDrawer) }),
+		layout.Rigid(func(gtx C) D { return a.barButton(gtx, &a.barHudBtn, glyphMenu, a.hudVisible()) }),
 	}
 	kids = append(kids, layout.Flexed(1, func(gtx C) D {
 		return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {

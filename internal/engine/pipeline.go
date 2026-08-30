@@ -336,8 +336,7 @@ func (e *Engine) SetPublishMode(m PublishMode) { e.publishMode.Store(int32(m)) }
 func (e *Engine) PublishMode() PublishMode { return PublishMode(e.publishMode.Load()) }
 
 // InflightSteps is how many step batches are in flight right now — sent and
-// not yet acked (async), or the one being awaited (sync). The HUD shows it
-// beside the move buffer.
+// not yet acked (async), or the one being awaited (sync).
 func (e *Engine) InflightSteps() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()

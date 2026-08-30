@@ -134,8 +134,8 @@ type CheckResult struct {
 // CheckConnection dials per cfg (NATSURL wins over NATSContext, like
 // Bootstrap), measures the core NATS round-trip time, peeks at the lobby's
 // player count, and closes the connection. It provisions nothing — used by
-// the login screen's server browser (Refresh) and LAN-mode check to size up a
-// server before playing on it.
+// the login screen's server browser (a row click, "Refresh all servers") and
+// LAN-mode check to size up a server before playing on it.
 func CheckConnection(cfg config.Config) (CheckResult, error) {
 	const timeout = 5 * time.Second
 	var (

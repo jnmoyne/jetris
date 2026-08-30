@@ -568,7 +568,7 @@ func clickable(m map[string]*widget.Clickable, key string) *widget.Clickable {
 
 // handleConnPage dispatches every click on the connection page: tab
 // switches, section toggles, row selection (which also probes the row),
-// favorite add/delete, the selected row's ↻ and LAN mode's Check embedded
+// favorite add/delete, "Refresh all servers" and LAN mode's Check embedded
 // server. Runs on the UI goroutine, before the frame is drawn.
 func (a *App) handleConnPage(gtx C) {
 	a.applyRefreshRound()
@@ -629,8 +629,8 @@ func (a *App) handleConnPage(gtx C) {
 		a.connResetOpen = false
 	}
 
-	if a.connRefreshBtn.Clicked(gtx) && a.connTab == connTabBrowser {
-		a.startProbe(a.connSel)
+	if a.connRefreshAll.Clicked(gtx) && a.connTab == connTabBrowser {
+		a.refreshAll()
 	}
 	if a.connCheckBtn.Clicked(gtx) && a.connTab == connTabLAN {
 		a.startProbe(probeKeyLAN)
@@ -638,7 +638,8 @@ func (a *App) handleConnPage(gtx C) {
 }
 
 // probeRow probes a browser row the player just clicked, so a single click
-// both selects a server and sizes it up (the ↻ chip re-probes on demand).
+// both selects a server and sizes it up — clicking the selected row again is
+// how one server is re-checked, "Refresh all servers" how they all are.
 // Probes run several at once, one per server; a row already being probed
 // is left to finish. Runs on the UI goroutine.
 func (a *App) probeRow(key string) { a.startProbe(key) }
@@ -685,6 +686,32 @@ func (a *App) refreshFavorites() {
 			keys = append(keys, urlKey(f.URL))
 		}
 	}
+	a.connPicked = false // the page just opened: the round's fastest is the pick
+	a.startRound(keys)
+}
+
+// refreshAll is the browser's "Refresh all servers" row: one round over every
+// row this build can dial — the contexts and the --server row too, not just
+// the favorites — so the whole list's pings and head counts are current. The
+// player's own selection stands (only a round they never picked in, the
+// page-opening one, moves it). Runs on the UI goroutine.
+func (a *App) refreshAll() {
+	var keys []string
+	for _, sec := range a.connSections() {
+		for _, e := range sec.entries {
+			if e.dialable {
+				keys = append(keys, e.key)
+			}
+		}
+	}
+	a.startRound(keys)
+}
+
+// startRound probes keys as one refresh round: their rows read "refreshing"
+// meanwhile, and doCheckConn flags the round done once the last result is in
+// (applyRefreshRound then sorts and selects). A key already being probed is
+// left to finish — its result closes the round all the same.
+func (a *App) startRound(keys []string) {
 	a.mu.Lock()
 	a.connRound = make(map[string]bool, len(keys))
 	for _, k := range keys {
@@ -692,10 +719,16 @@ func (a *App) refreshFavorites() {
 	}
 	a.connRoundDone = false
 	a.mu.Unlock()
-	a.connPicked = false
 	for _, k := range keys {
 		a.startProbe(k)
 	}
+}
+
+// roundRunning reports whether a refresh round is still out.
+func (a *App) roundRunning() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.connRound) > 0
 }
 
 // applyRefreshRound acts on a finished refresh round (doCheckConn flags it):
@@ -948,7 +981,7 @@ func (a *App) browserTab(gtx C) D {
 	}
 	a.mu.Unlock()
 
-	var rows []layout.Widget
+	rows := []layout.Widget{a.refreshAllRow(a.roundRunning())}
 	for _, sec := range a.connSections() {
 		sec := sec
 		rows = append(rows, a.sectionRow(sec))
@@ -1073,12 +1106,12 @@ func (a *App) sectionRow(sec connSection) layout.Widget {
 
 // entryRow is one selectable server. The selected row is a solid accent band
 // across the list with dark type — the same "this one is active" treatment as
-// the tab chips, unmistakable next to the plain rows — and carries in its
-// gutter the ↻ chip (the pad's blocky rotate glyph) that probes that server;
-// other rows leave the gutter blank. Every row shows its label over the URL
-// in a second line, the last probe's inline summary on the right (on the
-// selected row in a dark pill, so the green/red keeps reading against the
-// accent), and — for favorites — a ✕ to delete.
+// the tab chips, unmistakable next to the plain rows. Every row shows its
+// label over the URL in a second line, the last probe's inline summary on the
+// right (on the selected row in a dark pill, so the green/red keeps reading
+// against the accent), and — for favorites — a ✕ to delete. Clicking a row
+// probes it, the selected one included, so no row needs a refresh chip of
+// its own.
 func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing map[string]bool) layout.Widget {
 	return func(gtx C) D {
 		selected := e.key == a.connSel
@@ -1104,16 +1137,8 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing map[s
 				layout.Flexed(1, func(gtx C) D {
 					return rowButton(gtx, func(gtx C) D {
 						gtx.Constraints.Min.X = gtx.Constraints.Max.X
-						return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(10), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+						return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-								layout.Rigid(func(gtx C) D {
-									sz := gtx.Dp(22)
-									if !selected {
-										return D{Size: image.Pt(sz, sz)}
-									}
-									return a.rowRefreshButton(gtx, sz, probing[e.key])
-								}),
-								layout.Rigid(hSpacer(6)),
 								layout.Flexed(1, func(gtx C) D {
 									return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 										layout.Rigid(a.body(e.label, labelCol)),
@@ -1163,20 +1188,31 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing map[s
 	}
 }
 
-// rowRefreshButton is the selected row's ↻: a chip bordered and glyphed in the
-// dark background color, cut into the row's accent band (faded, inert while a
-// probe is running).
-func (a *App) rowRefreshButton(gtx C, sz int, busy bool) D {
-	col := colBg
-	if busy {
-		col = withAlpha(colBg, 0.45)
+// refreshAllRow heads the browser list: "↻ Refresh all servers" probes every
+// row this build can dial in one round (refreshAll). While the round is out —
+// the page-opening one included — it reads as refreshing, in muted type, and
+// is not a button at all.
+func (a *App) refreshAllRow(busy bool) layout.Widget {
+	return func(gtx C) D {
+		txt, col := "Refresh all servers", colNATSGreen
+		if busy {
+			txt, col = "Refreshing all servers…", colMuted
+		}
+		row := func(gtx C) D {
+			gtx.Constraints.Min.X = gtx.Constraints.Max.X
+			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(10), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(glyphWidget(glyphCW, 10, col)),
+					layout.Rigid(hSpacer(7)),
+					layout.Rigid(a.body(txt, col)),
+				)
+			})
+		}
+		if busy {
+			return row(gtx)
+		}
+		return material.Clickable(gtx, &a.connRefreshAll, row)
 	}
-	return widget.Border{Color: col, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
-		return material.Clickable(gtx, &a.connRefreshBtn, func(gtx C) D {
-			gtx.Constraints = layout.Exact(image.Pt(sz, sz))
-			return layout.Center.Layout(gtx, glyphWidget(glyphCW, 12, col))
-		})
-	})
 }
 
 // hintRow is a section's muted placeholder when it has no entries.
@@ -1367,7 +1403,7 @@ func (a *App) connStatusLine(gtx C, key string) D {
 	case key == probeKeyLAN:
 		msg = "Starts the server and pings it over the address above."
 	default:
-		msg = "Click a server (or hit its ↻) to measure the core NATS ping and count who's in its lobby."
+		msg = "Click a server (or Refresh all servers) to measure the core NATS ping and count who's in its lobby."
 	}
 	l := material.Body2(a.th, msg)
 	l.Color = col

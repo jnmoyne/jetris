@@ -35,6 +35,8 @@ func TestPickerSnapshots(t *testing.T) {
 	}
 	defer w.Release()
 
+	origDialable := dialable
+	defer func() { dialable = origDialable }()
 	a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo", "prod-cluster"}, "beta",
 		append(prefs.DefaultFavorites(), prefs.Favorite{Label: "home lab", URL: "nats://192.168.1.20:4222"}))
 	a.th = newTestApp().th
@@ -63,6 +65,14 @@ func TestPickerSnapshots(t *testing.T) {
 			// The browser build's view: nats:// rows greyed out.
 			a.connResetOpen = false
 			dialable = func(u string) bool { return strings.HasPrefix(u, "ws://") || strings.HasPrefix(u, "wss://") }
+		}},
+		{"browser_refreshing", func() {
+			// A round out: the top row and every probed row read as refreshing.
+			dialable = origDialable
+			for _, f := range prefs.DefaultFavorites() {
+				a.connRound[urlKey(f.URL)] = true
+				a.connProbing[urlKey(f.URL)] = true
+			}
 		}},
 	} {
 		st.setup()

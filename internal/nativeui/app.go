@@ -119,8 +119,9 @@ type App struct {
 	connCfg      config.Config
 	favSave      func([]prefs.Favorite) error
 
-	// Server probes — a browser row's click or ↻, the page-opening refresh of
-	// every favorite, and LAN mode's "Check embedded server" (written by
+	// Server probes — a browser row's click, the page-opening refresh of every
+	// favorite, "Refresh all servers", and LAN mode's "Check embedded
+	// server" (written by
 	// doCheckConn; guarded by mu): the last result per server key
 	// (connEntry.key, or probeKeyLAN for the embedded server), and the keys
 	// being probed right now — several at once. connRound is the refresh
@@ -277,7 +278,7 @@ type App struct {
 	connHostEd     widget.Editor                // LAN mode: IP entry (pre-set to the detected lanIP; empty = auto-detect again)
 	connPortEd     widget.Editor                // LAN mode: port entry (pre-set to config.DefaultEmbeddedPort)
 	lanIP          string                       // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
-	connRefreshBtn widget.Clickable             // browser: the selected row's ↻ (probe that server again)
+	connRefreshAll widget.Clickable             // browser: the list's "↻ Refresh all servers" row
 	connCheckBtn   widget.Clickable             // LAN mode: Check embedded server
 	// FAVORITES' trailing "Reset favorites…" row and its confirmation modal
 	// (connResetOpen while it is up): Yes puts prefs.DefaultFavorites back in

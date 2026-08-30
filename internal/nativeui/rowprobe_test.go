@@ -1,11 +1,13 @@
 package nativeui
 
 // A single click on a browser row probes the server it names — the player
-// should not have to find the ↻ chip to size up a server they just picked.
-// Probes run several at once, one per server: a second row clicked while the
-// first is still probing is probed right away, and a row already probing is
-// left to finish. When the page opens, every favorite is probed in one
-// round, sorted by ping once the last result is in, the fastest selected.
+// should not have to find a refresh control to size up a server they just
+// picked, and clicking the selected row again re-checks it. Probes run
+// several at once, one per server: a second row clicked while the first is
+// still probing is probed right away, and a row already probing is left to
+// finish. When the page opens, every favorite is probed in one round, sorted
+// by ping once the last result is in, the fastest selected; "Refresh all
+// servers" runs that round again, over every row, on demand.
 
 import (
 	"testing"
@@ -35,6 +37,16 @@ func waitProbeIdle(t *testing.T, a *App) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("probes never finished")
+}
+
+func roundKeys(a *App) map[string]bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(map[string]bool, len(a.connRound))
+	for k := range a.connRound {
+		out[k] = true
+	}
+	return out
 }
 
 func hasProbe(a *App, key string) bool {
@@ -164,6 +176,40 @@ func TestRefreshRoundSortsByPing(t *testing.T) {
 	a.persistFavorites()
 	if got := a.favoriteIndices(); got[0] != 0 || got[1] != 1 || got[2] != 2 {
 		t.Fatalf("order after the list changed = %v, want the list's own", got)
+	}
+}
+
+// TestRefreshAllProbesEveryRow: the browser's "Refresh all servers" row runs
+// one round over every row this build can dial — the contexts too, not just
+// the favorites — and leaves the player's own pick where it is; the row reads
+// as refreshing until the last result is in.
+func TestRefreshAllProbesEveryRow(t *testing.T) {
+	a := NewWithPicker(config.Config{}, []string{"alpha"}, "", []prefs.Favorite{
+		{Label: "A", URL: "nats://127.0.0.1:1"},
+		{Label: "B", URL: "nats://127.0.0.1:2"},
+	})
+	a.connTab = connTabBrowser
+	kA, kB, kCtx := urlKey("nats://127.0.0.1:1"), urlKey("nats://127.0.0.1:2"), ctxKey("alpha")
+
+	a.connSel, a.connPicked = kB, true // the player's own pick, mid-round and after
+	a.refreshAll()
+	round := roundKeys(a)
+	if len(round) != 3 || !round[kA] || !round[kB] || !round[kCtx] {
+		t.Fatalf("the round covers %v, want both favorites and the context", round)
+	}
+	if !a.roundRunning() {
+		t.Fatal("the row does not read as refreshing while the round is out")
+	}
+	waitProbeIdle(t, a)
+	if a.roundRunning() {
+		t.Fatalf("the round outlived its results: %v", roundKeys(a))
+	}
+	a.applyRefreshRound()
+	if a.connSel != kB {
+		t.Fatalf("Refresh all moved the player's pick to %q, want %q", a.connSel, kB)
+	}
+	if !hasProbe(a, kA) || !hasProbe(a, kB) || !hasProbe(a, kCtx) {
+		t.Fatal("Refresh all left a row unprobed")
 	}
 }
 

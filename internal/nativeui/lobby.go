@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -655,7 +656,7 @@ func (a *App) archivePlayersCell(r config.ArchiveRecord) layout.Widget {
 		lines := archiveRosterLines(r)
 		children := make([]layout.FlexChild, 0, len(lines))
 		for _, ln := range lines {
-			children = append(children, layout.Rigid(a.body(ln.text, ln.col)))
+			children = append(children, layout.Rigid(a.markedBody(ln.text, ln.col, false)))
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	}
@@ -738,7 +739,7 @@ func competitiveRosterLines(r config.ArchiveRecord) []rosterLine {
 	}
 	var out []rosterLine
 	if len(winners) > 0 {
-		out = append(out, rosterLine{"🏆 " + strings.Join(winners, " · "), colGold})
+		out = append(out, rosterLine{winnerMark + strings.Join(winners, " · "), colGold})
 	}
 	if len(rest) > 0 {
 		out = append(out, rosterLine{strings.Join(rest, " · "), colMuted})
@@ -770,7 +771,7 @@ func teamRosterLines(r config.ArchiveRecord) []rosterLine {
 		label := fmt.Sprintf("TEAM %s%s — %s", teamName(t), stats, strings.Join(members, ", "))
 		col := colMuted
 		if r.WinningTeam == t {
-			label, col = "🏆 "+label, colGold
+			label, col = winnerMark+label, colGold
 		}
 		out = append(out, rosterLine{label, col})
 	}
@@ -798,7 +799,12 @@ func archiveLine(r config.ArchiveRecord) string {
 // scores, levels, winners).
 func archiveModeLine(r config.ArchiveRecord) string {
 	if r.Mode == config.ModeTeams {
-		// "teams · A 🏆 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave"
+		// "teams · A 42 (lvl 3) alice, bob · B 17 (lvl 1) carol, dave".
+		// No winner mark: this line wraps (the replay dialog is 420 dp wide
+		// and it runs to two lines there), and a DRAWN trophy cannot sit
+		// inside wrapping text the way the old character did. The trophy is
+		// on the roster lines beside this one instead, where each entry is a
+		// row of its own — archiveRosterLines, which do carry it.
 		parts := make([]string, 0, config.TeamCount)
 		for t := 0; t < config.TeamCount; t++ {
 			var members []string
@@ -806,10 +812,6 @@ func archiveModeLine(r config.ArchiveRecord) string {
 				if p.Team == t {
 					members = append(members, p.PlayerID)
 				}
-			}
-			tag := ""
-			if r.WinningTeam == t {
-				tag = " 🏆"
 			}
 			stats := ""
 			if t < len(r.TeamScores) {
@@ -819,7 +821,7 @@ func archiveModeLine(r config.ArchiveRecord) string {
 					stats += fmt.Sprintf(" (lvl %d)", r.TeamLevels[t])
 				}
 			}
-			parts = append(parts, fmt.Sprintf("%s%s%s %s", teamName(t), tag, stats, strings.Join(members, ", ")))
+			parts = append(parts, fmt.Sprintf("%s%s %s", teamName(t), stats, strings.Join(members, ", ")))
 		}
 		return fmt.Sprintf("teams · %s", strings.Join(parts, " · "))
 	}
@@ -827,11 +829,7 @@ func archiveModeLine(r config.ArchiveRecord) string {
 	sort.Slice(players, func(i, j int) bool { return players[i].Score > players[j].Score })
 	parts := make([]string, 0, len(players))
 	for _, p := range players {
-		tag := ""
-		if p.Winner {
-			tag = " 🏆"
-		}
-		parts = append(parts, fmt.Sprintf("%s %d%s", p.PlayerID, p.Score, tag))
+		parts = append(parts, fmt.Sprintf("%s %d", p.PlayerID, p.Score))
 	}
 	if r.Mode == config.ModeCooperative {
 		return fmt.Sprintf("co-op · total %d (lvl %d) · %s", r.TotalScore, r.FinalLevel, strings.Join(parts, ", "))
@@ -839,11 +837,7 @@ func archiveModeLine(r config.ArchiveRecord) string {
 	// Competitive: append each player's achieved level to their score.
 	parts = parts[:0]
 	for _, p := range players {
-		tag := ""
-		if p.Winner {
-			tag = " 🏆"
-		}
-		parts = append(parts, fmt.Sprintf("%s %d (lvl %d)%s", p.PlayerID, p.Score, p.Level, tag))
+		parts = append(parts, fmt.Sprintf("%s %d (lvl %d)", p.PlayerID, p.Score, p.Level))
 	}
 	return fmt.Sprintf("competitive · %s", strings.Join(parts, ", "))
 }
@@ -1385,6 +1379,110 @@ func (a *App) body(txt string, c colorN) layout.Widget {
 		l := material.Body2(a.th, txt)
 		l.Color = c
 		return l.Layout(gtx)
+	}
+}
+
+// winnerMark is where a line asks for the winner's trophy to be DRAWN. It
+// travels inside the ordinary strings the roster and legend lines are built
+// from — a control character, so it can never collide with anything a player
+// could put in a name (config.ValidatePlayerName) — and markedText turns it
+// into glyphTrophy at the one place that knows how. A typed trophy would be
+// simpler, but it needs a font that has U+1F3C6 and since Gio v0.10 none in
+// reach does: it shapes to .notdef and comes out a tofu box.
+//
+// In practice it always leads its line. That is not an accident: a drawn
+// glyph is a widget, and a widget cannot sit INSIDE a paragraph that wraps,
+// so the one line that wraps — the history summary (archiveModeLine) — marks
+// no winner at all and leaves that to the roster lines beside it.
+const winnerMark = "\x00"
+
+// markedBody lays body text out with the trophy drawn wherever winnerMark
+// appears — one plain label when it appears nowhere, which is nearly always,
+// so an unmarked line behaves exactly as body does and still wraps.
+// markedSpan is the same for a run inside spansLine, which packs runs across
+// one row and so wants each held to a single line.
+func (a *App) markedBody(txt string, col colorN, emph bool) layout.Widget {
+	return a.markedText(txt, col, emph, 0)
+}
+
+func (a *App) markedSpan(txt string, col colorN, emph bool) layout.Widget {
+	return a.markedText(txt, col, emph, 1)
+}
+
+// markedText is the two of them. The pieces are placed by hand on a shared
+// baseline — a Flex would align them by its own rules, and its Baseline mode
+// has no idea what to do with a bitmap — with the trophy sized to the text's
+// ascent and standing on the baseline beside it. Each text run is given the
+// width still left on the line, so a long marked line (the history summary in
+// the replay dialog) wraps under itself as it did before there was a trophy
+// in it, and the line reports the first run's baseline so it drops into
+// spansLine and the legend rows exactly where a plain label would.
+func (a *App) markedText(txt string, col colorN, emph bool, maxLines int) layout.Widget {
+	run := func(s string) layout.Widget {
+		return func(gtx C) D {
+			l := material.Body2(a.th, s)
+			l.Color, l.MaxLines = col, maxLines
+			if emph {
+				l.Font.Weight, l.Font.Style = font.Bold, font.Italic
+			}
+			return l.Layout(gtx)
+		}
+	}
+	return func(gtx C) D {
+		parts := strings.Split(txt, winnerMark)
+		if len(parts) == 1 {
+			return run(txt)(gtx)
+		}
+		// Each piece at its OWN size: these labels are often in a Flexed slot,
+		// whose Min would otherwise make the first run report the whole slot's
+		// width and the row come out that much wider than the line it holds.
+		avail := gtx.Constraints.Max.X
+		gtx.Constraints.Min = image.Point{}
+		// The text's ascent (its top to its baseline), which sizes and seats
+		// the trophy.
+		ascent := 0
+		for _, p := range parts {
+			if p != "" {
+				m := op.Record(gtx.Ops)
+				d := run(p)(gtx)
+				m.Stop()
+				ascent = max(ascent, d.Size.Y-d.Baseline)
+			}
+		}
+		gap := gtx.Dp(3)
+		x, bottom, baseline := 0, 0, -1
+		place := func(w layout.Widget, trophy bool) {
+			cgtx := gtx
+			cgtx.Constraints.Max.X = max(0, avail-x)
+			m := op.Record(gtx.Ops)
+			d := w(cgtx)
+			call := m.Stop()
+			y := ascent - d.Size.Y // the trophy stands ON the baseline
+			if !trophy {
+				y = ascent - (d.Size.Y - d.Baseline)
+				if baseline < 0 {
+					baseline = d.Baseline
+				}
+			}
+			func() {
+				defer op.Offset(image.Pt(x, y)).Push(gtx.Ops).Pop()
+				call.Add(gtx.Ops)
+			}()
+			x += d.Size.X
+			bottom = max(bottom, y+d.Size.Y)
+			if trophy {
+				x += gap
+			}
+		}
+		for i, p := range parts {
+			if i > 0 {
+				place(glyphWidget(glyphTrophy, gtx.Metric.PxToDp(ascent), col), true)
+			}
+			if p != "" {
+				place(run(p), false)
+			}
+		}
+		return D{Size: image.Pt(x, bottom), Baseline: max(0, bottom-ascent)}
 	}
 }
 

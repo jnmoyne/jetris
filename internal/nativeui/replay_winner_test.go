@@ -115,7 +115,7 @@ func TestReplaySummaryKeepsTheEndingBack(t *testing.T) {
 	// Before the reveal: the players in their board colors, no scores, no trophy.
 	hidden := replaySummary(rec, false)
 	txt := joinSpans(hidden)
-	if strings.Contains(txt, "🏆") || strings.Contains(txt, "4200") || strings.Contains(txt, "lvl") {
+	if strings.Contains(txt, winnerMark) || strings.Contains(txt, "4200") || strings.Contains(txt, "lvl") {
 		t.Fatalf("summary before the reveal spoils the ending: %q", txt)
 	}
 	if !strings.Contains(txt, "competitive") {
@@ -134,7 +134,7 @@ func TestReplaySummaryKeepsTheEndingBack(t *testing.T) {
 	// out; the beaten player keeps their color.
 	shown := replaySummary(rec, true)
 	alice, _ = findSpan(shown, "alice")
-	if !strings.HasPrefix(alice.text, "🏆 ") || !strings.Contains(alice.text, "4200 (lvl 4)") || alice.col != colGold || !alice.emph {
+	if !strings.HasPrefix(alice.text, winnerMark) || !strings.Contains(alice.text, "4200 (lvl 4)") || alice.col != colGold || !alice.emph {
 		t.Errorf("alice revealed = %+v, want a gold bold-italic trophied span with her score", alice)
 	}
 	bob, _ = findSpan(shown, "bob")
@@ -145,12 +145,12 @@ func TestReplaySummaryKeepsTheEndingBack(t *testing.T) {
 	// Teams: the team headers carry the reveal; members ride their team's color.
 	teams := sampleTeamsReplayRecord()
 	txt = joinSpans(replaySummary(teams, false))
-	if strings.Contains(txt, "🏆") || strings.Contains(txt, "4200") {
+	if strings.Contains(txt, winnerMark) || strings.Contains(txt, "4200") {
 		t.Fatalf("teams summary before the reveal spoils the ending: %q", txt)
 	}
 	shown = replaySummary(teams, true)
 	b, _ := findSpan(shown, "TEAM B")
-	if !strings.HasPrefix(b.text, "🏆 ") || !strings.Contains(b.text, "4200 (lvl 4)") || b.col != colGold || !b.emph {
+	if !strings.HasPrefix(b.text, winnerMark) || !strings.Contains(b.text, "4200 (lvl 4)") || b.col != colGold || !b.emph {
 		t.Errorf("TEAM B revealed = %+v, want gold bold-italic with the trophy and score", b)
 	}
 	if a, _ := findSpan(shown, "TEAM A"); a.col != render.PlayerColorRGBA(0) || a.emph {

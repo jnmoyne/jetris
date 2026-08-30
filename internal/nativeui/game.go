@@ -850,7 +850,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 			textCol, won := colFg, false
 			switch {
 			case oc.wins(p.PlayerID):
-				name, textCol, won = "🏆 "+name, colGold, true
+				name, textCol, won = winnerMark+name, colGold, true
 			case oc.decided:
 				textCol = render.PlayerColorRGBA(i)
 			case elim:

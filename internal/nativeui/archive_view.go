@@ -200,7 +200,7 @@ func (a *App) archivePlayerRow(name string, col colorN, winner bool) layout.Flex
 		textCol := colFg
 		if winner {
 			textCol = colGold
-			name = "🏆 " + name
+			name = winnerMark + name
 		}
 		return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -208,7 +208,7 @@ func (a *App) archivePlayerRow(name string, col colorN, winner bool) layout.Flex
 					return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, func(gtx C) D { return swatch(gtx, col, 12) })
 				}),
 				layout.Rigid(hSpacer(8)),
-				layout.Flexed(1, a.body(name, textCol)),
+				layout.Flexed(1, a.markedBody(name, textCol, false)),
 			)
 		})
 	})

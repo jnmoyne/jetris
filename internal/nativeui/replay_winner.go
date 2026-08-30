@@ -9,11 +9,9 @@ import (
 	"time"
 
 	"gioui.org/f32"
-	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
-	"gioui.org/widget/material"
 
 	"jetris/internal/config"
 	"jetris/internal/game"
@@ -636,7 +634,7 @@ func replaySummary(r config.ArchiveRecord, reveal bool) []span {
 			won := reveal && r.WinningTeam == t
 			name := "TEAM " + teamName(t)
 			if won {
-				name, col = "🏆 "+name, colGold
+				name, col = winnerMark+name, colGold
 			}
 			if reveal && t < len(r.TeamScores) {
 				name += fmt.Sprintf(" %d", r.TeamScores[t])
@@ -675,7 +673,7 @@ func replaySummary(r config.ArchiveRecord, reveal bool) []span {
 			}
 			won := reveal && p.Winner
 			if won {
-				txt, col = "🏆 "+txt, colGold
+				txt, col = winnerMark+txt, colGold
 			}
 			out = append(out, span{text: txt, col: col, emph: won})
 		}
@@ -689,16 +687,7 @@ func (a *App) spansLine(spans []span) layout.Widget {
 	return func(gtx C) D {
 		kids := make([]layout.FlexChild, 0, len(spans))
 		for _, s := range spans {
-			s := s
-			kids = append(kids, layout.Rigid(func(gtx C) D {
-				l := material.Body2(a.th, s.text)
-				l.Color = s.col
-				l.MaxLines = 1
-				if s.emph {
-					l.Font.Weight, l.Font.Style = font.Bold, font.Italic
-				}
-				return l.Layout(gtx)
-			}))
+			kids = append(kids, layout.Rigid(a.markedSpan(s.text, s.col, s.emph)))
 		}
 		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx, kids...)
 	}

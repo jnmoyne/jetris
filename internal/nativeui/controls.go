@@ -137,6 +137,24 @@ var (
 		"XXX..XXX",
 		"XX....XX",
 	}
+	// glyphTrophy marks a winner (winnerMark, lobby.go). Drawn rather than
+	// typed: a text trophy needs a font that has U+1F3C6, and since Gio
+	// v0.10 none within reach does — it shapes to .notdef and comes out a
+	// tofu box — while a bitmap is the same on every platform and in the
+	// same language as the rest of this app's icons. Nine rows like the
+	// rotate arrows: the rim, a bowl with a handle either side, the stem,
+	// and the base.
+	glyphTrophy = []string{
+		"XXXXXXXXX",
+		"XXXXXXXXX",
+		"X.XXXXX.X",
+		"X.XXXXX.X",
+		"..XXXXX..",
+		"...XXX...",
+		"....X....",
+		"..XXXXX..",
+		".XXXXXXX.",
+	}
 	// The full screen's fold arrows: a panel folds toward its own edge and
 	// unfolds back out (game.go's HUD column and chat strip).
 	glyphFoldL = []string{

@@ -5,7 +5,6 @@ import (
 	"sort"
 	"time"
 
-	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -327,16 +326,13 @@ func (a *App) spectatorResultBox(gtx C, view gameView, oc liveOutcome, gmode con
 }
 
 // boardLabel is a board's (or a legend line's) name in its color — gold in
-// bold italic once it has won.
+// bold italic once it has won, with the trophy drawn where the name carries
+// the winner's mark (markedBody).
 func (a *App) boardLabel(name string, col colorN, won bool) layout.Widget {
-	return func(gtx C) D {
-		l := material.Body2(a.th, name)
-		l.Color = col
-		if won {
-			l.Color, l.Font.Weight, l.Font.Style = colGold, font.Bold, font.Italic
-		}
-		return l.Layout(gtx)
+	if won {
+		col = colGold
 	}
+	return a.markedBody(name, col, won)
 }
 
 // joinParts joins score parts with the history's middle-dot separator.

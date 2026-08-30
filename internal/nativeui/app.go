@@ -110,14 +110,15 @@ type App struct {
 	// Connection picker: set at construction by NewWithPicker, immutable
 	// afterwards. connCfg carries any --user/--password flags through to URL
 	// connects; connCtxURLs is each context's server URL for display (best
-	// effort, "" when unknown); favSave persists the favorites
-	// (prefs.SaveFavorites — tests stub it).
+	// effort, "" when unknown); favSave persists the favorites and
+	// handlingSave the DAS/ARR knobs (prefs.Save* — tests stub them).
 	needConn     bool
 	connContexts []string
 	connSelected string
 	connCtxURLs  map[string]string
 	connCfg      config.Config
 	favSave      func([]prefs.Favorite) error
+	handlingSave func(prefs.Handling) error
 
 	// Server probes — a browser row's click, the page-opening refresh of every
 	// favorite, "Refresh all servers", and LAN mode's "Check embedded
@@ -465,6 +466,18 @@ type App struct {
 	// taps, drags and flicks on the board, fed by handleGestures every frame.
 	// UI goroutine only.
 	gest boardGesture
+	// shift is the keyboard's ← → DAS/ARR machine (autoshift.go); dasMs and
+	// arrMs its two knobs (ms, 0..maxHandlingMs), mirrored by the HANDLING
+	// sliders' positions (dasFloat, arrFloat); handlingDirty marks a slider
+	// change not yet persisted (persistHandling, once the drag ends). UI
+	// goroutine only.
+	// padLeftWas/padRightWas is the pad arms' Pressed() reading of the last
+	// frame — what handlePadShift detects press/release edges against.
+	shift                   autoShift
+	dasMs, arrMs            int
+	dasFloat, arrFloat      widget.Float
+	handlingDirty           bool
+	padLeftWas, padRightWas bool
 	// heldMoves are gesture moves made while the board had no piece (the
 	// lock-to-spawn gap), dispatched the moment the next piece appears
 	// (handleGestures). UI goroutine only. pieceGapStart/spawnGapLast/
@@ -532,6 +545,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.ghostCb.Value = true     // hard-drop ghost preview on by default
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.dispMode = int(displayAck)
+	a.SetHandling(defaultDASMs, defaultARRMs)
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
 	a.chatEd.SingleLine = true
@@ -594,6 +608,7 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.connSelected = selected
 	a.favorites = append([]prefs.Favorite(nil), favorites...)
 	a.favSave = prefs.SaveFavorites
+	a.handlingSave = prefs.SaveHandling
 	a.connProbes = map[string]probeResult{}
 	a.connProbing = map[string]bool{}
 	a.connRound = map[string]bool{}

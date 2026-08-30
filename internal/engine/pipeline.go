@@ -242,6 +242,16 @@ func (e *Engine) freezePiece(m MoveType) {
 	e.mu.Unlock()
 }
 
+// PieceCommitting reports a hard drop or hold being committed: the piece is
+// frozen where it stands (pieceFrozen) and a shift dispatched now would land
+// on the NEXT piece. The keyboard auto-shift pauses on it, like the
+// lock-to-spawn gap (nativeui/autoshift.go).
+func (e *Engine) PieceCommitting() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !isStep(e.pieceFrozen)
+}
+
 // takeMoveGroup removes and returns the queue's next batch worth of moves —
 // the run of steps at its head when coalescing, one move otherwise (a
 // barrier is always alone) — and whether more are queued behind. Empty when

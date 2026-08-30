@@ -1,8 +1,8 @@
-// Package prefs persists the player's local preferences — today, the NATS
-// server browser's favorites. Files live under the same parent directory the
-// NATS CLI uses for its contexts (<XDG_CONFIG_HOME|~/.config>), in a jetris/
-// subdirectory, so a machine's NATS configuration and its Jetris preferences
-// sit side by side.
+// Package prefs persists the player's local preferences — the NATS server
+// browser's favorites and the keyboard's DAS/ARR handling tuning. Files live
+// under the same parent directory the NATS CLI uses for its contexts
+// (<XDG_CONFIG_HOME|~/.config>), in a jetris/ subdirectory, so a machine's
+// NATS configuration and its Jetris preferences sit side by side.
 package prefs
 
 import (

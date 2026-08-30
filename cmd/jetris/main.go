@@ -45,7 +45,12 @@ func main() {
 	if err != nil {
 		log.Printf("warning: loading server favorites: %v", err)
 	}
+	handling, err := prefs.LoadHandling()
+	if err != nil {
+		log.Printf("warning: loading handling tuning: %v", err)
+	}
 	a := nativeui.NewWithPicker(cfg, names, selected, favorites)
+	a.SetHandling(handling.DASMs, handling.ARRMs)
 	if !noUpdateCheck {
 		go checkForUpdate(ctx, a)
 	}

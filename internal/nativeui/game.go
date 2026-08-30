@@ -170,7 +170,15 @@ func (a *App) layoutGame(gtx C) D {
 	reachable := playing && !a.confirmLeave
 	// The on-screen pad mirrors the keyboard scheme; its clicks are drained
 	// every frame and only dispatched while the game is actually playable.
+	// The ← → arms shift on the press instead and, held, auto-repeat
+	// (handlePadShift feeds their edges to the DAS/ARR machine).
 	a.handlePadClicks(gtx, eng, reachable)
+	a.handlePadShift(gtx, eng, reachable)
+	// The frame's DAS/ARR repeats (autoshift.go), fed by handleKeys and
+	// handlePadShift above — the keyboard's gate, so a held key under the
+	// leave modal repeats exactly as the OS repeat did, and any other state
+	// resets the machine.
+	a.handleAutoShift(gtx, eng, mode == engine.ModePlayer && started)
 	// So are the touch gestures on the playfield (gesture.go) — after the
 	// pad's Clickables have drained.
 	a.handleGestures(gtx, eng, reachable)
@@ -572,6 +580,9 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		children = append(children,
 			layout.Rigid(spacer(12)),
 			layout.Rigid(a.labToggles),
+			// The DAS/ARR knobs (autoshift.go): how a held ← → repeats.
+			layout.Rigid(spacer(12)),
+			layout.Rigid(a.handlingKnobs),
 		)
 	}
 	children = append(children,
@@ -632,7 +643,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 // the y under the last section drawn.
 func (a *App) controlsLegend(gtx C, y, limit int, hold bool) int {
 	gtx.Constraints.Min = image.Point{} // the legend's parts at their own sizes, not the column's
-	keys := [][2]string{{"← →", "move"}, {"↓", "soft drop"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
+	keys := [][2]string{{"← →", "move · hold slides"}, {"↓", "soft drop"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
 	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
 	if hold {
 		keys = append(keys, [2]string{"C", "hold"})

@@ -1,0 +1,390 @@
+package nativeui
+
+import (
+	"image"
+	"testing"
+	"time"
+
+	"gioui.org/io/input"
+	"gioui.org/io/key"
+	"gioui.org/io/pointer"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/unit"
+
+	"jetris/internal/config"
+	"jetris/internal/engine"
+	"jetris/internal/game"
+	"jetris/internal/lobby"
+)
+
+// shiftRig drives an autoShift with synthetic key edges and frames — the
+// machine alone, no router and no engine — and collects the shifts it emits
+// (their dirs, in order). The frame clock is base + the given offset; base is
+// nonzero except where a test wants the zero-time regime the layout tests run
+// frames in.
+type shiftRig struct {
+	s        autoShift
+	base     time.Time
+	das, arr time.Duration
+	dirs     []int
+}
+
+func newShiftRig(das, arr time.Duration) *shiftRig {
+	return &shiftRig{base: time.Unix(2000, 0), das: das, arr: arr}
+}
+
+func (r *shiftRig) emit(dir int) { r.dirs = append(r.dirs, dir) }
+
+func (r *shiftRig) press(dir int, at time.Duration) {
+	r.s.press(dir, r.base.Add(at), r.das, r.arr, r.emit)
+}
+
+func (r *shiftRig) release(dir int, at time.Duration) {
+	r.s.release(dir, r.base.Add(at), r.das, r.arr, r.emit)
+}
+
+// step is a frame at base+at with the given buffer room and slide space
+// (possible < 0: no shift can land — the lock-to-spawn gap).
+func (r *shiftRig) step(at time.Duration, room, possible int) (wake time.Time, every bool) {
+	_, wake, every = r.s.step(r.base.Add(at), r.arr, room, func() int { return possible }, r.emit)
+	return wake, every
+}
+
+func (r *shiftRig) want(t *testing.T, dirs ...int) {
+	t.Helper()
+	if len(dirs) == 0 {
+		dirs = nil
+	}
+	if len(r.dirs) != len(dirs) {
+		t.Fatalf("emitted %v, want %v", r.dirs, dirs)
+	}
+	for i := range dirs {
+		if r.dirs[i] != dirs[i] {
+			t.Fatalf("emitted %v, want %v", r.dirs, dirs)
+		}
+	}
+}
+
+// wantDue asserts the machine's invariant: after a step, nextDue is never in
+// the past — repeats are dropped, not banked.
+func (r *shiftRig) wantDue(t *testing.T, at time.Duration) {
+	t.Helper()
+	if r.s.dir != 0 && r.s.nextDue.Before(r.base.Add(at)) {
+		t.Fatalf("nextDue %v is before now %v: banked repeats", r.s.nextDue, r.base.Add(at))
+	}
+}
+
+func TestAutoShiftTapMovesOnce(t *testing.T) {
+	r := newShiftRig(60*ms, 0)
+	r.press(-1, 0)
+	r.release(-1, 30*ms)
+	r.step(100*ms, 6, 9)
+	r.want(t, -1)
+
+	// The layout tests' regime: frames at the zero time, press and release in
+	// the same frame.
+	r = newShiftRig(60*ms, 0)
+	r.base = time.Time{}
+	r.press(-1, 0)
+	r.release(-1, 0)
+	r.step(0, 6, 9)
+	r.want(t, -1)
+}
+
+func TestAutoShiftDASThenARR(t *testing.T) {
+	r := newShiftRig(60*ms, 50*ms)
+	r.press(-1, 0)
+	r.want(t, -1) // the press's immediate shift
+
+	wake, every := r.step(30*ms, 6, 9) // DAS still charging
+	r.want(t, -1)
+	if every || !wake.Equal(r.base.Add(60*ms)) {
+		t.Fatalf("charging: wake = %v, every = %v; want the DAS expiry", wake, every)
+	}
+
+	wake, _ = r.step(60*ms, 6, 9) // DAS expiry: the first repeat
+	r.want(t, -1, -1)
+	if !wake.Equal(r.base.Add(110 * ms)) {
+		t.Fatalf("first repeat: wake = %v, want +110ms", wake)
+	}
+
+	r.step(160*ms, 6, 9) // a slow frame: floor catch-up, 2 owed
+	r.want(t, -1, -1, -1, -1)
+	r.wantDue(t, 160*ms)
+
+	r.release(-1, 200*ms)
+	r.step(300*ms, 6, 9) // released: nothing repeats
+	r.want(t, -1, -1, -1, -1)
+}
+
+func TestAutoShiftARRZeroSnapsAndGlues(t *testing.T) {
+	r := newShiftRig(60*ms, 0)
+	r.press(-1, 0)
+	r.want(t, -1)
+
+	_, every := r.step(60*ms, 6, 9) // the slide: all the board allows, room-capped
+	r.want(t, -1, -1, -1, -1, -1, -1, -1)
+	if !every {
+		t.Fatal("glued slide must re-measure every frame")
+	}
+
+	r.step(76*ms, 3, 3) // the re-measure is idempotent: only what remains
+	r.want(t, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
+
+	_, every = r.step(92*ms, 6, 0) // at the wall: glued, still watching
+	r.want(t, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
+	if !every {
+		t.Fatal("at the wall the slide keeps watching for a gap")
+	}
+
+	r.step(108*ms, 6, 2) // a gap opens (a shared board): taken at once
+	r.want(t, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
+}
+
+func TestAutoShiftInstantDAS(t *testing.T) {
+	// DAS 0 / ARR 0: a press is the whole slide.
+	r := newShiftRig(0, 0)
+	r.press(1, 0)
+	r.want(t, 1)
+	r.step(0, 6, 4)
+	r.want(t, 1, 1, 1, 1, 1)
+}
+
+func TestAutoShiftOSRepeatIgnored(t *testing.T) {
+	r := newShiftRig(60*ms, 50*ms)
+	r.press(-1, 0)
+	r.press(-1, 33*ms) // the OS auto-repeat: no Release between
+	r.press(-1, 47*ms)
+	r.want(t, -1) // only the real press shifted
+
+	wake, _ := r.step(50*ms, 6, 9)
+	if !wake.Equal(r.base.Add(60 * ms)) {
+		t.Fatalf("wake = %v, want the ORIGINAL press's DAS expiry", wake)
+	}
+}
+
+func TestAutoShiftMostRecentPressWins(t *testing.T) {
+	r := newShiftRig(60*ms, 50*ms)
+	r.press(-1, 0)
+	r.press(1, 20*ms) // both held: the newer press drives
+	r.want(t, -1, 1)
+
+	r.step(70*ms, 6, 9) // right's DAS (20+60=80) not expired yet
+	r.want(t, -1, 1)
+
+	r.release(-1, 75*ms) // the inactive key: no effect on the active one
+	r.press(-1, 90*ms)   // re-press left: newer again, fresh charge
+	r.want(t, -1, 1, -1)
+
+	r.release(-1, 100*ms) // right (held since 20ms, charge long spent) resumes
+	r.want(t, -1, 1, -1, 1)
+	r.step(150*ms, 6, 9) // resumed at 100ms: next repeat one ARR later
+	r.want(t, -1, 1, -1, 1, 1)
+
+	r.release(1, 200*ms) // last key up: idle
+	r.step(300*ms, 6, 9)
+	r.want(t, -1, 1, -1, 1, 1)
+
+	// A stray release (a focus regain mid-hold): ignored entirely.
+	r.release(-1, 310*ms)
+	r.step(400*ms, 6, 9)
+	r.want(t, -1, 1, -1, 1, 1)
+}
+
+func TestAutoShiftGapRetainsCharge(t *testing.T) {
+	// ARR 0: the charge survives the lock-to-spawn gap, and the NEXT piece
+	// snaps over the frame it appears — the full slide, nothing banked.
+	r := newShiftRig(60*ms, 0)
+	r.press(-1, 0)
+	_, every := r.step(60*ms, 6, -1) // the gap: no piece to shift
+	r.want(t, -1)
+	if !every {
+		t.Fatal("the gap must be watched every frame for the spawn")
+	}
+	r.step(200*ms, 6, -1) // still no piece
+	r.want(t, -1)
+	r.step(216*ms, 6, 4) // the spawn: the slide, at once
+	r.want(t, -1, -1, -1, -1, -1)
+
+	// ARR > 0: the spawn gets ONE immediate shift, then the cadence — the
+	// gap's worth of repeats was dropped, not banked.
+	r = newShiftRig(60*ms, 50*ms)
+	r.press(1, 0)
+	r.step(60*ms, 6, -1)
+	r.step(200*ms, 6, -1)
+	r.want(t, 1)
+	r.step(216*ms, 6, 9)
+	r.want(t, 1, 1)
+	r.wantDue(t, 216*ms)
+}
+
+func TestAutoShiftBackPressure(t *testing.T) {
+	// ARR > 0 with a full buffer: the repeat waits without banking.
+	r := newShiftRig(60*ms, 50*ms)
+	r.press(-1, 0)
+	_, every := r.step(60*ms, 0, 9) // due, but no room
+	r.want(t, -1)
+	if !every {
+		t.Fatal("a full buffer must be retried every frame")
+	}
+	r.wantDue(t, 60*ms)
+	r.step(76*ms, 3, 9) // room again: one repeat, not the backlog
+	r.want(t, -1, -1)
+}
+
+// gameFrameAt is gameFrame with a frame clock — the DAS/ARR timing tests
+// need Now to advance between frames.
+func gameFrameAt(a *App, r *input.Router, now time.Time) {
+	ops := new(op.Ops)
+	gtx := layout.Context{
+		Ops:         ops,
+		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
+		Constraints: layout.Exact(image.Pt(1200, 820)),
+		Now:         now,
+		Source:      r.Source(),
+	}
+	a.layout(gtx)
+	r.Frame(ops)
+}
+
+// TestAutoShiftKeyboardDAS drives the whole path through a real Gio router:
+// a held ← (Press, never Released) shifts once, the OS repeat's duplicate
+// Presses add nothing, the DAS expiry snaps the piece to the wall (ARR 0)
+// where it stays glued, and losing the keys to the chat resets the machine.
+func TestAutoShiftKeyboardDAS(t *testing.T) {
+	a := newTestApp()
+	a.SetHandling(60, 0) // pinned: the timings below assume DAS 60 / ARR 0
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(3000, 0)
+
+	gameFrameAt(a, &r, base) // the start frame: the board takes the keys
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys")
+	}
+
+	buffered := func() int { return len(a.eng.BufferedMoves()) }
+
+	r.Queue(key.Event{Name: key.NameLeftArrow, State: key.Press})
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the press: %d moves buffered, want 1", buffered())
+	}
+
+	// The OS auto-repeat: more Presses, no Release between.
+	r.Queue(key.Event{Name: key.NameLeftArrow, State: key.Press})
+	gameFrameAt(a, &r, base.Add(40*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the OS repeat's press: %d moves buffered, want still 1", buffered())
+	}
+
+	// DAS (60ms from the press's frame at +10ms) expires; ARR 0 slides the
+	// piece the remaining 3 columns to the wall, in one frame.
+	gameFrameAt(a, &r, base.Add(80*ms))
+	if buffered() != 4 {
+		t.Fatalf("after the DAS expiry: %d moves buffered, want 4 (the slide to the wall)", buffered())
+	}
+
+	// Glued at the wall: held frames add nothing.
+	gameFrameAt(a, &r, base.Add(100*ms))
+	gameFrameAt(a, &r, base.Add(200*ms))
+	if buffered() != 4 {
+		t.Fatalf("glued at the wall: %d moves buffered, want still 4", buffered())
+	}
+
+	// Tab hands the keys to the chat: the board's FocusEvent resets the
+	// machine, so the still-unreleased ← repeats nothing ever again.
+	r.Queue(input.SystemEvent{Event: key.Event{Name: key.NameTab, State: key.Press}})
+	gameFrameAt(a, &r, base.Add(210*ms))
+	gameFrameAt(a, &r, base.Add(300*ms))
+	gameFrameAt(a, &r, base.Add(400*ms))
+	if buffered() != 4 {
+		t.Fatalf("after losing the keys: %d moves buffered, want still 4", buffered())
+	}
+	if a.shift.dir != 0 || a.shift.leftDown {
+		t.Fatal("losing the keys did not reset the auto-shift machine")
+	}
+}
+
+// TestAutoShiftPadHold is the touch device's version of the same guarantee:
+// the on-screen pad's ← arm moves on the press, a held arm auto-repeats with
+// the DAS/ARR tuning (snapping to the wall at ARR 0), the pad press's
+// one-frame focus flap (the Clickable takes the keys, handleKeys hands them
+// back) does not reset the hold, and lifting the finger neither double-fires
+// the click nor leaves the repeat running.
+func TestAutoShiftPadHold(t *testing.T) {
+	a := newTestApp()
+	a.SetHandling(60, 0) // pinned: the timings below assume DAS 60 / ARR 0
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	a.touchUI = true
+	a.padPref = 1 // the pad on, whatever the window's default
+	var r input.Router
+	base := time.Unix(4000, 0)
+
+	gameFrameAt(a, &r, base)
+	pl, ok := semanticBounds(&r, padLeftLabel)
+	if !ok {
+		t.Fatal("no ← arm in the semantic tree — the pad is not on screen")
+	}
+	cx, cy := float32(pl.Min.X+pl.Dx()/2), float32(pl.Min.Y+pl.Dy()/2)
+	buffered := func() int { return len(a.eng.BufferedMoves()) }
+
+	touch(&r, pointer.Press, 1, cx, cy, 0) // finger down, and held
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the arm's press: %d moves buffered, want 1", buffered())
+	}
+
+	// The flap frame: the arm's Clickable holds the keys, and the machine
+	// must ride it out — the DAS expiry below is the proof.
+	gameFrameAt(a, &r, base.Add(40*ms))
+	if buffered() != 1 {
+		t.Fatalf("holding the arm before DAS: %d moves buffered, want still 1", buffered())
+	}
+
+	gameFrameAt(a, &r, base.Add(80*ms)) // DAS expiry: ARR 0 snaps the last 3 columns
+	if buffered() != 4 {
+		t.Fatalf("after the DAS expiry: %d moves buffered, want 4 (the slide to the wall)", buffered())
+	}
+	gameFrameAt(a, &r, base.Add(100*ms))
+	if buffered() != 4 {
+		t.Fatalf("glued at the wall: %d moves buffered, want still 4", buffered())
+	}
+
+	touch(&r, pointer.Release, 1, cx, cy, 110*ms) // finger up
+	gameFrameAt(a, &r, base.Add(120*ms))
+	gameFrameAt(a, &r, base.Add(300*ms))
+	if buffered() != 4 {
+		t.Fatalf("after the release: %d moves buffered, want still 4 (no click double-fire, no repeats)", buffered())
+	}
+	if a.shift.dir != 0 || a.shift.leftDown {
+		t.Fatal("lifting the finger did not release the machine")
+	}
+}
+
+func TestAutoShiftResetClearsEverything(t *testing.T) {
+	r := newShiftRig(60*ms, 0)
+	r.press(-1, 0)
+	r.want(t, -1)
+	r.s.reset() // the board lost the keys mid-hold
+	if r.s.dir != 0 || r.s.leftDown {
+		t.Fatal("reset must forget the held key")
+	}
+	r.step(100*ms, 6, 9) // no repeats from the forgotten hold
+	r.want(t, -1)
+	r.press(-1, 200*ms) // the next press is fresh, not an "OS repeat"
+	r.want(t, -1, -1)
+}

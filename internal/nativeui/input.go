@@ -1,6 +1,8 @@
 package nativeui
 
 import (
+	"time"
+
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
@@ -67,23 +69,55 @@ func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 // focus only when nothing of the game screen's has it: the chat editor keeps
 // it for as long as the player has clicked into the chat (handleGameFocus is
 // the switch between the two).
+//
+// ← and → go through the DAS/ARR machine (autoshift.go): both their edges
+// feed it — the press's immediate shift comes back out through emit — and
+// handleAutoShift runs the repeats right after. The other keys dispatch on
+// the press as ever, the OS repeat included. The board's key.FocusEvent
+// arrives in the same drain (the FocusFilter registers it): losing the keys
+// — to the chat, the modal, a window blur — resets the machine, so a Release
+// the board never saw cannot leave the auto-repeat running.
 func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 	tag := &a.boardTag
 	if !gtx.Source.Focused(tag) && !gtx.Source.Focused(&a.gameChatEd) {
 		gtx.Source.Execute(key.FocusCmd{Tag: tag})
 	}
+	emit := a.shiftEmit(eng)
+	das := time.Duration(a.dasMs) * time.Millisecond
+	arr := time.Duration(a.arrMs) * time.Millisecond
 	filters := boardKeyFilters(tag)
 	for {
 		ev, ok := gtx.Source.Event(filters...)
 		if !ok {
 			break
 		}
-		ke, ok := ev.(key.Event)
-		if !ok || ke.State != key.Press {
-			continue
-		}
-		if move, ok := moveForKey(ke.Name); ok {
-			move(eng)
+		switch e := ev.(type) {
+		case key.FocusEvent:
+			// Not on a pad press's one-frame flap (padFocused): the keys come
+			// straight back, and the reset would kill the hold it began.
+			if !e.Focus && !a.padFocused(gtx) {
+				a.shift.reset()
+			}
+		case key.Event:
+			switch e.Name {
+			case key.NameLeftArrow, key.NameRightArrow:
+				dir := -1
+				if e.Name == key.NameRightArrow {
+					dir = 1
+				}
+				if e.State == key.Press {
+					a.shift.press(dir, gtx.Now, das, arr, emit)
+				} else {
+					a.shift.release(dir, gtx.Now, das, arr, emit)
+				}
+			default:
+				if e.State != key.Press {
+					continue
+				}
+				if move, ok := moveForKey(e.Name); ok {
+					move(eng)
+				}
+			}
 		}
 	}
 }

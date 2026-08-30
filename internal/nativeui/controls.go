@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"gioui.org/io/semantic"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -19,6 +20,15 @@ import (
 	"gioui.org/widget/material"
 
 	"jetris/internal/engine"
+)
+
+// The D-pad arms' semantic labels (what the tests find the buttons by, the
+// way the playfield is found by playfieldLabel).
+const (
+	padLeftLabel   = "pad left"
+	padRightLabel  = "pad right"
+	padDownLabel   = "pad down"
+	padRotateLabel = "pad rotate"
 )
 
 // Blocky glyph bitmaps ('X' = filled square) for the control pad and the
@@ -826,18 +836,19 @@ func (a *App) dpad(gtx C, p padSizer, enabled bool) D {
 	pivot := max(cell/6, 2)
 	c := size/2 - pivot/2
 	fillRect(gtx.Ops, image.Rect(c, c, c+pivot, c+pivot), colBorder)
-	arm := func(btn *widget.Clickable, col, row int, bm []string) {
+	arm := func(btn *widget.Clickable, col, row int, bm []string, label string) {
 		defer op.Offset(image.Pt(col*cell, row*cell)).Push(gtx.Ops).Pop()
 		gtx := gtx
 		gtx.Constraints = layout.Exact(image.Pt(cell, cell))
 		material.Clickable(gtx, btn, func(gtx C) D {
+			semantic.LabelOp(label).Add(gtx.Ops) // what the tests find the arm by
 			return layout.Center.Layout(gtx, glyphWidget(bm, p.dp(p.m.glyph), glyphCol))
 		})
 	}
-	arm(&a.padUp, 1, 0, glyphCW)
-	arm(&a.padLeft, 0, 1, glyphLeft)
-	arm(&a.padRight, 2, 1, glyphRight)
-	arm(&a.padDown, 1, 2, glyphDown)
+	arm(&a.padUp, 1, 0, glyphCW, padRotateLabel)
+	arm(&a.padLeft, 0, 1, glyphLeft, padLeftLabel)
+	arm(&a.padRight, 2, 1, glyphRight, padRightLabel)
+	arm(&a.padDown, 1, 2, glyphDown, padDownLabel)
 	return D{Size: image.Pt(size, size)}
 }
 
@@ -919,15 +930,17 @@ func (a *App) padButton(gtx C, btn *widget.Clickable, enabled bool, sz image.Poi
 // them to the engine while the game is actually being played. Draining is
 // unconditional so clicks made while the pad is disabled (pre-start, game
 // over) die here instead of firing as moves once the game starts.
+//
+// The ← → arms are not here: they move on the PRESS, not the click's
+// release — held, they auto-repeat with the keyboard's DAS/ARR tuning — and
+// handlePadShift drains their clicks and feeds their edges.
 func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
 	pads := [...]struct {
 		btn  *widget.Clickable
 		move func(*engine.Engine)
 	}{
 		{&a.padUp, (*engine.Engine).RotateCW},
-		{&a.padLeft, (*engine.Engine).MoveLeft},
 		{&a.padDown, (*engine.Engine).MoveDown},
-		{&a.padRight, (*engine.Engine).MoveRight},
 		{&a.padCCW, (*engine.Engine).RotateCCW},
 		{&a.padCW, (*engine.Engine).RotateCW},
 		{&a.padDrop, (*engine.Engine).HardDrop},

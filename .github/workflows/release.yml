@@ -20,6 +20,15 @@
 #   - The github-pages environment must allow deployments from tags: under its
 #     "Deployment branches and tags", add a tag rule "v*" (the default policy
 #     only allows the default branch, and this workflow runs on tags).
+#
+# Every Go job downloads the module graph in a step of its own, retried, before
+# it builds or tests anything. A release fans out over seven runners and any one
+# of them can lose a coin flip with the module proxy — v0.11.1's darwin/arm64
+# build died on "github.com/klauspost/compress@v1.19.2: ... net/http: TLS
+# handshake timeout" while the other six were fine — and with the download
+# folded into `go build` that one blip fails the whole release, artifacts and
+# Pages deploy included, until someone re-runs the job by hand. Pulled out and
+# retried, a blip costs ten seconds instead.
 
 name: Release
 
@@ -35,10 +44,24 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Download modules
+        shell: bash
+        run: |
+          # The module proxy is a network service and occasionally times out on
+          # one runner. Retry rather than lose a release to it.
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "go mod download failed (attempt $attempt of 3); retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "go mod download failed three times — the module proxy is not reachable from this runner"
+          exit 1
       - name: Install Gio build dependencies
         run: |
           sudo apt-get update
@@ -62,10 +85,24 @@ jobs:
           - { os: windows-latest, goos: windows, goarch: amd64, cgo: 0 }
           - { os: windows-latest, goos: windows, goarch: arm64, cgo: 0 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Download modules
+        shell: bash
+        run: |
+          # The module proxy is a network service and occasionally times out on
+          # one runner. Retry rather than lose a release to it.
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "go mod download failed (attempt $attempt of 3); retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "go mod download failed three times — the module proxy is not reachable from this runner"
+          exit 1
       - name: Install Gio build dependencies
         if: matrix.goos == 'linux'
         run: |
@@ -98,7 +135,7 @@ jobs:
           else
             tar czf "${name}.tar.gz" "$name"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jetris-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -113,10 +150,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Download modules
+        shell: bash
+        run: |
+          # The module proxy is a network service and occasionally times out on
+          # one runner. Retry rather than lose a release to it.
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "go mod download failed (attempt $attempt of 3); retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "go mod download failed three times — the module proxy is not reachable from this runner"
+          exit 1
       - name: Build
         run: VERSION="${GITHUB_REF_NAME}" ./scripts/build-wasm.sh
       - name: Package
@@ -124,12 +175,12 @@ jobs:
           name="jetris-${GITHUB_REF_NAME}-web"
           cp -r dist/web "$name"
           tar czf "${name}.tar.gz" "$name"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jetris-web
           path: "*.tar.gz"
           if-no-files-found: error
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist/web
 
@@ -138,7 +189,7 @@ jobs:
     needs: [build, web]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: jetris-*
@@ -147,7 +198,7 @@ jobs:
         run: |
           cd dist
           sha256sum * > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
@@ -167,4 +218,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

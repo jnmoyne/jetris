@@ -2,11 +2,14 @@ package nativeui
 
 // Opt-in visual verification of the control pad's placement and sizes:
 // renders the player's game screen — a competitive game consuming a real
-// stream on an embedded server, so the playfield has its live row count and
-// the NEXT/HOLD wells beside it — at a tablet's landscape and portrait
-// viewports with the touch pad, and at the default desktop window with the
-// mouse pad, via a headless GPU window, and writes PNGs for inspection.
-// Skipped unless FW_SNAPSHOT_DIR is set (needs a GPU):
+// stream on an embedded server, so the playfield has its live row count — at
+// a tablet's landscape and portrait viewports with the touch pad, and at the
+// default desktop window with the mouse pad, via a headless GPU window, and
+// writes PNGs for inspection. The landscape and desktop shots are the full
+// screen, wells beside the playfield; the portrait one is the compact screen
+// (formfactor.go), its wells in the top bar — see TestFormSnapshots for the
+// responsive layouts themselves. Skipped unless FW_SNAPSHOT_DIR is set
+// (needs a GPU):
 //
 //	FW_SNAPSHOT_DIR=/tmp go test ./internal/nativeui/ -run TestPadSnapshots
 

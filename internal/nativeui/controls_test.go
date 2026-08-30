@@ -31,6 +31,8 @@ func TestGlyphBitmaps(t *testing.T) {
 	for name, bm := range map[string][]string{
 		"left": glyphLeft, "right": glyphRight, "down": glyphDown, "drop": glyphDrop,
 		"cw": glyphCW, "ccw": glyphCCW, "hold": glyphHold,
+		"menu": glyphMenu, "chat": glyphChat, "pad": glyphPad, "close": glyphClose,
+		"foldL": glyphFoldL, "foldR": glyphFoldR, "foldU": glyphFoldU, "foldD": glyphFoldD,
 	} {
 		if len(bm) == 0 {
 			t.Fatalf("%s: empty bitmap", name)
@@ -340,7 +342,7 @@ func TestBufferedMovesStripWidthIsConstant(t *testing.T) {
 		many[i] = []engine.MoveType{engine.MoveDown}
 	}
 	grouped := [][]engine.MoveType{{engine.MoveDown, engine.MoveDown, engine.MoveDown}, {engine.MoveLeft, engine.MoveLeft}, {engine.MoveDown}}
-	want := stripWidth(ctx())
+	want := a.stripWidth(ctx())
 	for _, c := range []struct {
 		name     string
 		batches  [][]engine.MoveType

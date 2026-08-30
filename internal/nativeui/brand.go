@@ -71,6 +71,19 @@ func (a *App) brandBanner(tag string) layout.Widget {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
 		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 			return layout.Center.Layout(gtx, func(gtx C) D {
+				if a.form.compact {
+					// A phone has no room for the sentence: the logo, the
+					// name and the screen's tag, on one line.
+					name := "JETRIS"
+					if tag != "" {
+						name += " · " + tag
+					}
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D { return natsLogo(gtx, 24) }),
+						layout.Rigid(hSpacer(10)),
+						layout.Rigid(a.pixel(unit.Sp(14), name, colAccent).Layout),
+					)
+				}
 				children := []layout.FlexChild{
 					layout.Rigid(func(gtx C) D { return natsLogo(gtx, 30) }),
 					layout.Rigid(hSpacer(10)),

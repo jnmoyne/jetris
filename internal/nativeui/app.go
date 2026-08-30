@@ -426,6 +426,32 @@ type App struct {
 	// queries (view_js.go) and, everywhere, by the first touch press on the
 	// game screen (handleGameFocus). UI goroutine only.
 	touchUI bool
+	// Form factor (formfactor.go): deviceHint is the browser's reading of
+	// the page — the device the game is on, hinted once at startup
+	// (view_js.go); form is the current frame's, re-derived at the top of
+	// every game frame from it and the window's own size. UI goroutine only.
+	deviceHint   deviceKind
+	deviceHinted bool
+	form         screenForm
+	// The compact game screen's state (compact.go): which panel is over the
+	// board, and the player's standing answer on the on-screen pad — 0 for
+	// the device's default (padVisible), ±1 once they have tapped the bar's
+	// pad button. UI goroutine only.
+	hudDrawer, chatDrawer bool
+	padPref               int8
+	// Its chrome: the bar's menu / pad / chat buttons, the scrim that closes
+	// a panel when tapped beside it, and the panels' own close button.
+	barHudBtn, barPadBtn, barChatBtn widget.Clickable
+	drawerScrim, drawerCloseBtn      widget.Clickable
+	drawerTag                        int // address used as the open panel's pointer-area tag: presses inside it are its own
+	chatSeen                         int // messages the chat panel last showed: the bar's unread dot
+	// drawerEng is the engine the panel state above belongs to; a new one
+	// (every game entry makes one) shuts the panels and forgets what was read.
+	drawerEng *engine.Engine
+	// The full screen's collapsibles: the HUD column and the chat strip fold
+	// away to a rail on a tap, handing their room to the playfield.
+	hudFold, chatFold       bool
+	hudFoldBtn, chatFoldBtn widget.Clickable
 	// Touch diagnostic (browser build, view_js.go; the page's ?touchdebug=1):
 	// touchDebug switches it on, touchPresses counts the touch presses that
 	// reached the game screen (handleGameFocus) and frames the frames laid
@@ -718,6 +744,11 @@ func (a *App) layout(gtx C) D {
 	// Stretch the whole frame to the display (see scale.go) before any
 	// screen measures a dp or an sp.
 	gtx = scaledContext(gtx)
+	// The frame's form factor (formfactor.go): which device, which way up,
+	// and how much room there is. Every screen reads it off a.form — the
+	// game screen to choose its shape, the others to trim what a phone has
+	// no width for.
+	a.form = a.formOf(gtx)
 	paint.Fill(gtx.Ops, colBg)
 	a.frames++
 	a.touchDebugFrame()
@@ -734,7 +765,12 @@ func (a *App) layout(gtx C) D {
 	case screenReplay:
 		d = a.layoutReplay(gtx)
 	}
-	a.versionBadge(gtx) // build version, top-right corner of every screen
+	// Build version, top-right corner of every screen — except the compact
+	// game screen, whose top-right corner is the chat button: there the
+	// plate moves into the HUD panel, beside the NATS tag (gameHUD).
+	if !(a.getScreen() == screenGame && a.form.compact) {
+		a.versionBadge(gtx)
+	}
 	// CRT overlay over the whole frame, screens and chrome alike. Deferred —
 	// op.Defer runs after everything else, first in first out — so it also
 	// covers what a screen paints late: the crown a winning player's board

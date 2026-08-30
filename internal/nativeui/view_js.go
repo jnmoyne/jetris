@@ -41,6 +41,7 @@ func (a *App) attachView(e app.ViewEvent) {
 		// (controls.go), rather than after the first tap reaches the game.
 		a.touchUI = true
 	}
+	a.deviceHint, a.deviceHinted = browserDevice(), true
 	// The page sets window.jetrisTouchDebug when opened with ?touchdebug=1:
 	// it then counts the raw DOM touch events itself and shows them beside
 	// the counts reported here (touchDebugFrame), so a stall can be placed —
@@ -84,6 +85,30 @@ func (a *App) touchDebugFrame() {
 		"spawnGapLast": a.spawnGapLast.Milliseconds(), "spawnGapMax": a.spawnGapMax.Milliseconds(),
 		"held": len(a.heldMoves), "heldPeak": a.heldPeak,
 	})
+}
+
+// browserDevice reads the page for the machine it is on (formfactor.go):
+// a fine pointer — a mouse, a trackpad — is a desktop whatever the window
+// size; a coarse one is a phone or a tablet by the SCREEN's short side in CSS
+// pixels, not the window's. The screen is the honest measure: a phone browser
+// shrinks its viewport for the URL bar and the keyboard, and a tablet's
+// split-screen half is still a tablet — its pad, its reach, its thumbs.
+func browserDevice() deviceKind {
+	if !mediaMatches("(any-pointer: coarse)") {
+		return deviceDesktop
+	}
+	scr := js.Global().Get("screen")
+	if !scr.Truthy() {
+		return deviceTablet
+	}
+	w, h := scr.Get("width"), scr.Get("height")
+	if !w.Truthy() || !h.Truthy() {
+		return deviceTablet
+	}
+	if min(w.Int(), h.Int()) <= phoneShortSideDp {
+		return devicePhone
+	}
+	return deviceTablet
 }
 
 // mediaMatches evaluates a CSS media query against the page (false where the

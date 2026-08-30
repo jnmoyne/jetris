@@ -159,12 +159,19 @@ func (a *App) layoutGame(gtx C) D {
 	if mode == engine.ModePlayer && started {
 		a.handleKeys(gtx, eng)
 	}
+	// The screen's own chrome first (compact.go — the compact screen's bar
+	// and panels, the full screen's fold handles): a panel opened or closed
+	// this frame decides whether the board is reachable at all.
+	a.handleFormClicks(gtx, eng)
+	// A panel over the board owns the frame's presses, as the leave modal
+	// does: neither the pad nor the playfield may act under one.
+	reachable := playing && !a.confirmLeave && !a.drawerOpen()
 	// The on-screen pad mirrors the keyboard scheme; its clicks are drained
 	// every frame and only dispatched while the game is actually playable.
-	a.handlePadClicks(gtx, eng, playing)
+	a.handlePadClicks(gtx, eng, reachable)
 	// So are the touch gestures on the playfield (gesture.go) — after the
-	// pad's Clickables have drained, and never under the leave modal.
-	a.handleGestures(gtx, eng, playing && !a.confirmLeave)
+	// pad's Clickables have drained.
+	a.handleGestures(gtx, eng, reachable)
 
 	if a.readyBtn.Clicked(gtx) {
 		go a.toggleReady()
@@ -218,41 +225,10 @@ func (a *App) layoutGame(gtx C) D {
 		eng.SetInflightLimit(labInflight)
 	}
 
-	content := func(gtx C) D {
-		return layout.Flex{}.Layout(gtx,
-			layout.Rigid(func(gtx C) D {
-				// HUD column: width-reactive (~19% of the window) within sane
-				// bounds, so a wide window doesn't waste it all on the board.
-				hudW := min(max(gtx.Constraints.Max.X*19/100, gtx.Dp(200)), gtx.Dp(300))
-				gtx.Constraints.Max.X = hudW
-				gtx.Constraints.Min.X = hudW
-				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-					return a.gameHUD(gtx, eng, view, mode, gmode)
-				})
-			}),
-			layout.Flexed(1, func(gtx C) D {
-				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-					return a.gameBoardArea(gtx, eng, view, mode, gmode)
-				})
-			}),
-			layout.Rigid(func(gtx C) D {
-				if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
-					return D{}
-				}
-				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
-					return a.opponentColumn(gtx, eng)
-				})
-			}),
-		)
+	root := func(gtx C) D { return a.fullGameScreen(gtx, eng, view, mode, gmode, showMsgs) }
+	if a.form.compact {
+		root = func(gtx C) D { return a.compactGameScreen(gtx, eng, view, mode, gmode, showMsgs) }
 	}
-	children := []layout.FlexChild{
-		layout.Flexed(1, content),
-		layout.Rigid(func(gtx C) D { return a.gameChatPanel(gtx, eng, view) }),
-	}
-	if showMsgs {
-		children = append(children, layout.Rigid(a.natsMsgSection))
-	}
-	root := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
 	base := root
 	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
 		// Victory fireworks paint over the whole game screen; pure paint ops,
@@ -285,6 +261,108 @@ func (a *App) layoutGame(gtx C) D {
 	// the pointer area whose presses (any not claimed by the chat panel) hand
 	// the keys back to the board.
 	return pointerArea(gtx, &a.boardTag, screen)
+}
+
+// fullGameScreen is the game screen at its full width: the HUD column, the
+// board column, the opponent thumbnails, and the chat strip across the
+// bottom — a desktop window or a tablet held landscape (formfactor.go; a
+// smaller screen gets compactGameScreen instead).
+//
+// Both side panels FOLD. The HUD's ◀ and the chat's ▼ shrink each to a thin
+// rail carrying only the arrow that brings it back, and every pixel they give
+// up goes to the playfield — the board's cell is fitted to whatever the
+// column has (gameBoardArea), so folding both is worth a visibly bigger board
+// on any window. A fold is remembered for the session, so a player who wants
+// nothing but the well keeps it across games.
+func (a *App) fullGameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, showMsgs bool) D {
+	content := func(gtx C) D {
+		return layout.Flex{}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				if a.hudFold {
+					// Folded: a rail just wide enough for the arrow back.
+					return a.foldRail(gtx, &a.hudFoldBtn, glyphFoldR, true)
+				}
+				// HUD column: width-reactive (~19% of the window) within sane
+				// bounds, so a wide window doesn't waste it all on the board.
+				hudW := min(max(gtx.Constraints.Max.X*19/100, gtx.Dp(200)), gtx.Dp(300))
+				gtx.Constraints.Max.X = hudW
+				gtx.Constraints.Min.X = hudW
+				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+					return a.gameHUD(gtx, eng, view, mode, gmode)
+				})
+			}),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+					return a.gameBoardArea(gtx, eng, view, mode, gmode)
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
+					return D{}
+				}
+				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+					return a.opponentColumn(gtx, eng)
+				})
+			}),
+		)
+	}
+	children := []layout.FlexChild{
+		layout.Flexed(1, content),
+		layout.Rigid(func(gtx C) D {
+			if a.chatFold {
+				return a.foldRail(gtx, &a.chatFoldBtn, glyphFoldU, false)
+			}
+			return a.gameChatPanel(gtx, eng, view, false)
+		}),
+	}
+	if showMsgs {
+		children = append(children, layout.Rigid(a.natsMsgSection))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// foldRail is a folded panel's remains: a thin bar along the edge it folded
+// into, carrying the arrow that unfolds it and nothing else. vertical is the
+// HUD column's rail (a narrow column down the side); otherwise it is the chat
+// strip's (a low bar across the bottom).
+func (a *App) foldRail(gtx C, btn *widget.Clickable, bm []string, vertical bool) D {
+	rail := gtx.Dp(28)
+	if vertical {
+		gtx.Constraints.Min.X, gtx.Constraints.Max.X = rail, rail
+	} else {
+		gtx.Constraints.Min.X = gtx.Constraints.Max.X
+		gtx.Constraints.Max.Y = rail
+	}
+	return background(gtx, colPanel, func(gtx C) D {
+		return btn.Layout(gtx, func(gtx C) D {
+			sz := image.Pt(gtx.Constraints.Max.X, rail)
+			if vertical {
+				sz = image.Pt(rail, gtx.Constraints.Max.Y)
+			}
+			gtx.Constraints = layout.Exact(sz)
+			// A hairline along the edge the panel folded into, so the rail
+			// reads as a shut drawer rather than as a gap in the screen.
+			if vertical {
+				fillRect(gtx.Ops, image.Rect(sz.X-gtx.Dp(2), 0, sz.X, sz.Y), colBorder)
+			} else {
+				fillRect(gtx.Ops, image.Rect(0, 0, sz.X, gtx.Dp(2)), colBorder)
+			}
+			return layout.Center.Layout(gtx, glyphWidget(bm, unit.Dp(16), colAccent))
+		})
+	})
+}
+
+// foldButton is a panel's fold handle in its own header: a small square
+// carrying the arrow of the edge it folds into. Deliberately understated —
+// it is chrome on a screen whose subject is the board.
+func (a *App) foldButton(gtx C, btn *widget.Clickable, bm []string) D {
+	sz := gtx.Dp(22)
+	gtx.Constraints = layout.Exact(image.Pt(sz, sz))
+	return btn.Layout(gtx, func(gtx C) D {
+		return background(gtx, colPanel, func(gtx C) D {
+			return layout.Center.Layout(gtx, glyphWidget(bm, unit.Dp(12), colAccent))
+		})
+	})
 }
 
 // confirmLeaveOverlay is the modal asking whether to leave an in-progress
@@ -356,66 +434,124 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 // ring; a click anywhere else, or Escape, hands them back to the board, and
 // Tab switches either way. The editor's hint says which way the keys
 // currently go.
-func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
-	gameID := eng.GameID()
-	a.mu.Lock()
-	msgs := make([]lobby.ChatMessage, 0, len(a.chatLog))
-	for _, m := range a.chatLog {
-		if m.GameID == gameID || m.GameID == "" {
-			msgs = append(msgs, m)
-		}
-	}
-	a.mu.Unlock()
+//
+// tall is the compact screen's chat panel (compact.go), which opens as a
+// drawer over the board and gives the conversation every row of it rather
+// than the strip's window-reactive slice; the strip also carries a fold
+// handle in its header, which the drawer (with its own close button) does not.
+func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView, tall bool) D {
+	msgs := a.gameChatLog(eng.GameID())
+	a.chatSeen = len(msgs) // seen: the bar's unread dot goes out (compact.go)
 
+	// The hints spell the keyboard's board/chat switch out at full width and
+	// abbreviate on the compact screen, where the editor is a phone's wide
+	// and the switch is a tap on the panel that is open anyway.
 	hint := "Message… (start with @lobby to message the lobby)"
+	focusHint := "Message… (Esc, Tab or click the board to play again; @lobby messages the lobby)"
+	boardHint := "Click here to chat — the keys are driving your piece; Tab to switch focus"
+	if a.form.compact {
+		hint, focusHint, boardHint = "Message…", "Message… (@lobby for the lobby)", "Tap to chat"
+	}
 	ring := colorN{} // transparent: the ring shows only while the chat holds the keys
 	switch {
 	case view.chatFocused:
-		hint = "Message… (Esc, Tab or click the board to play again; @lobby messages the lobby)"
+		hint = focusHint
 		ring = colFocus
 	case view.boardFocused:
-		hint = "Click here to chat — the keys are driving your piece; Tab to switch focus"
+		hint = boardHint
+	}
+	// The header doubles as the strip's fold handle: ▼ hands the whole strip
+	// to the playfield, and the rail it leaves behind brings it back. The
+	// drawer has its own close button instead.
+	head := a.header("CHAT")
+	if !tall {
+		head = func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.header("CHAT")),
+				layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
+				layout.Rigid(func(gtx C) D { return a.foldButton(gtx, &a.chatFoldBtn, glyphFoldD) }),
+			)
+		}
+	}
+
+	log := func(gtx C) D {
+		return bordered(gtx, func(gtx C) D {
+			// Height-reactive: at least 96 dp of chat, growing with the
+			// window (12% of the available height) so a taller window
+			// shows more of the conversation. As a drawer (tall) it takes
+			// every row it is given instead — it IS the screen while it is
+			// open — which the Flexed slot below hands it.
+			if tall {
+				gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+			} else if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
+				gtx.Constraints.Max.Y = maxH
+			}
+			return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
+				txt, col := chatLine(msgs[i])
+				return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
+			})
+		})
+	}
+	// The composer under the log: the editor and Send.
+	composer := func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, &a.gameChatEd, hint) }),
+			layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx) }),
+			layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
+		)
+	}
+	// Rigid everywhere but in the drawer, where the log stretches and the
+	// composer stays pinned under it.
+	logSlot, bodySlot := layout.Rigid(log), layout.Rigid
+	if tall {
+		logSlot, bodySlot = layout.Flexed(1, log), func(w layout.Widget) layout.FlexChild { return layout.Flexed(1, w) }
 	}
 
 	return pointerArea(gtx, &a.chatTag, func(gtx C) D {
 		return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(a.header("CHAT")),
-				layout.Rigid(func(gtx C) D {
+				layout.Rigid(head),
+				bodySlot(func(gtx C) D {
 					return focusRing(gtx, ring, func(gtx C) D {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx C) D {
-								return bordered(gtx, func(gtx C) D {
-									// Height-reactive: at least 96 dp of chat, growing with the
-									// window (12% of the available height) so a taller window
-									// shows more of the conversation.
-									if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
-										gtx.Constraints.Max.Y = maxH
-									}
-									return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
-										txt, col := chatLine(msgs[i])
-										return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
-									})
-								})
-							}),
+							logSlot,
 							layout.Rigid(spacer(6)),
-							layout.Rigid(func(gtx C) D {
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Flexed(1, func(gtx C) D {
-										return a.editorBox(gtx, &a.gameChatEd, hint)
-									}),
-									layout.Rigid(func(gtx C) D {
-										return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
-									}),
-									layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
-								)
-							}),
+							layout.Rigid(composer),
 						)
 					})
 				}),
 			)
 		})
 	})
+}
+
+// gameChatLog is this game's chat as the panel shows it: the game's own
+// messages plus the lobby's (GameID ""), which the panel prefixes "@lobby".
+func (a *App) gameChatLog(gameID string) []lobby.ChatMessage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	msgs := make([]lobby.ChatMessage, 0, len(a.chatLog))
+	for _, m := range a.chatLog {
+		if m.GameID == gameID || m.GameID == "" {
+			msgs = append(msgs, m)
+		}
+	}
+	return msgs
+}
+
+// gameChatCount is how many messages gameChatLog would return — what the
+// compact bar's unread dot compares against every frame, without copying the
+// conversation to find out.
+func (a *App) gameChatCount(gameID string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, m := range a.chatLog {
+		if m.GameID == gameID || m.GameID == "" {
+			n++
+		}
+	}
+	return n
 }
 
 // focusRing frames w with a chunky 3 dp ring in col, padded so the ring never
@@ -459,7 +595,18 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
-			return a.pixel(unit.Sp(11), modeLabel, colAccent).Layout(gtx)
+			// The mode line carries the column's fold handle on the full
+			// screen (◀ hands the whole column to the playfield); in the
+			// compact screen's drawer the panel closes by its own button.
+			if a.form.compact {
+				return a.pixel(unit.Sp(11), modeLabel, colAccent).Layout(gtx)
+			}
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx C) D {
+					return a.pixelLabelFit(gtx, unit.Sp(11), modeLabel, colAccent)
+				}),
+				layout.Rigid(func(gtx C) D { return a.foldButton(gtx, &a.hudFoldBtn, glyphFoldL) }),
+			)
 		}),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D { return a.legend(gtx, eng, view, gmode) }),
@@ -546,7 +693,25 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	topD := layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	topCall := macro.Stop()
 	macro = op.Record(gtx.Ops)
-	tagD := a.natsTag(22, 10)(gtx)
+	tagD := layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(a.natsTag(22, 10)),
+		layout.Flexed(1, func(gtx C) D {
+			// The compact screen has no room for the corner version plate
+			// (the bar's chat button is that corner), so it rides here.
+			if !a.form.compact {
+				return D{}
+			}
+			update, _ := a.update()
+			col := colMuted
+			if update != "" {
+				col = colGold
+			}
+			return layout.E.Layout(gtx, func(gtx C) D {
+				gtx.Constraints.Min.Y = 0
+				return a.pixelLabelFit(gtx, unit.Sp(8), versionLabel(update), col)
+			})
+		}),
+	)
 	tagCall := macro.Stop()
 	tagY := max(topD.Size.Y+gtx.Dp(20), slot.Y-tagD.Size.Y)
 	bottom := topD.Size.Y
@@ -766,16 +931,24 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// moment the countdown overlay goes away.
 		content := func(gtx C) D { return layout.Center.Layout(gtx, inner) }
 		if view.outcome.decided {
-			// Announce the verdict to the spectator in a result box beside
+			// Announce the verdict to the spectator in a result box next to
 			// the boards (never over them — the final playfields stay
-			// fully visible).
+			// fully visible): beside them, or under them on the compact
+			// screen, where the width is the boards' own.
+			box := func(gtx C) D {
+				return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+					return a.spectatorResultBox(gtx, view, view.outcome, gmode)
+				})
+			}
+			if a.form.compact {
+				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, content),
+					layout.Rigid(box),
+				)
+			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, content),
-				layout.Rigid(func(gtx C) D {
-					return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-						return a.spectatorResultBox(gtx, view, view.outcome, gmode)
-					})
-				}),
+				layout.Rigid(box),
 			)
 		}
 		if countdownVisible(view, mode) {
@@ -837,9 +1010,13 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// engine's sequence is up and the well will actually render. In a game
 	// with the hold rule the HOLD box flanks the playfield's other side
 	// (empty until the first hold; the slot is per seat too).
+	// On the compact screen both wells move into the top bar (compact.go): at
+	// a phone's width the pair costs the playfield eight of its own columns —
+	// nearly half the screen — for two previews a fraction of that size does
+	// just as well.
 	nextPieces := eng.NextPieces()
-	showNext := mode == engine.ModePlayer && len(nextPieces) > 0
-	showHold := mode == engine.ModePlayer && eng.HoldEnabled()
+	showNext := mode == engine.ModePlayer && len(nextPieces) > 0 && !a.form.compact
+	showHold := mode == engine.ModePlayer && eng.HoldEnabled() && !a.form.compact
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
 		// room for the wells beside it, the player's move-buffer strip under
@@ -847,7 +1024,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// the playfield or under it, whichever leaves the bigger board
 		// (fitBoardAndPad).
 		player := mode == engine.ModePlayer
-		showPad := player && !view.gameOver
+		showPad := player && !view.gameOver && a.padVisible()
 		hold := eng.HoldEnabled()
 		wells := sideWells{hold: showHold, next: showNext}
 		// The wells' tiles use the board cell size; the plan measures a well
@@ -904,21 +1081,27 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					return inner(gtx)
 				}
 			}
-			// The playfield is the touch-gesture surface (gesture.go) —
-			// registered outside the shake, so a swipe in flight never
-			// judders with the well, and inside the countdown stack, so
-			// the overlay never widens it.
-			field := bw
-			bw = func(gtx C) D { return a.gestureArea(gtx, cell, field) }
 			if !countdownVisible(view, mode) {
 				return bw(gtx)
 			}
 			// The pre-game countdown centers on the playfield itself
 			// (not the whole board area, which would drift it toward
-			// the NEXT well / surrounding whitespace).
+			// the NEXT well / surrounding whitespace) — and as an
+			// Expanded child sized to the playfield, so a "GO!" wider
+			// than a narrow board (it is, on a phone) neither widens the
+			// board's slot nor shifts the columns beside it.
 			return layout.Stack{Alignment: layout.Center}.Layout(gtx,
 				layout.Stacked(bw),
-				layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
+				layout.Expanded(func(gtx C) D {
+					sz := gtx.Constraints.Min
+					gtx.Constraints.Min = image.Point{}
+					m := op.Record(gtx.Ops)
+					d := a.countdownOverlay(gtx, view)
+					call := m.Stop()
+					defer op.Offset(image.Pt((sz.X-d.Size.X)/2, (sz.Y-d.Size.Y)/2)).Push(gtx.Ops).Pop()
+					call.Add(gtx.Ops)
+					return D{Size: sz}
+				}),
 			)
 		}
 		// The side wells, in their own sub-divisions hanging from the
@@ -936,6 +1119,10 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			// counts the ones in flight instead.
 			return a.bufferedMovesStrip(gtx, eng.BufferedBatches(), eng.InflightSteps(), eng.BatchesTaken())
 		}
+		// What layout.Center will stretch the column to (a Flexed slot's Min
+		// is its Max on the main axis): the room left over on either side of
+		// the centered content, which the gesture surface claims below.
+		slot := gtx.Constraints.Min
 		return layout.Center.Layout(gtx, func(gtx C) D {
 			// The playfield's columns: the HOLD box off its left, the NEXT
 			// well off its right, both hanging from its top edge — and, with
@@ -972,6 +1159,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				gap = gtx.Dp(padSideGap)
 			}
 			leftW, rightW := max(holdD.Size.X, dpadD.Size.X), max(nextD.Size.X, faceD.Size.X)
+			leftX := 0
 			boardX := leftW
 			if leftW > 0 {
 				boardX += gap
@@ -980,15 +1168,29 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			if rightW > 0 {
 				rightX += gap
 			}
-			dpadY := padTop(boardD.Size.Y, holdD.Size.Y, vgap, dpadD.Size.Y)
-			faceY := padTop(boardD.Size.Y, nextD.Size.Y, vgap, faceD.Size.Y)
+			// A handheld's controls belong at the screen's own edges, where
+			// the hands holding it are — not huddled against a playfield
+			// that, in a phone's landscape, is a fifth of its width. On the
+			// compact screen the flanking columns take the slot's far edges
+			// and the playfield sits dead centre between them; the room that
+			// opens up on either side of it is all swipe surface.
+			if flank && a.form.compact {
+				if room := slot.X - gtx.Dp(4); room > rightX+rightW {
+					if bx := (room - boardD.Size.X) / 2; bx-gap >= leftW && room-bx-boardD.Size.X-gap >= rightW {
+						boardX, rightX = bx, room-rightW
+					}
+				}
+			}
+			low := a.padsAtBottom()
+			dpadY := padTop(boardD.Size.Y, holdD.Size.Y, vgap, dpadD.Size.Y, low)
+			faceY := padTop(boardD.Size.Y, nextD.Size.Y, vgap, faceD.Size.Y, low)
 			leftBottom, rightBottom := holdD.Size.Y, nextD.Size.Y
 			if flank {
 				leftBottom, rightBottom = max(leftBottom, dpadY+dpadD.Size.Y), max(rightBottom, faceY+faceD.Size.Y)
 			}
 			stripX := boardX + boardD.Size.X/2 - stripD.Size.X/2
 			stripBase := boardD.Size.Y
-			if stripX < leftW {
+			if stripX < leftX+leftW {
 				stripBase = max(stripBase, leftBottom)
 			}
 			if stripX+stripD.Size.X > rightX {
@@ -1009,8 +1211,36 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				defer op.Offset(image.Pt(x+shift, y)).Push(gtx.Ops).Pop()
 				c.Add(gtx.Ops)
 			}
-			place((leftW-holdD.Size.X)/2, 0, holdCall)
-			place((leftW-dpadD.Size.X)/2, dpadY, dpadCall)
+			// The touch-gesture surface, registered FIRST so everything
+			// placed after it — the pad's buttons, the HOLD box — is over it
+			// and wins its own presses. It is the playfield plus all the
+			// empty room around it: out to whatever is beside the playfield
+			// (a well-and-pad column, else the edge of the slot the column is
+			// centered in), and down over the move-buffer strip to the pad
+			// under it, else to the foot of the column. The room is taken
+			// SYMMETRICALLY — the narrower side sets both — because a tap
+			// rotates by which half of the surface it lands in, and that
+			// split has to fall down the playfield's middle. On a phone this
+			// roughly doubles what a thumb can swipe on.
+			bx0, bx1 := shift+boardX, shift+boardX+boardD.Size.X
+			lo, hi := 0, size.X
+			if slack := (slot.X - size.X) / 2; slack > 0 {
+				lo, hi = -slack, hi+slack
+			}
+			if leftW > 0 {
+				lo = shift + leftX + leftW
+			}
+			if rightW > 0 {
+				hi = shift + rightX
+			}
+			ext := max(0, min(bx0-lo, hi-bx1)-gtx.Dp(1))
+			fieldBot := size.Y
+			if padD.Size.Y > 0 {
+				fieldBot = padY // never over the pad under the board
+			}
+			a.gestureSurface(gtx, image.Rect(bx0-ext, 0, bx1+ext, max(fieldBot, boardD.Size.Y)), cell)
+			place(leftX+(leftW-holdD.Size.X)/2, 0, holdCall)
+			place(leftX+(leftW-dpadD.Size.X)/2, dpadY, dpadCall)
 			place(boardX, 0, boardCall)
 			place(rightX+(rightW-nextD.Size.X)/2, 0, nextCall)
 			place(rightX+(rightW-faceD.Size.X)/2, faceY, faceCall)
@@ -1021,15 +1251,24 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	}
 	switch {
 	case view.gameOver:
-		// The game-over box sits BESIDE the board, not stacked over it: the
-		// final playfield must stay fully visible.
+		// The game-over box goes NEXT to the board, never over it: the final
+		// playfield must stay fully visible. Beside it where there is width
+		// to spare; under it on the compact screen, whose width there is
+		// none of and whose pad has just gone away, leaving the room.
+		box := func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+				return a.gameOverBox(gtx, gmode, view, eng.TeamIdx())
+			})
+		}
+		if a.form.compact {
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, board),
+				layout.Rigid(box),
+			)
+		}
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, board),
-			layout.Rigid(func(gtx C) D {
-				return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-					return a.gameOverBox(gtx, gmode, view, eng.TeamIdx())
-				})
-			}),
+			layout.Rigid(box),
 		)
 	default:
 		// The pre-game countdown is stacked over the playfield inside

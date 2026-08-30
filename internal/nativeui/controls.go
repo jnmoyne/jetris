@@ -93,6 +93,74 @@ var (
 		"XXXXXXXX",
 		".XX.....",
 	}
+	// The compact screen's bar icons (compact.go), in the same blocky
+	// language: the three-bar menu that opens the HUD, a speech bubble for
+	// the chat, the D-pad cross for the on-screen pad's on/off, and the
+	// cross that closes an open panel.
+	glyphMenu = []string{
+		"XXXXXXXX",
+		"XXXXXXXX",
+		"........",
+		"XXXXXXXX",
+		"XXXXXXXX",
+		"........",
+		"XXXXXXXX",
+		"XXXXXXXX",
+	}
+	glyphChat = []string{
+		".XXXXXX.",
+		"XXXXXXXX",
+		"XX....XX",
+		"XXXXXXXX",
+		"XX....XX",
+		"XXXXXXXX",
+		".XXXXXX.",
+		"..XX....",
+	}
+	glyphPad = []string{
+		"..XXXX..",
+		"..XXXX..",
+		"XXXXXXXX",
+		"XXXXXXXX",
+		"XXXXXXXX",
+		"XXXXXXXX",
+		"..XXXX..",
+		"..XXXX..",
+	}
+	glyphClose = []string{
+		"XX....XX",
+		"XXX..XXX",
+		".XXXXXX.",
+		"..XXXX..",
+		"..XXXX..",
+		".XXXXXX.",
+		"XXX..XXX",
+		"XX....XX",
+	}
+	// The full screen's fold arrows: a panel folds toward its own edge and
+	// unfolds back out (game.go's HUD column and chat strip).
+	glyphFoldL = []string{
+		"......XX",
+		"....XXXX",
+		"..XXXX..",
+		"XXXX....",
+		"XXXX....",
+		"..XXXX..",
+		"....XXXX",
+		"......XX",
+	}
+	glyphFoldR = mirrored(glyphFoldL)
+	glyphFoldU = []string{
+		"...XX...",
+		"...XX...",
+		"..XXXX..",
+		"..XXXX..",
+		".XX..XX.",
+		".XX..XX.",
+		"XX....XX",
+		"XX....XX",
+	}
+	glyphFoldD = flipped(glyphFoldU)
 )
 
 // mirrored flips a glyph bitmap horizontally (derives the CCW rotate arrow
@@ -105,6 +173,16 @@ func mirrored(bm []string) []string {
 			b[l], b[r] = b[r], b[l]
 		}
 		out[i] = string(b)
+	}
+	return out
+}
+
+// flipped mirrors a glyph bitmap vertically (derives the fold-down arrow from
+// the fold-up one).
+func flipped(bm []string) []string {
+	out := make([]string, len(bm))
+	for i := range bm {
+		out[i] = bm[len(bm)-1-i]
 	}
 	return out
 }
@@ -167,10 +245,34 @@ const (
 	bufPopDur     = 200 * time.Millisecond
 )
 
+// stripChip is the move-buffer strip's chip side and inter-chip gap in px.
+// The compact screen (formfactor.go) uses a smaller chip: the full-size row
+// is 392 dp wide — wider than a phone — and the board is centered on the
+// strip, so an oversized row would both spill off the screen and pull the
+// playfield off it.
+func (a *App) stripChip(gtx C) (chip, gap int) {
+	if a.form.compact {
+		return gtx.Dp(30), gtx.Dp(5)
+	}
+	return gtx.Dp(42), gtx.Dp(7)
+}
+
 // stripWidth is the move-buffer strip's width in px: its row of chip slots
 // (the label over them is narrower). fitBoardAndPad plans around it, as the
 // strip is wider than the playfield at most cell sizes.
-func stripWidth(gtx C) int { return bufferedSlots * (gtx.Dp(42) + gtx.Dp(7)) }
+func (a *App) stripWidth(gtx C) int {
+	chip, gap := a.stripChip(gtx)
+	return bufferedSlots * (chip + gap)
+}
+
+// stripReservedY is the vertical room the move-buffer strip and its inset
+// take under the playfield, which fitBoardAndPad keeps for it.
+func (a *App) stripReservedY(gtx C) int {
+	if a.form.compact {
+		return gtx.Dp(66)
+	}
+	return gtx.Dp(90)
+}
 
 // bufferedMovesStrip is the player's move-buffer readout under the board: a
 // row of chunky slots that fill with arrow glyphs as inputs queue behind the
@@ -189,7 +291,7 @@ func stripWidth(gtx C) int { return bufferedSlots * (gtx.Dp(42) + gtx.Dp(7)) }
 // every queued move; past the slots the last one counts the rest — and a
 // freshly queued glyph pops in with an overshoot.
 func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, firstOrdinal int) D {
-	chip, gap := gtx.Dp(42), gtx.Dp(7)
+	chip, gap := a.stripChip(gtx)
 	now := gtx.Now
 	// The queue flat: each move with its batch's color and whether it opens
 	// or closes its batch.
@@ -228,18 +330,25 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 	// line height, 11 px against the 9 px of real text, on another baseline)
 	// and would make the row — and the centered board over it — jump by
 	// two pixels every time the count came and went.
+	//
+	// The caption abbreviates on the compact screen: the full one runs wider
+	// than a phone's slot row, and the strip is only ever as wide as that row.
+	head, capSp, inflightTxt := "MOVE BUFFER  ", unit.Sp(9), "  ·  %d IN FLIGHT"
+	if a.form.compact {
+		head, capSp, inflightTxt = "BUF  ", unit.Sp(8), "  ·  %d FLYING"
+	}
 	caption := []layout.FlexChild{
-		layout.Rigid(a.pixel(unit.Sp(9), "MOVE BUFFER  ", colMuted).Layout),
-		layout.Rigid(a.pixel(unit.Sp(9), count, countCol).Layout),
+		layout.Rigid(a.pixel(capSp, head, colMuted).Layout),
+		layout.Rigid(a.pixel(capSp, count, countCol).Layout),
 	}
 	if inflight > 0 {
-		caption = append(caption, layout.Rigid(a.pixel(unit.Sp(9), fmt.Sprintf("  ·  %d IN FLIGHT", inflight), colAccent).Layout))
+		caption = append(caption, layout.Rigid(a.pixel(capSp, fmt.Sprintf(inflightTxt, inflight), colAccent).Layout))
 	}
 	// The strip is always exactly the slot row wide, its content centered in
 	// that width: the board over it is centered on the strip, and a caption
 	// or a count that widened the strip would shift the whole playfield
 	// with every move the player queues.
-	width := stripWidth(gtx)
+	width := a.stripWidth(gtx)
 	macro := op.Record(gtx.Ops)
 	dims := layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
@@ -279,12 +388,15 @@ func (a *App) bufferedMovesStrip(gtx C, batches [][]engine.MoveType, inflight, f
 							fillRect(gtx.Ops, image.Rect(chip-th, chip-stub, chip, chip), withAlpha(s.col, 0.85))
 						}
 						gtx.Constraints = layout.Exact(image.Pt(chip, chip))
+						// The glyph keeps its share of the chip whatever size
+						// the chip is (the compact strip's is smaller).
+						glyph := float32(gtx.Metric.PxToDp(chip * 4 / 7))
 						if i == bufferedSlots-1 && n > bufferedSlots {
 							// The queue runs past the strip: the last slot
 							// counts the rest instead of showing its move.
-							layout.Center.Layout(gtx, a.pixel(unit.Sp(11), fmt.Sprintf("+%d", n-bufferedSlots+1), colFg).Layout)
+							layout.Center.Layout(gtx, a.pixel(gtx.Metric.PxToSp(chip*11/42), fmt.Sprintf("+%d", n-bufferedSlots+1), colFg).Layout)
 						} else {
-							layout.Center.Layout(gtx, a.moveGlyph(s.m, unit.Dp(float32(24*clampF(scale, 0, 1.15))), colFg))
+							layout.Center.Layout(gtx, a.moveGlyph(s.m, unit.Dp(glyph*float32(clampF(scale, 0, 1.15))), colFg))
 						}
 						return D{Size: image.Pt(chip, chip)}
 					})
@@ -433,7 +545,8 @@ type flankGeom struct {
 	dpadW, dpadH, faceW, faceH int // the pads
 	holdW, holdH, nextW, nextH int // the wells (zero when not shown)
 	boardW, boardH, stripW     int
-	gap, vgap                  int // beside the playfield; between a well and its pad
+	gap, vgap                  int  // beside the playfield; between a well and its pad
+	lowPads                    bool // the pads hug the playfield's bottom edge (padsAtBottom)
 }
 
 func (g flankGeom) leftW() int  { return max(g.dpadW, g.holdW) }
@@ -446,21 +559,31 @@ func (g flankGeom) rowW() int   { return g.boardX() + g.boardW + g.gap + g.right
 // side included.
 func (g flankGeom) width() int { return max(g.rowW(), g.stripX()+g.stripW) - min(0, g.stripX()) }
 
-// padTop is a pad's top under its well (wellH zero without one): centered
-// on the playfield, pushed down under the well when the two would overlap.
-func padTop(boardH, wellH, vgap, padH int) int {
+// padTop is a pad's top under its well (wellH zero without one): centered on
+// the playfield — or hard against its bottom edge where the screen is held in
+// two hands and the thumbs are at the foot of it, which is the compact screen
+// in portrait (padsAtBottom) — and pushed down under the well when the two
+// would overlap.
+func padTop(boardH, wellH, vgap, padH int, bottom bool) int {
 	y := max(0, (boardH-padH)/2)
+	if bottom {
+		y = max(0, boardH-padH)
+	}
 	if wellH > 0 {
 		y = max(y, wellH+vgap)
 	}
 	return y
 }
 
+// padsAtBottom reports whether flanking pads hug the playfield's bottom edge
+// rather than its middle: a phone or a tablet held upright in two hands.
+func (a *App) padsAtBottom() bool { return a.form.compact && a.form.portrait }
+
 // height is the columns' — the playfield's, or a pad's bottom past it.
 func (g flankGeom) height() int {
 	return max(g.boardH,
-		padTop(g.boardH, g.holdH, g.vgap, g.dpadH)+g.dpadH,
-		padTop(g.boardH, g.nextH, g.vgap, g.faceH)+g.faceH)
+		padTop(g.boardH, g.holdH, g.vgap, g.dpadH, g.lowPads)+g.dpadH,
+		padTop(g.boardH, g.nextH, g.vgap, g.faceH, g.lowPads)+g.faceH)
 }
 
 // besideScale is the largest pad scale, floored at padMinScale, at which
@@ -517,12 +640,20 @@ func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad
 	plan := padPlan{padSizer: padSizer{m: m, scale: 1}}
 	reservedY := 0
 	if player {
-		reservedY = gtx.Dp(90) // the move-buffer strip and its inset
+		reservedY = a.stripReservedY(gtx) // the move-buffer strip and its inset
 	}
 	// The wells beside the playfield, at its cell size: previewCols board
 	// columns each, plus a slice for the frame and the gap after it.
 	wellCols, wellsX := wells.count()*previewCols, wells.count()*gtx.Dp(18)
-	fit := func(cols, rx, ry int) int { return fitCellPx(gtx, cols, rows, 1, gtx.Dp(24)+rx, ry, 14, 56) }
+	// The cell may go smaller on the compact screen: a phone held landscape
+	// has barely 300 dp of height for a 25-row well, and a board that fits
+	// whole — small, but with its move buffer and its controls on screen —
+	// beats one held at the desktop floor and clipped off the bottom.
+	floor := unit.Dp(14)
+	if a.form.compact {
+		floor = 10
+	}
+	fit := func(cols, rx, ry int) int { return fitCellPx(gtx, cols, rows, 1, gtx.Dp(24)+rx, ry, floor, 56) }
 	if !pad {
 		plan.cell = fit(cols+wellCols, wellsX, reservedY)
 		return plan
@@ -548,8 +679,8 @@ func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad
 		fw := max(cell/8, 2)
 		face := p.faceSize(gtx, hold)
 		g := flankGeom{dpadW: p.dpadSize(gtx), dpadH: p.dpadSize(gtx), faceW: face.X, faceH: face.Y,
-			boardW: cols*cell + 2*fw, boardH: rows*cell + 2*fw, stripW: stripWidth(gtx),
-			gap: gtx.Dp(padSideGap), vgap: gtx.Dp(wellPadGap)}
+			boardW: cols*cell + 2*fw, boardH: rows*cell + 2*fw, stripW: a.stripWidth(gtx),
+			gap: gtx.Dp(padSideGap), vgap: gtx.Dp(wellPadGap), lowPads: a.padsAtBottom()}
 		wellW := previewCols*cell + 2*(fw+max(cell/3, 6))
 		if wells.hold {
 			g.holdW, g.holdH = wellW, wells.holdH(cell)

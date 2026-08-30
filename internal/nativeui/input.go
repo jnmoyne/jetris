@@ -157,6 +157,7 @@ func (a *App) handleGameFocus(gtx C, eng *engine.Engine, playing bool) {
 		}
 		if ke, ok := ev.(key.Event); ok && ke.State == key.Press {
 			target = &a.boardTag
+			a.chatDrawer = false // and on the compact screen, out of the chat panel too
 		}
 	}
 	// Tab (shifted or not): from the board to the chat and from the chat to

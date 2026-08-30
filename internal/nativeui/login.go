@@ -150,8 +150,13 @@ func (a *App) layoutLogin(gtx C) D {
 	layers := []layout.StackChild{
 		layout.Expanded(a.loginBackdrop),
 		layout.Stacked(func(gtx C) D {
-			gtx.Constraints.Max.X = gtx.Dp(loginCardW)
-			gtx.Constraints.Min.X = gtx.Dp(loginCardW)
+			// The card is loginCardW wide, or the window's width where that
+			// is narrower — a phone's is. Pinned to 560 dp regardless, the
+			// name field and the server browser hang off both edges of the
+			// screen and the game cannot be reached at all.
+			cardW := min(gtx.Dp(loginCardW), gtx.Constraints.Max.X-gtx.Dp(12))
+			gtx.Constraints.Max.X = cardW
+			gtx.Constraints.Min.X = cardW
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
 					// The title flanked by NATS "N" logos, arcade-marquee style,
@@ -225,7 +230,7 @@ func (a *App) modalScrim(gtx C) D {
 // fresh-install defaults come back, and asks before doing it.
 func (a *App) confirmResetOverlay(gtx C) D {
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(460)
+		gtx.Constraints.Max.X = min(gtx.Dp(460), gtx.Constraints.Max.X-gtx.Dp(12))
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colErr, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {

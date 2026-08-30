@@ -10,10 +10,11 @@ package nativeui
 //	flick down          hard drop
 //	swipe up            hold (games with the hold rule)
 //
-// The playfield is the gesture surface (gestureArea): a press that a pad
-// button, the HOLD box, the chat panel or a HUD button took never reaches it,
-// so nothing double-fires, and positions arrive in the board's own
-// coordinates, so the rotate tap splits at the board's center. Only touch
+// The playfield and the empty room around it are the gesture surface
+// (gestureSurface): a press that a pad button, the HOLD box, the chat panel
+// or a HUD button took never reaches it, so nothing double-fires, and
+// positions arrive in the surface's own coordinates — centered on the
+// playfield, so the rotate tap splits at the playfield's center. Only touch
 // presses gesture — a mouse click on the board is the "keys back to the
 // board" click (handleGameFocus) and must not rotate. Every finger is its own
 // gesture: a thumb resting on the board's edge blocks nothing, and a finger
@@ -36,6 +37,7 @@ package nativeui
 // for gestureStill the rows it covered step after all.
 
 import (
+	"image"
 	"math"
 	"slices"
 	"time"
@@ -44,7 +46,6 @@ import (
 	"gioui.org/io/event"
 	"gioui.org/io/pointer"
 	"gioui.org/io/semantic"
-	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/unit"
@@ -502,19 +503,34 @@ func (a *App) handleGestures(gtx C, eng *engine.Engine, active bool) {
 	}
 }
 
-// gestureArea lays out the playfield w (drawn at cell px per cell) and
-// registers the gesture surface over it: the fieldTag pointer area exactly
-// covering it, as pointerArea does, with the playfield's semantic label; and
-// it records the geometry the recognizer measures the next frame's events
-// in.
-func (a *App) gestureArea(gtx C, cell int, w layout.Widget) D {
-	macro := op.Record(gtx.Ops)
-	dims := w(gtx)
-	call := macro.Stop()
-	defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
+// gestureSurface registers the touch-gesture surface over rectangle r of the
+// current transform: the fieldTag pointer area, the playfield's semantic
+// label (what the tests find it on screen by), and the geometry the
+// recognizer measures the next frame's events in.
+//
+// r is the playfield PLUS the empty room around it — the board column's
+// margins, the gap before the wells or the pad, the strip's row under it: a
+// thumb on any of it drives the piece, which on a phone roughly doubles the
+// surface a swipe has to work with (game.go computes r). It is kept centered
+// on the playfield, because a tap's rotation direction splits the surface
+// down the middle (fingerGesture.release) and that middle must be the
+// playfield's. Nothing else is registered inside r; the wells, the pad's
+// buttons and the panels are all outside it — and, being laid out after,
+// would win the press anyway.
+//
+// Registered outside the garbage-impact shake, so a swipe in flight never
+// judders with the well, and outside the countdown overlay, which draws over
+// the playfield without widening it.
+func (a *App) gestureSurface(gtx C, r image.Rectangle, cell int) {
+	// Pushed and popped here, not deferred to the caller: the surface is an
+	// EMPTY area, and everything the caller places after it must be outside
+	// it — over it in the hit test, so a pad button's tap is only ever the
+	// button's, and unclipped by it.
+	off := op.Offset(r.Min).Push(gtx.Ops)
+	cl := clip.Rect{Max: r.Size()}.Push(gtx.Ops)
 	event.Op(gtx.Ops, &a.fieldTag)
 	semantic.LabelOp(playfieldLabel).Add(gtx.Ops)
-	call.Add(gtx.Ops)
-	a.gest.setField(dims.Size.X, cell)
-	return dims
+	cl.Pop()
+	off.Pop()
+	a.gest.setField(r.Dx(), cell)
 }

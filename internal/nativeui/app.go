@@ -144,13 +144,16 @@ type App struct {
 	embAddr       string // shareable "<lan-ip>:<port>"
 	usingEmbedded bool
 
-	// connLabel names the server the CURRENT connection reached, for the
-	// lobby header — the server's name, then its URL in parentheses:
-	// "Jetris EU (nats://host:4222)" for a favorite, "context ngs
-	// (nats://connect.ngs.global:4222)", "your embedded server (nats://…)" in
-	// LAN mode; see connectionLabel. Set on connect, cleared on disconnect;
-	// guarded by mu.
-	connLabel string
+	// connName and connURL name the server the CURRENT connection reached,
+	// for the lobby header and the game HUD: the name as the player knows it
+	// ("Jetris EU central", "context ngs", "your embedded server") and the
+	// URL actually dialed. They are kept apart, not pre-joined, because the
+	// two are shown differently — the game HUD has room for the name alone,
+	// and where both fit it is the URL that gives way first, never the name
+	// (see connectionParts). A connection with no name to go by has the URL
+	// as its name and nothing in connURL. Set on connect, cleared on
+	// disconnect; guarded by mu.
+	connName, connURL string
 	// NATS link health (link.go): linkDownAt is when the connection dropped
 	// (zero while it is up) and linkErr why; set by the connection's
 	// callbacks, shown as the game HUD's LINK stat. Guarded by mu.

@@ -87,7 +87,7 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config, favorite string)
 	a.mu.Lock()
 	a.nc, a.js, a.kv = nc, js, kv
 	a.usingEmbedded = cfg.RunEmbedded
-	a.connLabel = connectionLabel(cfg, nc.ConnectedUrl(), favorite)
+	a.connName, a.connURL = connectionParts(cfg, nc.ConnectedUrl(), favorite)
 	a.mu.Unlock()
 	a.watchLink(nc)
 	a.doLogin(name, false)
@@ -227,36 +227,48 @@ func (a *App) disconnect() {
 	nc := a.nc
 	a.nc, a.js, a.kv = nil, nil, nil
 	a.usingEmbedded = false
-	a.connLabel = ""
+	a.connName, a.connURL = "", ""
 	a.mu.Unlock()
 	if nc != nil {
 		nc.Drain()
 	}
 }
 
-// connectionLabel describes a connection for the lobby header, after the
-// player's name and the @: the server's NAME as the player knows it — the
-// favorite's label, "context <name>" for a NATS CLI context, "your embedded
-// server" in LAN mode — and then, in parentheses, the URL actually reached
-// ("Jetris EU (nats://host:4222)"), which for a context or a clustered URL
-// can differ from what was configured. connectedURL is nc.ConnectedUrl();
-// when it is empty the configured URL stands in. A plain URL with no name to
-// go by is just the URL. Any user:password in the URL is dropped so
-// credentials never reach the screen.
-func connectionLabel(cfg config.Config, connectedURL, favorite string) string {
+// connectionParts describes a connection for the screens that say where this
+// session is, after the player's name and the @: the server's NAME as the
+// player knows it — the favorite's label, "context <name>" for a NATS CLI
+// context, "your embedded server" in LAN mode — and separately the URL
+// actually reached, which for a context or a clustered URL can differ from
+// what was configured. connectedURL is nc.ConnectedUrl(); when it is empty
+// the configured URL stands in. A plain URL with no name to go by is its own
+// name, and the url return is empty — there is nothing to add in parentheses
+// that the name does not already say. Any user:password in the URL is dropped
+// so credentials never reach the screen.
+//
+// The two are returned apart because they are shown apart: the lobby header
+// puts the name first and the URL after it in parentheses, cutting the URL
+// when the window is narrow; the game HUD's column has room for the name
+// alone (connectionLabel joins them where one string is wanted).
+func connectionParts(cfg config.Config, connectedURL, favorite string) (name, url string) {
 	u := stripURLUserinfo(connectedURL)
 	if u == "" {
 		u = stripURLUserinfo(cfg.NATSURL)
 	}
 	switch {
 	case cfg.RunEmbedded:
-		return joinLabel("your embedded server", u)
+		return "your embedded server", u
 	case cfg.NATSContext != "":
-		return joinLabel("context "+cfg.NATSContext, u)
+		return "context " + cfg.NATSContext, u
 	case favorite != "":
-		return joinLabel(favorite, u)
+		return favorite, u
 	}
-	return u
+	return u, ""
+}
+
+// connectionLabel is connectionParts joined the lobby's way: "<name> (<url>)",
+// or the name alone when there is no URL to add.
+func connectionLabel(cfg config.Config, connectedURL, favorite string) string {
+	return joinLabel(connectionParts(cfg, connectedURL, favorite))
 }
 
 // joinLabel is "<name> (<url>)", or the name alone when no URL is known.

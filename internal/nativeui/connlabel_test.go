@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"jetris/internal/config"
+	"jetris/internal/lobby"
 	"jetris/internal/testutil"
 )
 
@@ -113,20 +114,111 @@ func TestConnectAndLoginSetsLabel(t *testing.T) {
 	if a.loginErr != "" || a.screen != screenLobby {
 		t.Fatalf("URL login: err %q, screen %v, want the lobby", a.loginErr, a.screen)
 	}
-	if a.connLabel != url {
-		t.Fatalf("URL login label = %q, want %q", a.connLabel, url)
+	// A plain URL is its own name: there is nothing to put in parentheses
+	// that the name does not already say.
+	if a.connName != url || a.connURL != "" {
+		t.Fatalf("URL login = name %q url %q, want name %q and no url", a.connName, a.connURL, url)
 	}
 
 	a.quit()
-	if a.connLabel != "" {
-		t.Fatalf("label after quit = %q, want cleared", a.connLabel)
+	if a.connName != "" || a.connURL != "" {
+		t.Fatalf("after quit = name %q url %q, want both cleared", a.connName, a.connURL)
 	}
 
 	a.doConnectAndLogin("tester", config.Config{RunEmbedded: true, EmbeddedHost: "127.0.0.1", EmbeddedPort: freePort(t)}, "")
 	if a.loginErr != "" || a.screen != screenLobby {
 		t.Fatalf("LAN login: err %q, screen %v, want the lobby", a.loginErr, a.screen)
 	}
-	if !strings.HasPrefix(a.connLabel, "your embedded server (nats://127.0.0.1:") || !a.usingEmbedded {
-		t.Fatalf("LAN login label = %q (embedded %v), want the LAN-mode label", a.connLabel, a.usingEmbedded)
+	if a.connName != "your embedded server" || !strings.HasPrefix(a.connURL, "nats://127.0.0.1:") || !a.usingEmbedded {
+		t.Fatalf("LAN login = name %q url %q (embedded %v), want the LAN-mode parts", a.connName, a.connURL, a.usingEmbedded)
+	}
+}
+
+// TestConnectionParts pins the split the screens rely on: the server's name
+// and its URL come back apart, so the lobby header can put the name first and
+// let the URL be the part a narrow window cuts, and the game HUD can show the
+// name on its own.
+func TestConnectionParts(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cfg       config.Config
+		connected string
+		favorite  string
+		wantName  string
+		wantURL   string
+	}{
+		{
+			name:      "a favorite keeps its name, the server reached in the url",
+			cfg:       config.Config{NATSURL: "nats://172.105.76.148:4222"},
+			connected: "nats://172.105.76.148:4222",
+			favorite:  "Jetris (EU central)",
+			wantName:  "Jetris (EU central)",
+			wantURL:   "nats://172.105.76.148:4222",
+		},
+		{
+			name:      "a context is named by its context",
+			cfg:       config.Config{NATSContext: "ngs"},
+			connected: "nats://connect.ngs.global:4222",
+			wantName:  "context ngs",
+			wantURL:   "nats://connect.ngs.global:4222",
+		},
+		{
+			name:      "LAN mode names the embedded server",
+			cfg:       config.Config{RunEmbedded: true},
+			connected: "nats://192.168.1.23:4222",
+			wantName:  "your embedded server",
+			wantURL:   "nats://192.168.1.23:4222",
+		},
+		{
+			name:      "a plain URL is its own name and adds no parentheses",
+			cfg:       config.Config{NATSURL: "nats://demo.nats.io:4222"},
+			connected: "nats://demo.nats.io:4222",
+			wantName:  "nats://demo.nats.io:4222",
+		},
+		{
+			name:      "credentials never reach either part",
+			cfg:       config.Config{NATSURL: "nats://alice:s3cret@host:4222"},
+			connected: "nats://alice:s3cret@host:4222",
+			favorite:  "home",
+			wantName:  "home",
+			wantURL:   "nats://host:4222",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name, u := connectionParts(tc.cfg, tc.connected, tc.favorite)
+			if name != tc.wantName || u != tc.wantURL {
+				t.Fatalf("connectionParts() = %q, %q, want %q, %q", name, u, tc.wantName, tc.wantURL)
+			}
+		})
+	}
+}
+
+// TestSessionLine pins the game HUD's "you are here" line: nothing at all
+// when there is no connection to name, one line where the name and the
+// server fit the column, and the name over the server where they don't —
+// never one truncated line, because half a server name identifies nothing.
+func TestSessionLine(t *testing.T) {
+	a := newTestApp()
+	a.lobby = lobby.New(nil, nil, "tester", "tester")
+
+	if d := a.sessionLine(looseCtx(240, 60)); d.Size.Y != 0 {
+		t.Fatalf("no connection: line is %v, want nothing", d.Size)
+	}
+
+	a.connName, a.connURL = "Jetris EU central", "wss://eu-central.example.com:4223"
+	one := a.sessionLine(looseCtx(400, 60))
+	if one.Size.Y == 0 {
+		t.Fatal("connected: no line at all")
+	}
+	// A column too narrow for "tester @ Jetris EU central" on one line.
+	two := a.sessionLine(looseCtx(90, 60))
+	if two.Size.Y <= one.Size.Y {
+		t.Fatalf("narrow column: line is %v, want it taller than the one-line %v", two.Size, one.Size)
+	}
+	// The URL is the lobby header's business; the HUD names the server only,
+	// so a very long URL never changes this line.
+	a.connURL = "wss://a-very-long-hostname-that-would-never-fit.example.com:4223"
+	if d := a.sessionLine(looseCtx(400, 60)); d.Size != one.Size {
+		t.Fatalf("with a long URL the line is %v, want the %v it had without", d.Size, one.Size)
 	}
 }

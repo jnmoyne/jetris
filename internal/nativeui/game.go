@@ -577,6 +577,42 @@ func chatLine(m lobby.ChatMessage) (string, colorN) {
 	return fmt.Sprintf("%s: %s", name, m.Text), colFg
 }
 
+// sessionLine is the game HUD's "you are here": the player's name and the
+// server this session is on, in the lobby header's own idiom — "tester @
+// Jetris EU central". Every move in this game is a round trip to that server,
+// and which one it is is exactly what a player comparing an RTT wants to be
+// reminded of without leaving the board. The name alone, not the URL: the HUD
+// column is 200-300 dp wide and the name is what identifies the server (the
+// lobby header carries the URL, and so does the connection page).
+func (a *App) sessionLine(gtx C) D {
+	a.mu.Lock()
+	server := a.connName
+	a.mu.Unlock()
+	if server == "" {
+		return D{}
+	}
+	name := ""
+	if lb := a.getLobby(); lb != nil {
+		name = lb.PlayerName()
+	}
+	const size = unit.Sp(8)
+	return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+		// One line where it fits; otherwise the name over the server, never
+		// one truncated line — the server is what this line exists to say,
+		// and half a server name says nothing.
+		if name == "" {
+			return a.pixelLabelFit(gtx, size, "@ "+server, colMuted)
+		}
+		if a.pixelWidth(gtx, size, name+" @ "+server) <= gtx.Constraints.Max.X {
+			return a.pixelLabelFit(gtx, size, name+" @ "+server, colMuted)
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, size, name, colMuted) }),
+			layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, size, "@ "+server, colMuted) }),
+		)
+	})
+}
+
 func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	started := view.status == string(config.GameStatusInProgress)
 	modeLabel := "Cooperative"
@@ -608,6 +644,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 				layout.Rigid(func(gtx C) D { return a.foldButton(gtx, &a.hudFoldBtn, glyphFoldL) }),
 			)
 		}),
+		layout.Rigid(func(gtx C) D { return a.sessionLine(gtx) }),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D { return a.legend(gtx, eng, view, gmode) }),
 		layout.Rigid(spacer(14)),

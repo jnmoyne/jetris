@@ -143,7 +143,7 @@ func TestScreenSnapshots(t *testing.T) {
 		a.screen = screenLobby
 		// A favorite's full label — long enough to need the header's
 		// single-line truncation at the default window.
-		a.connLabel = "nats://172.105.76.148:4222 (Jetris (EU central))"
+		a.connName, a.connURL = "Jetris (EU central)", "nats://172.105.76.148:4222"
 		a.chatLog = []lobby.ChatMessage{
 			{Name: "alice", Text: "ready when you are"},
 			{Name: "bob", Text: "one more round"},
@@ -169,7 +169,7 @@ func TestScreenSnapshots(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
-		a.connLabel = "nats://172.105.76.148:4222 (Jetris (EU central))"
+		a.connName, a.connURL = "Jetris (EU central)", "nats://172.105.76.148:4222"
 		a.chatLog = []lobby.ChatMessage{{Name: "alice", Text: "ready when you are"}}
 		snapshotPNGSized(t, big, dir, "screen_lobby_large", size, func(gtx C) { a.layout(gtx) })
 	})
@@ -182,7 +182,7 @@ func TestScreenSnapshots(t *testing.T) {
 		a.screen = screenLobby
 		a.usingEmbedded = true
 		a.embAddr = "192.168.1.23:4222"
-		a.connLabel = connectionLabel(config.Config{RunEmbedded: true, NATSURL: "nats://" + a.embAddr}, "nats://"+a.embAddr, "")
+		a.connName, a.connURL = connectionParts(config.Config{RunEmbedded: true, NATSURL: "nats://" + a.embAddr}, "nats://"+a.embAddr, "")
 		snapshotPNG(t, w, dir, "screen_lobby_lan", func(gtx C) { a.layout(gtx) })
 	})
 

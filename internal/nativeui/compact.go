@@ -349,12 +349,34 @@ func (a *App) compactStats(gtx C, view gameView, mode engine.Mode, gmode config.
 		line += "  " + formatRTT(view.rtt)
 		col = rttColor(view.rtt)
 	}
+	// And, last so it is the first thing a narrow bar gives up, which server
+	// this session is on — the same reminder the full screen's HUD column
+	// carries (sessionLine), for the bars wide enough to hold it. The HUD
+	// panel, one tap away, always has it.
+	a.mu.Lock()
+	server := a.connName
+	a.mu.Unlock()
 	return layout.W.Layout(gtx, func(gtx C) D {
 		// A text label handed a tall minimum height takes that height and
 		// sits its glyphs at the top of it; zeroed, it is its own height and
 		// W centers it on the bar.
 		gtx.Constraints.Min.Y = 0
-		return a.pixelLabelFit(gtx, unit.Sp(10), line, col)
+		if server == "" {
+			return a.pixelLabelFit(gtx, unit.Sp(10), line, col)
+		}
+		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(10), line, col).Layout),
+			layout.Flexed(1, func(gtx C) D {
+				// Whole or not at all: a server name cut to "..." is noise
+				// where a phone's bar has no room, and the HUD panel one tap
+				// away carries it in full either way.
+				txt := "  @ " + server
+				if a.pixelWidth(gtx, unit.Sp(8), txt) > gtx.Constraints.Max.X {
+					return D{}
+				}
+				return a.pixel(unit.Sp(8), txt, colMuted).Layout(gtx)
+			}),
+		)
 	})
 }
 

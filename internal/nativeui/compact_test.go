@@ -370,6 +370,9 @@ func TestCompactScreensLayoutWithoutPanic(t *testing.T) {
 						a.screen = screenGame
 						a.gameStatus = string(st)
 						a.gameOver = st == config.GameStatusFinished
+						// The panels shut themselves on a screen's first frame, so
+						// this one has to look like a screen already up.
+						a.drawerEng = a.eng
 						a.hudDrawer, a.chatDrawer = panel == "hud", panel == "chat"
 						a.showMsgs.Value = true
 						if d := a.layout(testCtx(sz.X, sz.Y)); d.Size.X == 0 || d.Size.Y == 0 {

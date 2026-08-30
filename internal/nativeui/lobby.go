@@ -65,7 +65,7 @@ func (a *App) layoutLobby(gtx C) D {
 			chat = append(chat, m)
 		}
 	}
-	connLabel := a.connLabel
+	connName, connURL := a.connName, a.connURL
 	a.mu.Unlock()
 
 	// dispatch per-game buttons
@@ -129,7 +129,7 @@ func (a *App) layoutLobby(gtx C) D {
 				}),
 				layout.Flexed(2, func(gtx C) D {
 					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyRight(gtx, games, abandoned, a.archivesForDisplay(lb.Archives()), lb.PlayerName(), connLabel)
+						return a.lobbyRight(gtx, games, abandoned, a.archivesForDisplay(lb.Archives()), lb.PlayerName(), connName, connURL)
 					})
 				}),
 			)
@@ -204,23 +204,32 @@ func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.Chat
 	)
 }
 
-func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, playerName, connLabel string) D {
+func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, playerName, connName, connURL string) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx C) D {
 					// Who we are, then which server this session is on (the
 					// banner above already says LOBBY): same size, the server
-					// muted and kept to one line — truncated rather than
-					// wrapping into the rows below when the window is narrow.
+					// muted and kept to one line. The server's NAME is rigid
+					// and its URL takes only what is left over, so a narrow
+					// window eats into the URL — "@ Jetris EU central
+					// (wss://eu-cen…" — instead of leaving the player looking
+					// at half an address with no idea which server it is.
 					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
 						layout.Rigid(a.pixel(unit.Sp(13), playerName, colFg).Layout),
 						layout.Rigid(hSpacer(14)),
-						layout.Flexed(1, func(gtx C) D {
-							if connLabel == "" {
+						layout.Rigid(func(gtx C) D {
+							if connName == "" {
 								return D{}
 							}
-							return a.pixelLabelFit(gtx, unit.Sp(13), "@ "+connLabel, colMuted)
+							return a.pixel(unit.Sp(13), "@ "+connName, colMuted).Layout(gtx)
+						}),
+						layout.Flexed(1, func(gtx C) D {
+							if connName == "" || connURL == "" {
+								return D{}
+							}
+							return a.pixelLabelFit(gtx, unit.Sp(9), "  ("+connURL+")", colMuted)
 						}),
 					)
 				}),
@@ -1335,15 +1344,9 @@ func (a *App) viewBoardButton(gtx C, btn *widget.Clickable) D {
 func (a *App) pixelLabelFit(gtx C, size unit.Sp, txt string, col colorN) D {
 	l := a.pixel(size, txt, col)
 	l.MaxLines = 1
-	m := gtx
-	m.Constraints.Min = image.Point{}
-	m.Constraints.Max.X = 1 << 20
-	rec := op.Record(gtx.Ops)
-	full := l.Layout(m)
-	rec.Stop() // measure only — discard the recorded ops
-	if full.Size.X > gtx.Constraints.Max.X {
+	if full := a.pixelWidth(gtx, size, txt); full > gtx.Constraints.Max.X {
 		runes := []rune(txt)
-		per := float64(full.Size.X) / float64(max(len(runes), 1))
+		per := float64(full) / float64(max(len(runes), 1))
 		keep := int(float64(gtx.Constraints.Max.X)/per) - len("...")
 		if keep < 1 {
 			keep = 1
@@ -1353,6 +1356,21 @@ func (a *App) pixelLabelFit(gtx C, size unit.Sp, txt string, col colorN) D {
 		}
 	}
 	return l.Layout(gtx)
+}
+
+// pixelWidth measures txt in the pixel face at size, unconstrained: what the
+// label WOULD take on one line, which is how pixelLabelFit knows whether it
+// has to cut and how callers choose between one line and two.
+func (a *App) pixelWidth(gtx C, size unit.Sp, txt string) int {
+	l := a.pixel(size, txt, colFg)
+	l.MaxLines = 1
+	m := gtx
+	m.Constraints.Min = image.Point{}
+	m.Constraints.Max.X = 1 << 20
+	rec := op.Record(gtx.Ops)
+	d := l.Layout(m)
+	rec.Stop() // measure only — discard the recorded ops
+	return d.Size.X
 }
 
 func (a *App) header(txt string) layout.Widget {

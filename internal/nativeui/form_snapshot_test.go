@@ -96,10 +96,16 @@ func TestFormSnapshots(t *testing.T) {
 		a.readyPlayers = a.gamePlayers
 		a.screen = screenGame
 		a.gameStatus = string(config.GameStatusInProgress)
+		a.connName, a.connURL = "Jetris EU central", "wss://eu-central.jetris.johnnyxmas.com:4223"
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.chatLog = []lobby.ChatMessage{
 			{GameID: gameID, Name: "bob", Text: "gl hf"},
 			{GameID: "", Name: "carol", Text: "who's winning?"},
 		}
+		// The panels shut themselves on a game screen's first frame (a new
+		// engine — handleFormClicks); this IS that first frame, so the tweak
+		// opens one against an already-established screen.
+		a.drawerEng = e
 		if c.tweak != nil {
 			c.tweak(a)
 		}

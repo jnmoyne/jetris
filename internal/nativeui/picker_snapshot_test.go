@@ -38,9 +38,14 @@ func TestPickerSnapshots(t *testing.T) {
 	a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo", "prod-cluster"}, "beta",
 		append(prefs.DefaultFavorites(), prefs.Favorite{Label: "home lab", URL: "nats://192.168.1.20:4222"}))
 	a.th = newTestApp().th
+	a.connRefreshed = true // no page-opening refresh here: the results below are the picture
 	a.connCtxURLs["beta"] = "nats://beta.example.com:4222"
-	a.connProbes[urlKey(prefs.JetrisUS.URL)] = probeResult{ok: true, msg: "✓ nats://demo.nats.io:4222 · Core NATS ping 38 ms · 3 players online", rtt: 38 * time.Millisecond, players: 3, lobby: true}
+	a.connProbes[urlKey(prefs.JetrisUS.URL)] = probeResult{ok: true, msg: "✓ nats://demo.nats.io:4222 · Core NATS ping 38 ms · 3 players · 1 agent online", rtt: 38 * time.Millisecond, players: 3, agents: 1, lobby: true}
+	a.connProbes[urlKey(prefs.DefaultFavorites()[0].URL)] = probeResult{ok: true, msg: "✓ · Core NATS ping 12 ms · 1 player online", rtt: 12 * time.Millisecond, players: 1, lobby: true}
 	a.connProbes[urlKey("nats://192.168.1.20:4222")] = probeResult{msg: "✗ dial tcp 192.168.1.20:4222: connection refused"}
+	// The round's outcome: the list sorted by ping, the fastest selected.
+	a.connRoundDone = true
+	a.applyRefreshRound()
 
 	for _, st := range []struct {
 		name  string

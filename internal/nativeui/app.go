@@ -119,12 +119,19 @@ type App struct {
 	connCfg      config.Config
 	favSave      func([]prefs.Favorite) error
 
-	// Server probes — a browser row's click or ↻ and LAN mode's "Check embedded
-	// server" (written by doCheckConn; guarded by mu): the last result per
-	// server key (connEntry.key, or probeKeyLAN for the embedded server), and
-	// the key being probed right now ("" = idle).
-	connProbes  map[string]probeResult
-	connProbing string
+	// Server probes — a browser row's click or ↻, the page-opening refresh of
+	// every favorite, and LAN mode's "Check embedded server" (written by
+	// doCheckConn; guarded by mu): the last result per server key
+	// (connEntry.key, or probeKeyLAN for the embedded server), and the keys
+	// being probed right now — several at once. connRound is the refresh
+	// round's keys still out, connRoundDone that its last result is in
+	// (applyRefreshRound then sorts the favorites by ping and selects the
+	// fastest); connRefreshed that the page refreshed since it opened.
+	connProbes    map[string]probeResult
+	connProbing   map[string]bool
+	connRound     map[string]bool
+	connRoundDone bool
+	connRefreshed bool
 
 	// Embedded server ("LAN party mode (embedded NATS server)" option; guarded by
 	// mu). The server starts on the first embedded login and runs until the
@@ -137,9 +144,10 @@ type App struct {
 	usingEmbedded bool
 
 	// connLabel names the server the CURRENT connection reached, for the
-	// lobby header ("context ngs · nats://connect.ngs.global:4222",
-	// "nats://host:4222 (Jetris EU)" for a favorite, "LAN mode (your embedded
-	// server)"; see connectionLabel). Set on connect, cleared on disconnect;
+	// lobby header — the server's name, then its URL in parentheses:
+	// "Jetris EU (nats://host:4222)" for a favorite, "context ngs
+	// (nats://connect.ngs.global:4222)", "your embedded server (nats://…)" in
+	// LAN mode; see connectionLabel. Set on connect, cleared on disconnect;
 	// guarded by mu.
 	connLabel string
 	// NATS link health (link.go): linkDownAt is when the connection dropped
@@ -280,9 +288,13 @@ type App struct {
 	connResetNo     widget.Clickable
 	scrimTag        int // address used as the modal scrim's pointer-area tag (login screen)
 
-	// A browser row clicked while a probe was in flight: probed by
-	// drainQueuedProbe once the slot frees, if it is still the selection.
-	connProbeQueued string
+	// connPicked: the player clicked a browser row since the page-opening
+	// refresh started, so its result must not move the selection. favOrder
+	// is the favorites' display order — indices into favorites, fastest ping
+	// first — set by the last refresh round (nil = the list's own order).
+	// UI goroutine only.
+	connPicked bool
+	favOrder   []int
 
 	// Create-game wizard: the lobby's single "Create a new game" button
 	// (createBtn) opens a modal that walks through the game's attributes one
@@ -557,6 +569,8 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.favorites = append([]prefs.Favorite(nil), favorites...)
 	a.favSave = prefs.SaveFavorites
 	a.connProbes = map[string]probeResult{}
+	a.connProbing = map[string]bool{}
+	a.connRound = map[string]bool{}
 	a.connSecClosed = map[string]bool{}
 	a.connSecBtns = map[string]*widget.Clickable{}
 	a.connRowBtns = map[string]*widget.Clickable{}

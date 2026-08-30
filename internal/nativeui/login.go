@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,7 +54,8 @@ type probeResult struct {
 	ok      bool
 	msg     string
 	rtt     time.Duration
-	players int
+	players int // human players in the server's lobby
+	agents  int // agent players in it
 	lobby   bool
 }
 
@@ -106,6 +108,15 @@ func (a *App) layoutLogin(gtx C) D {
 		}
 	}
 	if a.pickerActive() {
+		// The page just opened (the app's start, or back from the lobby):
+		// size up every favorite at once, then sort them by ping.
+		a.mu.Lock()
+		fresh := !a.connRefreshed
+		a.connRefreshed = true
+		a.mu.Unlock()
+		if fresh {
+			a.refreshFavorites()
+		}
 		a.handleConnPage(gtx)
 	}
 
@@ -343,7 +354,17 @@ func (a *App) pickerConfig() (config.Config, error) {
 		cfg.EmbeddedPort = port
 		return cfg, nil
 	}
-	e, ok := a.connEntry(a.connSel)
+	return a.entryConfig(a.connSel)
+}
+
+// entryConfig is the config that dials browser entry key — a favorite's or
+// the --server flag's URL (with any --user/--password), or a NATS CLI
+// context — the way Play and the probes dial it.
+func (a *App) entryConfig(key string) (config.Config, error) {
+	cfg := a.connCfg
+	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
+	cfg.EmbeddedHost, cfg.EmbeddedPort = "", 0
+	e, ok := a.connEntry(key)
 	if !ok {
 		return cfg, errors.New("select a server in the browser (or add one to your favorites)")
 	}
@@ -483,7 +504,8 @@ func (a *App) loginCollisionContent(gtx C) D {
 // favorite. Built fresh every frame; rows are cheap.
 func (a *App) connSections() []connSection {
 	favs := connSection{title: secFavorites, addRow: true, hint: "no favorites yet — add a NATS URL below"}
-	for i, f := range a.favorites {
+	for _, i := range a.favoriteIndices() {
+		f := a.favorites[i]
 		detail := f.URL
 		if detail == f.Label {
 			detail = ""
@@ -549,7 +571,7 @@ func clickable(m map[string]*widget.Clickable, key string) *widget.Clickable {
 // favorite add/delete, the selected row's ↻ and LAN mode's Check embedded
 // server. Runs on the UI goroutine, before the frame is drawn.
 func (a *App) handleConnPage(gtx C) {
-	a.drainQueuedProbe()
+	a.applyRefreshRound()
 	if a.connTabBtns[0].Clicked(gtx) {
 		a.connTab = connTabBrowser
 	}
@@ -563,6 +585,7 @@ func (a *App) handleConnPage(gtx C) {
 		for _, e := range sec.entries {
 			if e.dialable && clickable(a.connRowBtns, e.key).Clicked(gtx) {
 				a.connSel = e.key
+				a.connPicked = true // the player's own pick: the refresh round leaves it be
 				a.setLoginErr("")
 				a.probeRow(e.key)
 			}
@@ -615,65 +638,143 @@ func (a *App) handleConnPage(gtx C) {
 }
 
 // probeRow probes a browser row the player just clicked, so a single click
-// both selects a server and sizes it up (the ↻ chip re-probes on demand). The
-// probe slot is single-occupancy: while another probe is in flight the row is
-// parked in connProbeQueued and drainQueuedProbe starts it once the slot
-// frees — the latest click wins. Runs on the UI goroutine.
-func (a *App) probeRow(key string) {
-	a.mu.Lock()
-	busy := a.connProbing != ""
-	a.mu.Unlock()
-	if busy {
-		a.connProbeQueued = key
-		return
-	}
-	a.connProbeQueued = ""
-	a.startProbe(key)
-}
+// both selects a server and sizes it up (the ↻ chip re-probes on demand).
+// Probes run several at once, one per server; a row already being probed
+// is left to finish. Runs on the UI goroutine.
+func (a *App) probeRow(key string) { a.startProbe(key) }
 
-// drainQueuedProbe starts the row parked by probeRow once the probe slot is
-// free — provided that row is still the browser tab's selection (a stale
-// click is dropped rather than fired at whatever the player moved on to).
-// Called every frame by handleConnPage; doCheckConn's completion invalidates
-// the window, so the drain runs promptly.
-func (a *App) drainQueuedProbe() {
-	key := a.connProbeQueued
-	if key == "" {
-		return
-	}
-	a.mu.Lock()
-	busy := a.connProbing != ""
-	a.mu.Unlock()
-	if busy {
-		return
-	}
-	a.connProbeQueued = ""
-	if a.connTab == connTabBrowser && a.connSel == key {
-		a.startProbe(key)
-	}
-}
-
-// startProbe kicks off the probe of key — the selected browser row or the
-// LAN-mode server — unless one is already running; the choice must resolve
+// startProbe kicks off the probe of key — a browser row or the LAN-mode
+// server — unless that key is already being probed; the choice must resolve
 // to a config first (nothing selected, a bad port… land on the error line).
 func (a *App) startProbe(key string) {
 	a.mu.Lock()
-	probing := a.connProbing != ""
+	running := a.connProbing[key]
 	a.mu.Unlock()
-	if probing {
+	if running {
 		return
 	}
-	cfg, err := a.pickerConfig()
+	var (
+		cfg config.Config
+		err error
+	)
+	if key == probeKeyLAN {
+		cfg, err = a.pickerConfig()
+	} else {
+		cfg, err = a.entryConfig(key)
+	}
 	if err != nil {
 		a.setLoginErr(err.Error())
 		return
 	}
 	a.setLoginErr("")
 	a.mu.Lock()
-	a.connProbing = key
+	a.connProbing[key] = true
 	delete(a.connProbes, key)
 	a.mu.Unlock()
 	go a.doCheckConn(key, cfg)
+}
+
+// refreshFavorites probes every favorite this build can dial, all at once —
+// their rows read "refreshing" meanwhile — as one round: when the last
+// result is in, applyRefreshRound sorts the favorites by ping and selects
+// the fastest. Runs on the UI goroutine, when the connection page opens.
+func (a *App) refreshFavorites() {
+	var keys []string
+	for _, f := range a.favorites {
+		if dialable(f.URL) {
+			keys = append(keys, urlKey(f.URL))
+		}
+	}
+	a.mu.Lock()
+	a.connRound = make(map[string]bool, len(keys))
+	for _, k := range keys {
+		a.connRound[k] = true
+	}
+	a.connRoundDone = false
+	a.mu.Unlock()
+	a.connPicked = false
+	for _, k := range keys {
+		a.startProbe(k)
+	}
+}
+
+// applyRefreshRound acts on a finished refresh round (doCheckConn flags it):
+// the favorites are sorted by ping — the reachable ones fastest first, then
+// the ones that failed, then the ones this build cannot dial, the list's own
+// order breaking ties — and the fastest becomes the selection, unless the
+// player picked a row meanwhile or Play is set on a context or the --server
+// flag (their explicit choice stands). Called every frame by handleConnPage,
+// on the UI goroutine.
+func (a *App) applyRefreshRound() {
+	a.mu.Lock()
+	done := a.connRoundDone
+	a.connRoundDone = false
+	probes := make(map[string]probeResult, len(a.connProbes))
+	for k, v := range a.connProbes {
+		probes[k] = v
+	}
+	a.mu.Unlock()
+	if !done {
+		return
+	}
+	a.favOrder = favoriteOrder(a.favorites, probes)
+	if a.connPicked {
+		return
+	}
+	if e, ok := a.connEntry(a.connSel); ok && e.fav < 0 {
+		return
+	}
+	for _, i := range a.favOrder {
+		key := urlKey(a.favorites[i].URL)
+		if p := probes[key]; p.ok {
+			a.connSel = key
+			return
+		}
+	}
+}
+
+// favoriteOrder is the favorites' display order after a refresh round:
+// indices into favs, the reachable ones by ping ascending, then the ones
+// whose probe failed, then the ones this build cannot dial — the list's own
+// order breaking ties, so the sort is stable and predictable.
+func favoriteOrder(favs []prefs.Favorite, probes map[string]probeResult) []int {
+	rank := func(i int) (int, time.Duration) {
+		f := favs[i]
+		if !dialable(f.URL) {
+			return 2, 0
+		}
+		if p, ok := probes[urlKey(f.URL)]; ok && p.ok {
+			return 0, p.rtt
+		}
+		return 1, 0
+	}
+	order := make([]int, len(favs))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		rx, tx := rank(order[x])
+		ry, ty := rank(order[y])
+		if rx != ry {
+			return rx < ry
+		}
+		return tx < ty
+	})
+	return order
+}
+
+// favoriteIndices is the order the favorites are listed in: the last
+// refresh round's (favOrder) while it still fits the list, the list's own
+// otherwise.
+func (a *App) favoriteIndices() []int {
+	if len(a.favOrder) == len(a.favorites) {
+		return a.favOrder
+	}
+	order := make([]int, len(a.favorites))
+	for i := range order {
+		order[i] = i
+	}
+	return order
 }
 
 // addFavorite reads the add form, bookmarks the URL (label defaults to the
@@ -753,6 +854,7 @@ func (a *App) resetFavorites() {
 // persistFavorites saves the favorites; a failure is shown on the error line
 // (the in-memory list still works for this session).
 func (a *App) persistFavorites() {
+	a.favOrder = nil // the list changed: its own order until the next refresh round
 	if a.favSave == nil {
 		return
 	}
@@ -840,7 +942,10 @@ func (a *App) browserTab(gtx C) D {
 	for k, v := range a.connProbes {
 		probes[k] = v
 	}
-	probing := a.connProbing
+	probing := make(map[string]bool, len(a.connProbing))
+	for k := range a.connProbing {
+		probing[k] = true
+	}
 	a.mu.Unlock()
 
 	var rows []layout.Widget
@@ -974,7 +1079,7 @@ func (a *App) sectionRow(sec connSection) layout.Widget {
 // in a second line, the last probe's inline summary on the right (on the
 // selected row in a dark pill, so the green/red keeps reading against the
 // accent), and — for favorites — a ✕ to delete.
-func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing string) layout.Widget {
+func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing map[string]bool) layout.Widget {
 	return func(gtx C) D {
 		selected := e.key == a.connSel
 		bg, labelCol, detailCol, delCol := colBg, colFg, colMuted, colErr
@@ -1006,7 +1111,7 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 									if !selected {
 										return D{Size: image.Pt(sz, sz)}
 									}
-									return a.rowRefreshButton(gtx, sz, probing != "")
+									return a.rowRefreshButton(gtx, sz, probing[e.key])
 								}),
 								layout.Rigid(hSpacer(6)),
 								layout.Flexed(1, func(gtx C) D {
@@ -1023,7 +1128,7 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing strin
 									)
 								}),
 								layout.Rigid(func(gtx C) D {
-									txt, col := probeSummary(probes[e.key], probing == e.key)
+									txt, col := probeSummary(probes[e.key], probing[e.key])
 									if !e.dialable {
 										txt, col = undialableHint, withAlpha(colMuted, 0.8)
 									}
@@ -1133,13 +1238,14 @@ func (a *App) addForm(gtx C) D {
 	})
 }
 
-// probeSummary is a row's inline probe readout: "…" while probing, the ping
-// and head count once it succeeded ("12 ms · 3 online"), OFFLINE if it failed
-// (the detail row under the list carries the error).
+// probeSummary is a row's inline probe readout: "refreshing…" while
+// probing, the ping and head counts once it succeeded ("12 ms · 3 players ·
+// 1 agent"), OFFLINE if it failed (the detail row under the list carries the
+// error).
 func probeSummary(p probeResult, probing bool) (string, colorN) {
 	switch {
 	case probing:
-		return "…", colMuted
+		return "refreshing…", colMuted
 	case p.msg == "":
 		return "", colMuted
 	case !p.ok:
@@ -1147,22 +1253,35 @@ func probeSummary(p probeResult, probing bool) (string, colorN) {
 	}
 	online := "no lobby"
 	if p.lobby {
-		online = fmt.Sprintf("%d online", p.players)
+		online = headCount(p.players, p.agents)
 	}
 	return formatRTT(p.rtt) + " · " + online, colGo
 }
 
-// playersText words a probe's lobby head count for the detail line.
-func playersText(players int, lobby bool) string {
-	switch {
-	case !lobby:
-		return "no lobby yet"
-	case players == 0:
-		return "nobody online"
-	case players == 1:
-		return "1 player online"
+// headCount words a lobby's players and agents, apart: "3 players · 1
+// agent", "1 player", "0 players · 2 agents", "nobody" when it is empty.
+func headCount(players, agents int) string {
+	if players+agents == 0 {
+		return "nobody"
 	}
-	return fmt.Sprintf("%d players online", players)
+	plural := func(n int, word string) string {
+		if n == 1 {
+			return "1 " + word
+		}
+		return fmt.Sprintf("%d %ss", n, word)
+	}
+	if agents == 0 {
+		return plural(players, "player")
+	}
+	return plural(players, "player") + " · " + plural(agents, "agent")
+}
+
+// playersText words a probe's lobby head count for the detail line.
+func playersText(players, agents int, lobby bool) string {
+	if !lobby {
+		return "no lobby yet"
+	}
+	return headCount(players, agents) + " online"
 }
 
 // lanTab is LAN mode: what it does, the IP + port editors, the shareable URL,
@@ -1209,7 +1328,7 @@ func (a *App) lanTab(gtx C) D {
 		layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
 		layout.Rigid(func(gtx C) D {
 			a.mu.Lock()
-			probing := a.connProbing != ""
+			probing := a.connProbing[probeKeyLAN]
 			a.mu.Unlock()
 			label := "Check embedded server"
 			if probing {
@@ -1233,12 +1352,12 @@ func (a *App) lanTab(gtx C) D {
 func (a *App) connStatusLine(gtx C, key string) D {
 	a.mu.Lock()
 	res, has := a.connProbes[key]
-	probing := a.connProbing
+	probing := a.connProbing[key]
 	a.mu.Unlock()
 
 	msg, col := "", colMuted
 	switch {
-	case probing == key && key != "":
+	case probing && key != "":
 		msg = "Connecting and measuring the core NATS ping…"
 	case has:
 		msg, col = res.msg, colErr

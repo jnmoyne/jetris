@@ -45,17 +45,19 @@ func TestCheckConnURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
-	for _, key := range []string{"players.alice", "players.hal", "games.g1"} {
-		if _, err := kv.Put(ctx, key, []byte("{}")); err != nil {
+	// A human, an agent (its presence says so) and a game listing: the probe
+	// counts the players and the agents apart.
+	for key, val := range map[string]string{"players.alice": "{}", "players.hal": `{"agent":true}`, "games.g1": "{}"} {
+		if _, err := kv.Put(ctx, key, []byte(val)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	res = a.checkConn(config.Config{NATSURL: url})
-	if !res.ok || !res.lobby || res.players != 2 || !strings.Contains(res.msg, "2 players online") {
-		t.Fatalf("probe with two players = %+v, want 2 players online", res)
+	if !res.ok || !res.lobby || res.players != 1 || res.agents != 1 || !strings.Contains(res.msg, "1 player · 1 agent online") {
+		t.Fatalf("probe with a player and an agent = %+v, want 1 player · 1 agent online", res)
 	}
-	if txt, col := probeSummary(res, false); !strings.HasSuffix(txt, " · 2 online") || col != colGo {
-		t.Fatalf("row summary = %q (%v), want '<ping> · 2 online' in green", txt, col)
+	if txt, col := probeSummary(res, false); !strings.HasSuffix(txt, " · 1 player · 1 agent") || col != colGo {
+		t.Fatalf("row summary = %q (%v), want '<ping> · 1 player · 1 agent' in green", txt, col)
 	}
 }
 
@@ -72,8 +74,8 @@ func TestCheckConnURLUnreachable(t *testing.T) {
 	if txt, col := probeSummary(res, false); txt != "OFFLINE" || col != colErr {
 		t.Fatalf("row summary = %q (%v), want a red OFFLINE", txt, col)
 	}
-	if txt, _ := probeSummary(probeResult{}, true); txt != "…" {
-		t.Fatalf("row summary while probing = %q, want …", txt)
+	if txt, _ := probeSummary(probeResult{}, true); txt != "refreshing…" {
+		t.Fatalf("row summary while probing = %q, want refreshing…", txt)
 	}
 	if txt, _ := probeSummary(probeResult{}, false); txt != "" {
 		t.Fatalf("row summary before any probe = %q, want empty", txt)

@@ -2,6 +2,7 @@ package nats
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -125,7 +126,8 @@ type CheckResult struct {
 	ServerURL string
 	ServerID  string
 	RTT       time.Duration
-	Players   int
+	Players   int // human players in the server's lobby right now
+	Agents    int // agent players (golang-mk1 and the like) in it
 	Lobby     bool
 }
 
@@ -163,40 +165,63 @@ func CheckConnection(cfg config.Config) (CheckResult, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	res.Players, res.Lobby, err = LobbyPlayerCount(ctx, js)
+	res.Players, res.Agents, res.Lobby, err = LobbyPlayerCounts(ctx, js)
 	if err != nil {
 		return res, fmt.Errorf("lobby: %w", err)
 	}
 	return res, nil
 }
 
-// LobbyPlayerCount counts the presence entries in the server's lobby KV bucket
-// — the players (humans and agents) currently connected to that server's
-// Jetris lobby. Presence entries carry a per-key TTL (see PutLobbyPresence), so
+// LobbyPlayerCounts counts the presence entries in the server's lobby KV
+// bucket — the players currently connected to that server's Jetris lobby —
+// humans and agents apart (each entry says which it is: lobby.PlayerPresence's
+// agent flag). Presence entries carry a per-key TTL (see PutLobbyPresence), so
 // a client that vanished drops out of the count within config.PresenceTTL. A
 // server nobody has ever played on has no bucket yet: that is reported as
-// (0, false, nil), not as an error.
-func LobbyPlayerCount(ctx context.Context, js jetstream.JetStream) (count int, found bool, err error) {
+// (0, 0, false, nil), not as an error. One watch delivers every current value
+// and then a nil marker, so the count costs one round trip whatever the
+// lobby's size.
+func LobbyPlayerCounts(ctx context.Context, js jetstream.JetStream) (players, agents int, found bool, err error) {
 	kv, err := js.KeyValue(ctx, config.LobbyKVBucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
-	keys, err := kv.Keys(ctx)
-	if errors.Is(err, jetstream.ErrNoKeysFound) {
-		return 0, true, nil
-	}
+	w, err := kv.WatchAll(ctx, jetstream.IgnoreDeletes())
 	if err != nil {
-		return 0, true, err
+		return 0, 0, true, err
 	}
-	for _, k := range keys {
-		if strings.HasPrefix(k, lobbyPlayersPrefix) {
-			count++
+	defer func() { _ = w.Stop() }()
+	for {
+		select {
+		case <-ctx.Done():
+			return players, agents, true, ctx.Err()
+		case entry, ok := <-w.Updates():
+			if !ok || entry == nil {
+				return players, agents, true, nil
+			}
+			if !strings.HasPrefix(entry.Key(), lobbyPlayersPrefix) {
+				continue
+			}
+			var p struct {
+				Agent bool `json:"agent"`
+			}
+			if json.Unmarshal(entry.Value(), &p) == nil && p.Agent {
+				agents++
+			} else {
+				players++
+			}
 		}
 	}
-	return count, true, nil
+}
+
+// LobbyPlayerCount is LobbyPlayerCounts' head count, humans and agents
+// together.
+func LobbyPlayerCount(ctx context.Context, js jetstream.JetStream) (count int, found bool, err error) {
+	players, agents, found, err := LobbyPlayerCounts(ctx, js)
+	return players + agents, found, err
 }
 
 // lobbyPlayersPrefix is the key prefix of presence entries in the lobby KV

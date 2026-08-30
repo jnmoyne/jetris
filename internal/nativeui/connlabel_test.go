@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"jetris/internal/config"
@@ -23,7 +24,7 @@ func TestConnectionLabel(t *testing.T) {
 			name:      "context shows its name and the server reached",
 			cfg:       config.Config{NATSContext: "ngs"},
 			connected: "nats://connect.ngs.global:4222",
-			want:      "context ngs · nats://connect.ngs.global:4222",
+			want:      "context ngs (nats://connect.ngs.global:4222)",
 		},
 		{
 			name:      "plain URL shows the server reached",
@@ -38,12 +39,10 @@ func TestConnectionLabel(t *testing.T) {
 			want:      "nats://n2:4222",
 		},
 		{
-			// The lobby's YOUR SERVER'S URL line shows the address; the
-			// header doesn't repeat it.
-			name:      "LAN mode names the embedded server without its address",
+			name:      "LAN mode names the embedded server, its address in parentheses",
 			cfg:       config.Config{RunEmbedded: true, NATSURL: "nats://192.168.1.23:4222"},
 			connected: "nats://192.168.1.23:4222",
-			want:      "LAN mode (your embedded server)",
+			want:      "your embedded server (nats://192.168.1.23:4222)",
 		},
 		{
 			name:      "credentials in the URL are dropped",
@@ -55,7 +54,7 @@ func TestConnectionLabel(t *testing.T) {
 			name:      "no connected URL falls back to the configured one",
 			cfg:       config.Config{NATSContext: "local", NATSURL: "nats://127.0.0.1:4222"},
 			connected: "",
-			want:      "context local · nats://127.0.0.1:4222",
+			want:      "context local (nats://127.0.0.1:4222)",
 		},
 		{
 			name: "context with nothing else known is just the context",
@@ -63,11 +62,11 @@ func TestConnectionLabel(t *testing.T) {
 			want: "context local",
 		},
 		{
-			name:      "a favorite's name follows the server in parentheses",
+			name:      "a favorite's name comes first, the server in parentheses",
 			cfg:       config.Config{NATSURL: "nats://172.105.76.148:4222"},
 			connected: "nats://172.105.76.148:4222",
 			favorite:  "Jetris (EU central)",
-			want:      "nats://172.105.76.148:4222 (Jetris (EU central))",
+			want:      "Jetris (EU central) (nats://172.105.76.148:4222)",
 		},
 		{
 			name:     "a favorite with no URL known is just its name",
@@ -79,7 +78,7 @@ func TestConnectionLabel(t *testing.T) {
 			cfg:       config.Config{RunEmbedded: true, NATSURL: "nats://192.168.1.23:4222"},
 			connected: "nats://192.168.1.23:4222",
 			favorite:  "demo",
-			want:      "LAN mode (your embedded server)",
+			want:      "your embedded server (nats://192.168.1.23:4222)",
 		},
 	}
 	for _, tc := range cases {
@@ -127,7 +126,7 @@ func TestConnectAndLoginSetsLabel(t *testing.T) {
 	if a.loginErr != "" || a.screen != screenLobby {
 		t.Fatalf("LAN login: err %q, screen %v, want the lobby", a.loginErr, a.screen)
 	}
-	if a.connLabel != "LAN mode (your embedded server)" || !a.usingEmbedded {
+	if !strings.HasPrefix(a.connLabel, "your embedded server (nats://127.0.0.1:") || !a.usingEmbedded {
 		t.Fatalf("LAN login label = %q (embedded %v), want the LAN-mode label", a.connLabel, a.usingEmbedded)
 	}
 }

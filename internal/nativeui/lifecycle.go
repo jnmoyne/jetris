@@ -160,8 +160,16 @@ func (a *App) ensureEmbeddedServer(wantHost string, wantPort int) (string, error
 func (a *App) doCheckConn(key string, cfg config.Config) {
 	res := a.checkConn(cfg)
 	a.mu.Lock()
-	a.connProbing = ""
+	delete(a.connProbing, key)
 	a.connProbes[key] = res
+	if a.connRound[key] {
+		// Part of the page-opening refresh: the last result in completes
+		// the round, and the UI goroutine sorts and selects (applyRefreshRound).
+		delete(a.connRound, key)
+		if len(a.connRound) == 0 {
+			a.connRoundDone = true
+		}
+	}
 	a.mu.Unlock()
 	a.invalidate()
 }
@@ -201,9 +209,10 @@ func (a *App) checkConn(cfg config.Config) probeResult {
 	}
 	return probeResult{
 		ok:      true,
-		msg:     fmt.Sprintf("✓ %s · Core NATS ping %s · %s", server, formatRTT(res.RTT), playersText(res.Players, res.Lobby)),
+		msg:     fmt.Sprintf("✓ %s · Core NATS ping %s · %s", server, formatRTT(res.RTT), playersText(res.Players, res.Agents, res.Lobby)),
 		rtt:     res.RTT,
 		players: res.Players,
+		agents:  res.Agents,
 		lobby:   res.Lobby,
 	}
 }
@@ -225,42 +234,37 @@ func (a *App) disconnect() {
 	}
 }
 
-// connectionLabel describes a connection for the lobby header: how the player
-// chose the server (a NATS CLI context by name, or a plain URL) plus the URL
-// actually reached, which for a context or a clustered URL can differ from
-// what was configured. connectedURL is nc.ConnectedUrl(); when it is empty the
-// configured URL stands in. A URL picked from the favorites carries the
-// favorite's name after it in parentheses ("nats://host:4222 (Jetris EU)"),
-// so the header names the server the way the player knows it. Any
-// user:password in the URL is dropped so credentials never reach the screen.
-// LAN mode names the embedded server and leaves the address out: the lobby's
-// YOUR SERVER'S URL line right under the header already shows it, as the
-// thing to share.
+// connectionLabel describes a connection for the lobby header, after the
+// player's name and the @: the server's NAME as the player knows it — the
+// favorite's label, "context <name>" for a NATS CLI context, "your embedded
+// server" in LAN mode — and then, in parentheses, the URL actually reached
+// ("Jetris EU (nats://host:4222)"), which for a context or a clustered URL
+// can differ from what was configured. connectedURL is nc.ConnectedUrl();
+// when it is empty the configured URL stands in. A plain URL with no name to
+// go by is just the URL. Any user:password in the URL is dropped so
+// credentials never reach the screen.
 func connectionLabel(cfg config.Config, connectedURL, favorite string) string {
-	if cfg.RunEmbedded {
-		return "LAN mode (your embedded server)"
-	}
 	u := stripURLUserinfo(connectedURL)
 	if u == "" {
 		u = stripURLUserinfo(cfg.NATSURL)
 	}
-	if cfg.NATSContext != "" {
+	switch {
+	case cfg.RunEmbedded:
+		return joinLabel("your embedded server", u)
+	case cfg.NATSContext != "":
 		return joinLabel("context "+cfg.NATSContext, u)
-	}
-	if favorite != "" {
-		if u == "" {
-			return favorite
-		}
-		return u + " (" + favorite + ")"
+	case favorite != "":
+		return joinLabel(favorite, u)
 	}
 	return u
 }
 
-func joinLabel(how, u string) string {
+// joinLabel is "<name> (<url>)", or the name alone when no URL is known.
+func joinLabel(name, u string) string {
 	if u == "" {
-		return how
+		return name
 	}
-	return how + " · " + u
+	return name + " (" + u + ")"
 }
 
 // stripURLUserinfo returns raw without any user:password@ part. A string that
@@ -733,6 +737,7 @@ func (a *App) quit() {
 	a.lobby = nil
 	a.lobbyCancel = nil
 	a.screen = screenLogin
+	a.connRefreshed = false // the connection page opens afresh: refresh the favorites again
 	a.mu.Unlock()
 
 	if lb != nil {

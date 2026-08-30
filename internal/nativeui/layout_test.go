@@ -95,7 +95,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		a.connSecClosed[secContexts] = true
 		a.connAddOpen = true
 		a.connAddScroll = true // just opened: the list scrolls the form into view
-		a.connProbing = ctxKey("beta")
+		a.connProbing = map[string]bool{ctxKey("beta"): true}
 		a.connProbes[urlKey(prefs.JetrisEUWS.URL)] = probeResult{ok: true, msg: "✓ ok", rtt: 12 * time.Millisecond, lobby: true, players: 2}
 		renderOnce(t, a)
 		if a.connAddScroll {

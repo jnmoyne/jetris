@@ -38,6 +38,14 @@ func snapshotPNG(t *testing.T, w *headless.Window, dir, name string, frame func(
 
 // snapshotPNGSized is snapshotPNG for a window of the given size (the
 // headless window must have been created at that size).
+//
+// The frame is given a live (if eventless) input source. A zero Source has
+// been a DISABLED one since Gio v0.10 moved Enabled() onto it — `s.r != nil
+// && !s.disabled`, where v0.8's Context.Enabled() only asked about the
+// context's own flag — and every material widget paints its disabled look
+// when the context is disabled: without this the buttons in these
+// screenshots come out washed grey, which is not what anyone running the app
+// sees.
 func snapshotPNGSized(t *testing.T, w *headless.Window, dir, name string, size image.Point, frame func(gtx C)) {
 	t.Helper()
 	var ops op.Ops
@@ -45,6 +53,7 @@ func snapshotPNGSized(t *testing.T, w *headless.Window, dir, name string, size i
 		Ops:         &ops,
 		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
 		Constraints: layout.Exact(size),
+		Source:      new(input.Router).Source(),
 	}
 	frame(gtx)
 	if err := w.Frame(&ops); err != nil {

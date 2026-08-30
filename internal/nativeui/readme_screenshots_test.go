@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"gioui.org/gpu/headless"
+	"gioui.org/io/input"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -186,13 +187,17 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// frameCtx builds the 2x layout context of one frame drawn at now.
+// frameCtx builds the 2x layout context of one frame drawn at now, with a
+// live (if eventless) input source: a zero Source is a DISABLED one since Gio
+// v0.10, and every material widget in a disabled context paints its greyed
+// look — not what the app shows anyone (see snapshotPNGSized).
 func frameCtx(ops *op.Ops, now time.Time) layout.Context {
 	return layout.Context{
 		Ops:         ops,
 		Metric:      unit.Metric{PxPerDp: 2, PxPerSp: 2},
 		Constraints: layout.Exact(image.Pt(shotW, shotH)),
 		Now:         now,
+		Source:      new(input.Router).Source(),
 	}
 }
 

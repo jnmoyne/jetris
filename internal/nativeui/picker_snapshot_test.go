@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gioui.org/gpu/headless"
+	"gioui.org/io/input"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -81,6 +82,9 @@ func TestPickerSnapshots(t *testing.T) {
 			Ops:         &ops,
 			Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
 			Constraints: layout.Exact(image.Pt(1200, 820)),
+			// Live source: a disabled context greys every material widget
+			// (see snapshotPNGSized).
+			Source: new(input.Router).Source(),
 		}
 		a.layout(gtx)
 		if err := w.Frame(&ops); err != nil {

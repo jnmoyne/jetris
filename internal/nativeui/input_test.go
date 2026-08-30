@@ -177,13 +177,20 @@ func press(r *input.Router, x, y float32) {
 // itself for the frame of its press, handleKeys handing them back on the
 // next.)
 const (
-	chatPressX, chatPressY   = 600, 816
-	boardPressX, boardPressY = 250, 40
-	// Inside the chat panel, on widgets that consume the press themselves:
-	// the editor and the Send button (the press still reaches the panel's
-	// area, which encloses them).
-	editorPressX, editorPressY = 600, 788
-	sendPressX, sendPressY     = 1147, 787
+	// The bar's chat button, at the top right of the game screen; and a point
+	// on the board that is clear of it AND clear of the chat panel when that
+	// is open — the panel takes the bottom drawerFrac of the body, so
+	// this sits in the strip left above it.
+	chatBtnPressX, chatBtnPressY = 1200 - 6 - (gameBarH-14)/2, gameBarH / 2
+	boardPressX, boardPressY     = 250, gameBarH + 40
+	// Inside the open chat panel, on widgets that consume the press
+	// themselves: the editor and the Send button (the press still reaches the
+	// panel's area, which encloses them). The panel is drawerMaxW wide,
+	// centred, and sits on the window's bottom edge, so its composer row is a
+	// little over 30 px up and Send is at its right end.
+	drawerRight                = (1200 + drawerMaxW) / 2
+	editorPressX, editorPressY = 600, 820 - 32
+	sendPressX, sendPressY     = drawerRight - 56, 820 - 34
 )
 
 // TestTouchPressSizesPad checks the runtime half of the touch detection: the
@@ -251,28 +258,50 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 		t.Fatal("board did not take the keys when the game became playable")
 	}
 
-	press(&r, chatPressX, chatPressY)
-	gameFrame(a, &r)
+	// The chat is a panel over the board, opened from the bar (compact.go):
+	// opening it hands the keys to its editor, and a press inside it keeps
+	// them there.
+	openChat := func() {
+		press(&r, chatBtnPressX, chatBtnPressY)
+		gameFrame(a, &r)
+		gameFrame(a, &r)
+	}
+	openChat()
+	if !a.chatDrawer {
+		t.Fatal("the bar's chat button did not open the chat panel")
+	}
 	if !r.Source().Focused(&a.gameChatEd) {
-		t.Fatal("a press in the chat panel did not hand the keys to the chat editor")
+		t.Fatal("opening the chat panel did not hand the keys to its editor")
 	}
 	if r.Source().Focused(&a.boardTag) {
-		t.Fatal("board kept the keys after a press in the chat panel")
+		t.Fatal("board kept the keys while the chat panel was open")
 	}
-
-	press(&r, boardPressX, boardPressY)
-	gameFrame(a, &r)
-	if !r.Source().Focused(&a.boardTag) {
-		t.Fatal("a press outside the chat panel did not hand the keys back to the board")
-	}
-
-	press(&r, chatPressX, chatPressY)
+	press(&r, editorPressX, editorPressY)
 	gameFrame(a, &r)
 	if !r.Source().Focused(&a.gameChatEd) {
-		t.Fatal("second press in the chat panel did not hand the keys to the chat editor")
+		t.Fatal("a press inside the open chat panel took the keys off its editor")
+	}
+
+	// A press on the board beside the panel closes it and takes the keys back.
+	press(&r, boardPressX, boardPressY)
+	gameFrame(a, &r)
+	gameFrame(a, &r)
+	if a.chatDrawer {
+		t.Fatal("a press beside the chat panel did not close it")
+	}
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("closing the chat panel did not hand the keys back to the board")
+	}
+
+	openChat()
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("second open did not hand the keys to the chat editor")
 	}
 	r.Queue(key.Event{Name: key.NameEscape, State: key.Press})
 	gameFrame(a, &r)
+	if a.chatDrawer {
+		t.Fatal("Escape did not close the chat panel")
+	}
 	if !r.Source().Focused(&a.boardTag) {
 		t.Fatal("Escape in the chat did not hand the keys back to the board")
 	}
@@ -284,13 +313,13 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 	shiftTab := input.SystemEvent{Event: key.Event{Name: key.NameTab, Modifiers: key.ModShift, State: key.Press}}
 	r.Queue(tab)
 	gameFrame(a, &r)
-	if !r.Source().Focused(&a.gameChatEd) {
-		t.Fatal("Tab on the board did not hand the keys to the chat editor")
+	if !r.Source().Focused(&a.gameChatEd) || !a.chatDrawer {
+		t.Fatal("Tab on the board did not open the chat panel and hand it the keys")
 	}
 	r.Queue(tab)
 	gameFrame(a, &r)
-	if !r.Source().Focused(&a.boardTag) {
-		t.Fatal("Tab in the chat did not hand the keys back to the board")
+	if !r.Source().Focused(&a.boardTag) || a.chatDrawer {
+		t.Fatal("Tab in the chat did not close the panel and hand the keys back")
 	}
 	r.Queue(shiftTab)
 	gameFrame(a, &r)
@@ -313,19 +342,29 @@ func TestGameFocusFollowsClicks(t *testing.T) {
 		name string
 		x, y float32
 	}{{"editor", editorPressX, editorPressY}, {"Send button", sendPressX, sendPressY}} {
+		// From the board each time: open the panel, then press the widget.
 		press(&r, boardPressX, boardPressY)
 		gameFrame(a, &r)
+		gameFrame(a, &r)
+		openChat()
 		press(&r, pt.x, pt.y)
 		gameFrame(a, &r)
 		gameFrame(a, &r)
 		if !r.Source().Focused(&a.gameChatEd) {
-			t.Fatalf("a press on the %s did not hand the keys to the chat editor", pt.name)
+			t.Fatalf("a press on the %s did not leave the keys with the chat editor", pt.name)
+		}
+		if !a.chatDrawer {
+			t.Fatalf("a press on the %s closed the chat panel", pt.name)
 		}
 		gameFrame(a, &r)
 		if !r.Source().Focused(&a.gameChatEd) {
 			t.Fatalf("the chat editor did not keep the keys after a press on the %s", pt.name)
 		}
 	}
+	// Back to the board for the fresh-screen check below.
+	press(&r, boardPressX, boardPressY)
+	gameFrame(a, &r)
+	gameFrame(a, &r)
 
 	// A new game screen (new engine) observes the start edge afresh: the
 	// keys go to the board again even though the chat held them last.

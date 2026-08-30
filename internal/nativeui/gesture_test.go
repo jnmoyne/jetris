@@ -541,14 +541,19 @@ func TestPlayfieldGesturesDriveThePiece(t *testing.T) {
 			t.Fatal("the press did not leave the keys with the board")
 		}
 	})
+	// A pad button sits OVER the gesture surface, which runs the width of the
+	// board column (gestureSurface): the button is laid out after it, so the
+	// press is the button's alone — one move, not the button's move and a
+	// rotate from the tap underneath it. That is the whole reason the two are
+	// allowed to overlap, so it is checked on a button that really does.
 	t.Run("pad button fires once", func(t *testing.T) {
 		g := newGame(t, config.GameStatusInProgress)
 		btn, ok := nearestButton(g.r, image.Pt(g.field.Min.X, g.field.Min.Y+g.field.Dy()/2))
 		if !ok {
 			t.Fatal("no pad button in the semantic tree")
 		}
-		if btn.Overlaps(g.field) {
-			t.Fatalf("the nearest button %v overlaps the playfield %v", btn, g.field)
+		if !btn.Overlaps(g.field) {
+			t.Fatalf("the nearest button %v does not overlap the surface %v — the overlap this checks is gone", btn, g.field)
 		}
 		bx, by := float32(btn.Min.X+btn.Dx()/2), float32(btn.Min.Y+btn.Dy()/2)
 		touch(g.r, pointer.Press, 1, bx, by, 0)

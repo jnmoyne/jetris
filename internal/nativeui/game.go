@@ -225,10 +225,7 @@ func (a *App) layoutGame(gtx C) D {
 		eng.SetInflightLimit(labInflight)
 	}
 
-	root := func(gtx C) D { return a.fullGameScreen(gtx, eng, view, mode, gmode, showMsgs) }
-	if a.form.compact {
-		root = func(gtx C) D { return a.compactGameScreen(gtx, eng, view, mode, gmode, showMsgs) }
-	}
+	root := func(gtx C) D { return a.gameScreen(gtx, eng, view, mode, gmode, showMsgs) }
 	base := root
 	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
 		// Victory fireworks paint over the whole game screen; pure paint ops,
@@ -261,108 +258,6 @@ func (a *App) layoutGame(gtx C) D {
 	// the pointer area whose presses (any not claimed by the chat panel) hand
 	// the keys back to the board.
 	return pointerArea(gtx, &a.boardTag, screen)
-}
-
-// fullGameScreen is the game screen at its full width: the HUD column, the
-// board column, the opponent thumbnails, and the chat strip across the
-// bottom — a desktop window or a tablet held landscape (formfactor.go; a
-// smaller screen gets compactGameScreen instead).
-//
-// Both side panels FOLD. The HUD's ◀ and the chat's ▼ shrink each to a thin
-// rail carrying only the arrow that brings it back, and every pixel they give
-// up goes to the playfield — the board's cell is fitted to whatever the
-// column has (gameBoardArea), so folding both is worth a visibly bigger board
-// on any window. A fold is remembered for the session, so a player who wants
-// nothing but the well keeps it across games.
-func (a *App) fullGameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, showMsgs bool) D {
-	content := func(gtx C) D {
-		return layout.Flex{}.Layout(gtx,
-			layout.Rigid(func(gtx C) D {
-				if a.hudFold {
-					// Folded: a rail just wide enough for the arrow back.
-					return a.foldRail(gtx, &a.hudFoldBtn, glyphFoldR, true)
-				}
-				// HUD column: width-reactive (~19% of the window) within sane
-				// bounds, so a wide window doesn't waste it all on the board.
-				hudW := min(max(gtx.Constraints.Max.X*19/100, gtx.Dp(200)), gtx.Dp(300))
-				gtx.Constraints.Max.X = hudW
-				gtx.Constraints.Min.X = hudW
-				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-					return a.gameHUD(gtx, eng, view, mode, gmode)
-				})
-			}),
-			layout.Flexed(1, func(gtx C) D {
-				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-					return a.gameBoardArea(gtx, eng, view, mode, gmode)
-				})
-			}),
-			layout.Rigid(func(gtx C) D {
-				if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
-					return D{}
-				}
-				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
-					return a.opponentColumn(gtx, eng)
-				})
-			}),
-		)
-	}
-	children := []layout.FlexChild{
-		layout.Flexed(1, content),
-		layout.Rigid(func(gtx C) D {
-			if a.chatFold {
-				return a.foldRail(gtx, &a.chatFoldBtn, glyphFoldU, false)
-			}
-			return a.gameChatPanel(gtx, eng, view, false)
-		}),
-	}
-	if showMsgs {
-		children = append(children, layout.Rigid(a.natsMsgSection))
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
-}
-
-// foldRail is a folded panel's remains: a thin bar along the edge it folded
-// into, carrying the arrow that unfolds it and nothing else. vertical is the
-// HUD column's rail (a narrow column down the side); otherwise it is the chat
-// strip's (a low bar across the bottom).
-func (a *App) foldRail(gtx C, btn *widget.Clickable, bm []string, vertical bool) D {
-	rail := gtx.Dp(28)
-	if vertical {
-		gtx.Constraints.Min.X, gtx.Constraints.Max.X = rail, rail
-	} else {
-		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		gtx.Constraints.Max.Y = rail
-	}
-	return background(gtx, colPanel, func(gtx C) D {
-		return btn.Layout(gtx, func(gtx C) D {
-			sz := image.Pt(gtx.Constraints.Max.X, rail)
-			if vertical {
-				sz = image.Pt(rail, gtx.Constraints.Max.Y)
-			}
-			gtx.Constraints = layout.Exact(sz)
-			// A hairline along the edge the panel folded into, so the rail
-			// reads as a shut drawer rather than as a gap in the screen.
-			if vertical {
-				fillRect(gtx.Ops, image.Rect(sz.X-gtx.Dp(2), 0, sz.X, sz.Y), colBorder)
-			} else {
-				fillRect(gtx.Ops, image.Rect(0, 0, sz.X, gtx.Dp(2)), colBorder)
-			}
-			return layout.Center.Layout(gtx, glyphWidget(bm, unit.Dp(16), colAccent))
-		})
-	})
-}
-
-// foldButton is a panel's fold handle in its own header: a small square
-// carrying the arrow of the edge it folds into. Deliberately understated —
-// it is chrome on a screen whose subject is the board.
-func (a *App) foldButton(gtx C, btn *widget.Clickable, bm []string) D {
-	sz := gtx.Dp(22)
-	gtx.Constraints = layout.Exact(image.Pt(sz, sz))
-	return btn.Layout(gtx, func(gtx C) D {
-		return background(gtx, colPanel, func(gtx C) D {
-			return layout.Center.Layout(gtx, glyphWidget(bm, unit.Dp(12), colAccent))
-		})
-	})
 }
 
 // confirmLeaveOverlay is the modal asking whether to leave an in-progress
@@ -421,8 +316,8 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 	go a.sendGameChat(eng, text)
 }
 
-// gameChatPanel renders the chat strip at the bottom of the game screen: this
-// game's messages plus the lobby chat folded in — lobby lines are prefixed
+// gameChatPanel renders the game's chat panel: this game's messages plus the
+// lobby chat folded in — lobby lines are prefixed
 // "@lobby" and colored colLobby so they're obviously not from the game. Game
 // messages are seen only by this game's players and spectators (per-game chat
 // subject); a message typed here goes to the game chat, or to the lobby chat
@@ -435,11 +330,10 @@ func (a *App) handleGameChatSubmit(gtx C, eng *engine.Engine) {
 // Tab switches either way. The editor's hint says which way the keys
 // currently go.
 //
-// tall is the compact screen's chat panel (compact.go), which opens as a
-// drawer over the board and gives the conversation every row of it rather
-// than the strip's window-reactive slice; the strip also carries a fold
-// handle in its header, which the drawer (with its own close button) does not.
-func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView, tall bool) D {
+// It is a drawer over the board (compact.go), opened by the bar's chat
+// button, so it takes every row it is given rather than a slice of the
+// window.
+func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	msgs := a.gameChatLog(eng.GameID())
 	a.chatSeen = len(msgs) // seen: the bar's unread dot goes out (compact.go)
 
@@ -460,32 +354,12 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView, tall bool)
 	case view.boardFocused:
 		hint = boardHint
 	}
-	// The header doubles as the strip's fold handle: ▼ hands the whole strip
-	// to the playfield, and the rail it leaves behind brings it back. The
-	// drawer has its own close button instead.
-	head := a.header("CHAT")
-	if !tall {
-		head = func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(a.header("CHAT")),
-				layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
-				layout.Rigid(func(gtx C) D { return a.foldButton(gtx, &a.chatFoldBtn, glyphFoldD) }),
-			)
-		}
-	}
 
 	log := func(gtx C) D {
 		return bordered(gtx, func(gtx C) D {
-			// Height-reactive: at least 96 dp of chat, growing with the
-			// window (12% of the available height) so a taller window
-			// shows more of the conversation. As a drawer (tall) it takes
-			// every row it is given instead — it IS the screen while it is
-			// open — which the Flexed slot below hands it.
-			if tall {
-				gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
-			} else if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
-				gtx.Constraints.Max.Y = maxH
-			}
+			// The log takes every row the drawer gives it — it IS the
+			// screen while it is open.
+			gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
 			return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
 				txt, col := chatLine(msgs[i])
 				return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
@@ -500,21 +374,15 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView, tall bool)
 			layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
 		)
 	}
-	// Rigid everywhere but in the drawer, where the log stretches and the
-	// composer stays pinned under it.
-	logSlot, bodySlot := layout.Rigid(log), layout.Rigid
-	if tall {
-		logSlot, bodySlot = layout.Flexed(1, log), func(w layout.Widget) layout.FlexChild { return layout.Flexed(1, w) }
-	}
 
 	return pointerArea(gtx, &a.chatTag, func(gtx C) D {
 		return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(head),
-				bodySlot(func(gtx C) D {
+				layout.Rigid(a.header("CHAT")),
+				layout.Flexed(1, func(gtx C) D {
 					return focusRing(gtx, ring, func(gtx C) D {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							logSlot,
+							layout.Flexed(1, log),
 							layout.Rigid(spacer(6)),
 							layout.Rigid(composer),
 						)
@@ -631,18 +499,8 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
-			// The mode line carries the column's fold handle on the full
-			// screen (◀ hands the whole column to the playfield); in the
-			// compact screen's drawer the panel closes by its own button.
-			if a.form.compact {
-				return a.pixel(unit.Sp(11), modeLabel, colAccent).Layout(gtx)
-			}
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, func(gtx C) D {
-					return a.pixelLabelFit(gtx, unit.Sp(11), modeLabel, colAccent)
-				}),
-				layout.Rigid(func(gtx C) D { return a.foldButton(gtx, &a.hudFoldBtn, glyphFoldL) }),
-			)
+			// The panel closes by its own button; this line just names the game.
+			return a.pixelLabelFit(gtx, unit.Sp(11), modeLabel, colAccent)
 		}),
 		layout.Rigid(func(gtx C) D { return a.sessionLine(gtx) }),
 		layout.Rigid(spacer(10)),
@@ -733,11 +591,8 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	tagD := layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(a.natsTag(22, 10)),
 		layout.Flexed(1, func(gtx C) D {
-			// The compact screen has no room for the corner version plate
-			// (the bar's chat button is that corner), so it rides here.
-			if !a.form.compact {
-				return D{}
-			}
+			// The game screen has no corner for the version plate (the bar's
+			// chat button is that corner), so it rides here.
 			update, _ := a.update()
 			col := colMuted
 			if update != "" {
@@ -1047,13 +902,14 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// engine's sequence is up and the well will actually render. In a game
 	// with the hold rule the HOLD box flanks the playfield's other side
 	// (empty until the first hold; the slot is per seat too).
-	// On the compact screen both wells move into the top bar (compact.go): at
-	// a phone's width the pair costs the playfield eight of its own columns —
-	// nearly half the screen — for two previews a fraction of that size does
-	// just as well.
+	// The wells flank the playfield on every screen, the compact one included
+	// — that is what they are for, and where a player looks for them. What
+	// the compact screen changes is their SIZE: they draw at a fraction of
+	// the board's cell there (wellCell), because a phone cannot spare the
+	// eight board columns a full-size pair would cost.
 	nextPieces := eng.NextPieces()
-	showNext := mode == engine.ModePlayer && len(nextPieces) > 0 && !a.form.compact
-	showHold := mode == engine.ModePlayer && eng.HoldEnabled() && !a.form.compact
+	showNext := mode == engine.ModePlayer && len(nextPieces) > 0
+	showHold := mode == engine.ModePlayer && eng.HoldEnabled()
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
 		// room for the wells beside it, the player's move-buffer strip under
@@ -1080,10 +936,12 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			}
 		}
 		if showHold {
-			wells.holdH = measure(func(gtx C, cell int) D { return a.holdWellBox(gtx, game.PieceI, false, false, cell) })
+			wells.holdH = measure(func(gtx C, cell int) D {
+				return a.holdWellBox(gtx, game.PieceI, false, false, a.wellCell(cell))
+			})
 		}
 		if showNext {
-			wells.nextH = measure(func(gtx C, cell int) D { return a.nextWell(gtx, nextPieces, cell) })
+			wells.nextH = measure(func(gtx C, cell int) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) })
 		}
 		plan := a.fitBoardAndPad(gtx, snap.Width, snap.Height-snap.VisibleStart, wells, player, showPad, hold)
 		cell := plan.cell
@@ -1146,9 +1004,9 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// its right, classic arcade style.
 		holdBox := func(gtx C) D {
 			held, has := eng.HeldPiece()
-			return a.holdWell(gtx, held, has, eng.HoldUsed(), cell)
+			return a.holdWell(gtx, held, has, eng.HoldUsed(), a.wellCell(cell))
 		}
-		nextBox := func(gtx C) D { return a.nextWell(gtx, nextPieces, cell) }
+		nextBox := func(gtx C) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) }
 		strip := func(gtx C) D {
 			// Inputs queued behind the in-flight batch publish (very visible
 			// on a high-RTT server); the strip drains as each buffered
@@ -1250,25 +1108,21 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			}
 			// The touch-gesture surface, registered FIRST so everything
 			// placed after it — the pad's buttons, the HOLD box — is over it
-			// and wins its own presses. It is the playfield plus all the
-			// empty room around it: out to whatever is beside the playfield
-			// (a well-and-pad column, else the edge of the slot the column is
-			// centered in), and down over the move-buffer strip to the pad
-			// under it, else to the foot of the column. The room is taken
+			// and wins its own presses. It runs the whole width the board
+			// column was given, right across the ground the side columns
+			// stand on: the wells only occupy the top of those columns, and
+			// what is under and between them is room a thumb can use. The
+			// widgets there keep their own taps by being drawn after (the
+			// HOLD box holds when tapped, every pad button fires); the dead
+			// space around them drives the piece. The room is taken
 			// SYMMETRICALLY — the narrower side sets both — because a tap
 			// rotates by which half of the surface it lands in, and that
 			// split has to fall down the playfield's middle. On a phone this
-			// roughly doubles what a thumb can swipe on.
+			// roughly triples what a thumb can swipe on.
 			bx0, bx1 := shift+boardX, shift+boardX+boardD.Size.X
 			lo, hi := 0, size.X
 			if slack := (slot.X - size.X) / 2; slack > 0 {
 				lo, hi = -slack, hi+slack
-			}
-			if leftW > 0 {
-				lo = shift + leftX + leftW
-			}
-			if rightW > 0 {
-				hi = shift + rightX
 			}
 			ext := max(0, min(bx0-lo, hi-bx1)-gtx.Dp(1))
 			fieldBot := size.Y

@@ -129,10 +129,10 @@ func (g *screenRig) boardPx() image.Point {
 
 // The bar's button positions in a 1 px/dp test window: the menu is the
 // leftmost, then (right to left) the chat button and the pad switch.
-func barCenterY() float32    { return compactBarH / 2 }
-func barMenuX() float32      { return 6 + (compactBarH-14)/2 }
+func barCenterY() float32    { return gameBarH / 2 }
+func barMenuX() float32      { return 6 + (gameBarH-14)/2 }
 func barChatX(w int) float32 { return float32(w) - barMenuX() }
-func barPadX(w int) float32  { return float32(w) - barMenuX() - (compactBarH - 14) - 6 }
+func barPadX(w int) float32  { return float32(w) - barMenuX() - (gameBarH - 14) - 6 }
 
 // TestCompactWellsAndPadBuyTheBoardRoom pins what the compact screen trades
 // away and what the playfield gets for it: with the HOLD/NEXT wells moved
@@ -181,13 +181,95 @@ func TestCompactBoardSpansThePhone(t *testing.T) {
 	if field.Dx() <= board.X {
 		t.Errorf("swipe surface %d px, playfield %d px: no room gained", field.Dx(), board.X)
 	}
-	// It reaches the edges: the board column's own 4 dp inset, and the 1 px
-	// the surface leaves itself, are all that is missing on either side.
+	// It reaches the edges — across the ground the HOLD and NEXT wells stand
+	// on, which is dead space below them: the board column's own inset and
+	// the pixel the surface leaves itself are all that is missing.
 	if slack := w - field.Dx(); slack > 16 {
 		t.Errorf("swipe surface %d px on a %d px phone: %d px of it unreachable", field.Dx(), w, slack)
 	}
 	if g.a.gest.fieldW != field.Dx() {
 		t.Errorf("recognizer width %d, surface on screen %v", g.a.gest.fieldW, field)
+	}
+}
+
+// TestCompactWellsFlankTheBoard: the HOLD box and the NEXT well sit beside
+// the playfield on a phone exactly as they do on the desktop — one either
+// side, hanging from its top edge — at a reduced cell, so they cost the board
+// far less than a full-size pair would. And the HOLD box still holds when
+// tapped, though the gesture surface now runs underneath it.
+func TestCompactWellsFlankTheBoard(t *testing.T) {
+	const w, h = 390, 844
+	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-wells", config.ModeCompetitive))
+	if !g.a.form.compact {
+		t.Fatalf("a %dx%d phone did not get the compact screen", w, h)
+	}
+	cell := g.a.gest.cell
+	if wc := g.a.wellCell(cell); wc >= cell || wc < narrowWellMinCell {
+		t.Fatalf("well cell %d px against a %d px board cell: want it smaller but legible", wc, cell)
+	}
+	// Both wells are on screen, one either side of the playfield, level with
+	// its top edge.
+	board := g.boardPx()
+	field := g.field(t)
+	wellW := g.a.wellWidth(cell)
+	// The playfield is centred in the surface, so the columns either side of
+	// it are what is left — and each is at least a well wide.
+	bx0 := field.Min.X + (field.Dx()-board.X)/2
+	if margin := bx0 - field.Min.X; margin < wellW {
+		t.Fatalf("only %d px left of the playfield for a %d px well", margin, wellW)
+	}
+	// A tap on the HOLD box holds — it hangs from the playfield's top edge,
+	// centred in that left column, over the gesture surface, and the box wins
+	// the press by being drawn after it. The engine really holds, so the
+	// check is on the held piece rather than on the move queue, which this
+	// live engine drains as it publishes.
+	if _, has := g.a.eng.HeldPiece(); has {
+		t.Fatal("a piece is held before anything was tapped")
+	}
+	g.tap(float32(bx0-wellW/2), float32(field.Min.Y+cell))
+	held := false
+	for range 40 {
+		if _, has := g.a.eng.HeldPiece(); has {
+			held = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+		g.frame()
+	}
+	if !held {
+		t.Fatal("tapping the HOLD box held nothing — the press did not reach it")
+	}
+}
+
+// TestCompactOpponentsToggle: the opposing boards are off by default on the
+// compact screen and the bar's switch brings them in beside the playfield,
+// which costs the board width — the reason they are a switch at all.
+func TestCompactOpponentsToggle(t *testing.T) {
+	const w, h = 390, 844
+	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-opps", config.ModeCompetitive))
+	if g.a.oppVisible() {
+		t.Fatal("the opponents' boards are on by default on a narrow screen")
+	}
+	if !g.a.hasOpponents(g.a.eng, engine.ModePlayer, config.ModeCompetitive) {
+		t.Skip("no opponent snapshot arrived yet")
+	}
+	without := g.a.gest.cell
+	g.a.oppPref = 1
+	g.frame()
+	if g.a.gest.cell >= without {
+		t.Fatalf("with the opponents shown the cell is %d px, not under the %d px it had without", g.a.gest.cell, without)
+	}
+	g.a.oppPref = -1
+	g.frame()
+	if g.a.gest.cell != without {
+		t.Fatalf("cell back to %d px, want the %d px it had before", g.a.gest.cell, without)
+	}
+	// A co-op game has no opposing board, so it never offers the switch.
+	if g.a.hasOpponents(g.a.eng, engine.ModePlayer, config.ModeCooperative) {
+		t.Error("co-op offers an opponents switch")
+	}
+	if g.a.hasOpponents(g.a.eng, engine.ModeSpectator, config.ModeCompetitive) {
+		t.Error("a spectator, who already sees every board, is offered the switch")
 	}
 }
 
@@ -299,25 +381,37 @@ func TestCompactPadButtonTogglesThePad(t *testing.T) {
 	}
 }
 
-// TestFoldedPanelsGiveTheBoardTheirRoom: on the full screen the HUD column
-// and the chat strip fold away, and what they give up the playfield takes —
-// a bigger cell, and a wider surface to swipe on.
-func TestFoldedPanelsGiveTheBoardTheirRoom(t *testing.T) {
-	eng := liveEngine(t, "fold-room", config.ModeCooperative)
-	sz := image.Pt(1100, 820)
-	open := newScreenRig(t, sz, deviceDesktop, eng)
-	if open.a.form.compact {
-		t.Fatalf("a %v window went compact", sz)
+// TestOneScreenEverywhere: a desktop window gets the same screen a phone
+// does — the bar on top, the HUD and the chat behind it — and no permanent
+// side columns. What differs is only what the screen can afford: a wide one
+// is not "compact", so its opponents show by default and its wells draw at
+// the board's own cell.
+func TestOneScreenEverywhere(t *testing.T) {
+	eng := liveEngine(t, "one-screen", config.ModeCompetitive)
+	wide := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
+	if wide.a.form.compact {
+		t.Fatal("a 1280x820 window reports itself as compact")
 	}
-	folded := newScreenRig(t, sz, deviceDesktop, eng)
-	folded.a.hudFold, folded.a.chatFold = true, true
-	folded.frame()
-	if folded.a.gest.cell <= open.a.gest.cell {
-		t.Fatalf("folded cell %d px, unfolded %d px: folding bought the board nothing",
-			folded.a.gest.cell, open.a.gest.cell)
+	// The bar is there: its menu button opens the HUD panel, exactly as on a
+	// phone, and the board is reachable again once it closes.
+	wide.tap(barMenuX(), barCenterY())
+	if !wide.a.hudDrawer {
+		t.Fatal("the desktop window has no working menu button")
 	}
-	if fo, op := folded.field(t).Dx(), open.field(t).Dx(); fo <= op {
-		t.Fatalf("folded swipe surface %d px, unfolded %d px", fo, op)
+	wide.tap(barMenuX(), barCenterY())
+	if wide.a.drawerOpen() {
+		t.Fatal("the menu button did not close the panel it opened")
+	}
+	// Room to spare: the opponents show without being asked, and the wells
+	// draw at the board's own cell rather than the narrow screen's fraction.
+	if !wide.a.oppVisible() {
+		t.Error("a wide window hides the opponents by default")
+	}
+	if wide.a.narrowWells() {
+		t.Error("a wide window shrinks its wells")
+	}
+	if c := wide.a.gest.cell; wide.a.wellCell(c) != c {
+		t.Errorf("well cell %d px against a %d px board cell on a wide window: want them equal", wide.a.wellCell(c), c)
 	}
 }
 

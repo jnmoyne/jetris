@@ -442,19 +442,19 @@ type App struct {
 	// pad button. UI goroutine only.
 	hudDrawer, chatDrawer bool
 	padPref               int8
+	// oppPref is the player's standing answer on the opponents' playfields
+	// beside the board — 0 for the screen's own default (oppVisible), ±1
+	// once they have tapped the bar's boards button, like padPref.
+	oppPref int8
 	// Its chrome: the bar's menu / pad / chat buttons, the scrim that closes
 	// a panel when tapped beside it, and the panels' own close button.
-	barHudBtn, barPadBtn, barChatBtn widget.Clickable
-	drawerScrim, drawerCloseBtn      widget.Clickable
-	drawerTag                        int // address used as the open panel's pointer-area tag: presses inside it are its own
-	chatSeen                         int // messages the chat panel last showed: the bar's unread dot
+	barHudBtn, barPadBtn, barChatBtn, barOppBtn widget.Clickable
+	drawerScrim, drawerCloseBtn                 widget.Clickable
+	drawerTag                                   int // address used as the open panel's pointer-area tag: presses inside it are its own
+	chatSeen                                    int // messages the chat panel last showed: the bar's unread dot
 	// drawerEng is the engine the panel state above belongs to; a new one
 	// (every game entry makes one) shuts the panels and forgets what was read.
 	drawerEng *engine.Engine
-	// The full screen's collapsibles: the HUD column and the chat strip fold
-	// away to a rail on a tap, handing their room to the playfield.
-	hudFold, chatFold       bool
-	hudFoldBtn, chatFoldBtn widget.Clickable
 	// Touch diagnostic (browser build, view_js.go; the page's ?touchdebug=1):
 	// touchDebug switches it on, touchPresses counts the touch presses that
 	// reached the game screen (handleGameFocus) and frames the frames laid
@@ -768,10 +768,10 @@ func (a *App) layout(gtx C) D {
 	case screenReplay:
 		d = a.layoutReplay(gtx)
 	}
-	// Build version, top-right corner of every screen — except the compact
-	// game screen, whose top-right corner is the chat button: there the
-	// plate moves into the HUD panel, beside the NATS tag (gameHUD).
-	if !(a.getScreen() == screenGame && a.form.compact) {
+	// Build version, top-right corner of every screen — except the game
+	// screen, whose top-right corner is the bar's chat button: there the
+	// plate rides in the HUD panel, beside the NATS tag (gameHUD).
+	if a.getScreen() != screenGame {
 		a.versionBadge(gtx)
 	}
 	// CRT overlay over the whole frame, screens and chrome alike. Deferred —

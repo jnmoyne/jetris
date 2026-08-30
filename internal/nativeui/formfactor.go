@@ -1,26 +1,26 @@
 package nativeui
 
 // Form factor — which device the game is being played on, which way it is
-// held, and how much of the screen the playfield may therefore claim.
+// held, and how much room there is to spend.
 //
-// The game screen comes in two shapes. The FULL one is the three-column
-// arcade cabinet this app was designed as: the HUD column, the board column,
-// the opponent thumbnails, and the chat strip across the bottom — a desktop
-// window, or a tablet held landscape. The COMPACT one (compact.go) is
-// everything else, phones above all: one slim top bar carrying the HOLD box,
-// the score and the NEXT pieces, the playfield under it with the whole rest
-// of the screen to itself, and the HUD and the chat behind a tap — panels
-// that slide over the board only while they are wanted, so nothing
-// permanently owns space the playfield could have.
+// There is ONE game screen (compact.go): a slim bar across the top carrying
+// the score and the switches for everything that costs the playfield room,
+// the board with all the rest, and the HUD and the chat behind a tap —
+// panels that slide over the board only while they are wanted. A phone and a
+// desktop get the same screen; what changes between them is what that screen
+// can afford, which is what this file works out.
 //
-// Which shape a frame gets is decided here, per frame, from the device and
-// the window: a phone always, a tablet held portrait (its short side spends
-// too much of itself on side columns), and any window too small for the full
-// layout to be worth it — the desktop app dragged down to its minimum size
-// included. The device itself is the browser's to say (view_js.go reads the
-// page's media queries and screen size and hints it here); everywhere else it
-// is inferred from the touch flag and the window's own dp size, which is what
-// a headless test drives.
+// `compact` is that affordability, not a second layout: a phone always, a
+// tablet held portrait, and any window too small to spend freely — the
+// desktop app dragged down to its minimum size included. Under it the
+// move-buffer chips shrink, captions abbreviate, the pads move to the
+// playfield's bottom edge where the thumbs are, and the boxes that sit
+// beside the board stack under it instead.
+//
+// The device itself is the browser's to say (view_js.go reads the page's
+// media queries and screen size and hints it here); everywhere else it is
+// inferred from the touch flag and the window's own dp size, which is what a
+// headless test drives.
 
 // deviceKind is the machine the game is being played on.
 type deviceKind uint8
@@ -110,7 +110,23 @@ func (a *App) padVisible() bool {
 	return !(a.form.device == devicePhone && a.form.portrait)
 }
 
-// drawerOpen reports whether one of the compact screen's panels is over the
+// oppVisible reports whether the opponents' playfields show beside the
+// board. As with the pad, it is the player's call once they make one (the
+// bar's boards button sets oppPref, which then holds for the session); until
+// then it follows the room. A screen with width to spare shows them, as the
+// game always has on a desktop; a narrow one does not, because there every
+// dp of that column is dp the playfield does not get.
+func (a *App) oppVisible() bool {
+	switch {
+	case a.oppPref > 0:
+		return true
+	case a.oppPref < 0:
+		return false
+	}
+	return !a.narrowWells()
+}
+
+// drawerOpen reports whether one of the screen's panels is over the
 // board — the frame's presses belong to it, not to the game (the pad's
 // clicks and the playfield's gestures are gated on this).
 func (a *App) drawerOpen() bool { return a.hudDrawer || a.chatDrawer }

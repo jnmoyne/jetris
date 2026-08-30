@@ -60,11 +60,15 @@ func TestFormSnapshots(t *testing.T) {
 			tweak: func(a *App) { a.hudDrawer = true }},
 		{name: "form_phone_portrait_chat", size: image.Pt(390, 844), device: devicePhone,
 			tweak: func(a *App) { a.chatDrawer = true }},
+		{name: "form_phone_portrait_opps", size: image.Pt(390, 844), device: devicePhone,
+			tweak: func(a *App) { a.oppPref = 1 }},
+		{name: "form_phone_portrait_opps_pad", size: image.Pt(390, 844), device: devicePhone,
+			tweak: func(a *App) { a.oppPref, a.padPref = 1, 1 }},
 		{name: "form_phone_landscape", size: image.Pt(844, 390), device: devicePhone},
 		{name: "form_tablet_portrait", size: image.Pt(820, 1180), device: deviceTablet},
 		{name: "form_tablet_landscape", size: image.Pt(1180, 740), device: deviceTablet},
-		{name: "form_tablet_landscape_folded", size: image.Pt(1180, 740), device: deviceTablet,
-			tweak: func(a *App) { a.hudFold, a.chatFold = true, true }},
+		{name: "form_tablet_landscape_hud", size: image.Pt(1180, 740), device: deviceTablet,
+			tweak: func(a *App) { a.hudDrawer = true }},
 		{name: "form_desktop", size: image.Pt(1280, 820), device: deviceDesktop},
 	}
 	for i, c := range cases {

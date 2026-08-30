@@ -32,7 +32,7 @@ func TestGlyphBitmaps(t *testing.T) {
 		"left": glyphLeft, "right": glyphRight, "down": glyphDown, "drop": glyphDrop,
 		"cw": glyphCW, "ccw": glyphCCW, "hold": glyphHold,
 		"menu": glyphMenu, "chat": glyphChat, "pad": glyphPad, "close": glyphClose,
-		"foldL": glyphFoldL, "foldR": glyphFoldR, "foldU": glyphFoldU, "foldD": glyphFoldD,
+		"boards": glyphBoards, "trophy": glyphTrophy,
 	} {
 		if len(bm) == 0 {
 			t.Fatalf("%s: empty bitmap", name)

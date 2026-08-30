@@ -230,8 +230,9 @@ func TestScreenSnapshots(t *testing.T) {
 		}
 		gameFrame(a, &r) // the game is playable: the keys go to the board
 		snapshotPNG(t, w, dir, "screen_game_keys_board", frame)
-		press(&r, chatPressX, chatPressY)
-		gameFrame(a, &r) // the click hands them to the chat
+		press(&r, chatBtnPressX, chatBtnPressY)
+		gameFrame(a, &r)
+		gameFrame(a, &r) // the bar's chat button opens the panel and takes the keys
 		snapshotPNG(t, w, dir, "screen_game_keys_chat", frame)
 	})
 

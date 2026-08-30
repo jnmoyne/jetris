@@ -1,24 +1,24 @@
 package nativeui
 
-// The compact game screen — a phone, a tablet held portrait, any window too
-// small for the full three-column one (formfactor.go decides which).
+// The game screen — the same one on a phone, a tablet and a desktop.
 //
-// The rule here is that nothing permanent stands between the player and the
-// playfield. What the full screen spends whole columns on, this one either
-// shrinks into one slim bar across the top — the HOLD box, the score, the
-// NEXT pieces, all at their own small cell size instead of the board's — or
-// puts behind a tap: the HUD (players, stats, the controls legend, the lab
-// switches, Back to Lobby) opens as a panel over the board, the chat as
-// another, and each closes on the button that opened it, on its own ✕, or on
-// a tap anywhere beside it. The playfield gets everything else, and the touch
-// gestures (gesture.go) get the whole width of it — the surface a swipe lands
-// on runs edge to edge, well past the board's own columns.
+// The rule is that nothing permanent stands between the player and the
+// playfield. One slim bar runs across the top: the score, and a switch for
+// each thing that costs the board room. Everything else is behind a tap —
+// the HUD (players, stats, the controls legend, the lab switches, Back to
+// Lobby) opens as a panel over the board, the chat as another, and each
+// closes on the button that opened it, on its own ✕, or on a tap anywhere
+// beside it. The playfield gets all the rest, with the HOLD box and the NEXT
+// well flanking it as they always have, and the touch gestures (gesture.go)
+// get its whole width — the surface a swipe lands on runs edge to edge, well
+// past the board's own columns.
 //
-// The bar also carries the on-screen pad's switch. On a phone held portrait
-// the pad sits UNDER the playfield and takes about a third of its rows, so it
-// starts off there (padVisible) and one tap brings it back; held landscape,
-// or on a tablet, it flanks the board in room the playfield could not have
-// used and starts on.
+// The bar's switches are the on-screen pad and the opponents' boards. Each
+// starts wherever the screen can afford it (padVisible, oppVisible) and
+// stays wherever the player last put it: on a phone held portrait the pad
+// stacks UNDER the playfield and takes about a third of its rows, so it
+// starts off there, while on any screen with width to spare the opponents
+// start on, as they always were on a desktop.
 
 import (
 	"fmt"
@@ -28,43 +28,68 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 
+	"sort"
+
 	"jetris/internal/config"
 	"jetris/internal/engine"
-	"jetris/internal/game"
 )
 
 const (
-	// compactBarH is the top bar's height in dp — a comfortable touch target
+	// gameBarH is the top bar's height in dp — a comfortable touch target
 	// for the buttons in it, and room for a two-cell preview tile.
-	compactBarH = 54
-	// compactTileCell is the bar's preview cell in dp: a tile is
-	// previewCols × that wide and two of them tall. Small enough that the
-	// HOLD box and three NEXT pieces leave the score its room on a phone,
-	// big enough to read a piece by its shape and color at arm's length.
-	compactTileCell = 10
-	// compactNextMax is the most NEXT pieces the bar shows; a narrow one
-	// shows fewer (compactBar fits them to the room left over).
-	compactNextMax = 3
-	// compactDrawerFrac is how much of the screen an open panel takes, in
+	gameBarH = 54
+	// drawerFrac is how much of the screen an open panel takes, in
 	// percent of its long axis: the HUD panel's width, the chat panel's
 	// height. The rest stays board, so the game is still visible behind the
 	// panel and closing it is one tap on what you can see.
-	compactDrawerFrac = 78
+	drawerFrac = 78
+	// drawerMaxH/drawerMaxW cap a bottom drawer on a big screen (see above).
+	drawerMaxH = 420
+	drawerMaxW = 820
+	// oppColPct/oppColMaxW bound the opponents' column when it is shown: a
+	// slice of the screen, never more than a thumbnail's worth. Every dp of
+	// it comes off the playfield.
+	oppColPct  = 24
+	oppColMaxW = 150
 )
 
-// compactGameScreen is the game screen for a small display: the bar, the
-// board with everything left, and whichever panel is open over them.
-func (a *App) compactGameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, showMsgs bool) D {
+// gameScreen is THE game screen, on every display: the bar, the board with
+// everything left over, and whichever panel is open over them.
+func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, showMsgs bool) D {
 	started := view.status == string(config.GameStatusInProgress)
 	var children []layout.FlexChild
 	if mode == engine.ModePlayer && !started && !view.gameOver {
 		// Pre-start there is nothing to play and everything to decide: the
 		// ready-up action belongs on the screen, not behind the menu.
-		children = append(children, layout.Rigid(func(gtx C) D { return a.compactReadyBar(gtx, view) }))
+		children = append(children, layout.Rigid(func(gtx C) D { return a.readyBar(gtx, view) }))
 	}
 	children = append(children, layout.Flexed(1, func(gtx C) D {
 		return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
-			return a.gameBoardArea(gtx, eng, view, mode, gmode)
+			if !a.oppVisible() || !a.hasOpponents(eng, mode, gmode) {
+				return a.gameBoardArea(gtx, eng, view, mode, gmode)
+			}
+			// The opponents stand beside the board, and the two are centred
+			// TOGETHER: a playfield is portrait and a screen is not, so on a
+			// wide one the board cannot use all the width whatever it does
+			// (its cell is bound by the height) — and a board centred in
+			// what is left over, with the opponents pinned out at the edge,
+			// reads as two things that missed each other rather than as one
+			// row. The column's width is taken off the board area BEFORE it
+			// fits itself, so nothing is squeezed after the fact.
+			oppW := min(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMaxW))
+			return layout.Center.Layout(gtx, func(gtx C) D {
+				gtx.Constraints.Min = image.Point{}
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Max.X = max(0, gtx.Constraints.Max.X-oppW)
+						return a.gameBoardArea(gtx, eng, view, mode, gmode)
+					}),
+					layout.Rigid(func(gtx C) D {
+						gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
+						return a.opponentBoards(gtx, eng)
+					}),
+				)
+			})
 		})
 	}))
 	if showMsgs {
@@ -87,12 +112,12 @@ func (a *App) compactGameScreen(gtx C, eng *engine.Engine, view gameView, mode e
 		inner := body
 		body = func(gtx C) D {
 			return a.drawer(gtx, inner, layout.S, func(gtx C) D {
-				return a.gameChatPanel(gtx, eng, view, true)
+				return a.gameChatPanel(gtx, eng, view)
 			})
 		}
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D { return a.compactBar(gtx, eng, view, mode, gmode) }),
+		layout.Rigid(func(gtx C) D { return a.gameBar(gtx, eng, view, mode, gmode) }),
 		layout.Flexed(1, body),
 	)
 }
@@ -115,6 +140,13 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 	for a.barChatBtn.Clicked(gtx) {
 		a.chatDrawer, a.hudDrawer = !a.chatDrawer, false
 	}
+	for a.barOppBtn.Clicked(gtx) {
+		if a.oppVisible() {
+			a.oppPref = -1
+		} else {
+			a.oppPref = 1
+		}
+	}
 	for a.barPadBtn.Clicked(gtx) {
 		// The player's standing answer on the on-screen pad, from whatever
 		// the device's default happened to be showing.
@@ -130,18 +162,12 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 	for a.drawerScrim.Clicked(gtx) {
 		a.hudDrawer, a.chatDrawer = false, false
 	}
-	for a.hudFoldBtn.Clicked(gtx) {
-		a.hudFold = !a.hudFold
-	}
-	for a.chatFoldBtn.Clicked(gtx) {
-		a.chatFold = !a.chatFold
-	}
 }
 
 // drawer lays the screen out with panel over it, against the given edge, and
 // a scrim over the rest — tinted, so the board still reads through it, and
 // clickable, so a tap beside the panel closes it. The panel takes
-// compactDrawerFrac of the axis it slides in along.
+// drawerFrac of the axis it slides in along.
 func (a *App) drawer(gtx C, base layout.Widget, edge layout.Direction, panel layout.Widget) D {
 	return layout.Stack{}.Layout(gtx,
 		layout.Expanded(base),
@@ -158,13 +184,20 @@ func (a *App) drawer(gtx C, base layout.Widget, edge layout.Direction, panel lay
 			return edge.Layout(gtx, func(gtx C) D {
 				switch edge {
 				case layout.W, layout.E:
-					w := min(gtx.Constraints.Max.X*compactDrawerFrac/100, gtx.Dp(340))
+					w := min(gtx.Constraints.Max.X*drawerFrac/100, gtx.Dp(340))
 					gtx.Constraints.Min.X, gtx.Constraints.Max.X = w, w
 					gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
 				default:
-					h := gtx.Constraints.Max.Y * compactDrawerFrac / 100
+					// A share of the height, but never more than a panel's
+					// worth: on a phone drawerFrac IS the panel, while on a
+					// desktop the same fraction would hand a whole screen to
+					// one line of chat. Capped, and no wider than a column of
+					// text wants to be — layout.S centres what it is given, so
+					// the narrower panel sits centred over the board.
+					h := min(gtx.Constraints.Max.Y*drawerFrac/100, gtx.Dp(drawerMaxH))
 					gtx.Constraints.Min.Y, gtx.Constraints.Max.Y = h, h
-					gtx.Constraints.Min.X = gtx.Constraints.Max.X
+					w := min(gtx.Constraints.Max.X, gtx.Dp(drawerMaxW))
+					gtx.Constraints.Min.X, gtx.Constraints.Max.X = w, w
 				}
 				// The panel's own pointer area, over the scrim's: a press
 				// inside the panel — on a widget or on its empty space
@@ -192,54 +225,28 @@ func (a *App) drawer(gtx C, base layout.Widget, edge layout.Direction, panel lay
 	)
 }
 
-// compactBar is the screen's one permanent row: the menu button, the HOLD
-// box, the score line, the NEXT pieces, the pad switch and the chat button.
-// Everything in it is sized so the row holds together on the narrowest phone
-// — the NEXT previews drop one at a time as the width runs out, and the
-// score line takes whatever is left (it elides rather than wraps).
-func (a *App) compactBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
-	barH := gtx.Dp(compactBarH)
-	cell := gtx.Dp(compactTileCell)
-	tile := previewCols * cell
+// gameBar is the screen's one permanent row: the menu button, the score
+// line, and the switches for the things that cost the playfield room — the
+// opponents' boards, the on-screen pad — with the chat at the far end. The
+// HOLD box and the NEXT well are NOT here: they flank the playfield, as they
+// do on the full screen (gameBoardArea).
+func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
+	barH := gtx.Dp(gameBarH)
 	player := mode == engine.ModePlayer
-	hold := player && eng.HoldEnabled()
-
-	var pieces []game.PieceType
-	if player {
-		pieces = eng.NextPieces()
-	}
-	// The NEXT previews take what the buttons, the HOLD box and a legible
-	// score line leave; a narrow bar simply shows fewer of them.
-	btnW := gtx.Dp(compactBarH-14) + gtx.Dp(8)
-	room := gtx.Constraints.Max.X - 3*btnW - gtx.Dp(96)
-	if hold {
-		room -= tile + gtx.Dp(8)
-	}
-	nNext := min(len(pieces), compactNextMax, max(0, room/(tile+gtx.Dp(4))))
 
 	kids := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D { return a.barButton(gtx, &a.barHudBtn, glyphMenu, a.hudDrawer) }),
 	}
-	if hold {
-		held, has := eng.HeldPiece()
-		used := eng.HoldUsed()
-		kids = append(kids, layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-				// Tapping it holds, exactly as the full screen's HOLD box does.
-				return a.holdBoxBtn.Layout(gtx, func(gtx C) D {
-					return a.compactHoldTile(gtx, held, has, used, cell)
-				})
-			})
-		}))
-	}
 	kids = append(kids, layout.Flexed(1, func(gtx C) D {
 		return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-			return a.compactStats(gtx, view, mode, gmode)
+			return a.barStats(gtx, view, mode, gmode)
 		})
 	}))
-	if nNext > 0 {
+	if a.hasOpponents(eng, mode, gmode) {
 		kids = append(kids, layout.Rigid(func(gtx C) D {
-			return a.compactNextRow(gtx, pieces[:nNext], cell)
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return a.barButton(gtx, &a.barOppBtn, glyphBoards, a.oppVisible())
+			})
 		}))
 	}
 	if player && !view.gameOver {
@@ -279,7 +286,7 @@ func (a *App) compactBar(gtx C, eng *engine.Engine, view gameView, mode engine.M
 // as the control pad's, at a thumb-friendly size. on lights it up: the panel
 // it opens is open, or the pad it switches is showing.
 func (a *App) barButton(gtx C, btn *widget.Clickable, bm []string, on bool) D {
-	sz := gtx.Dp(compactBarH - 14)
+	sz := gtx.Dp(gameBarH - 14)
 	bg, fg := colPanel, colAccent
 	if on {
 		bg, fg = colAccent, colBg
@@ -294,49 +301,67 @@ func (a *App) barButton(gtx C, btn *widget.Clickable, bm []string, on bool) D {
 	})
 }
 
-// compactHoldTile is the bar's HOLD box: the well's frame idiom at the bar's
-// own small cell, holding the set-aside piece — dimmed while it is spent for
-// this piece, empty until the first hold.
-func (a *App) compactHoldTile(gtx C, held game.PieceType, has, used bool, cell int) D {
-	w, h := previewCols*cell, 2*cell
-	fw := max(cell/8, 2)
-	fillRect(gtx.Ops, image.Rect(0, 0, w+2*fw, h+2*fw), colBorder)
-	fillRect(gtx.Ops, image.Rect(fw, fw, w+fw, h+fw), colBg)
-	if has {
-		rows := 1
-		for _, rc := range (game.Piece{Type: held}).Cells() {
-			rows = max(rows, rc[0]+1)
-		}
-		drawMiniPiece(gtx.Ops, fw, fw+(h-rows*cell)/2, cell, held)
-		if used {
-			fillRect(gtx.Ops, image.Rect(fw, fw, w+fw, h+fw), withAlpha(colBg, 0.62))
-		}
+// hasOpponents reports whether this game has other playfields for the local
+// player to watch: the competitive modes' own gate (a spectator already sees
+// every board, and a co-op crew shares one). The bar's boards switch shows
+// only when there is something behind it.
+func (a *App) hasOpponents(eng *engine.Engine, mode engine.Mode, gmode config.GameMode) bool {
+	if mode == engine.ModeSpectator || (gmode != config.ModeCompetitive && gmode != config.ModeTeams) {
+		return false
 	}
-	return D{Size: image.Pt(w+2*fw, h+2*fw)}
+	return len(eng.OpponentSnapshots()) > 0
 }
 
-// compactNextRow is the bar's piece preview: the upcoming pieces left to
-// right in play order, at the bar's cell, with no well around them (the row
-// reads as a queue running toward the board).
-func (a *App) compactNextRow(gtx C, pieces []game.PieceType, cell int) D {
-	gap := gtx.Dp(4)
-	x, h := 0, 2*cell
-	for _, pt := range pieces {
-		rows := 1
-		for _, rc := range (game.Piece{Type: pt}).Cells() {
-			rows = max(rows, rc[0]+1)
-		}
-		drawMiniPiece(gtx.Ops, x, (h-rows*cell)/2, cell, pt)
-		x += previewCols*cell + gap
+// opponentBoards is the opponents' playfields beside the board: thumbnails in
+// a column down the side, the name over each. Every pixel of the column comes
+// off the playfield — it is capped at oppColPct of the screen and its cells
+// are clamped small — which is why it is a switch (oppVisible), on where
+// there is width to spare and off where there is not.
+//
+// It is centred on the same axis the board area centres on, so the two read
+// as one row rather than as a board with something bolted to its corner.
+func (a *App) opponentBoards(gtx C, eng *engine.Engine) D {
+	opps := eng.OpponentSnapshots()
+	if len(opps) == 0 {
+		return D{}
 	}
-	return D{Size: image.Pt(max(0, x-gap), h)}
+	ids := make([]string, 0, len(opps))
+	for id := range opps {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	first := opps[ids[0]]
+	vis := first.Height - first.VisibleStart
+	cell := fitCellPx(gtx, first.Width, vis*len(ids), 1, gtx.Dp(8), len(ids)*gtx.Dp(16), 3, 14)
+	teams := eng.GameMode() == config.ModeTeams
+	return layout.Center.Layout(gtx, func(gtx C) D {
+		var kids []layout.FlexChild
+		for i, id := range ids {
+			snap, label := opps[id], id
+			if teams {
+				label = "OPPONENTS"
+			}
+			if i > 0 {
+				kids = append(kids, layout.Rigid(spacer(8)))
+			}
+			kids = append(kids,
+				layout.Rigid(func(gtx C) D {
+					gtx.Constraints.Max.X = first.Width*cell + gtx.Dp(4)
+					return a.pixelLabelFit(gtx, unit.Sp(7), label, colMuted)
+				}),
+				layout.Rigid(spacer(3)),
+				layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now)),
+			)
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	})
 }
 
-// compactStats is the bar's readout, in the room the previews and the buttons
+// barStats is the bar's readout, in the room the previews and the buttons
 // leave: the score (per team in teams mode), the level, and — while it is
 // worth naming — the batch round trip, which is what this game is about. It
 // elides rather than wraps, so the bar never grows a second line.
-func (a *App) compactStats(gtx C, view gameView, mode engine.Mode, gmode config.GameMode) D {
+func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	line := fmt.Sprintf("%d  LV%d", view.score, view.level)
 	if gmode == config.ModeTeams {
 		line = fmt.Sprintf("%s %d · %s %d  LV%d",
@@ -380,9 +405,9 @@ func (a *App) compactStats(gtx C, view gameView, mode engine.Mode, gmode config.
 	})
 }
 
-// compactReadyBar is the pre-start row: the ready-up action, and how much of
+// readyBar is the pre-start row: the ready-up action, and how much of
 // the table is waiting on the rest.
-func (a *App) compactReadyBar(gtx C, view gameView) D {
+func (a *App) readyBar(gtx C, view gameView) D {
 	ready := 0
 	for _, p := range view.readyPlayer {
 		if p.Ready {

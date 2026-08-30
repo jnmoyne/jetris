@@ -155,30 +155,19 @@ var (
 		"..XXXXX..",
 		".XXXXXXX.",
 	}
-	// The full screen's fold arrows: a panel folds toward its own edge and
-	// unfolds back out (game.go's HUD column and chat strip).
-	glyphFoldL = []string{
-		"......XX",
-		"....XXXX",
-		"..XXXX..",
-		"XXXX....",
-		"XXXX....",
-		"..XXXX..",
-		"....XXXX",
-		"......XX",
+	// glyphBoards switches the opponents' playfields on and off (compact.go):
+	// two wells side by side, the second one part-filled, which is what the
+	// strip it opens actually shows.
+	glyphBoards = []string{
+		"XXX.XXX.",
+		"X.X.X.X.",
+		"X.X.X.X.",
+		"X.X.X.X.",
+		"X.X.XXX.",
+		"X.X.XXX.",
+		"XXX.XXX.",
+		"........",
 	}
-	glyphFoldR = mirrored(glyphFoldL)
-	glyphFoldU = []string{
-		"...XX...",
-		"...XX...",
-		"..XXXX..",
-		"..XXXX..",
-		".XX..XX.",
-		".XX..XX.",
-		"XX....XX",
-		"XX....XX",
-	}
-	glyphFoldD = flipped(glyphFoldU)
 )
 
 // mirrored flips a glyph bitmap horizontally (derives the CCW rotate arrow
@@ -530,6 +519,46 @@ type padPlan struct {
 	width  int  // the pad's row per the plan's model, px: flanked, the whole row with the strip; under, the pad
 }
 
+// The HOLD box and the NEXT well normally draw at exactly the board's cell,
+// so a preview reads like the pieces on the board. On a NARROW screen they
+// cannot: a pair of full-size wells is 168 dp of a phone's 382 dp column,
+// which drops the playfield from 280 dp wide to 170. So under
+// narrowWellW they take narrowWellPct of the board's cell instead and keep
+// their place beside the playfield, which is what they are for.
+//
+// The test is the screen's width, not whether it is the compact screen: what
+// makes the wells unaffordable is width being the scarce dimension. A phone
+// held LANDSCAPE is compact too, but its board is bound by height and there
+// is width to spare — full-size wells cost it nothing — and the same goes
+// for a tablet held portrait. narrowWellMinCell keeps a tile legible where
+// the fraction lands small.
+const (
+	narrowWellW       = 600
+	narrowWellPct     = 55
+	narrowWellMinCell = 7
+)
+
+// narrowWells reports whether the wells shrink to fit this screen's width.
+func (a *App) narrowWells() bool { return a.form.w > 0 && a.form.w < narrowWellW }
+
+// wellCell is the cell size the HOLD box and the NEXT well draw at, given
+// the board's (see narrowWellPct).
+func (a *App) wellCell(boardCell int) int {
+	if a.narrowWells() {
+		return max(narrowWellMinCell, boardCell*narrowWellPct/100)
+	}
+	return boardCell
+}
+
+// wellWidth is a side well's full width in px at a given BOARD cell — the
+// preview tile plus the frame and the padding around it, exactly as
+// nextWell and holdWellBox lay themselves out. fitBoardAndPad plans the
+// columns beside the playfield with it.
+func (a *App) wellWidth(boardCell int) int {
+	c := a.wellCell(boardCell)
+	return previewCols*c + 2*(max(c/8, 2)+max(c/3, 6))
+}
+
 // sideWells is what flanks a player's playfield, for fitBoardAndPad's plan:
 // whether the HOLD box (off the playfield's left) and the NEXT well (off its
 // right) show, and each one's height at a given board cell — measured by
@@ -662,7 +691,14 @@ func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad
 	}
 	// The wells beside the playfield, at its cell size: previewCols board
 	// columns each, plus a slice for the frame and the gap after it.
-	wellCols, wellsX := wells.count()*previewCols, wells.count()*gtx.Dp(18)
+	// The wells beside the playfield cost it columns of its own: previewCols
+	// each at the well's cell, which the compact screen shrinks
+	// (compactWellPct), plus a slice for each frame and the gap after it.
+	wellCols := wells.count() * previewCols
+	if a.narrowWells() {
+		wellCols = wellCols * narrowWellPct / 100
+	}
+	wellsX := wells.count() * gtx.Dp(18)
 	// The cell may go smaller on the compact screen: a phone held landscape
 	// has barely 300 dp of height for a 25-row well, and a board that fits
 	// whole — small, but with its move buffer and its controls on screen —
@@ -699,7 +735,7 @@ func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad
 		g := flankGeom{dpadW: p.dpadSize(gtx), dpadH: p.dpadSize(gtx), faceW: face.X, faceH: face.Y,
 			boardW: cols*cell + 2*fw, boardH: rows*cell + 2*fw, stripW: a.stripWidth(gtx),
 			gap: gtx.Dp(padSideGap), vgap: gtx.Dp(wellPadGap), lowPads: a.padsAtBottom()}
-		wellW := previewCols*cell + 2*(fw+max(cell/3, 6))
+		wellW := a.wellWidth(cell)
 		if wells.hold {
 			g.holdW, g.holdH = wellW, wells.holdH(cell)
 		}

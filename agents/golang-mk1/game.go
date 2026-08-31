@@ -9,6 +9,7 @@ import (
 	mrand "math/rand/v2"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -71,6 +72,23 @@ type Game struct {
 	guideline   bool // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
 	dead        bool
 
+	// The batch pipeline (pipeline.go, guide §4.3). inflight counts the move
+	// batches sent and not yet acked; inflightCells the in-flight writes per
+	// cell (such a cell's expectation can only be none, or optimistic-mode's
+	// prediction in inflightSeq); pipePredictedEnd is the predicted stream
+	// sequence of the last in-flight batch's commit; pipeBroken marks a lost
+	// batch until the repair. All guarded by mu; pipeCond (on mu) wakes
+	// settlers and slot-waiters when a batch resolves. streamSeqSeen is the
+	// highest stream sequence observed anywhere (consumers, acks, fetches) —
+	// the stream's end as the agent knows it, what predictions start from.
+	inflight         int
+	inflightCells    map[cell]int
+	inflightSeq      map[cell]uint64
+	pipePredictedEnd uint64
+	pipeBroken       bool
+	pipeCond         *sync.Cond
+	streamSeqSeen    atomic.Uint64
+
 	stream       jetstream.Stream
 	started      chan struct{}
 	ended        chan struct{}
@@ -80,13 +98,16 @@ type Game struct {
 }
 
 func newGame(a *Agent, id string, idx int) *Game {
-	return &Game{
+	g := &Game{
 		a: a, id: id, idx: idx,
 		locked: map[cell]wireCell{}, seqs: map[cell]uint64{},
 		othersAct: map[cell]int{}, othersPiece: map[int]active{}, senderTotals: map[string][2]int{},
 		eliminated: map[string]bool{}, results: map[string]event{},
+		inflightCells: map[cell]int{}, inflightSeq: map[cell]uint64{},
 		started: make(chan struct{}), ended: make(chan struct{}),
 	}
+	g.pipeCond = sync.NewCond(&g.mu)
+	return g
 }
 
 func (g *Game) markStarted() { g.startedOnce.Do(func() { close(g.started) }) }
@@ -276,6 +297,7 @@ func (g *Game) publishBatch(ctx context.Context, cells []cellUpd, cas bool) erro
 		if conflict {
 			return errCAS
 		}
+		g.noteStreamSeq(seq)
 		g.seqs[u.at] = seq
 		return nil
 	}
@@ -306,6 +328,7 @@ func (g *Game) publishBatch(ctx context.Context, cells []cellUpd, cas bool) erro
 			return err
 		}
 	}
+	g.noteStreamSeq(commitSeq)
 	for i, u := range cells { // write-through
 		g.seqs[u.at] = commitSeq - uint64(n-1-i)
 	}
@@ -362,6 +385,7 @@ func (g *Game) publishGatedBatch(ctx context.Context, txn txnReg, cells []cellUp
 			return err
 		}
 	}
+	g.noteStreamSeq(commitSeq)
 	g.txnSeq = commitSeq - uint64(n-1)
 	g.txnApplied = txn.Applied
 	for i, u := range cells {
@@ -441,6 +465,7 @@ func (g *Game) fetchBoard(ctx context.Context) (map[cell]boardMsg, error) {
 			if len(m.Data) > 0 {
 				_ = json.Unmarshal(m.Data, &wc)
 			}
+			g.noteStreamSeq(m.Sequence)
 			out[cell{r, c}] = boardMsg{seq: m.Sequence, wc: wc}
 		}
 	}
@@ -451,25 +476,36 @@ func (g *Game) fetchBoard(ctx context.Context) (map[cell]boardMsg, error) {
 // fetch that fails outright leaves the current state in place (and logs)
 // rather than wiping the board to empty.
 func (g *Game) resync(ctx context.Context) {
-	if g.shared() {
-		g.resyncShared(ctx)
-		return
-	}
 	snap, err := g.fetchBoard(ctx)
 	if err != nil {
 		log.Printf("resync: %v", err)
 		return
 	}
+	g.foldSnapshot(snap)
+}
+
+// foldSnapshot replaces the local board state — settled cells, our own piece,
+// on shared boards the other players' pieces, and every per-cell sequence —
+// with one consistent stream snapshot. Caller holds mu.
+func (g *Game) foldSnapshot(snap map[cell]boardMsg) {
 	g.locked = map[cell]wireCell{}
 	g.seqs = map[cell]uint64{}
 	g.piece = nil
+	if g.shared() {
+		g.othersAct = map[cell]int{}
+		g.othersPiece = map[int]active{}
+	}
 	for at, m := range snap {
 		g.seqs[at] = m.seq
+		wc := m.wc
 		switch {
-		case m.wc.A:
-			g.piece = &active{m.wc.T, m.wc.R, m.wc.Ar, m.wc.Ac}
-		case m.wc.O:
-			g.locked[at] = m.wc
+		case wc.A && (!g.shared() || wc.Pi == g.idx):
+			g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
+		case wc.A:
+			g.othersAct[at] = wc.Pi
+			g.othersPiece[wc.Pi] = active{wc.T, wc.R, wc.Ar, wc.Ac}
+		case wc.O:
+			g.locked[at] = wc
 		}
 	}
 }
@@ -510,7 +546,9 @@ type garbageReg struct {
 }
 
 // publishPieceMove CAS-batches the diff between the current active cells and
-// `to`. On a dropped write it flashes and resyncs.
+// `to`. Pipelined modes (--publish async/optimistic) send the batch and move
+// on — a loss surfaces later and settles the pipeline (pipeline.go). Sync
+// mode blocks on the ack; a dropped write flashes and resyncs.
 func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
 	old := g.activeCells()
 	newCells := pieceCells(to.pt, to.orient, to.row, to.col)
@@ -523,6 +561,15 @@ func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
 		if !newSet[c] {
 			cells = append(cells, cellUpd{at: c})
 		}
+	}
+	if g.a.pub != pubSync {
+		if !g.publishBatchAsync(ctx, cells, old) {
+			g.settlePipeline(ctx)
+			return false
+		}
+		p := to
+		g.piece = &p // the optimistic projection; the ack reconciles sequences
+		return true
 	}
 	if err := g.publishBatch(ctx, cells, true); err != nil {
 		if errors.Is(err, errCAS) {
@@ -551,6 +598,7 @@ func (g *Game) activeCells() []cell {
 // the top-out; covered only by another player's falling piece it is DEFERRED —
 // placed=false, topped=false — and the caller retries (gameplays §3).
 func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool) {
+	g.settlePipeline(ctx) // barrier: exact expectations, converged board
 	if g.piece != nil {
 		// We already own a live piece on the board — adopted from a committed
 		// transform that moved it (a garbage lift racing our NoCAS lock), or
@@ -889,6 +937,7 @@ func (g *Game) bumpMetaPieceIdx(ctx context.Context) {
 func (g *Game) applyOwedGarbage(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.settlePipeline(ctx) // barrier: the gated batch needs exact expectations
 	for attempt := 0; attempt < 3; attempt++ {
 		n := g.garbageOwed - g.txnApplied
 		if n <= 0 || g.dead {
@@ -1288,6 +1337,7 @@ func (g *Game) playPieces(ctx context.Context) bool {
 			deferrals++
 			if deferrals%30 == 0 {
 				g.mu.Lock()
+				g.settlePipeline(ctx)
 				g.resyncShared(ctx)
 				g.mu.Unlock()
 			}
@@ -1379,6 +1429,12 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			g.mu.Unlock()
 			return
 		}
+		if g.pipeBroken {
+			// A pipelined batch was lost: drain, repair, re-plan.
+			g.settlePipeline(ctx)
+			g.mu.Unlock()
+			return
+		}
 		if g.piece == nil {
 			g.mu.Unlock()
 			return // a shrink squeezed the piece away
@@ -1390,6 +1446,7 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			// Parked behind an obstacle that never moves: a live teammate
 			// piece falls away in well under a second, so this is a stale
 			// ghost. Rebuild from the stream and re-plan.
+			g.settlePipeline(ctx)
 			g.resyncShared(ctx)
 			g.mu.Unlock()
 			return
@@ -1404,6 +1461,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			case g.canPlace(dcs):
 				// blocked only by another falling piece: wait, don't lock
 			default:
+				if g.settleForLock(ctx, p) {
+					g.mu.Unlock()
+					return
+				}
 				g.lockPiece(ctx, p)
 				locked = true
 			}
@@ -1425,10 +1486,20 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			case transient:
 				// a crossing piece is in the way: wait it out
 			default:
+				if g.settleForLock(ctx, p) {
+					g.mu.Unlock()
+					return
+				}
 				g.lockPiece(ctx, active{p.pt, p.orient, g.dropRowShared(p), p.col})
 				locked = true
 			}
 		} else {
+			// The piece is at its planned column: settle before deciding its
+			// landing, so the drop row comes from converged state.
+			if g.settleForLock(ctx, p) {
+				g.mu.Unlock()
+				return
+			}
 			dr := g.dropRowShared(p)
 			below := pieceCells(p.pt, p.orient, dr+1, p.col)
 			if g.canPlace(below) && g.sharedBlocked(below) {

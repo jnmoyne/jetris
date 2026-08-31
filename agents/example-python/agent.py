@@ -15,11 +15,20 @@ Scope (deliberately minimal):
     each resulting board (lines, holes, height, bumpiness), take the best.
     It never uses SRS wall kicks: a kick-free rotation is the first SRS kick
     offset, so its move repertoire is a legal subset of the game's.
-  - Fair visibility: decisions use only its own committed board. It never
-    reads the meta seed beyond generating its OWN piece sequence (which the
-    protocol requires every peer to do). Games may reveal a piece preview
-    (meta next_count, 0-4) that an agent MAY plan with — this one keeps its
-    strategy one-ply and simply ignores its allowance, which is always legal.
+  - Fair visibility: decisions use only its own committed board plus its own
+    optimistic projection of it (guide §1). It never reads the meta seed
+    beyond generating its OWN piece sequence (which the protocol requires
+    every peer to do). Games may reveal a piece preview (meta next_count,
+    0-4) that an agent MAY plan with — this one keeps its strategy one-ply
+    and simply ignores its allowance, which is always legal.
+  - Publishing is PIPELINED by default (guide §4.3): a move batch is sent and
+    the next move made at once, the commit ack handled when it comes — a cell
+    an un-acked batch already wrote goes out with no expectation, every other
+    cell with its exact per-subject CAS. A lost batch drains the pipeline,
+    refetches the committed board, vacates the strays the poisoned batches
+    left, and re-plans; barriers (spawn, lock-in, gated transforms) settle
+    the pipeline first so their expectations are exact. --publish sync
+    restores the classic one-round-trip-per-batch discipline.
 
 Everything it carries as a peer, per the guide:
   presence heartbeat - join via KV CAS - roster announcement - ready toggle -
@@ -74,6 +83,12 @@ H_BATCH_SEQ = "Nats-Batch-Sequence"
 H_BATCH_COMMIT = "Nats-Batch-Commit"
 H_EXPECT_LAST = "Nats-Expected-Last-Subject-Sequence"
 CAS_ERR_CODES = (10071, 10164)  # wrong last seq for subject (plain / batch-constant variant)
+
+# The batch pipeline (guide §4.3): how many move batches may be in flight
+# before the next one waits, and how long a commit ack may take before the
+# batch counts as lost.
+MAX_INFLIGHT = 4
+ACK_TIMEOUT = 10.0
 
 # Tetromino cell offsets [piece][orientation] -> 4 (rowOff, colOff) from the
 # anchor; orientation 0 is the spawn orientation. Pieces: I O T S Z J L = 0..6.
@@ -259,7 +274,7 @@ class GameOver(Exception):
 
 
 class Agent:
-    def __init__(self, server, stem, join_id, once, auto_join):
+    def __init__(self, server, stem, join_id, once, auto_join, publish="async"):
         self.server = server
         self.name = f"{stem}-{secrets.token_hex(2)}-{DIFFICULTY}"
         if len(self.name) > 32:
@@ -267,6 +282,7 @@ class Agent:
         self.join_id = join_id
         self.once = once
         self.auto_join = auto_join
+        self.publish = publish  # "async" (pipelined move batches) or "sync"
         self.nc = self.js = self.kv = None
         self.listings = {}      # gameID -> listing dict (from the KV watcher)
         self.invites = {}       # gameID -> invitation dict (one KV key per game)
@@ -567,6 +583,100 @@ class Agent:
         for i, ((r, c), _cell) in enumerate(ordered):  # write-through
             game.seqs[(r, c)] = commit_seq - (n - 1 - i)
 
+    async def publish_batch_pipelined(self, game, cells, flash_cells):
+        """Send one CAS move batch WITHOUT awaiting its commit ack (guide
+        §4.3 — the pipelined/async discipline the contract allows) and return
+        whether it went out. A cell an un-acked batch already wrote carries
+        NO expectation (its sequence is unknown until that ack); every other
+        cell its exact per-subject CAS. The whole batch — commit included —
+        is published on the calling flow, so the order of commits on the wire
+        is the order of the calls; a background task consumes the ack from a
+        reply inbox: on success the ACTUAL sequences write through, on a lost
+        CAS race (or a missing ack) the pipeline is marked BROKEN and the
+        caller settles (drain + repair + re-plan). At MAX_INFLIGHT batches in
+        flight the next one waits for a slot."""
+        def category(cell):
+            if cell and cell.get("a"):
+                return 0
+            if cell and cell.get("o"):
+                return 1
+            return 2
+        ordered = sorted(cells, key=lambda e: (category(e[1]), e[0][0], e[0][1]))
+        n = len(ordered)
+        if n == 0:
+            return True
+        async with game.pipe_cond:
+            while game.inflight >= MAX_INFLIGHT and not game.pipe_broken:
+                await game.pipe_cond.wait()
+            if game.pipe_broken:
+                return False
+            batch_id = secrets.token_hex(11)
+            keys = [rc for rc, _cell in ordered]
+            for i, ((r, c), cell) in enumerate(ordered):
+                payload = json.dumps({k: v for k, v in (cell or {}).items() if v}).encode()
+                headers = {}
+                if n > 1:
+                    headers[H_BATCH_ID], headers[H_BATCH_SEQ] = batch_id, str(i + 1)
+                if not game.inflight_cells.get((r, c)):
+                    headers[H_EXPECT_LAST] = str(game.seqs.get((r, c), 0))
+                if i == n - 1:
+                    if n > 1:
+                        headers[H_BATCH_COMMIT] = "1"
+                    inbox = self.nc.new_inbox()
+                    ack_sub = await self.nc.subscribe(inbox)
+                    await self.nc.publish(game.cell_subject(r, c), payload,
+                                          reply=inbox, headers=headers)
+                else:
+                    await self.nc.publish(game.cell_subject(r, c), payload, headers=headers)
+            for rc in keys:
+                game.inflight_cells[rc] = game.inflight_cells.get(rc, 0) + 1
+            game.inflight += 1
+        task = asyncio.create_task(self._await_commit(game, keys, flash_cells, ack_sub))
+        game.ack_tasks.add(task)
+        task.add_done_callback(game.ack_tasks.discard)
+        return True
+
+    async def _await_commit(self, game, keys, flash_cells, ack_sub):
+        """Resolve one pipelined batch: fold the commit ack in (write-through
+        of the ACTUAL sequences — the batch's messages get consecutive stream
+        sequences ending at the commit's) or break the pipeline on a loss."""
+        seq, lost, err = 0, False, None
+        try:
+            resp = await ack_sub.next_msg(timeout=ACK_TIMEOUT)
+            body = json.loads(resp.data) if resp.data else {}
+            if body.get("error"):
+                lost = True
+                if body["error"].get("err_code") not in CAS_ERR_CODES:
+                    err = body["error"]
+            else:
+                seq = body["seq"]
+        except Exception as exc:
+            lost, err = True, exc
+        finally:
+            try:
+                await ack_sub.unsubscribe()
+            except Exception:
+                pass
+        async with game.pipe_cond:
+            game.inflight -= 1
+            for rc in keys:
+                game.inflight_cells[rc] -= 1
+                if game.inflight_cells[rc] <= 0:
+                    del game.inflight_cells[rc]
+            if not lost:
+                for i, rc in enumerate(keys):
+                    s = seq - (len(keys) - 1 - i)
+                    if s > game.seqs.get(rc, 0):
+                        game.seqs[rc] = s
+            else:
+                first = not game.pipe_broken
+                game.pipe_broken = True
+                if err:
+                    log(f"pipelined batch: {err}")
+                elif first:  # the loss itself was a CAS race: flash it
+                    await game.flash(flash_cells)
+            game.pipe_cond.notify_all()
+
     async def publish_gated_batch(self, game, txn, cells):
         """Publish one BULK TRANSFORM (garbage application or line-clear
         collapse) as a single gated atomic batch: message 1 is the board's txn
@@ -689,6 +799,15 @@ class Game:
         self.garbage_by = 0
         self.txn_applied = 0
         self.txn_seq = 0          # txn register's last stream seq — the gate expectation
+        # The batch pipeline (guide §4.3): move batches in flight, the cells
+        # they wrote (no exact expectation until their acks), and whether a
+        # batch was lost (broken until the repair). pipe_cond wakes settlers
+        # and slot-waiters; ack_tasks keeps the resolver tasks alive.
+        self.inflight = 0
+        self.inflight_cells = {}  # (r,c) -> in-flight write count
+        self.pipe_broken = False
+        self.pipe_cond = asyncio.Condition()
+        self.ack_tasks = set()
 
     def cell_subject(self, r, c):
         return f"jetris.game.{self.id}.player.{self.a.name}.playfield.cell.{r}.{c}"
@@ -791,10 +910,19 @@ class Game:
 
     async def publish_piece_move(self, new):
         """CAS-batch the diff between the current active cells and `new`
-        (type, orient, row, col). On a dropped write: flash + resync."""
+        (type, orient, row, col). Pipelined (the default): the batch is sent
+        and we move on — a loss surfaces later and settles the pipeline.
+        Sync (--publish sync): block on the ack; a dropped write flashes and
+        resyncs."""
         old = set(self.active_cells())
         cells = [((r, c), self.active_cell_payload(*new)) for r, c in piece_cells(*new)]
         cells += [((r, c), None) for r, c in old - set(piece_cells(*new))]
+        if self.a.publish != "sync":
+            if not await self.a.publish_batch_pipelined(self, cells, sorted(old)):
+                await self.settle()
+                return False
+            self.piece = list(new)  # the optimistic projection; acks reconcile
+            return True
         try:
             await self.a.publish_batch(self, cells, cas=True)
         except CASFailure:
@@ -803,6 +931,50 @@ class Game:
             return False
         self.piece = list(new)
         return True
+
+    async def settle(self):
+        """The barrier (guide §4.3): return once no batch is in flight and,
+        if one was lost meanwhile, the board is repaired — so the caller's
+        write (a spawn, a lock-in, a gated transform) is computed from
+        converged state with exact expectations. True = a repair ran and the
+        caller should re-plan."""
+        async with self.pipe_cond:
+            while self.inflight:
+                await self.pipe_cond.wait()
+            if not self.pipe_broken:
+                return False
+            self.pipe_broken = False
+        await self.repair()
+        return True
+
+    async def settle_for_lock(self, pos):
+        """settle() before an authoritative lock-in; True = re-plan instead
+        of locking (a repair ran, or the piece is no longer where the lock
+        decision left it)."""
+        if await self.settle():
+            return True
+        return self.piece is None or tuple(self.piece) != tuple(pos)
+
+    async def repair(self):
+        """Recover from a lost pipelined batch (guide §4.3): refetch the
+        committed board — adopting the stream's truth wholesale, our piece
+        included — and vacate every STRAY cell the batches poisoned behind
+        the loss left committed: cells carrying our active piece at an anchor
+        the adopted piece no longer stands at."""
+        for _ in range(3):
+            snap = await self.resync()
+            own = set(piece_cells(*self.piece)) if self.piece else set()
+            strays = [(rc, None) for rc, cell in snap.items()
+                      if cell.get("a") and rc not in own]
+            if not strays:
+                return
+            try:
+                await self.a.publish_batch(self, strays, cas=True)
+                log(f"pipeline repaired: {len(strays)} stray cell(s) vacated")
+                return
+            except CASFailure:
+                continue  # the board moved under the repair: refetch, retry
+        log("repair: gave up after 3 attempts — the next resync converges")
 
     async def flash(self, cells):
         """Broadcast a CAS-failure flash so spectators see the dropped write
@@ -813,8 +985,10 @@ class Game:
 
     async def resync(self):
         """After a dropped CAS write, refetch our own board from the stream to
-        recover the true cell contents and sequences."""
+        recover the true cell contents and sequences. Returns the snapshot it
+        adopted, {(r,c): cell-dict} (the repair scans it for strays)."""
         self.locked, self.seqs, self.piece = {}, {}, None
+        snap = {}
         for r in range(self.height):
             for c in range(WIDTH):
                 try:
@@ -824,13 +998,20 @@ class Game:
                     continue
                 self.seqs[(r, c)] = raw.seq
                 cell = json.loads(raw.data) if raw.data else {}
+                snap[(r, c)] = cell
                 if cell.get("a"):
                     self.piece = [cell.get("t", 0), cell.get("r", 0),
                                   cell.get("ar", 0), cell.get("ac", 0)]
                 elif cell.get("o"):
                     self.locked[(r, c)] = cell
+        return snap
 
     async def spawn(self):
+        await self.settle()  # barrier: exact expectations, converged board
+        if self.piece:
+            # A live piece survived (adopted by a repair): resume it instead
+            # of spawning over it — the caller re-plans from where it stands.
+            return time.monotonic()
         pt = piece_at(self.meta["seed"], self.piece_idx)
         row, col = 2, (WIDTH - 4) // 2
         cells = piece_cells(pt, 0, row, col)
@@ -983,6 +1164,7 @@ class Game:
         txn register (message 1 of the batch, per-subject CAS) makes the
         application exactly-once across duplicate signals and replays."""
         async with self.lock:
+            await self.settle()  # barrier: the gated batch needs exact expectations
             for attempt in range(3):
                 n = self.garbage_owed - self.txn_applied
                 if n <= 0 or self.dead:
@@ -1226,6 +1408,10 @@ class Game:
             if self.ended.is_set():
                 return
             async with self.lock:
+                if self.pipe_broken:
+                    # A pipelined batch was lost: drain, repair, re-plan.
+                    await self.settle()
+                    return
                 if self.piece is None:
                     return  # a shrink squeezed the piece away
                 pt, o, row, col = self.piece
@@ -1236,6 +1422,8 @@ class Game:
                         await self.publish_piece_move((pt, o, row + 1, col))
                         next_gravity += GRAVITY_SECONDS
                         continue
+                    if await self.settle_for_lock((pt, o, row, col)):
+                        return  # repaired (or moved): re-plan
                     await self.lock_piece((pt, o, row, col))
                     return
                 if o != target_o:
@@ -1243,11 +1431,15 @@ class Game:
                 elif col != target_c:
                     step = (pt, o, row, col + (1 if target_c > col else -1))
                 else:
+                    if await self.settle_for_lock((pt, o, row, col)):
+                        return
                     dest_r = drop_row(self.locked, self.height, pt, o, row, col)
                     await self.lock_piece((pt, o, dest_r, col))
                     return
                 if not can_place(self.locked, self.height, piece_cells(*step)):
                     # blocked (board changed under us): drop where we are
+                    if await self.settle_for_lock((pt, o, row, col)):
+                        return
                     dest_r = drop_row(self.locked, self.height, pt, o, row, col)
                     await self.lock_piece((pt, o, dest_r, col))
                     return
@@ -1299,12 +1491,17 @@ async def main():
     ap.add_argument("--auto-join", action="store_true",
                     help="also join open agent-allowed games (default: invited games only)")
     ap.add_argument("--once", action="store_true", help="play one game, then exit")
+    ap.add_argument("--publish", choices=("sync", "async"), default="async",
+                    help="how move batches are committed (guide §4.3): async = "
+                         "pipelined, no expectation on in-flight cells (default); "
+                         "sync = await every commit ack")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         return
-    agent = Agent(args.server, args.name, args.join, args.once, args.auto_join)
+    agent = Agent(args.server, args.name, args.join, args.once, args.auto_join,
+                  publish=args.publish)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: setattr(agent, "stopping", True))

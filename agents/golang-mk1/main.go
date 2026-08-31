@@ -48,6 +48,7 @@ func main() {
 	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (default: one row per line)")
 	hold := flag.Bool("hold", false, "the Guideline hold queue when creating a game (the agent itself never holds; the humans in the game may)")
 	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 4, hold, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage and --hold")
+	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
 	once := flag.Bool("once", false, "play one game, then exit")
@@ -60,6 +61,11 @@ func main() {
 	}
 
 	diff, err := validDifficulty(*difficulty)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	pub, err := parsePublishMode(*publish)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -89,7 +95,7 @@ func main() {
 	}
 
 	a, err := newAgent(connChoice{server: *server, context: *natsCtx, user: *user, password: *password},
-		*name, diff, *join, *once, *autoJoin, host, *wait)
+		*name, diff, *join, *once, *autoJoin, host, *wait, pub)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

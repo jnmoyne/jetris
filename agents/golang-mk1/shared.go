@@ -115,6 +115,7 @@ func (g *Game) handleBoardMsg(m jetstream.Msg) {
 	if md, _ := m.Metadata(); md != nil {
 		seq = md.Sequence.Stream
 	}
+	g.noteStreamSeq(seq)
 	if strings.HasSuffix(subject, ".playfield.garbage") {
 		var reg garbageReg
 		if len(m.Data()) > 0 {
@@ -179,8 +180,12 @@ func (g *Game) handleBoardMsg(m jetstream.Msg) {
 		delete(g.locked, at)
 		if wc.Pi == g.idx {
 			// Our own piece, moved by someone else's committed transform
-			// (a clear shifting it down, a cascade lifting it): adopt.
-			if g.piece == nil || g.piece.row != wc.Ar || g.piece.col != wc.Ac || g.piece.orient != wc.R {
+			// (a clear shifting it down, a cascade lifting it): adopt — but
+			// not while our own batches are in flight: then the echo is just
+			// the stream catching up to the projection, and adopting it would
+			// snap the piece back mid-pipeline (a real external transform
+			// rejects an in-flight batch, and the repair adopts its truth).
+			if g.inflight == 0 && (g.piece == nil || g.piece.row != wc.Ar || g.piece.col != wc.Ac || g.piece.orient != wc.R) {
 				g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
 			}
 			delete(g.othersAct, at)
@@ -236,33 +241,9 @@ func parseCellSubject(subject string) (int, int, bool) {
 // resyncShared rebuilds the whole shared board — settled cells, every other
 // player's active cells, our own piece if the stream still has it, and every
 // per-cell sequence — from one multi-get snapshot of the stream (fetchBoard)
-// after a dropped write. A fetch that fails outright leaves the current state
-// in place (and logs) rather than wiping the board to empty.
-func (g *Game) resyncShared(ctx context.Context) {
-	snap, err := g.fetchBoard(ctx)
-	if err != nil {
-		log.Printf("resync: %v", err)
-		return
-	}
-	g.locked = map[cell]wireCell{}
-	g.othersAct = map[cell]int{}
-	g.othersPiece = map[int]active{}
-	g.seqs = map[cell]uint64{}
-	g.piece = nil
-	for at, m := range snap {
-		g.seqs[at] = m.seq
-		wc := m.wc
-		switch {
-		case wc.A && wc.Pi == g.idx:
-			g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
-		case wc.A:
-			g.othersAct[at] = wc.Pi
-			g.othersPiece[wc.Pi] = active{wc.T, wc.R, wc.Ar, wc.Ac}
-		case wc.O:
-			g.locked[at] = wc
-		}
-	}
-}
+// after a dropped write. It IS resync (foldSnapshot handles both board
+// kinds); the name survives at the shared-board call sites.
+func (g *Game) resyncShared(ctx context.Context) { g.resync(ctx) }
 
 // ---- clears on shared boards ---------------------------------------------
 
@@ -462,6 +443,7 @@ func (g *Game) teamDead(t int) bool {
 // against another player's "active" cells). Each retry resyncs, so a cascade
 // that already vacated us ends the loop with piece == nil.
 func (g *Game) vacateOwnPiece(ctx context.Context) {
+	g.settlePipeline(ctx) // barrier: converge before the gated vacate
 	const maxAttempts = 10
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {

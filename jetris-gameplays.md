@@ -1097,9 +1097,11 @@ minimal Python agent with no repo dependency.
 
 ### How it plays
 
-- **Perception:** the agent plans only against **committed** state — its board as the
-  stream has echoed it back, never against predictions — the same
-  no-client-side-prediction rule every player lives under.
+- **Perception:** the agent plans against **committed** state — its board as the
+  stream has echoed it back — plus its own optimistic projection of it: the committed
+  cells with its own in-flight writes applied on top, the same view the human client's
+  optimistic publish mode draws. Never anyone else's unacked writes, and never
+  protocol internals the UI does not render.
 - **Planning:** for each piece it enumerates every placement reachable with its move
   vocabulary (SRS rotations in place, one-column slides, hard drop), simulates the lock
   and line clear on a board copy, and scores the result with Pierre Dellacherie's
@@ -1110,11 +1112,15 @@ minimal Python agent with no repo dependency.
   sequence is deterministic from the game seed (§4), but reading it past
   `next_count` would violate the fair-visibility contract — in a no-preview game
   the agent plans one piece at a time, exactly like its human opponents.
-- **Execution:** moves are issued one at a time — observe the piece, dispatch the one
-  move that advances it toward the target (honoring gravity on the way), wait for the
-  effect to appear on the committed board, repeat, hard drop. A move that loses a CAS
-  race (against incoming garbage, say) is dropped, not retried: the agent flashes,
-  resyncs its board from the stream, and re-plans from the converged state.
+- **Execution:** the agent walks the piece toward the target as atomic CAS batches
+  (a whole walk can go out as one batch), honoring gravity on the way, then
+  hard-drops. Its batches are pipelined by default — the next batch goes out without
+  awaiting the last one's commit ack, per the agent guide's §4.3 disciplines — with
+  the spawn, the lock-in and every gated transform settling the pipeline first. A
+  move that loses a CAS race (against incoming garbage, say) is dropped, not
+  retried: the agent flashes, resyncs its board from the stream, and re-plans from
+  the converged state — a lost pipelined batch additionally vacates whatever strays
+  the batches behind it left before re-planning.
 - **Garbage awareness:** adversarial shrink rows are priced in naturally — they count
   as locked stack for every feature and the clear simulation refuses to complete them,
   exactly like the game's own full-row rule.

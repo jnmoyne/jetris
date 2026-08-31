@@ -35,6 +35,16 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
   (active → locked → empty ordering, per-subject expected-last-sequence, write-through), and
   every bulk transform (line-clear collapse, garbage cascade) as a **gated** batch behind
   its txn register — exactly as the guide specifies.
+- **Pipelines its move batches** (guide §4.3): `--publish` picks the discipline — `sync`
+  (await every commit ack, the classic one-round-trip-per-batch path), `async` (the
+  default: a batch is sent and the next move made at once, a cell an un-acked batch
+  already wrote carrying no expectation), or `optimistic` (pipelined with the sequences
+  in-flight writes are *predicted* to get, full CAS protection at the price of a repair on
+  a wrong guess) — the same three modes the human client plays. A lost pipelined batch
+  drains the acks, refetches the committed board in one multi-subject direct get, vacates
+  the strays the poisoned batches left, flashes, and re-plans; the spawn, the lock-in and
+  every gated transform settle the pipeline first so their expectations are exact
+  (`pipeline.go`).
 - **Strategy** is the El-Tetris one-ply Dellacherie heuristic (landing height, eroded cells,
   row/column transitions, holes, cumulative wells) with beam-pruned lookahead over the
   game's revealed piece preview — the same evaluator the in-repo reference agent uses.
@@ -92,7 +102,8 @@ Guideline attack table, `guideline_garbage` — `--hold`, the Guideline hold que
 `hold`, which the agent itself never uses but the humans in its game may — and
 `--guideline`, the GUI wizard's Guideline preset in one flag: next 4, hold, 1 hole
 per garbage row, the Guideline attack table, overriding the individual rule flags),
-`--auto-join`, `--wait`, `--once`, `--selftest`.
+`--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
+`async`), `--auto-join`, `--wait`, `--once`, `--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the
 GUI and create a game with agents allowed — or let one instance host for another:
@@ -112,6 +123,8 @@ GUI and create a game with agents allowed — or let one instance host for anoth
 - `types.go` — wire payloads and the CAS-safe lobby/meta read-modify-write helpers.
 - `agent.go` — the lobby: presence, watching, select/join/ready/countdown, CAS publishing.
 - `game.go` — one game: the engine, consumers, garbage, line clears, outcome, archive.
+- `pipeline.go` — the batch pipeline: the `--publish` disciplines (sync/async/optimistic),
+  settle barriers, and the lost-batch repair.
 - `shared.go` — shared boards: the coop/teams board consumer, merge-retry clears,
   deferred spawns, cascading garbage lifts, team verdicts.
 - `main.go` — flags, signals, the selftest.

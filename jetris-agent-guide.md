@@ -44,8 +44,12 @@ server enforces.
 
 An agent MAY use:
 
-- Its own board's **committed** state — the same no-client-side-prediction view a
-  human sees: a move is visible only after it round-trips through the stream.
+- Its own board's **committed** state, and its own optimistic projection of it —
+  the committed cells with the agent's OWN in-flight writes applied on top. The
+  human client draws exactly that projection in its optimistic publish mode, so
+  an agent may plan from it too. What nobody gets is certainty: a projection can
+  be rolled back by a lost CAS race, and the recovery discipline in §4.3 applies
+  to agents exactly as it does to the human client.
 - Its own falling piece (type, orientation, position).
 - **The game's piece preview**: the next `GameMeta.NextCount` pieces of its own
   sequence (`seq.Piece(pieceIdx+1 .. +NextCount)`). That is exactly what the UI's
@@ -191,7 +195,12 @@ Its reading order (see its [README](agents/golang-mk1/README.md)): `pieces.go` �
 
 One behavior of its move pipeline worth copying: moves that lose a CAS race are
 **dropped, not retried** — it re-observes committed state, resyncs, and re-plans
-(§4.3), which is what keeps a contended board consistent.
+(§4.3), which is what keeps a contended board consistent. Its `--publish` flag
+plays all three publish disciplines the contract allows — `sync` (await every
+commit ack), `async` (pipelined, no expectation on in-flight cells, the
+default), and `optimistic` (pipelined with predicted sequences) — the same
+choice the human client's HUD offers, with the same repair-and-re-plan recovery
+when a pipelined batch is lost.
 
 ## 4. The contract: play the protocol (any language)
 
@@ -263,6 +272,27 @@ must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
   player's falling piece ends the walk there (wait, it falls away); one blocked
   by the stack at the very first step means the piece locks where it stands.
   Humans' clients merge the moves queued during a round trip the same way.
+- **Batches may be pipelined.** Nothing in the contract makes you await one
+  batch's commit ack before sending the next: you may publish your move batches
+  asynchronously — send the commit, handle the ack when it comes — and keep
+  several in flight, exactly as the human client's async/optimistic publish
+  modes do. The catch is CAS: a per-subject expectation is an EXACT sequence
+  known only from the ack, so a pipelined batch cannot carry an exact
+  expectation about a cell an un-acked batch already wrote. Such a cell goes out
+  either with NO expectation (the async discipline), or with the sequence the
+  un-acked write is PREDICTED to get (the optimistic discipline: a batch's N
+  messages take N consecutive stream sequences, so predict from the highest
+  stream sequence you have observed, or the predicted end of the batch in flight
+  ahead, whichever is later); every other cell keeps its exact per-subject CAS.
+  Both are optimistic in the true sense — a batch sent behind an un-acked one is
+  computed on the assumption that it commits. When a pipelined batch is lost (a
+  CAS race, or a wrong guess), treat it like any dropped move, at pipeline
+  scale: stop publishing, let every in-flight ack drain, re-fetch your committed
+  board (§4.5), vacate any stray cells the batches poisoned behind the loss left
+  committed, flash, and re-plan. Bound your depth (the human client keeps at
+  most a handful of batches in flight) and keep your barriers honest: a lock-in,
+  a spawn, and every gated transform (§4.4) still needs exact expectations, so
+  settle the pipeline — drain, repair if broken — before publishing one.
 - **Player moves that lose CAS are dropped** — never retried. Re-observe, re-plan.
   On a dropped move, **broadcast a CAS-failure flash** so spectators can see it (see
   below).
@@ -272,7 +302,9 @@ must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
 - **Write-through**: after a successful publish, apply the committed cells and
   their inferred sequences to your in-memory board immediately (batch messages get
   consecutive sequences ending at the commit ack); your own echo then no-ops via a
-  strictly-higher-sequence rule.
+  strictly-higher-sequence rule. A pipelined batch applies its CONTENT at send
+  time (that is the optimistic projection §1 lets you plan from) and reconciles
+  the actual sequences when its ack arrives.
 - **You are the engine.** There is no server running the game for you: your agent
   must tick gravity (`jetris-gameplays.md` §7), detect its own lock-in (your
   active-cell count reaching zero on the consumer), clear lines, publish events,
@@ -433,7 +465,7 @@ agree on eliminations and outcomes without a coordinator.
 - [ ] `max_agents` honored inside the join CAS
 - [ ] `invite_only` games joined only when invited (watch `invites.<name>.*`; accept = join + delete key, decline = rewrite with `declined: true`)
 - [ ] Name is `<agent-name>-<instance>-<difficulty>`, KV-key-safe, ≤32 chars
-- [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried
+- [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried (pipelined/async batches allowed — a lost one drains, repairs, and re-plans; barriers settle the pipeline first, §4.3)
 - [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
 - [ ] Garbage rows raised with the meta's `garbage_holes` (one column set per raise, or one per row under `random_garbage_holes`), and a holed garbage row cleared like any line once its holes are filled — a solid garbage row never (§4.2, §4.4)

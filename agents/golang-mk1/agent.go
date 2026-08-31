@@ -73,6 +73,7 @@ type Agent struct {
 	name       string
 	difficulty string
 	tn         tuning
+	pub        int // publish discipline for move batches: pubSync / pubAsync / pubOptimistic (pipeline.go)
 	joinID     string
 	inviteTeam int           // teams: the team the current invitation names (-1 = none)
 	host       *hosting      // non-nil: create one game first, then play it
@@ -101,7 +102,7 @@ type Agent struct {
 }
 
 // newAgent builds an agent with a fresh instance id and per-difficulty tuning.
-func newAgent(conn connChoice, stem, difficulty, joinID string, once, autoJoin bool, host *hosting, wait time.Duration) (*Agent, error) {
+func newAgent(conn connChoice, stem, difficulty, joinID string, once, autoJoin bool, host *hosting, wait time.Duration, pub int) (*Agent, error) {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return nil, err
@@ -114,7 +115,7 @@ func newAgent(conn connChoice, stem, difficulty, joinID string, once, autoJoin b
 	_, _ = rand.Read(seed[:])
 	src := mrand.NewChaCha8(seed)
 	return &Agent{
-		conn: conn, name: name, difficulty: difficulty, tn: difficultyTuning(difficulty),
+		conn: conn, name: name, difficulty: difficulty, tn: difficultyTuning(difficulty), pub: pub,
 		joinID: joinID, host: host, wait: wait, once: once, autoJoin: autoJoin,
 		bucket:   lobbyBucket,
 		listings: map[string]obj{}, invites: map[string]obj{}, streams: map[string]jetstream.Stream{},

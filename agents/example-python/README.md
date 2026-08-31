@@ -23,6 +23,13 @@ and it follows the guide's fair-play rules.
 - Publishes every board change as an **atomic CAS batch** to its cell subjects
   (active → locked → empty message ordering, per-subject expected-last-sequence,
   write-through), exactly as the guide specifies.
+- **Pipelines its move batches** by default (guide §4.3): a batch is sent and the next
+  move made at once, the commit ack handled by a background task — a cell an un-acked
+  batch already wrote goes out with no expectation, every other cell with its exact
+  per-subject CAS. A lost batch drains the pipeline, refetches the committed board,
+  vacates the strays the poisoned batches left, and re-plans; the spawn, the lock-in
+  and the gated transforms settle the pipeline first. `--publish sync` restores the
+  classic await-every-ack discipline.
 - Strategy is a naive one-ply greedy (`easy`): enumerate placements reachable with
   kick-free rotations and sideways moves, score the resulting board (lines, holes,
   height, bumpiness), pick the best. It plays under the name

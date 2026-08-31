@@ -593,7 +593,8 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		children = append(children,
 			layout.Rigid(spacer(12)),
 			layout.Rigid(a.labToggles),
-			// The DAS/ARR knobs (autoshift.go): how a held ← → repeats.
+			// The handling knobs (autoshift.go): how a held ← → repeats,
+			// and how fast a held ↓ falls.
 			layout.Rigid(spacer(12)),
 			layout.Rigid(a.handlingKnobs),
 		)
@@ -687,7 +688,7 @@ type controlsSection struct {
 // the hold queue can promise it — the lobby, which has no game yet, says
 // nothing about it rather than teaching a key that may do nothing.
 func (a *App) controlsSections(hold bool) []controlsSection {
-	keys := [][2]string{{"← →", "move · hold slides"}, {"↓", "soft drop"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
+	keys := [][2]string{{"← →", "move · hold slides"}, {"↓", "soft drop · hold falls"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
 	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
 	if hold {
 		keys = append(keys, [2]string{"C", "hold"})

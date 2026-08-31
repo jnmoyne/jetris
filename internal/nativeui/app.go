@@ -111,7 +111,7 @@ type App struct {
 	// afterwards. connCfg carries any --user/--password flags through to URL
 	// connects; connCtxURLs is each context's server URL for display (best
 	// effort, "" when unknown); favSave persists the favorites and
-	// handlingSave the DAS/ARR knobs (prefs.Save* — tests stub them).
+	// handlingSave the DAS/ARR/SDF knobs (prefs.Save* — tests stub them).
 	needConn     bool
 	connContexts []string
 	connSelected string
@@ -422,7 +422,9 @@ type App struct {
 	// D-pad's four arms (padUp rotates clockwise, like the ↑ key), the face
 	// buttons — rotate CCW/CW, hard drop, and in games with the hold rule
 	// hold, which the HOLD box beside the playfield also triggers when
-	// tapped (holdBoxBtn). Clicks are dispatched by handlePadClicks.
+	// tapped (holdBoxBtn). Clicks are dispatched by handlePadClicks — bar
+	// the ← → ↓ arms', which move on the press and repeat when held
+	// (handlePadShift).
 	padUp, padLeft, padDown, padRight, padCCW, padCW, padDrop, padHold widget.Clickable
 	holdBoxBtn                                                         widget.Clickable
 	// touchUI: the player is on a touch screen, so the pad is laid out at
@@ -485,18 +487,24 @@ type App struct {
 	// taps, drags and flicks on the board, fed by handleGestures every frame.
 	// UI goroutine only.
 	gest boardGesture
-	// shift is the keyboard's ← → DAS/ARR machine (autoshift.go); dasMs and
-	// arrMs its two knobs (ms, 0..maxHandlingMs), mirrored by the HANDLING
-	// sliders' positions (dasFloat, arrFloat); handlingDirty marks a slider
-	// change not yet persisted (persistHandling, once the drag ends). UI
-	// goroutine only.
-	// padLeftWas/padRightWas is the pad arms' Pressed() reading of the last
-	// frame — what handlePadShift detects press/release edges against.
-	shift                   autoShift
-	dasMs, arrMs            int
-	dasFloat, arrFloat      widget.Float
-	handlingDirty           bool
-	padLeftWas, padRightWas bool
+	// shift and soft are the keyboard's auto-repeat machines, one per axis
+	// (autoshift.go): ← → on the DAS and ARR knobs (dasMs, arrMs — ms,
+	// 0..maxHandlingMs) and ↓ on neither, falling at sdf times the level's
+	// gravity (minSDF..maxSDF, maxSDF instant) with no charge at all. The
+	// three are mirrored by the HANDLING sliders' positions (dasFloat,
+	// arrFloat, sdfFloat); handlingDirty marks a slider change not yet
+	// persisted (persistHandling, once the drag ends). UI goroutine only.
+	// padLeftWas/padRightWas/padDownWas is the pad arms' Pressed() reading of
+	// the last frame — what handlePadShift detects press/release edges
+	// against. dropHeld is the space bar's physical state: a hard drop fires
+	// on its false→true edge only, so holding it drops once and not once per
+	// OS auto-repeat.
+	shift, soft                         autoShift
+	dasMs, arrMs, sdf                   int
+	dasFloat, arrFloat, sdfFloat        widget.Float
+	handlingDirty                       bool
+	padLeftWas, padRightWas, padDownWas bool
+	dropHeld                            bool
 	// heldMoves are gesture moves made while the board had no piece (the
 	// lock-to-spawn gap), dispatched the moment the next piece appears
 	// (handleGestures). UI goroutine only. pieceGapStart/spawnGapLast/
@@ -568,7 +576,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.ghostCb.Value = true     // hard-drop ghost preview on by default
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.dispMode = int(displayAck)
-	a.SetHandling(defaultDASMs, defaultARRMs)
+	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF)
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
 	a.chatEd.SingleLine = true

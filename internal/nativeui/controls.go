@@ -944,7 +944,7 @@ func (a *App) padButton(gtx C, btn *widget.Clickable, enabled bool, sz image.Poi
 // unconditional so clicks made while the pad is disabled (pre-start, game
 // over) die here instead of firing as moves once the game starts.
 //
-// The ← → arms are not here: they move on the PRESS, not the click's
+// The ← → ↓ arms are not here: they move on the PRESS, not the click's
 // release — held, they auto-repeat with the keyboard's DAS/ARR tuning — and
 // handlePadShift drains their clicks and feeds their edges.
 func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
@@ -953,7 +953,6 @@ func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
 		move func(*engine.Engine)
 	}{
 		{&a.padUp, (*engine.Engine).RotateCW},
-		{&a.padDown, (*engine.Engine).MoveDown},
 		{&a.padCCW, (*engine.Engine).RotateCCW},
 		{&a.padCW, (*engine.Engine).RotateCW},
 		{&a.padDrop, (*engine.Engine).HardDrop},

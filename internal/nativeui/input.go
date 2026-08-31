@@ -41,6 +41,10 @@ func boardKeyFilters(tag event.Tag) []event.Filter {
 // Space hard drop, C hold (the Guideline's key; a no-op in a game without the
 // hold rule — Shift, the Guideline's other hold key, is not mapped: it is a
 // modifier, and a shifted Tab is still the board/chat focus switch).
+//
+// It is the scheme's table, and no longer its whole dispatch: handleKeys
+// sends the rotate and hold keys straight through it, but runs ← → ↓ and
+// Space itself (the DAS/ARR machines, and the one-drop-per-press rule).
 func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 	switch name {
 	case key.NameLeftArrow:
@@ -70,21 +74,27 @@ func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 // it for as long as the player has clicked into the chat (handleGameFocus is
 // the switch between the two).
 //
-// ← and → go through the DAS/ARR machine (autoshift.go): both their edges
-// feed it — the press's immediate shift comes back out through emit — and
-// handleAutoShift runs the repeats right after. The other keys dispatch on
-// the press as ever, the OS repeat included. The board's key.FocusEvent
-// arrives in the same drain (the FocusFilter registers it): losing the keys
-// — to the chat, the modal, a window blur — resets the machine, so a Release
-// the board never saw cannot leave the auto-repeat running.
+// ← → and ↓ go through the DAS/ARR machines (autoshift.go — one per axis):
+// both their edges feed them — the press's immediate move comes back out
+// through emit — and handleAutoShift runs the repeats right after. ↓ takes
+// neither knob: no charge (softDAS) and its own rate (softARR, SDF times the
+// level's gravity), so a soft drop starts repeating straight away. Space is
+// the opposite: one hard drop per physical press, the OS repeat's extra
+// presses ignored (dropHeld), or a held space would drop every piece that
+// spawned under it. The remaining keys (rotate, hold) dispatch on the press
+// as ever, the OS repeat included. The board's key.FocusEvent arrives in the
+// same drain (the FocusFilter registers it): losing the keys — to the chat,
+// the modal, a window blur — resets both machines and the held space, so a
+// Release the board never saw cannot leave a repeat running.
 func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 	tag := &a.boardTag
 	if !gtx.Source.Focused(tag) && !gtx.Source.Focused(&a.gameChatEd) {
 		gtx.Source.Execute(key.FocusCmd{Tag: tag})
 	}
-	emit := a.shiftEmit(eng)
+	shiftEmit, softEmit := a.shiftEmit(eng), a.softEmit(eng)
 	das := time.Duration(a.dasMs) * time.Millisecond
 	arr := time.Duration(a.arrMs) * time.Millisecond
+	sarr := a.softARR(eng) // the soft drop's rate: SDF times gravity
 	filters := boardKeyFilters(tag)
 	for {
 		ev, ok := gtx.Source.Event(filters...)
@@ -97,6 +107,8 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 			// straight back, and the reset would kill the hold it began.
 			if !e.Focus && !a.padFocused(gtx) {
 				a.shift.reset()
+				a.soft.reset()
+				a.dropHeld = false
 			}
 		case key.Event:
 			switch e.Name {
@@ -106,10 +118,31 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 					dir = 1
 				}
 				if e.State == key.Press {
-					a.shift.press(dir, gtx.Now, das, arr, emit)
+					a.shift.press(dir, gtx.Now, das, arr, shiftEmit)
 				} else {
-					a.shift.release(dir, gtx.Now, das, arr, emit)
+					a.shift.release(dir, gtx.Now, das, arr, shiftEmit)
 				}
+			case key.NameDownArrow:
+				// The soft drop's own axis: +1 is one row down, no DAS
+				// (softDAS), and its own rate — one row on the press, the
+				// next one softARR behind it.
+				if e.State == key.Press {
+					a.soft.press(1, gtx.Now, softDAS, sarr, softEmit)
+				} else {
+					a.soft.release(1, gtx.Now, softDAS, sarr, softEmit)
+				}
+			case key.NameSpace:
+				// One drop per press, however long it is held: a Press with
+				// no Release since the last one is the OS auto-repeat.
+				if e.State != key.Press {
+					a.dropHeld = false
+					continue
+				}
+				if a.dropHeld {
+					continue
+				}
+				a.dropHeld = true
+				eng.HardDrop()
 			default:
 				if e.State != key.Press {
 					continue

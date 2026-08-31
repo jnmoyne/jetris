@@ -24,7 +24,7 @@ func TestHandlingRoundTrip(t *testing.T) {
 		t.Fatalf("fresh handling = %+v, want the defaults %+v", h, DefaultHandling())
 	}
 
-	want := Handling{DASMs: 85, ARRMs: 35}
+	want := Handling{DASMs: 85, ARRMs: 35, SDF: 12}
 	if err := SaveHandling(want); err != nil {
 		t.Fatal(err)
 	}
@@ -36,15 +36,36 @@ func TestHandlingRoundTrip(t *testing.T) {
 		t.Fatalf("reloaded handling = %+v, want %+v", h, want)
 	}
 
-	if err := SaveHandling(Handling{DASMs: 9000, ARRMs: -5}); err != nil {
+	if err := SaveHandling(Handling{DASMs: 9000, ARRMs: -5, SDF: 9000}); err != nil {
 		t.Fatal(err)
 	}
 	h, err = LoadHandling()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h != (Handling{DASMs: MaxHandlingMs, ARRMs: 0}) {
-		t.Fatalf("clamped handling = %+v, want {%d 0}", h, MaxHandlingMs)
+	if want := (Handling{DASMs: MaxHandlingMs, ARRMs: 0, SDF: MaxSDF}); h != want {
+		t.Fatalf("clamped handling = %+v, want %+v", h, want)
+	}
+}
+
+// A tuning saved before the soft drop had a knob of its own: the missing key
+// reads as the default factor, not as the slowest one.
+func TestHandlingSDFAbsentTakesDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, handlingFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"das_ms": 90, "arr_ms": 15}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := LoadHandling()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Handling{DASMs: 90, ARRMs: 15, SDF: DefaultSDF}); h != want {
+		t.Fatalf("handling from a pre-SDF file = %+v, want %+v", h, want)
 	}
 }
 
@@ -69,14 +90,14 @@ func TestHandlingTolerantLoad(t *testing.T) {
 		t.Fatalf("unparsable file: handling = %+v, want the defaults", h)
 	}
 
-	if err := os.WriteFile(path, []byte(`{"das_ms": 500, "arr_ms": 20}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"das_ms": 500, "arr_ms": 20, "sdf": 99}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	h, err = LoadHandling()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h != (Handling{DASMs: MaxHandlingMs, ARRMs: 20}) {
-		t.Fatalf("hand-edited file: handling = %+v, want {%d 20}", h, MaxHandlingMs)
+	if want := (Handling{DASMs: MaxHandlingMs, ARRMs: 20, SDF: MaxSDF}); h != want {
+		t.Fatalf("hand-edited file: handling = %+v, want %+v", h, want)
 	}
 }

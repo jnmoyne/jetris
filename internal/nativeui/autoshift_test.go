@@ -16,6 +16,7 @@ import (
 	"jetris/internal/engine"
 	"jetris/internal/game"
 	"jetris/internal/lobby"
+	"jetris/internal/prefs"
 )
 
 // shiftRig drives an autoShift with synthetic key edges and frames — the
@@ -254,7 +255,7 @@ func gameFrameAt(a *App, r *input.Router, now time.Time) {
 // where it stays glued, and losing the keys to the chat resets the machine.
 func TestAutoShiftKeyboardDAS(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(60, 0) // pinned: the timings below assume DAS 60 / ARR 0
+	a.SetHandling(60, 0, defaultSDF) // pinned: the timings below assume DAS 60 / ARR 0
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
@@ -308,7 +309,7 @@ func TestAutoShiftKeyboardDAS(t *testing.T) {
 	if buffered() != 4 {
 		t.Fatalf("after losing the keys: %d moves buffered, want still 4", buffered())
 	}
-	if a.shift.dir != 0 || a.shift.leftDown {
+	if a.shift.dir != 0 || a.shift.negDown {
 		t.Fatal("losing the keys did not reset the auto-shift machine")
 	}
 }
@@ -321,7 +322,7 @@ func TestAutoShiftKeyboardDAS(t *testing.T) {
 // the click nor leaves the repeat running.
 func TestAutoShiftPadHold(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(60, 0) // pinned: the timings below assume DAS 60 / ARR 0
+	a.SetHandling(60, 0, defaultSDF) // pinned: the timings below assume DAS 60 / ARR 0
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
@@ -370,7 +371,7 @@ func TestAutoShiftPadHold(t *testing.T) {
 	if buffered() != 4 {
 		t.Fatalf("after the release: %d moves buffered, want still 4 (no click double-fire, no repeats)", buffered())
 	}
-	if a.shift.dir != 0 || a.shift.leftDown {
+	if a.shift.dir != 0 || a.shift.negDown {
 		t.Fatal("lifting the finger did not release the machine")
 	}
 }
@@ -380,11 +381,254 @@ func TestAutoShiftResetClearsEverything(t *testing.T) {
 	r.press(-1, 0)
 	r.want(t, -1)
 	r.s.reset() // the board lost the keys mid-hold
-	if r.s.dir != 0 || r.s.leftDown {
+	if r.s.dir != 0 || r.s.negDown {
 		t.Fatal("reset must forget the held key")
 	}
 	r.step(100*ms, 6, 9) // no repeats from the forgotten hold
 	r.want(t, -1)
 	r.press(-1, 200*ms) // the next press is fresh, not an "OS repeat"
 	r.want(t, -1, -1)
+}
+
+// TestHardDropOncePerPress: the hard drop has no DAS and no ARR. A held
+// space drops once, however many Presses the OS auto-repeat sends behind it,
+// and only a real re-press (a Release first) drops again — or a player
+// leaning on the bar would drop every piece that spawned under it.
+func TestHardDropOncePerPress(t *testing.T) {
+	a := newTestApp()
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(5000, 0)
+
+	gameFrameAt(a, &r, base) // the start frame: the board takes the keys
+	buffered := func() int { return len(a.eng.BufferedMoves()) }
+
+	r.Queue(key.Event{Name: key.NameSpace, State: key.Press})
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the press: %d moves buffered, want 1", buffered())
+	}
+	if m := a.eng.BufferedMoves()[0]; m != engine.MoveHardDrop {
+		t.Fatalf("space buffered %v, want a hard drop", m)
+	}
+
+	// The OS auto-repeat: Presses with no Release between, and frames to
+	// give any repeat machine its chance to run.
+	r.Queue(key.Event{Name: key.NameSpace, State: key.Press})
+	gameFrameAt(a, &r, base.Add(60*ms))
+	r.Queue(key.Event{Name: key.NameSpace, State: key.Press})
+	gameFrameAt(a, &r, base.Add(200*ms))
+	gameFrameAt(a, &r, base.Add(400*ms))
+	if buffered() != 1 {
+		t.Fatalf("holding space: %d moves buffered, want still 1", buffered())
+	}
+
+	// Lifting and pressing again is a second drop.
+	r.Queue(key.Event{Name: key.NameSpace, State: key.Release})
+	gameFrameAt(a, &r, base.Add(410*ms))
+	r.Queue(key.Event{Name: key.NameSpace, State: key.Press})
+	gameFrameAt(a, &r, base.Add(420*ms))
+	if buffered() != 2 {
+		t.Fatalf("after the re-press: %d moves buffered, want 2", buffered())
+	}
+}
+
+// TestSoftDropAutoRepeat: ↓ repeats on its own knob — SDF times the level's
+// gravity, the Guideline's soft drop — on its own axis and with no DAS to
+// wait out (softDAS). The press drops one row, the OS repeat's duplicate
+// Presses add nothing, and a row falls every interval from the press onward
+// until the key comes up.
+func TestSoftDropAutoRepeat(t *testing.T) {
+	a := newTestApp()
+	// Pinned: DAS 150 (which ↓ must ignore), ARR 20 (which is the shift's
+	// and not the soft drop's), SDF 20 — 20x the level-0 gravity of 1000ms,
+	// so one row every 50ms.
+	a.SetHandling(150, 20, 20)
+	if got := a.softARR(nil); got != 50*ms {
+		t.Fatalf("soft drop interval = %v, want 50ms (level 0 gravity / SDF 20)", got)
+	}
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	// High on an empty board: rows to spare below it.
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(6000, 0)
+
+	gameFrameAt(a, &r, base)
+	buffered := func() int { return len(a.eng.BufferedMoves()) }
+
+	r.Queue(key.Event{Name: key.NameDownArrow, State: key.Press})
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the press: %d moves buffered, want 1", buffered())
+	}
+	if m := a.eng.BufferedMoves()[0]; m != engine.MoveDown {
+		t.Fatalf("↓ buffered %v, want a soft drop", m)
+	}
+
+	// The OS auto-repeat, inside the first interval: nothing of its own.
+	r.Queue(key.Event{Name: key.NameDownArrow, State: key.Press})
+	gameFrameAt(a, &r, base.Add(30*ms))
+	if buffered() != 1 {
+		t.Fatalf("inside the first interval: %d moves buffered, want still 1", buffered())
+	}
+
+	// The first repeat is one interval after the press (+60ms), NOT one DAS:
+	// this frame is still 100ms short of the 150ms charge a shift would owe.
+	gameFrameAt(a, &r, base.Add(70*ms))
+	if buffered() != 2 {
+		t.Fatalf("one interval after the press: %d moves buffered, want 2 (no DAS on ↓)", buffered())
+	}
+	// The rows due at +110ms and +160ms, both owed by this frame.
+	gameFrameAt(a, &r, base.Add(160*ms))
+	if buffered() != 4 {
+		t.Fatalf("after two more rows: %d moves buffered, want 4", buffered())
+	}
+
+	// The key comes up: the repeat stops there.
+	r.Queue(key.Event{Name: key.NameDownArrow, State: key.Release})
+	gameFrameAt(a, &r, base.Add(170*ms))
+	gameFrameAt(a, &r, base.Add(600*ms))
+	if buffered() != 4 {
+		t.Fatalf("after the release: %d moves buffered, want still 4", buffered())
+	}
+	if a.soft.dir != 0 || a.soft.posDown {
+		t.Fatal("the release did not stop the soft-drop machine")
+	}
+	// The shift machine is a different axis and never saw a key.
+	if a.shift.dir != 0 {
+		t.Fatal("the ↓ key drove the ← → machine")
+	}
+}
+
+// TestPadDownArmSoftDrops is the touch version: the pad's ↓ arm drops on the
+// press and, held, repeats on the same SDF and with no DAS — and lifting the
+// finger does not fire its click as a second drop (handlePadClicks no longer
+// has it).
+func TestPadDownArmSoftDrops(t *testing.T) {
+	a := newTestApp()
+	a.SetHandling(150, 20, 20) // pinned: DAS 150 (ignored by ↓), SDF 20 = one row per 50ms
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	a.touchUI = true
+	a.padPref = 1 // the pad on, whatever the window's default
+	var r input.Router
+	base := time.Unix(7000, 0)
+
+	gameFrameAt(a, &r, base)
+	pd, ok := semanticBounds(&r, padDownLabel)
+	if !ok {
+		t.Fatal("no ↓ arm in the semantic tree — the pad is not on screen")
+	}
+	cx, cy := float32(pd.Min.X+pd.Dx()/2), float32(pd.Min.Y+pd.Dy()/2)
+	buffered := func() int { return len(a.eng.BufferedMoves()) }
+
+	touch(&r, pointer.Press, 1, cx, cy, 0) // finger down, and held
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the arm's press: %d moves buffered, want 1", buffered())
+	}
+	// The focus flap frame: the arm's Clickable holds the keys, and the
+	// machine must ride it out — the row below is the proof.
+	gameFrameAt(a, &r, base.Add(40*ms))
+	if buffered() != 1 {
+		t.Fatalf("inside the first interval: %d moves buffered, want still 1", buffered())
+	}
+	gameFrameAt(a, &r, base.Add(70*ms)) // one interval past the press
+	if buffered() != 2 {
+		t.Fatalf("one interval after the arm's press: %d moves buffered, want 2", buffered())
+	}
+
+	touch(&r, pointer.Release, 1, cx, cy, 80*ms) // finger up
+	gameFrameAt(a, &r, base.Add(90*ms))
+	gameFrameAt(a, &r, base.Add(600*ms))
+	if buffered() != 2 {
+		t.Fatalf("after the release: %d moves buffered, want still 2 (no click double-fire)", buffered())
+	}
+	if a.soft.dir != 0 || a.soft.posDown {
+		t.Fatal("lifting the finger did not release the soft-drop machine")
+	}
+}
+
+// TestSoftARRFollowsGravity: the soft drop's rate is SDF times the level's
+// gravity, the Guideline's way of putting it — so ↓ stays ahead of the fall
+// at every level instead of running at a wall-clock rate the speed curve
+// overtakes. The top of the knob is instant, and no setting can ever compute
+// its way to 0 (the machine's "instant") by rounding.
+func TestSoftARRFollowsGravity(t *testing.T) {
+	for _, c := range []struct {
+		sdf, level int
+		want       time.Duration
+	}{
+		{sdf: 20, level: 0, want: 50 * ms},       // 1000ms gravity / 20
+		{sdf: 10, level: 0, want: 100 * ms},      // the same level, half the factor
+		{sdf: 1, level: 0, want: 1000 * ms},      // the slowest setting: gravity itself
+		{sdf: 20, level: 5, want: 262 * ms / 20}, // the curve carried through
+		{sdf: 20, level: 19, want: 1 * ms},       // the fastest level: floored, never 0
+		{sdf: maxSDF, level: 0, want: 0},         // MAX: the machine's instant slide
+		{sdf: maxSDF, level: 19, want: 0},        //
+	} {
+		if got := softInterval(c.sdf, c.level); got != c.want {
+			t.Errorf("SDF %d at level %d: interval %v, want %v", c.sdf, c.level, got, c.want)
+		}
+	}
+	// No engine yet (a frame before the game): level 0 stands in.
+	a := newTestApp()
+	a.SetHandling(defaultDASMs, defaultARRMs, 20)
+	if got := a.softARR(nil); got != 50*ms {
+		t.Errorf("with no engine: interval %v, want the level-0 rate 50ms", got)
+	}
+}
+
+// TestHandlingKnobsRoundTrip: each slider's position and its knob agree, so
+// the HANDLING section opens showing the tuning that is actually in force —
+// and the saved set carries all three.
+func TestHandlingKnobsRoundTrip(t *testing.T) {
+	a := newTestApp()
+	var saved prefs.Handling
+	a.handlingSave = func(h prefs.Handling) error { saved = h; return nil }
+
+	a.SetHandling(85, 35, 12)
+	if a.dasMs != 85 || a.arrMs != 35 || a.sdf != 12 {
+		t.Fatalf("knobs = %d/%d/%d, want 85/35/12", a.dasMs, a.arrMs, a.sdf)
+	}
+	for _, c := range []struct {
+		name string
+		pos  float32
+		r    knobRange
+		want int
+	}{
+		{"DAS", a.dasFloat.Value, msRange, 85},
+		{"ARR", a.arrFloat.Value, msRange, 35},
+		{"SDF", a.sdfFloat.Value, sdfRange, 12},
+	} {
+		if got := c.r.value(c.pos); got != c.want {
+			t.Errorf("%s slider at %v reads back as %d, want %d", c.name, c.pos, got, c.want)
+		}
+	}
+	// Out of range on the way in: clamped, sliders and all.
+	a.SetHandling(9000, -5, 9000)
+	if a.dasMs != maxHandlingMs || a.arrMs != 0 || a.sdf != maxSDF {
+		t.Fatalf("clamped knobs = %d/%d/%d, want %d/0/%d", a.dasMs, a.arrMs, a.sdf, maxHandlingMs, maxSDF)
+	}
+	if got := sdfRange.value(a.sdfFloat.Value); got != maxSDF {
+		t.Errorf("SDF slider at the top reads back as %d, want %d", got, maxSDF)
+	}
+
+	a.persistHandling()
+	if want := (prefs.Handling{DASMs: maxHandlingMs, ARRMs: 0, SDF: maxSDF}); saved != want {
+		t.Fatalf("persisted %+v, want %+v", saved, want)
+	}
 }

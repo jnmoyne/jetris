@@ -1,25 +1,39 @@
 package nativeui
 
-// Keyboard auto-shift — DAS/ARR, the competitive game's ← → handling, in
+// Keyboard auto-shift — DAS/ARR, the competitive game's ← → ↓ handling, in
 // place of the OS key repeat (which neither backend suppresses, whose rate no
 // two platforms share, and which a player cannot tune):
 //
-//	press           one shift, at once
-//	held DAS ms     the auto-repeat starts
+//	press           one step, at once
+//	held DAS ms     the ← → auto-repeat starts (↓ skips the charge, softDAS)
 //	every ARR ms    one more shift
 //	ARR = 0         the whole slide at once: the piece goes until the wall or
 //	                another player's piece stops it, and stays glued there —
 //	                a gap that opens (a teammate's piece moves off a shared
 //	                board) is taken the frame it appears
 //
-// Both knobs are in the game menu's HANDLING section (handlingKnobs), in
-// milliseconds, 0..maxHandlingMs.
+// ↓ is the Guideline's soft drop and takes neither knob: it falls at SDF
+// times the level's gravity (softARR), the third knob, and at maxSDF it is
+// the same instant slide ARR 0 is — to the floor, resting there unlocked.
+//
+// All three are in the game menu's HANDLING section (handlingKnobs): DAS and
+// ARR in milliseconds, 0..maxHandlingMs; SDF a multiple of gravity,
+// minSDF..maxSDF.
 //
 // autoShift is the machine: a pure struct in the boardGesture mold — fed key
 // edges and the frame clock, emitting through a callback, no router and no
-// engine, unit-tested as one (autoshift_test.go). handleKeys (input.go) feeds
-// it the frame's presses and releases; handleAutoShift below runs the frame's
-// repeats. Its rules:
+// engine, unit-tested as one (autoshift_test.go). The App runs ONE PER AXIS:
+// a.shift for the ← → pair (mutually exclusive — the newest press has the
+// piece) and a.soft for the lone ↓ soft drop, on its own knob and
+// independent of it, so a piece slid and soft-dropped at once takes both.
+// handleKeys (input.go) feeds them the frame's presses and releases;
+// handleAutoShift below runs the frame's repeats.
+//
+// Space is deliberately not one of them: a hard drop is one drop per physical
+// press, no DAS and no ARR (handleKeys drops the OS repeat's extra presses on
+// the floor), or a held space would drop every piece that spawned under it.
+//
+// The machines' rules:
 //
 //   - A press of a key already down is the OS auto-repeat leaking through
 //     (macOS and the browser both resend key.Press with no Release between;
@@ -63,20 +77,35 @@ const (
 	maxHandlingMs = prefs.MaxHandlingMs
 	defaultDASMs  = prefs.DefaultDASMs
 	defaultARRMs  = prefs.DefaultARRMs
-	// maxAutoShiftPerFrame caps a slow frame's ARR catch-up at the board's
-	// width — no run of repeats can mean more than that.
+	// The soft drop factor: ↓ falls at sdf times the level's gravity, and at
+	// maxSDF instantly (softARR). The prefs store owns the numbers.
+	minSDF     = prefs.MinSDF
+	maxSDF     = prefs.MaxSDF
+	defaultSDF = prefs.DefaultSDF
+	// maxAutoShiftPerFrame caps a slow frame's ARR catch-up at ten steps — a
+	// board's width of shifts, or as many rows of soft drop.
 	maxAutoShiftPerFrame = 10
+	// softDAS is the ↓ key's charge: none. A soft drop is a fall rate, not a
+	// slide, so it wants no delay before the repeat — the first row goes on
+	// the press and the next one softARR behind it, the DAS knob being the
+	// shift's alone. (At maxSDF that makes a tap of ↓ the whole drop to the
+	// floor, the piece landing without locking, exactly as ARR 0 slides a
+	// shift into the wall.)
+	softDAS = 0
 )
 
-// autoShift is the ← → DAS/ARR machine. dir is -1 left, +1 right (the sign of
-// a shift's column delta), 0 none. UI goroutine only.
+// autoShift is one axis's DAS/ARR machine: the ← → pair (dir -1 left, +1
+// right — the sign of a shift's column delta) or the lone ↓ soft drop (dir
+// +1, one row down); dir 0 is no key held. UI goroutine only.
 type autoShift struct {
-	// leftDown/rightDown is the physical key state, from the Press/Release
-	// edges — what dedupes the OS auto-repeat's synthetic presses.
-	leftDown, rightDown bool
-	// leftAt/rightAt is each key's press time — its DAS charge. It survives
+	// negDown/posDown is the physical state of the axis's two keys, the
+	// dir<0 one (←, which the soft drop's axis simply never has) and the
+	// dir>0 one (→, ↓), from the Press/Release edges — what dedupes the OS
+	// auto-repeat's synthetic presses.
+	negDown, posDown bool
+	// negAt/posAt is each key's press time — its DAS charge. It survives
 	// the lock-to-spawn gap and dies only on release or reset.
-	leftAt, rightAt time.Time
+	negAt, posAt time.Time
 	// dir is the active direction: the most recent press still held.
 	dir int
 	// nextDue is when the active direction owes its next auto-shift.
@@ -86,16 +115,16 @@ type autoShift struct {
 
 func (s *autoShift) down(dir int) bool {
 	if dir < 0 {
-		return s.leftDown
+		return s.negDown
 	}
-	return s.rightDown
+	return s.posDown
 }
 
 func (s *autoShift) pressedAt(dir int) time.Time {
 	if dir < 0 {
-		return s.leftAt
+		return s.negAt
 	}
-	return s.rightAt
+	return s.posAt
 }
 
 // press feeds a key-down edge. A press of a key already down is the OS
@@ -105,24 +134,25 @@ func (s *autoShift) press(dir int, now time.Time, das, arr time.Duration, emit f
 		return
 	}
 	if dir < 0 {
-		s.leftDown, s.leftAt = true, now
+		s.negDown, s.negAt = true, now
 	} else {
-		s.rightDown, s.rightAt = true, now
+		s.posDown, s.posAt = true, now
 	}
 	s.activate(dir, now, das, arr, emit)
 }
 
 // release feeds a key-up edge. Releasing the active direction hands the keys
-// to the other one if it is still held; a release of a key not seen down
-// (a focus regained mid-hold) is a stray and does nothing.
+// to the other one if it is still held (the soft drop's axis has no other
+// key, so it simply stops); a release of a key not seen down (a focus
+// regained mid-hold) is a stray and does nothing.
 func (s *autoShift) release(dir int, now time.Time, das, arr time.Duration, emit func(int)) {
 	if !s.down(dir) {
 		return
 	}
 	if dir < 0 {
-		s.leftDown = false
+		s.negDown = false
 	} else {
-		s.rightDown = false
+		s.posDown = false
 	}
 	if s.dir != dir {
 		return
@@ -151,11 +181,12 @@ func (s *autoShift) activate(dir int, now time.Time, das, arr time.Duration, emi
 func (s *autoShift) reset() { *s = autoShift{} }
 
 // step runs one frame of the repeat. room is how many moves the buffer may
-// take (the gestures' back-pressure); possible is how many columns the piece
-// can still shift toward dir — negative when no shift can land right now (no
-// piece on the board, a drop committing) — consulted only once due; emit
-// dispatches one shift. Returns the room left, a wake time for a timed
-// invalidate (zero when none), and whether the caller must animate every
+// take (the gestures' back-pressure); possible is how many steps the piece
+// can still take toward dir — columns for a shift, rows for a soft drop, and
+// negative when none can land right now (no piece on the board, a drop
+// committing) — consulted only once due; emit dispatches one step. Returns
+// the room left, a wake time for a timed invalidate (zero when none), and
+// whether the caller must animate every
 // frame instead (glued at ARR 0, blocked at a wall, or watching for a spawn).
 func (s *autoShift) step(now time.Time, arr time.Duration, room int,
 	possible func() int, emit func(int)) (roomLeft int, wake time.Time, everyFrame bool) {
@@ -218,11 +249,52 @@ func (a *App) shiftEmit(eng *engine.Engine) func(int) {
 	}
 }
 
-// handlePadShift feeds the on-screen pad's ← → press-and-hold edges to the
-// DAS/ARR machine: on a touch device the pad's arms ARE the arrow keys, so
-// they shift on the press (not the click's release — handlePadClicks leaves
-// these two arms to this function) and, held, auto-repeat with the same
-// HANDLING tuning. Pressed() is state, not an event, so edges are detected
+// softInterval is the soft drop's repeat interval: the level's gravity
+// divided by the SDF knob — the Guideline's "soft drop is N times the fall
+// speed", so ↓ stays ahead of gravity at every level instead of running at
+// some wall-clock rate the speed curve overtakes. maxSDF is 0, the machine's
+// instant slide (to the floor, resting there unlocked); anything faster than
+// a millisecond a row is that in all but name, and the floor is also what
+// keeps a fast level's division from rounding to 0 and meaning instant by
+// accident. Pure, so the knob's whole range is testable without an engine.
+func softInterval(sdf, level int) time.Duration {
+	if sdf >= maxSDF {
+		return 0
+	}
+	return max(game.GravityInterval(level)/time.Duration(max(sdf, minSDF)), time.Millisecond)
+}
+
+// softARR is the soft drop's interval right now: the knob at the engine's
+// level. eng may be nil (a frame with no engine): level 0 stands in.
+func (a *App) softARR(eng *engine.Engine) time.Duration {
+	level := 0
+	if eng != nil {
+		level = eng.Level()
+	}
+	return softInterval(a.sdf, level)
+}
+
+// softEmit is the soft-drop machine's dispatch: one row down, now. A step
+// owed while the board has no piece is dropped rather than held for the next
+// one (unlike shiftEmit's): a soft drop banked across the spawn would push
+// the new piece down before the player had seen it, and the repeat takes it
+// the frame it appears anyway.
+func (a *App) softEmit(eng *engine.Engine) func(int) {
+	noPiece := eng.Started() && !eng.HasActivePiece()
+	return func(int) {
+		if noPiece {
+			return
+		}
+		moveFor(engine.MoveDown)(eng)
+	}
+}
+
+// handlePadShift feeds the on-screen pad's ← → ↓ press-and-hold edges to the
+// DAS/ARR machines: on a touch device the pad's arms ARE the arrow keys, so
+// they move on the press (not the click's release — handlePadClicks leaves
+// these three arms to this function) and, held, auto-repeat on the same
+// HANDLING tuning as the keys, each arm on its own key's terms (the ↓ arm at
+// softDAS, repeating on softARR). Pressed() is state, not an event, so edges are detected
 // against the last frame's reading — except a tap whose press and release
 // both land inside one frame, which the state poll can never see: its click
 // (drained here, which is also what brings the button's state up to date)
@@ -230,19 +302,24 @@ func (a *App) shiftEmit(eng *engine.Engine) func(int) {
 // runs the repeats an edge fed here starts.
 func (a *App) handlePadShift(gtx C, eng *engine.Engine, active bool) {
 	active = active && eng != nil
-	emit := func(int) {}
+	shiftEmit, softEmit := func(int) {}, func(int) {}
 	if eng != nil {
-		emit = a.shiftEmit(eng)
+		shiftEmit, softEmit = a.shiftEmit(eng), a.softEmit(eng)
 	}
 	das := time.Duration(a.dasMs) * time.Millisecond
 	arr := time.Duration(a.arrMs) * time.Millisecond
+	sarr := a.softARR(eng)
 	pads := [...]struct {
-		btn *widget.Clickable
-		was *bool
-		dir int
+		btn      *widget.Clickable
+		was      *bool
+		s        *autoShift
+		dir      int
+		das, arr time.Duration
+		emit     func(int)
 	}{
-		{&a.padLeft, &a.padLeftWas, -1},
-		{&a.padRight, &a.padRightWas, +1},
+		{&a.padLeft, &a.padLeftWas, &a.shift, -1, das, arr, shiftEmit},
+		{&a.padRight, &a.padRightWas, &a.shift, +1, das, arr, shiftEmit},
+		{&a.padDown, &a.padDownWas, &a.soft, +1, softDAS, sarr, softEmit},
 	}
 	for _, p := range pads {
 		clicked := false
@@ -252,13 +329,13 @@ func (a *App) handlePadShift(gtx C, eng *engine.Engine, active bool) {
 		down := active && p.btn.Pressed()
 		switch {
 		case down && !*p.was:
-			a.shift.press(p.dir, gtx.Now, das, arr, emit)
+			p.s.press(p.dir, gtx.Now, p.das, p.arr, p.emit)
 		case !down && *p.was:
-			a.shift.release(p.dir, gtx.Now, das, arr, emit)
+			p.s.release(p.dir, gtx.Now, p.das, p.arr, p.emit)
 		case clicked && !*p.was && active:
 			// The whole tap inside one frame: press and release together.
-			a.shift.press(p.dir, gtx.Now, das, arr, emit)
-			a.shift.release(p.dir, gtx.Now, das, arr, emit)
+			p.s.press(p.dir, gtx.Now, p.das, p.arr, p.emit)
+			p.s.release(p.dir, gtx.Now, p.das, p.arr, p.emit)
 		}
 		*p.was = down
 	}
@@ -282,13 +359,14 @@ func (a *App) padFocused(gtx C) bool {
 	return false
 }
 
-// autoShiftPossible is how many columns the piece can shift toward dir right
-// now: measured from IntentPiece (queued and in-flight moves already played
-// out — what makes the per-frame re-measure idempotent) against the board,
+// autoShiftPossible is how many steps of (dRow, dCol) the piece can still
+// take right now — the columns a shift has left, the rows a soft drop has:
+// measured from IntentPiece (queued and in-flight moves already played out —
+// what makes the per-frame re-measure idempotent) against the board,
 // CanPlaceCoop so a teammate's active piece blocks like a wall on a shared
 // board (on a private one there is none and it is CanPlace). Negative when
-// no shift can land: no piece (the lock-to-spawn gap) or a drop committing.
-func (a *App) autoShiftPossible(eng *engine.Engine, dir int) int {
+// no step can land: no piece (the lock-to-spawn gap) or a drop committing.
+func (a *App) autoShiftPossible(eng *engine.Engine, dRow, dCol int) int {
 	if eng.PieceCommitting() {
 		return -1
 	}
@@ -297,9 +375,14 @@ func (a *App) autoShiftPossible(eng *engine.Engine, dir int) int {
 		return -1
 	}
 	pf, idx := eng.Playfield(), eng.PlayerIdx()
+	limit := pf.Width
+	if dRow != 0 {
+		limit = pf.Height
+	}
 	n := 0
-	for n < pf.Width {
-		p.Col += dir
+	for n < limit {
+		p.Row += dRow
+		p.Col += dCol
 		if !game.CanPlaceCoop(p, pf, idx) {
 			break
 		}
@@ -308,33 +391,53 @@ func (a *App) autoShiftPossible(eng *engine.Engine, dir int) int {
 	return n
 }
 
-// handleAutoShift runs the frame's auto-repeats — what a held ← or → owes by
-// the frame clock — back-pressured like the gestures so a slide never queues
-// past the engine. Called right after handleKeys (which feeds the machine the
-// frame's presses and releases); active under the same gate, so the repeat
-// behaves under the leave modal exactly like a held OS-repeat key did, and
-// any other screen state resets the machine.
+// handleAutoShift runs the frame's auto-repeats — what a held ←, → or ↓ owes
+// by the frame clock — back-pressured like the gestures so a slide never
+// queues past the engine. Called right after handleKeys (which feeds the
+// machines the frame's presses and releases); active under the same gate, so
+// a repeat behaves under the leave modal exactly like a held OS-repeat key
+// did, and any other screen state resets both machines (and forgets a held
+// space, whose Release the board will not be there to see).
+//
+// The shift goes first and the soft drop takes the room it leaves: the two
+// axes share one move buffer, and a slide that is already under way should
+// not lose its cells to the drop riding along with it.
 func (a *App) handleAutoShift(gtx C, eng *engine.Engine, active bool) {
 	if !active {
 		a.shift.reset()
+		a.soft.reset()
+		a.dropHeld = false
 		return
 	}
-	if a.shift.dir == 0 {
+	if a.shift.dir == 0 && a.soft.dir == 0 {
 		return
 	}
 	room := max(0, gestureBufferCap-len(eng.BufferedMoves()))
-	arr := time.Duration(a.arrMs) * time.Millisecond
-	possible := func() int { return a.autoShiftPossible(eng, a.shift.dir) }
-	emit := func(dir int) {
+	var wake time.Time
+	everyFrame := false
+	// step runs one machine, at its own repeat rate and on the room left
+	// over, folding its wake-up into the frame's: the earliest of the two,
+	// since either may be owed first.
+	step := func(s *autoShift, arr time.Duration, dRow, dCol int, emit func(int)) {
+		possible := func() int { return a.autoShiftPossible(eng, dRow*s.dir, dCol*s.dir) }
+		var w time.Time
+		var every bool
+		room, w, every = s.step(gtx.Now, arr, room, possible, emit)
+		everyFrame = everyFrame || every
+		if !w.IsZero() && (wake.IsZero() || w.Before(wake)) {
+			wake = w
+		}
+	}
+	step(&a.shift, time.Duration(a.arrMs)*time.Millisecond, 0, 1, func(dir int) {
 		if dir < 0 {
 			eng.MoveLeft()
 		} else {
 			eng.MoveRight()
 		}
-	}
-	_, wake, every := a.shift.step(gtx.Now, arr, room, possible, emit)
+	})
+	step(&a.soft, a.softARR(eng), 1, 0, func(int) { eng.MoveDown() })
 	switch {
-	case every:
+	case everyFrame:
 		animate(gtx) // glued, blocked or waiting for the spawn: look again next frame
 	case !wake.IsZero():
 		gtx.Execute(op.InvalidateCmd{At: wake}) // the DAS expiry or the next ARR tick, exactly
@@ -344,13 +447,33 @@ func (a *App) handleAutoShift(gtx C, eng *engine.Engine, active bool) {
 // clampHandlingMs clamps a knob value to its range.
 func clampHandlingMs(v int) int { return min(max(v, 0), maxHandlingMs) }
 
-// SetHandling sets the DAS/ARR knobs (ms, clamped to 0..maxHandlingMs) and
-// mirrors them into the menu sliders — the loaded preferences' way in
-// (cmd/jetris/main.go), before Run.
-func (a *App) SetHandling(dasMs, arrMs int) {
+// knobRange maps a HANDLING slider's 0..1 position to its knob's integer
+// value and back, snapping to the knob's detents so the thumb comes to rest
+// exactly where the value is.
+type knobRange struct{ lo, hi, step int }
+
+var (
+	msRange  = knobRange{0, maxHandlingMs, 5}
+	sdfRange = knobRange{minSDF, maxSDF, 1}
+)
+
+func (r knobRange) value(pos float32) int {
+	return r.lo + int(pos*float32(r.hi-r.lo)/float32(r.step)+0.5)*r.step
+}
+
+func (r knobRange) pos(v int) float32 {
+	return float32(min(max(v, r.lo), r.hi)-r.lo) / float32(r.hi-r.lo)
+}
+
+// SetHandling sets the three knobs — DAS and ARR in ms (0..maxHandlingMs),
+// SDF a multiple of gravity (minSDF..maxSDF) — and mirrors them into the menu
+// sliders: the loaded preferences' way in (cmd/jetris/main.go), before Run.
+func (a *App) SetHandling(dasMs, arrMs, sdf int) {
 	a.dasMs, a.arrMs = clampHandlingMs(dasMs), clampHandlingMs(arrMs)
-	a.dasFloat.Value = float32(a.dasMs) / maxHandlingMs
-	a.arrFloat.Value = float32(a.arrMs) / maxHandlingMs
+	a.sdf = min(max(sdf, minSDF), maxSDF)
+	a.dasFloat.Value = msRange.pos(a.dasMs)
+	a.arrFloat.Value = msRange.pos(a.arrMs)
+	a.sdfFloat.Value = sdfRange.pos(a.sdf)
 }
 
 // persistHandling saves the knobs. A failure is silent: the game screen has
@@ -359,20 +482,21 @@ func (a *App) persistHandling() {
 	if a.handlingSave == nil {
 		return
 	}
-	_ = a.handlingSave(prefs.Handling{DASMs: a.dasMs, ARRMs: a.arrMs})
+	_ = a.handlingSave(prefs.Handling{DASMs: a.dasMs, ARRMs: a.arrMs, SDF: a.sdf})
 }
 
-// handlingKnobs is the menu's HANDLING section: a slider per knob, DAS and
-// ARR, with a live ms readout. The sliders snap to 5 ms detents and drive
-// dasMs/arrMs directly — the machine reads those every frame, so a change
-// applies to the very next press or tick. widget.Float is drag-only (no
-// Clickable), so tuning never takes the keys from the board.
+// handlingKnobs is the menu's HANDLING section: a slider per knob — DAS and
+// ARR, the shift's, in ms, and SDF, the soft drop's, as a multiple of gravity
+// (MAX being instant). Each snaps to its own detents and drives dasMs/arrMs/
+// sdf directly — the machines read those every frame, so a change applies to
+// the very next press or tick. widget.Float is drag-only (no Clickable), so
+// tuning never takes the keys from the board.
 func (a *App) handlingKnobs(gtx C) D {
-	row := func(label string, f *widget.Float, val *int) layout.Widget {
+	row := func(label string, f *widget.Float, val *int, r knobRange, text func(int) string) layout.Widget {
 		return func(gtx C) D {
 			if f.Update(gtx) {
-				*val = int(f.Value*maxHandlingMs/5+0.5) * 5
-				f.Value = float32(*val) / maxHandlingMs // the detent, thumb included
+				*val = r.value(f.Value)
+				f.Value = r.pos(*val) // the detent, thumb included
 				a.handlingDirty = true
 			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -388,20 +512,31 @@ func (a *App) handlingKnobs(gtx C) D {
 				}),
 				layout.Rigid(hSpacer(6)),
 				layout.Rigid(func(gtx C) D {
-					return a.pixelLabelFit(gtx, unit.Sp(10), fmt.Sprintf("%3d ms", *val), colMuted)
+					return a.pixelLabelFit(gtx, unit.Sp(10), text(*val), colMuted)
 				}),
 			)
 		}
 	}
-	// A finished drag (both thumbs at rest) persists the pair once.
-	if a.handlingDirty && !a.dasFloat.Dragging() && !a.arrFloat.Dragging() {
+	// A finished drag (every thumb at rest) persists the set once.
+	if a.handlingDirty && !a.dasFloat.Dragging() && !a.arrFloat.Dragging() && !a.sdfFloat.Dragging() {
 		a.handlingDirty = false
 		a.persistHandling()
 	}
+	// The readouts are the same width in the monospace pixel face, so the
+	// three sliders start and end on the same columns.
+	ms := func(v int) string { return fmt.Sprintf("%3d ms", v) }
+	factor := func(v int) string {
+		if v >= maxSDF {
+			return "   MAX" // instant: straight to the floor, resting there
+		}
+		return fmt.Sprintf("%5dx", v)
+	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.header("HANDLING")),
-		layout.Rigid(row("DAS", &a.dasFloat, &a.dasMs)),
+		layout.Rigid(row("DAS", &a.dasFloat, &a.dasMs, msRange, ms)),
 		layout.Rigid(spacer(4)),
-		layout.Rigid(row("ARR", &a.arrFloat, &a.arrMs)),
+		layout.Rigid(row("ARR", &a.arrFloat, &a.arrMs, msRange, ms)),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(row("SDF", &a.sdfFloat, &a.sdf, sdfRange, factor)),
 	)
 }

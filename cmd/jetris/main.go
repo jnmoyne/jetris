@@ -50,7 +50,7 @@ func main() {
 		log.Printf("warning: loading handling tuning: %v", err)
 	}
 	a := nativeui.NewWithPicker(cfg, names, selected, favorites)
-	a.SetHandling(handling.DASMs, handling.ARRMs)
+	a.SetHandling(handling.DASMs, handling.ARRMs, handling.SDF)
 	if !noUpdateCheck {
 		go checkForUpdate(ctx, a)
 	}

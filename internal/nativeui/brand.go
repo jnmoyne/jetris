@@ -69,7 +69,15 @@ func (a *App) natsTag(size unit.Dp, sp unit.Sp) layout.Widget {
 func (a *App) brandBanner(tag string) layout.Widget {
 	return func(gtx C) D {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+		inset := layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(2)}
+		if a.form.compact {
+			// The version plate rides in this row's right-hand corner
+			// (versionBadge). On a wide screen the banner never reaches it;
+			// on a phone it would run its last letters under the plate, so
+			// the line is centred in the room the plate leaves instead.
+			inset.Right = unit.Dp(96)
+		}
+		return inset.Layout(gtx, func(gtx C) D {
 			return layout.Center.Layout(gtx, func(gtx C) D {
 				if a.form.compact {
 					// A phone has no room for the sentence: the logo, the

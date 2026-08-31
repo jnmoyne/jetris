@@ -20,6 +20,33 @@ import (
 	"jetris/internal/lobby"
 )
 
+// The lobby screen — the game screen's shape, with a list of games where the
+// playfield goes.
+//
+// It is built the same way and out of the same parts (gamescreen.go): one
+// slim bar across the top, and under it the thing the screen is FOR, with a
+// switch in the bar for each thing that costs it room. The menu column (who
+// we are, which server, the address to share, Disconnect), the players in the
+// lobby, the chat strip — every one of them shows or it does not, and none of
+// them is a window: there is no scrim, nothing to dismiss, and the button that
+// shows a column is the only thing that hides it. Each starts wherever the
+// screen can afford it (lobbyMenuVisible, lobbyPlayersVisible,
+// lobbyChatVisible) and stays wherever the player last put it, so a lobby on
+// a desktop opens with all three up and a phone opens with the games and
+// nothing else.
+//
+// What is left in the middle is one panel with the two lists a lobby has in
+// it, on tabs: the games on offer now, and the games already played. They are
+// tabs and not two stacked lists because either one can be long — twenty open
+// games or two hundred finished ones — and a screen that gives half its
+// height to each shows too little of both. The one action that is neither
+// list stands over them, where it cannot be scrolled away from: Create a new
+// game.
+//
+// The brand banner stays over the bar. This is the screen a player lands on
+// and the one they leave from, and it is the only one that says what Jetris
+// is.
+
 func (a *App) layoutLobby(gtx C) D {
 	lb := a.getLobby()
 	if lb == nil {
@@ -41,6 +68,11 @@ func (a *App) layoutLobby(gtx C) D {
 	pickerOpen := a.handleInvitePicker(gtx)
 	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
 	replayOpen := a.handleReplayChoice(gtx)
+	// The bar's switches and the panel's tabs, drained before anything is
+	// laid out so a column shown or hidden this frame is already in the
+	// layout that measures it — and answered only while no modal is up, since
+	// the scrim dims the bar without taking its presses.
+	a.handleLobbyBarClicks(gtx, wizOpen || pickerOpen || inviteOpen || replayOpen)
 	// The Create button just opens the wizard; the wizard's last step does
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
@@ -67,6 +99,7 @@ func (a *App) layoutLobby(gtx C) D {
 		}
 	}
 	connName, connURL := a.connName, a.connURL
+	msg := a.lobbyErr
 	a.mu.Unlock()
 
 	// dispatch per-game buttons
@@ -108,12 +141,108 @@ func (a *App) layoutLobby(gtx C) D {
 	}
 
 	// --- render ---
+	archives := a.archivesForDisplay(lb.Archives())
+	// Under the bar: whichever columns are switched on, the panel with
+	// everything they leave, and the chat strip along the bottom.
+	body := func(gtx C) D {
+		// Where each column stands, decided once for the whole body: the menu
+		// takes its share off the room the panel row has, and the players
+		// stand beside the panel only if what is then left is still a panel.
+		menuBeside := a.lobbyMenuVisible() && a.lobbyMenuBeside(gtx)
+		rowW := gtx.Constraints.Max.X
+		if menuBeside {
+			rowW -= a.lobbyMenuW(gtx)
+		}
+		playersBeside := a.lobbyPlayersVisible() && a.lobbyPlayersBeside(gtx, rowW)
+		children := []layout.FlexChild{
+			layout.Flexed(1, func(gtx C) D {
+				// The panel with the players' column beside it when it is
+				// switched on and there is room for it. The column's width
+				// comes off the panel BEFORE it fits itself, so nothing is
+				// squeezed after the fact.
+				content := func(gtx C) D {
+					panel := func(gtx C) D {
+						return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+							return a.lobbyPanel(gtx, games, abandoned, archives)
+						})
+					}
+					if !playersBeside {
+						return panel(gtx)
+					}
+					pw := a.lobbyPlayersColW(gtx, gtx.Constraints.Max.X)
+					return layout.Flex{}.Layout(gtx,
+						layout.Flexed(1, panel),
+						layout.Rigid(func(gtx C) D {
+							gtx.Constraints.Min.X, gtx.Constraints.Max.X = pw, pw
+							gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+							return a.lobbyPlayersColumn(gtx, players)
+						}),
+					)
+				}
+				menuW := a.lobbyMenuW(gtx)
+				menu := func(gtx C) D {
+					gtx.Constraints.Min.X, gtx.Constraints.Max.X = menuW, menuW
+					gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+					return a.lobbyMenuColumn(gtx, lb.PlayerName(), connName, connURL)
+				}
+				switch {
+				case !a.lobbyMenuVisible():
+					return content(gtx)
+				case a.lobbyMenuBeside(gtx):
+					// Room for both: the menu stands against the screen's edge
+					// and the panel takes what is left.
+					return layout.Flex{}.Layout(gtx,
+						layout.Rigid(menu),
+						layout.Flexed(1, content),
+					)
+				default:
+					// No room to stand beside it (a phone held portrait): the
+					// menu is drawn OVER the panel rather than squeezing it
+					// down to a column of ellipses. Its own pointer area keeps
+					// its presses off the rows underneath, and — as on the
+					// game screen — there is no scrim and nothing here closes
+					// it but the button that opened it.
+					return layout.Stack{}.Layout(gtx,
+						layout.Expanded(func(gtx C) D {
+							// The slot the panel has when no menu is up: a
+							// Stack hands its expanded children a zero
+							// minimum, and a panel laid out to its own size
+							// would jump the moment the menu came over it.
+							gtx.Constraints.Min = gtx.Constraints.Max
+							return content(gtx)
+						}),
+						layout.Expanded(func(gtx C) D {
+							return layout.W.Layout(gtx, func(gtx C) D {
+								return pointerArea(gtx, &a.lobbyMenuTag, menu)
+							})
+						}),
+					)
+				}
+			}),
+		}
+		// The players, where they could not stand beside the panel: a strip of
+		// their own across the full width, just above the chat.
+		if a.lobbyPlayersVisible() && !playersBeside {
+			children = append(children, layout.Rigid(func(gtx C) D {
+				return a.lobbyPlayersStrip(gtx, players)
+			}))
+		}
+		// The chat is a strip along the bottom, the full width of the screen
+		// and in the flow, exactly as it is in a game: while it is up the
+		// panel simply has that many fewer rows.
+		if a.lobbyChatVisible() {
+			children = append(children, layout.Rigid(func(gtx C) D {
+				return a.lobbyChatStrip(gtx, chat)
+			}))
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	}
 	base := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.lobbyBanner),
 		layout.Rigid(func(gtx C) D {
-			a.mu.Lock()
-			msg := a.lobbyErr
-			a.mu.Unlock()
+			return a.lobbyBar(gtx, lb.PlayerName(), connName, len(chat) > a.lobbyChatSeen)
+		}),
+		layout.Rigid(func(gtx C) D {
 			if msg == "" {
 				return D{}
 			}
@@ -121,20 +250,7 @@ func (a *App) layoutLobby(gtx C) D {
 				return layout.UniformInset(unit.Dp(6)).Layout(gtx, a.pixel(unit.Sp(9), msg, colErr).Layout)
 			})
 		}),
-		layout.Flexed(1, func(gtx C) D {
-			return layout.Flex{}.Layout(gtx,
-				layout.Flexed(1, func(gtx C) D {
-					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyLeft(gtx, players, chat)
-					})
-				}),
-				layout.Flexed(2, func(gtx C) D {
-					return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-						return a.lobbyRight(gtx, games, abandoned, a.archivesForDisplay(lb.Archives()), lb.PlayerName(), connName, connURL)
-					})
-				}),
-			)
-		}),
+		layout.Flexed(1, body),
 	)
 	if !pickerOpen && !inviteOpen && !wizOpen && !replayOpen {
 		return base
@@ -165,179 +281,621 @@ func (a *App) layoutLobby(gtx C) D {
 // logInvite logs an invitation-send failure without stopping the batch.
 func logInvite(err error) { log.Printf("send invite: %v", err) }
 
-func (a *App) lobbyLeft(gtx C, players []lobby.PlayerPresence, chat []lobby.ChatMessage) D {
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.header("PLAYERS")),
+// The lobby's two tabs: the games on offer, and the games already played.
+const (
+	lobbyTabGames   = "games"
+	lobbyTabHistory = "history"
+)
+
+const (
+	// lobbyPanelMinW is the width the games panel will not be pushed under.
+	// It is what the widest thing in it — a game row's info line beside its
+	// Join and Spectate buttons — needs to stay one row instead of stacking
+	// into a paragraph; take more than this off it and the menu is better
+	// drawn OVER the panel (lobbyMenuBeside).
+	lobbyPanelMinW = 420
+	// lobbyPlayersPct/lobbyPlayersMaxW/lobbyPlayersMinW bound the players
+	// column: a slice of the screen, never wider than a column of names and
+	// states wants, never narrower than one can be read at, and never more
+	// than a third of the row. Every dp of it comes off the panel, which is
+	// why it is a switch, exactly as the opponents' boards are in a game.
+	lobbyPlayersPct  = 26
+	lobbyPlayersMaxW = 260
+	lobbyPlayersMinW = 170
+	// lobbyPlayersStripRows is how many packed lines the players strip shows
+	// before it stops growing and scrolls (lobbyPlayersStrip). It is a strip:
+	// a busy lobby must not push the games off the screen to list who is in
+	// it.
+	lobbyPlayersStripRows = 3
+)
+
+// lobbyPlayersColW bounds the players column in w dp of room (see
+// lobbyPlayersPct).
+func (a *App) lobbyPlayersColW(gtx C, w int) int {
+	cw := min(w*lobbyPlayersPct/100, gtx.Dp(lobbyPlayersMaxW))
+	return min(max(cw, gtx.Dp(lobbyPlayersMinW)), w/3)
+}
+
+// lobbyPlayersBeside reports whether the players can stand in a column beside
+// the panel in w dp of room — what the panel row has once the menu column has
+// taken its share. Only where what is left is still a panel worth reading
+// (lobbyPanelMinW): every dp of that column comes off the games list and the
+// history table, and at a phone's width the difference is a MODE column
+// against a stack of one-letter lines. Where they cannot stand beside it they
+// go where the chat goes instead — a strip across the full width, just above
+// it — which costs the panel only its own height.
+
+// handleLobbyBarClicks drains the lobby bar's switches and the panel's tabs.
+// The presses are drained whether or not they are answered, so a click that
+// landed under a modal is spent there rather than arriving the frame it
+// closes; modal says to spend them and do nothing.
+func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
+	// Each switch is just that: the button that shows a column is the button
+	// that hides it, and nothing else does.
+	flip := func(btn *widget.Clickable, pref *int8, on bool) {
+		n := 0
+		for btn.Clicked(gtx) {
+			n++
+		}
+		if n == 0 || modal {
+			return
+		}
+		if on {
+			*pref = -1
+		} else {
+			*pref = 1
+		}
+	}
+	flip(&a.barLobbyMenuBtn, &a.lobbyMenuPref, a.lobbyMenuVisible())
+	flip(&a.barLobbyPlayersBtn, &a.lobbyPlayersPref, a.lobbyPlayersVisible())
+	flip(&a.barLobbyChatBtn, &a.lobbyChatPref, a.lobbyChatVisible())
+	for _, t := range []struct {
+		btn *widget.Clickable
+		tab string
+	}{{&a.lobbyTabBtns[0], lobbyTabGames}, {&a.lobbyTabBtns[1], lobbyTabHistory}} {
+		n := 0
+		for t.btn.Clicked(gtx) {
+			n++
+		}
+		if n > 0 && !modal {
+			a.lobbyTab = t.tab
+		}
+	}
+}
+
+// lobbyBar is the lobby's one permanent row — the game bar's twin
+// (gamescreen.go), at the same height and out of the same buttons, so the
+// chrome does not move under the player between the two screens. The menu
+// switch, who we are and which server this session is on, and at the far end
+// the switches for the two things that cost the panel room: the players
+// column and the chat strip.
+func (a *App) lobbyBar(gtx C, playerName, connName string, unread bool) D {
+	barH := gtx.Dp(gameBarH)
+	kids := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D {
+			return a.barButton(gtx, &a.barLobbyMenuBtn, glyphMenu, a.lobbyMenuVisible())
+		}),
 		layout.Flexed(1, func(gtx C) D {
-			return bordered(gtx, func(gtx C) D {
-				return material.List(a.th, &a.playerList).Layout(gtx, len(players), func(gtx C, i int) D {
-					p := players[i]
-					return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-						return layout.Flex{}.Layout(gtx,
-							layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
-							layout.Rigid(a.body(statusText(p.Status), colMuted)),
-						)
+			return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+				return a.lobbyBarLine(gtx, playerName, connName)
+			})
+		}),
+		layout.Rigid(func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return a.barButton(gtx, &a.barLobbyPlayersBtn, glyphPlayers, a.lobbyPlayersVisible())
+			})
+		}),
+		layout.Rigid(func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				d := a.barButton(gtx, &a.barLobbyChatBtn, glyphChat, a.lobbyChatVisible())
+				// Unread mark: messages have arrived since the strip last
+				// showed them (lobbyChatStrip records what it showed).
+				if unread && !a.lobbyChatVisible() {
+					dot := gtx.Dp(7)
+					fillRect(gtx.Ops, image.Rect(d.Size.X-dot, 0, d.Size.X, dot), colGold)
+				}
+				return d
+			})
+		}),
+	}
+	gtx.Constraints.Min.X = gtx.Constraints.Max.X
+	gtx.Constraints.Min.Y, gtx.Constraints.Max.Y = barH, barH
+	return background(gtx, colPanel, func(gtx C) D {
+		d := layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
+		})
+		// A hairline under the bar, so it reads as its own division over the
+		// panel rather than as part of it.
+		fillRect(gtx.Ops, image.Rect(0, barH-gtx.Dp(2), d.Size.X, barH), colBorder)
+		return D{Size: image.Pt(d.Size.X, barH)}
+	})
+}
+
+// lobbyBarLine is the bar's readout, in the room the buttons leave: who we
+// are, then which server this session is on. Whole or not at all, like the
+// game bar's (barStats) — a server name cut to "..." is noise, and the menu
+// column one press away carries it in full along with its URL.
+func (a *App) lobbyBarLine(gtx C, playerName, connName string) D {
+	return layout.W.Layout(gtx, func(gtx C) D {
+		// A text label handed a tall minimum height takes that height and
+		// sits its glyphs at the top of it; zeroed, it is its own height and
+		// W centers it on the bar.
+		gtx.Constraints.Min.Y = 0
+		if connName == "" {
+			return a.pixelLabelFit(gtx, unit.Sp(10), playerName, colFg)
+		}
+		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, unit.Sp(10), playerName, colFg) }),
+			layout.Flexed(1, func(gtx C) D {
+				txt := "  @ " + connName
+				if a.pixelWidth(gtx, unit.Sp(8), txt) > gtx.Constraints.Max.X {
+					return D{}
+				}
+				return a.pixel(unit.Sp(8), txt, colMuted).Layout(gtx)
+			}),
+		)
+	})
+}
+
+// lobbyMenuBeside reports whether the menu column can stand beside the panel
+// in the area gtx measures: only where what is left of it still holds a games
+// list worth reading (lobbyPanelMinW). Where it cannot, the menu is drawn
+// over the panel instead, which costs the panel nothing.
+func (a *App) lobbyMenuBeside(gtx C) bool {
+	return gtx.Constraints.Max.X-a.hudColBesideW(gtx) >= gtx.Dp(lobbyPanelMinW)
+}
+
+// lobbyMenuW is the width the menu column is laid out at. It is the game
+// menu's own width policy (hudColBesideW, hudOverPct) and not a second one:
+// this is the same column on the other screen, and a menu that changed width
+// between the lobby and a game would read as a different thing.
+func (a *App) lobbyMenuW(gtx C) int {
+	if a.lobbyMenuBeside(gtx) {
+		return a.hudColBesideW(gtx)
+	}
+	return min(gtx.Constraints.Max.X*hudOverPct/100, gtx.Dp(hudColMaxW))
+}
+
+func (a *App) lobbyPlayersBeside(gtx C, w int) bool {
+	return w-a.lobbyPlayersColW(gtx, w) >= gtx.Dp(lobbyPanelMinW)
+}
+
+// lobbyMenuColumn is the lobby's menu as a column beside the panel: its own
+// panel ground and a hairline down the edge it meets the panel on, and
+// nothing else — no scrim behind it, no close button in it. What it holds is
+// everything about this SESSION rather than about any game: who we are, the
+// server we are on and the one we are hosting, and the way out.
+func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string) D {
+	return background(gtx, colPanel, func(gtx C) D {
+		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
+			return a.lobbyMenu(gtx, playerName, connName, connURL)
+		})
+		fillRect(gtx.Ops, image.Rect(d.Size.X-gtx.Dp(2), 0, d.Size.X, d.Size.Y), colBorder)
+		return d
+	})
+}
+
+// lobbyMenu is that column's contents: who we are and where we are connected,
+// the address to hand out while hosting a server, the way out, and — since
+// this is the screen a player sits on before they play — how the game is
+// played, the same legend the game's own menu carries (controlsSections).
+// Everything in it stacks rather than running along a line: the column is a
+// third of a phone's width at its narrowest, and a server URL beside its
+// label there would be two ellipses.
+func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string) D {
+	// The address other players should dial while this session is hosting the
+	// embedded server: the one thing on this screen the host has to be able
+	// to read out loud, so it gets lines of its own in the NATS green. It is
+	// also the URL we are connected to, so it is said once, here, and the
+	// plain connection line above drops to just the server's name.
+	addr := a.embeddedAddr()
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, unit.Sp(11), playerName, colAccent) }),
+	}
+	if connName != "" {
+		children = append(children, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return a.pixelLabelFit(gtx, unit.Sp(9), "@ "+connName, colMuted)
+			})
+		}))
+		if connURL != "" && addr == "" {
+			children = append(children, layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+					return a.pixelLabelFit(gtx, unit.Sp(8), connURL, colMuted)
+				})
+			}))
+		}
+	}
+	if addr != "" {
+		children = append(children,
+			layout.Rigid(spacer(14)),
+			layout.Rigid(a.header("YOUR SERVER'S URL IS")),
+			layout.Rigid(func(gtx C) D {
+				return a.pixelLabelFit(gtx, unit.Sp(10), "nats://"+addr, colNATSGreen)
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(4)}.Layout(gtx,
+					a.body("Share this address so others can join you.", colMuted))
+			}),
+		)
+	}
+	children = append(children,
+		layout.Rigid(spacer(18)),
+		layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.quitBtn, "Disconnect") }),
+	)
+	// The controls, on the screen where a player is deciding whether to play
+	// rather than in the middle of playing. Hold is left out of it: whether
+	// there is a hold queue is the GAME's rule and no game has been chosen
+	// yet (controlsSections).
+	for _, sec := range a.controlsSections(false) {
+		children = append(children,
+			layout.Rigid(spacer(16)),
+			layout.Rigid(func(gtx C) D {
+				// The legend's parts at their own sizes, not the column's: a
+				// key label handed the column's width as its minimum reports
+				// it, and controlsHint lines the moves up past the widest key.
+				gtx.Constraints.Min = image.Point{}
+				return a.controlsHint(gtx, sec.header, sec.rows)
+			}),
+		)
+	}
+	// The column fills its slot (an exact height): lay its parts out at their
+	// own heights — the button still spans the width — and return the slot.
+	slot := gtx.Constraints.Max
+	gtx.Constraints.Min.Y = 0
+	layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	return D{Size: slot}
+}
+
+// lobbyPlayersColumn is everyone in the lobby, in a column beside the panel:
+// the counterpart of the opponents' boards on the game screen, switched on
+// and off by the bar the same way. Each row is the name over what that player
+// is doing — stacked, not side by side, because the column is narrow and a
+// name and a state sharing a line would both be cut.
+func (a *App) lobbyPlayersColumn(gtx C, players []lobby.PlayerPresence) D {
+	return background(gtx, colPanel, func(gtx C) D {
+		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(a.header(fmt.Sprintf("PLAYERS (%d)", len(players)))),
+				layout.Flexed(1, func(gtx C) D {
+					if len(players) == 0 {
+						return a.body("Nobody else is here.", colMuted)(gtx)
+					}
+					return material.List(a.th, &a.playerList).Layout(gtx, len(players), func(gtx C, i int) D {
+						p := players[i]
+						return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(a.body(agentName(p.Name, p.Agent), colFg)),
+								layout.Rigid(a.caption(statusText(p.Status), colMuted)),
+							)
+						})
+					})
+				}),
+			)
+		})
+		fillRect(gtx.Ops, image.Rect(0, 0, gtx.Dp(2), d.Size.Y), colBorder)
+		return d
+	})
+}
+
+// lobbyPlayersStrip is the players list where it cannot stand beside the
+// panel (lobbyPlayersBeside): the same names and states, laid ACROSS the full
+// width just above the chat instead of down a column beside the games. It
+// costs the panel its own height rather than a quarter of its width — and it
+// takes as little of that as it can, packing the players along each line and
+// starting a new one only when the next will not fit (lobbyPlayersFlow),
+// scrolling only once there are more lines than lobbyPlayersStripRows.
+func (a *App) lobbyPlayersStrip(gtx C, players []lobby.PlayerPresence) D {
+	return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.header(fmt.Sprintf("PLAYERS (%d)", len(players)))),
+			layout.Rigid(func(gtx C) D {
+				if len(players) == 0 {
+					return a.body("Nobody else is here.", colMuted)(gtx)
+				}
+				return bordered(gtx, func(gtx C) D {
+					rows := a.lobbyPlayersFlow(gtx, players)
+					// Three lines of them at most; past that the strip keeps
+					// its height and scrolls, so a lobby with thirty agents in
+					// it cannot push the games off the screen.
+					m := gtx
+					m.Constraints.Min = image.Point{}
+					rec := op.Record(gtx.Ops)
+					rowH := rows[0](m).Size.Y
+					rec.Stop() // measure only — discard the recorded ops
+					if maxH := rowH * lobbyPlayersStripRows; gtx.Constraints.Max.Y > maxH {
+						gtx.Constraints.Max.Y = maxH
+					}
+					return material.List(a.th, &a.playerStripLst).Layout(gtx, len(rows), func(gtx C, i int) D {
+						return rows[i](gtx)
+					})
+				})
+			}),
+		)
+	})
+}
+
+// lobbyPlayersFlow packs the players onto as many lines as they need: each
+// entry takes the width its name wants (up to a column's worth) and a line
+// breaks where the next entry would not fit. Gio has no flow layout, so the
+// entries are measured at their own sizes into a discarded macro and the
+// lines assembled by hand — cheap, since a lobby holds a handful of players
+// and every entry is two labels.
+func (a *App) lobbyPlayersFlow(gtx C, players []lobby.PlayerPresence) []layout.Widget {
+	entry := func(p lobby.PlayerPresence) layout.Widget {
+		return func(gtx C) D {
+			gtx.Constraints.Min.X = 0
+			gtx.Constraints.Max.X = min(gtx.Constraints.Max.X, gtx.Dp(lobbyPlayersMaxW))
+			return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(a.body(agentName(p.Name, p.Agent), colFg)),
+					layout.Rigid(a.caption(statusText(p.Status), colMuted)),
+				)
+			})
+		}
+	}
+	gap, avail := gtx.Dp(14), gtx.Constraints.Max.X
+	var rows []layout.Widget
+	var line []layout.Widget
+	x := 0
+	for _, p := range players {
+		w := entry(p)
+		m := gtx
+		m.Constraints.Min = image.Point{}
+		rec := op.Record(gtx.Ops)
+		need := w(m).Size.X
+		rec.Stop() // measure only — discard the recorded ops
+		if len(line) > 0 && x+gap+need > avail {
+			rows = append(rows, flowLine(line, gap))
+			line, x = nil, 0
+		}
+		if len(line) > 0 {
+			x += gap
+		}
+		line = append(line, w)
+		x += need
+	}
+	if len(line) > 0 {
+		rows = append(rows, flowLine(line, gap))
+	}
+	return rows
+}
+
+// flowLine is one packed line: its entries side by side, gap px apart, each
+// at its own width and all of them topped off at the same line.
+func flowLine(items []layout.Widget, gap int) layout.Widget {
+	return func(gtx C) D {
+		kids := make([]layout.FlexChild, 0, 2*len(items))
+		for i, w := range items {
+			if i > 0 {
+				kids = append(kids, layout.Rigid(func(gtx C) D { return D{Size: image.Pt(gap, 0)} }))
+			}
+			kids = append(kids, layout.Rigid(w))
+		}
+		return layout.Flex{}.Layout(gtx, kids...)
+	}
+}
+
+// lobbyChatStrip is the lobby's chat along the bottom of the screen, the same
+// strip the game screen has (gameChatPanel) and built from the same two
+// pieces, minus the two things a lobby has no need of: there is no piece here
+// for the keys to go back to, so no focus ring and no pointer area of its
+// own, and every message in it is already the lobby's, so none is prefixed
+// @lobby.
+func (a *App) lobbyChatStrip(gtx C, chat []lobby.ChatMessage) D {
+	a.lobbyChatSeen = len(chat) // seen: the bar's unread dot goes out
+	return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.header("CHAT")),
+			layout.Rigid(func(gtx C) D {
+				return a.chatLogBox(gtx, &a.chatList, len(chat), func(i int) (string, colorN) {
+					return fmt.Sprintf("%s: %s", chat[i].Name, chat[i].Text), colFg
+				})
+			}),
+			layout.Rigid(spacer(6)),
+			layout.Rigid(func(gtx C) D {
+				return a.chatComposer(gtx, &a.chatEd, &a.chatBtn, "Message…")
+			}),
+		)
+	})
+}
+
+// lobbyPanel is the middle of the screen: the one action that is not a list
+// over the two that are. Create a new game stands above the tabs rather than
+// inside either of them, because it belongs to neither and because a button
+// on a scrolling list is a button that can be scrolled away from.
+func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord) D {
+	history := a.lobbyTab == lobbyTabHistory
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.createRow),
+		layout.Rigid(spacer(12)),
+		layout.Rigid(func(gtx C) D {
+			// The tabs sit on the panel's top border like file-folder tabs
+			// (the connection page's, connPage), each carrying its own count
+			// so the one that is not showing still says how much is in it.
+			return layout.Flex{Alignment: layout.End}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return a.tabChip(gtx, &a.lobbyTabBtns[0], fmt.Sprintf("GAMES (%d)", len(games)), !history)
+				}),
+				layout.Rigid(hSpacer(4)),
+				layout.Rigid(func(gtx C) D {
+					return a.tabChip(gtx, &a.lobbyTabBtns[1], fmt.Sprintf("GAME HISTORY (%d)", len(archives)), history)
+				}),
+			)
+		}),
+		layout.Flexed(1, func(gtx C) D {
+			return widget.Border{Color: colAccent, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+				return background(gtx, colPanel, func(gtx C) D {
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+						if history {
+							return a.lobbyHistoryTab(gtx, archives)
+						}
+						return a.lobbyGamesTab(gtx, games, abandoned)
 					})
 				})
 			})
 		}),
-		layout.Rigid(spacer(8)),
-		layout.Rigid(a.header("CHAT")),
-		layout.Flexed(1, func(gtx C) D {
-			return bordered(gtx, func(gtx C) D {
-				return material.List(a.th, &a.chatList).Layout(gtx, len(chat), func(gtx C, i int) D {
-					m := chat[i]
-					txt := fmt.Sprintf("%s: %s", m.Name, m.Text)
-					return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, colFg))
-				})
-			})
-		}),
+	)
+}
+
+// lobbyGamesTab is the games on offer now, newest first, ruled off from one
+// another.
+func (a *App) lobbyGamesTab(gtx C, games []lobby.GameListing, abandoned map[string]bool) D {
+	if len(games) == 0 {
+		return layout.Inset{Top: unit.Dp(4), Left: unit.Dp(6)}.Layout(gtx,
+			a.body("No games yet — create one and the others will see it here.", colMuted))
+	}
+	return material.List(a.th, &a.gameList).Layout(gtx, len(games), func(gtx C, i int) D {
+		g := games[i]
+		row := func(gtx C) D { return a.gameRow(gtx, g, abandoned[g.GameID]) }
+		if i == 0 {
+			return row(gtx)
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return hrule(gtx, colBorder, 1) }),
+			layout.Rigid(row),
+		)
+	})
+}
+
+// lobbyHistoryTab is the games already played: the sort and crew controls,
+// the all-time teams scoreboard when there is one, and the high-score table.
+func (a *App) lobbyHistoryTab(gtx C, archives []config.ArchiveRecord) D {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.historyControls),
 		layout.Rigid(spacer(6)),
-		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx C) D { return a.teamStandingsLine(gtx, archives) }),
+		layout.Flexed(1, func(gtx C) D {
+			if len(archives) == 0 {
+				return layout.Inset{Top: unit.Dp(6), Left: unit.Dp(6)}.Layout(gtx,
+					a.body("No finished games yet.", colMuted))
+			}
+			// An arcade high-score table: a pixel-font column header over a
+			// scrolling list of games, each row a fixed SCORE / TIME / MODE
+			// column trio (the score largest, in gold) and a flexed
+			// winner-first PLAYERS column, ruled off from the next game.
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(a.archiveHistoryHeader),
+				layout.Rigid(func(gtx C) D { return hrule(gtx, colAccent, 1) }),
 				layout.Flexed(1, func(gtx C) D {
-					return a.editorBox(gtx, &a.chatEd, "Message…")
+					lb := a.getLobby()
+					return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
+						for len(a.archiveBtns) <= i {
+							a.archiveBtns = append(a.archiveBtns, widget.Clickable{})
+							a.replayBtns = append(a.replayBtns, widget.Clickable{})
+						}
+						btn := &a.archiveBtns[i]
+						if btn.Clicked(gtx) {
+							a.openArchive(archives[i])
+						}
+						// Games whose stream was archived to a replay stream
+						// grow a Replay button; clicking it opens the
+						// speed-choice dialog.
+						var replayBtn *widget.Clickable
+						if lb != nil && lb.HasReplay(archives[i].GameID) {
+							replayBtn = &a.replayBtns[i]
+							if replayBtn.Clicked(gtx) {
+								rec := archives[i]
+								a.replayChoice = &rec
+							}
+						}
+						// Games in their bucket's all-time top 10 are marked
+						// (the ranking counts every record, not just the rows
+						// the filter shows — and only once the bucket has
+						// more than ten games).
+						top := lb != nil && lb.IsTopRanked(archives[i].GameID)
+						return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top)
+					})
 				}),
-				layout.Rigid(hSpacer(6)),
-				layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.chatBtn, "Send") }),
 			)
 		}),
 	)
 }
 
-func (a *App) lobbyRight(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, playerName, connName, connURL string) D {
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, func(gtx C) D {
-					// Who we are, then which server this session is on (the
-					// banner above already says LOBBY): same size, the server
-					// muted and kept to one line. The server's NAME is rigid
-					// and its URL takes only what is left over, so a narrow
-					// window eats into the URL — "@ Jetris EU central
-					// (wss://eu-cen…" — instead of leaving the player looking
-					// at half an address with no idea which server it is.
-					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-						layout.Rigid(a.pixel(unit.Sp(13), playerName, colFg).Layout),
-						layout.Rigid(hSpacer(14)),
-						layout.Rigid(func(gtx C) D {
-							if connName == "" {
-								return D{}
-							}
-							return a.pixel(unit.Sp(13), "@ "+connName, colMuted).Layout(gtx)
-						}),
-						layout.Flexed(1, func(gtx C) D {
-							if connName == "" || connURL == "" {
-								return D{}
-							}
-							return a.pixelLabelFit(gtx, unit.Sp(9), "  ("+connURL+")", colMuted)
-						}),
-					)
-				}),
-				layout.Rigid(func(gtx C) D {
-					return a.secondaryButton(gtx, &a.quitBtn, "Disconnect")
-				}),
-			)
-		}),
-		layout.Rigid(func(gtx C) D {
-			// While hosting the embedded server, show the address other
-			// players should dial so the host can share it.
-			addr := a.embeddedAddr()
-			if addr == "" {
-				return D{}
-			}
-			return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-					layout.Rigid(a.pixel(unit.Sp(9), "YOUR SERVER'S URL IS  ", colMuted).Layout),
-					layout.Rigid(a.pixel(unit.Sp(10), "nats://"+addr, colNATSGreen).Layout),
-					layout.Rigid(a.body("  — share this address so others can join you", colMuted)),
-				)
-			})
-		}),
-		layout.Rigid(spacer(10)),
-		layout.Rigid(a.createRow),
-		layout.Rigid(spacer(10)),
-		layout.Rigid(a.header("GAMES")),
-		layout.Flexed(2, func(gtx C) D {
-			return bordered(gtx, func(gtx C) D {
-				return material.List(a.th, &a.gameList).Layout(gtx, len(games), func(gtx C, i int) D {
-					return a.gameRow(gtx, games[i], abandoned[games[i].GameID])
+// historyControls is the history tab's own toolbar: how the table is ordered,
+// and which crews are listed in it. On one line where it fits and two where it
+// does not — and that is measured rather than guessed at from the form factor,
+// because what it has to fit inside is the PANEL's width and not the screen's:
+// a desktop lobby with both columns up leaves the panel far less than the
+// window. The measuring pass lays the row out into a discarded macro, on
+// throwaway widget state so the real controls' presses are not spent on it.
+func (a *App) historyControls(gtx C) D {
+	sort := func(sortEnum *widget.Enum) layout.Widget {
+		return func(gtx C) D {
+			rb := func(v, label string) layout.FlexChild {
+				return layout.Rigid(func(gtx C) D {
+					b := material.RadioButton(a.th, sortEnum, v, label)
+					b.Color = colFg
+					return b.Layout(gtx)
 				})
-			})
-		}),
-		layout.Rigid(spacer(8)),
-		layout.Rigid(func(gtx C) D {
-			// GAME HISTORY header with its sort selector and the crew
-			// filters (one box per agent composition) grouped beside it.
+			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(a.header("GAME HISTORY")),
-				layout.Rigid(hSpacer(12)),
-				layout.Rigid(func(gtx C) D {
-					rb := material.RadioButton(a.th, &a.histSortEnum, "score", "By score")
-					rb.Color = colFg
-					return rb.Layout(gtx)
-				}),
+				rb("score", "By score"),
 				layout.Rigid(hSpacer(6)),
-				layout.Rigid(func(gtx C) D {
-					rb := material.RadioButton(a.th, &a.histSortEnum, "date", "By date")
-					rb.Color = colFg
-					return rb.Layout(gtx)
-				}),
-				layout.Rigid(hSpacer(10)),
-				layout.Rigid(a.histFilterBox(&a.histHumansCb, "Players only")),
-				layout.Rigid(hSpacer(6)),
-				layout.Rigid(a.histFilterBox(&a.histMixedCb, "Agents and players")),
-				layout.Rigid(hSpacer(6)),
-				layout.Rigid(a.histFilterBox(&a.histAgentsOnlyCb, "Agents only")),
+				rb("date", "By date"),
 			)
-		}),
-		layout.Rigid(func(gtx C) D { return a.teamStandingsLine(gtx, archives) }),
-		layout.Flexed(1, func(gtx C) D {
-			return bordered(gtx, func(gtx C) D {
-				if len(archives) == 0 {
-					return layout.Inset{Top: unit.Dp(6), Left: unit.Dp(4)}.Layout(gtx,
-						a.body("No finished games yet.", colMuted))
-				}
-				// An arcade high-score table: a pixel-font column header over a
-				// scrolling list of games, each row a fixed SCORE / TIME / MODE
-				// column trio (the score largest, in gold) and a flexed
-				// winner-first PLAYERS column, ruled off from the next game.
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(a.archiveHistoryHeader),
-					layout.Rigid(func(gtx C) D { return hrule(gtx, colAccent, 1) }),
-					layout.Flexed(1, func(gtx C) D {
-						lb := a.getLobby()
-						return material.List(a.th, &a.archiveLst).Layout(gtx, len(archives), func(gtx C, i int) D {
-							for len(a.archiveBtns) <= i {
-								a.archiveBtns = append(a.archiveBtns, widget.Clickable{})
-								a.replayBtns = append(a.replayBtns, widget.Clickable{})
-							}
-							btn := &a.archiveBtns[i]
-							if btn.Clicked(gtx) {
-								a.openArchive(archives[i])
-							}
-							// Games whose stream was archived to a replay
-							// stream grow a Replay button; clicking it opens
-							// the speed-choice dialog.
-							var replayBtn *widget.Clickable
-							if lb != nil && lb.HasReplay(archives[i].GameID) {
-								replayBtn = &a.replayBtns[i]
-								if replayBtn.Clicked(gtx) {
-									rec := archives[i]
-									a.replayChoice = &rec
-								}
-							}
-							// Games in their bucket's all-time top 10 are
-							// marked (the ranking counts every record, not
-							// just the rows the filter shows — and only once
-							// the bucket has more than ten games).
-							top := lb != nil && lb.IsTopRanked(archives[i].GameID)
-							return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top)
-						})
-					}),
-				)
-			})
-		}),
+		}
+	}
+	crew := func(humans, mixed, agents *widget.Bool) layout.Widget {
+		return func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.histFilterBox(humans, "Players only")),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(a.histFilterBox(mixed, "Agents and players")),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(a.histFilterBox(agents, "Agents only")),
+			)
+		}
+	}
+	// Stacked, for a panel that cannot hold the three of them side by side: a
+	// checkbox handed less width than its label wants does not elide, it
+	// WRAPS — "Agents only" came out as three lines of stacked syllables on a
+	// phone — so below the width they need each one takes a line.
+	crewStack := func(humans, mixed, agents *widget.Bool) layout.Widget {
+		return func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(a.histFilterBox(humans, "Players only")),
+				layout.Rigid(a.histFilterBox(mixed, "Agents and players")),
+				layout.Rigid(a.histFilterBox(agents, "Agents only")),
+			)
+		}
+	}
+	oneLine := func(s, c layout.Widget) layout.Widget {
+		return func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(s),
+				layout.Rigid(hSpacer(14)),
+				layout.Rigid(c),
+			)
+		}
+	}
+	// What each arrangement wants, measured into a discarded macro on
+	// throwaway widget state so the real controls' presses are not spent on
+	// it. It is measured rather than guessed at from the form factor because
+	// what these have to fit inside is the PANEL's width and not the
+	// screen's: a desktop lobby with both columns up leaves the panel far
+	// less than the window.
+	var mEnum widget.Enum
+	var mHumans, mMixed, mAgents widget.Bool
+	m := gtx
+	m.Constraints.Min = image.Point{}
+	m.Constraints.Max.X = 1 << 20
+	rec := op.Record(gtx.Ops)
+	bothW := oneLine(sort(&mEnum), crew(&mHumans, &mMixed, &mAgents))(m).Size.X
+	crewW := crew(&mHumans, &mMixed, &mAgents)(m).Size.X
+	rec.Stop() // measure only — discard the recorded ops
+	row := crew(&a.histHumansCb, &a.histMixedCb, &a.histAgentsOnlyCb)
+	switch {
+	case bothW <= gtx.Constraints.Max.X:
+		return oneLine(sort(&a.histSortEnum), row)(gtx)
+	case crewW > gtx.Constraints.Max.X:
+		row = crewStack(&a.histHumansCb, &a.histMixedCb, &a.histAgentsOnlyCb)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(sort(&a.histSortEnum)),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(row),
 	)
 }
 
@@ -428,16 +986,37 @@ func (a *App) teamStandingsLine(gtx C, archives []config.ArchiveRecord) D {
 		txt := fmt.Sprintf("TEAM %s %dW · %d PTS", teamName(t), wins[t], points[t])
 		return layout.Rigid(a.pixel(unit.Sp(8), txt, col).Layout)
 	}
-	label := fmt.Sprintf("TEAMS OVERALL (%d GAMES)   ", games)
+	label := fmt.Sprintf("TEAMS OVERALL (%d GAMES)", games)
 	if games == 1 {
-		label = "TEAMS OVERALL (1 GAME)   "
+		label = "TEAMS OVERALL (1 GAME)"
 	}
-	return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+	oneLine := func(gtx C) D {
 		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-			layout.Rigid(a.pixel(unit.Sp(8), label, colMuted).Layout),
+			layout.Rigid(a.pixel(unit.Sp(8), label+"   ", colMuted).Layout),
 			seg(0),
 			layout.Rigid(a.pixel(unit.Sp(8), "  —  ", colMuted).Layout),
 			seg(1),
+		)
+	}
+	return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		// One line where it fits, three where it does not. A Flex hands a
+		// rigid child whatever is left and lets it be one glyph wide, which
+		// on a phone printed TEAM B's totals vertically down the edge of the
+		// table; measured, the line stacks instead.
+		if a.pixelWidth(gtx, unit.Sp(8), label+"    TEAM A 00W · 000000 PTS  —  TEAM B 00W · 000000 PTS") <= gtx.Constraints.Max.X {
+			return oneLine(gtx)
+		}
+		line := func(t int) layout.FlexChild {
+			return layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+					return layout.Flex{}.Layout(gtx, seg(t))
+				})
+			})
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(8), label, colMuted).Layout),
+			line(0),
+			line(1),
 		)
 	})
 }
@@ -491,7 +1070,24 @@ const (
 	histScoreW = 92
 	histTimeW  = 96
 	histModeW  = 124
+	// The same columns where the row has been folded onto two lines
+	// (histStacked): narrower, because there all three of them share a line
+	// with nothing beside them and the roster has the next line to itself.
+	histScoreNarrowW = 76
+	histTimeNarrowW  = 84
+	// histRowW is the width the one-line row needs: the three columns and
+	// their gaps, a roster column worth reading beside them, and the row's
+	// actions. Under it — a phone, or a desktop panel with both lobby columns
+	// up — the row folds, because a Flex hands its flexed child whatever the
+	// rigid ones leave and that is a PLAYERS column one letter wide, printed
+	// down the side of the table.
+	histRowW = 620
 )
+
+// histStacked reports whether the history table's rows are folded onto two
+// lines in the width gtx measures — the columns over the roster — instead of
+// running as one.
+func histStacked(gtx C) bool { return gtx.Constraints.Max.X < gtx.Dp(unit.Dp(histRowW)) }
 
 // fixedCol lays wdg inside a fixed-width (dp) column, aligned by dir.
 func fixedCol(gtx C, w int, dir layout.Direction, wdg layout.Widget) D {
@@ -518,16 +1114,30 @@ func (a *App) archiveHistoryHeader(gtx C) D {
 			return fixedCol(gtx, w, dir, a.pixel(unit.Sp(8), txt, colAccent).Layout)
 		})
 	}
+	stacked := histStacked(gtx)
+	scoreW, timeW := histScoreW, histTimeW
+	if stacked {
+		scoreW, timeW = histScoreNarrowW, histTimeNarrowW
+	}
 	return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(5), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			col("SCORE", histScoreW, layout.E),
+		kids := []layout.FlexChild{
+			col("SCORE", scoreW, layout.E),
 			layout.Rigid(hSpacer(10)),
-			col("TIME", histTimeW, layout.W),
+			col("TIME", timeW, layout.W),
 			layout.Rigid(hSpacer(10)),
+		}
+		if stacked {
+			// The roster is on the row's second line, under all three of
+			// these, so there is no PLAYERS column here to label.
+			kids = append(kids, layout.Flexed(1, a.pixel(unit.Sp(8), "MODE", colAccent).Layout))
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
+		}
+		kids = append(kids,
 			col("MODE", histModeW, layout.W),
 			layout.Rigid(hSpacer(10)),
 			layout.Flexed(1, a.pixel(unit.Sp(8), "PLAYERS", colAccent).Layout),
 		)
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 	})
 }
 
@@ -562,9 +1172,64 @@ func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn 
 	)
 }
 
+// archiveHistoryActions is the row's action cluster: View board, and Replay
+// for a game whose stream was archived to one.
+func (a *App) archiveHistoryActions(btn, replayBtn *widget.Clickable) []layout.FlexChild {
+	kids := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
+	}
+	if replayBtn != nil {
+		kids = append(kids,
+			layout.Rigid(hSpacer(6)),
+			layout.Rigid(func(gtx C) D {
+				return a.smallActionButton(gtx, replayBtn, "Replay", colNATSGreen)
+			}),
+		)
+	}
+	return kids
+}
+
+// archiveHistoryStackedCells is the row folded onto two lines, for a panel
+// too narrow to run it as one (histStacked): the SCORE, TIME and MODE columns
+// on top — MODE taking whatever the two fixed ones leave rather than a fixed
+// column of its own — and under them the roster with the row's actions beside
+// it. Nothing is dropped and nothing is abbreviated; the row is simply two
+// lines tall, which is what a phone has to spend.
+func (a *App) archiveHistoryStackedCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
+	return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						return fixedCol(gtx, histScoreNarrowW, layout.E, a.archiveScoreCell(rec, top))
+					}),
+					layout.Rigid(hSpacer(10)),
+					layout.Rigid(func(gtx C) D {
+						return fixedCol(gtx, histTimeNarrowW, layout.W, a.archiveTimeCell(rec))
+					}),
+					layout.Rigid(hSpacer(10)),
+					layout.Flexed(1, a.archiveModeCell(rec)),
+				)
+			}),
+			layout.Rigid(spacer(6)),
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					append([]layout.FlexChild{
+						layout.Flexed(1, a.archivePlayersCell(rec)),
+						layout.Rigid(hSpacer(8)),
+					}, a.archiveHistoryActions(btn, replayBtn)...)...)
+			}),
+		)
+	})
+}
+
 // archiveHistoryCells is the history row's inset column flex (see
-// archiveHistoryRow).
+// archiveHistoryRow), folded onto two lines where the panel is too narrow to
+// run it as one.
 func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
+	if histStacked(gtx) {
+		return a.archiveHistoryStackedCells(gtx, rec, btn, replayBtn, top)
+	}
 	return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 		children := []layout.FlexChild{
 			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec, top)) }),
@@ -575,16 +1240,8 @@ func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBt
 			layout.Rigid(hSpacer(10)),
 			layout.Flexed(1, a.archivePlayersCell(rec)),
 			layout.Rigid(hSpacer(8)),
-			layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
 		}
-		if replayBtn != nil {
-			children = append(children,
-				layout.Rigid(hSpacer(6)),
-				layout.Rigid(func(gtx C) D {
-					return a.smallActionButton(gtx, replayBtn, "Replay", colNATSGreen)
-				}),
-			)
-		}
+		children = append(children, a.archiveHistoryActions(btn, replayBtn)...)
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
 	})
 }
@@ -1484,6 +2141,16 @@ func (a *App) markedText(txt string, col colorN, emph bool, maxLines int) layout
 		}
 		return D{Size: image.Pt(x, bottom), Baseline: max(0, bottom-ascent)}
 	}
+}
+
+// modalW is the width a modal dialog is laid out at: the width it was
+// designed for, or everything the screen can give it less a margin, whichever
+// is smaller. Setting Max.X to the design width alone does NOT fit it — a
+// 480 dp wizard on a 390 dp phone is laid out 480 dp wide and hangs off both
+// edges, taking its Next button over one of them, which is the one thing a
+// wizard cannot afford to lose.
+func modalW(gtx C, want unit.Dp) int {
+	return min(gtx.Dp(want), max(gtx.Constraints.Max.X-gtx.Dp(12), gtx.Dp(1)))
 }
 
 func bordered(gtx C, w layout.Widget) D {

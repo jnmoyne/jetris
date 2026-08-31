@@ -452,6 +452,25 @@ type App struct {
 	// screenEng is the engine the screen state above belongs to; a new one
 	// (every game entry makes one) shuts the menu and forgets what was read.
 	screenEng *engine.Engine
+	// The lobby screen's switches (lobby.go), the same idiom one screen over:
+	// lobbyMenuPref is the menu column (lobbyMenuVisible), lobbyPlayersPref
+	// the players column beside the panel (lobbyPlayersVisible) and
+	// lobbyChatPref the chat strip under it (lobbyChatVisible). 0 for the
+	// screen's own default, ±1 once the player has used that bar button. They
+	// are the lobby's own and NOT the game's: the two screens stand different
+	// things beside their content. UI goroutine only.
+	lobbyMenuPref, lobbyPlayersPref, lobbyChatPref       int8
+	barLobbyMenuBtn, barLobbyPlayersBtn, barLobbyChatBtn widget.Clickable
+	lobbyMenuTag                                         int // pointer-area tag of a lobby menu column drawn OVER the panel
+	lobbyChatSeen                                        int // lobby messages the strip last showed: the bar's unread dot
+	// The panel's two tabs (lobbyTabGames / lobbyTabHistory) and their chips:
+	// the games on offer now, and the games already played.
+	lobbyTab     string
+	lobbyTabBtns [2]widget.Clickable
+	// playerStripLst scrolls the players strip where the column has moved
+	// under the panel and there are more players than its lines hold
+	// (lobbyPlayersStrip).
+	playerStripLst widget.List
 	// Touch diagnostic (browser build, view_js.go; the page's ?touchdebug=1):
 	// touchDebug switches it on, touchPresses counts the touch presses that
 	// reached the game screen (handleGameFocus) and frames the frames laid
@@ -502,7 +521,11 @@ type App struct {
 	archiveSel      *config.ArchiveRecord // the finished game whose boards are being shown
 	archiveBtns     []widget.Clickable    // one per history row (indexed by list position)
 	archiveBackBtn  widget.Clickable      // "Back to Lobby" from the archive viewer
-	archiveChatList widget.List           // the record's preserved chat history
+	archiveChatList widget.List
+	// archiveColLst scrolls the archive viewer's stacked column on a compact
+	// screen, where the boards, the roster and the chat cannot stand side by
+	// side (layoutArchive).
+	archiveColLst widget.List // the record's preserved chat history
 
 	// game replay: the history rows' Replay buttons, the speed-choice dialog
 	// (replayChoice non-nil while it is open; UI goroutine only, like
@@ -576,7 +599,14 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.archiveLst.Axis = layout.Vertical
 	a.archiveChatList.Axis = layout.Vertical
 	a.archiveChatList.ScrollToEnd = true
+	a.archiveColLst.Axis = layout.Vertical
 	a.chatList.Axis = layout.Vertical
+	// The lobby chat is a strip like the game's now, so it follows the
+	// conversation like the game's: a message arriving while it is up shows
+	// without the reader scrolling for it.
+	a.chatList.ScrollToEnd = true
+	a.lobbyTab = lobbyTabGames
+	a.playerStripLst.Axis = layout.Vertical
 	a.msgList.Axis = layout.Vertical
 	a.msgList.ScrollToEnd = true
 	a.gameChatEd.SingleLine = true

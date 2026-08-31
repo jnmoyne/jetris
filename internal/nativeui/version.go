@@ -50,6 +50,22 @@ func versionLabel(update string) string {
 	return s
 }
 
+// versionLabelShort is the plate where there is no room for the whole thing —
+// a phone, where the badge sits in the same row as the brand banner and a
+// two-line plate covers it. The build metadata goes ("0.11.1-13-GF206014-DIRTY"
+// is a developer's string, not a player's), and once a newer release is known
+// the plate says only that, which is the part worth the corner.
+func versionLabelShort(update string) string {
+	if update != "" {
+		return "NEW " + strings.ToUpper(strings.TrimPrefix(update, "v"))
+	}
+	v := strings.ToUpper(strings.TrimPrefix(version, "v"))
+	if i := strings.IndexByte(v, '-'); i > 0 {
+		v = v[:i]
+	}
+	return "VER " + v
+}
+
 // versionBadge draws the version plate in the window's top-right corner, over
 // whatever screen is showing: pixel-face text on its own panel chip so it stays
 // readable above a board, framed like the rest of the 8-bit chrome. Muted
@@ -61,7 +77,12 @@ func (a *App) versionBadge(gtx C) {
 	if update != "" {
 		col = colGold
 	}
-	lbl := a.pixel(unit.Sp(8), versionLabel(update), col)
+	txt := versionLabel(update)
+	if a.form.compact {
+		txt = versionLabelShort(update)
+	}
+	lbl := a.pixel(unit.Sp(8), txt, col)
+	lbl.MaxLines = 1
 	inset := layout.Inset{Top: unit.Dp(6), Right: unit.Dp(8)}
 	inset.Layout(gtx, func(gtx C) D {
 		return layout.NE.Layout(gtx, func(gtx C) D {

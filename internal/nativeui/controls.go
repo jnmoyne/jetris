@@ -157,6 +157,19 @@ var (
 		"..XXXXX..",
 		".XXXXXXX.",
 	}
+	// glyphPlayers switches the lobby's players column on and off (lobby.go):
+	// two figures side by side, which is what the column beside the games
+	// actually lists — everyone else in here.
+	glyphPlayers = []string{
+		"XXX.XXX",
+		"XXX.XXX",
+		".X...X.",
+		".......",
+		"XXX.XXX",
+		"XXX.XXX",
+		"XXX.XXX",
+		"XXX.XXX",
+	}
 	// glyphBoards switches the opponents' playfields on and off (gamescreen.go):
 	// two wells side by side, the second one part-filled, which is what the
 	// strip it opens actually shows.

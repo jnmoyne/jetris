@@ -275,7 +275,7 @@ func (a *App) layoutGame(gtx C) D {
 // Rejoin button.
 func (a *App) confirmLeaveOverlay(gtx C) D {
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(420)
+		gtx.Constraints.Max.X = modalW(gtx, 420)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colErr, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {
@@ -366,26 +366,12 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 	}
 
 	log := func(gtx C) D {
-		return bordered(gtx, func(gtx C) D {
-			// Height-reactive: at least 96 dp of conversation, growing with
-			// the window (12% of the room the strip is given) so a taller
-			// screen shows more of it without eating the board.
-			if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
-				gtx.Constraints.Max.Y = maxH
-			}
-			return material.List(a.th, &a.gameChatList).Layout(gtx, len(msgs), func(gtx C, i int) D {
-				txt, col := chatLine(msgs[i])
-				return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
-			})
+		return a.chatLogBox(gtx, &a.gameChatList, len(msgs), func(i int) (string, colorN) {
+			return chatLine(msgs[i])
 		})
 	}
-	// The composer under the log: the editor and Send.
 	composer := func(gtx C) D {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, &a.gameChatEd, hint) }),
-			layout.Rigid(func(gtx C) D { return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx) }),
-			layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.gameChatBtn, "Send") }),
-		)
+		return a.chatComposer(gtx, &a.gameChatEd, &a.gameChatBtn, hint)
 	}
 
 	return pointerArea(gtx, &a.chatTag, func(gtx C) D {
@@ -404,6 +390,33 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 			)
 		})
 	})
+}
+
+// chatLogBox is the conversation itself, the same in both chat strips (the
+// game's above and the lobby's, lobbyChatStrip): the messages in a bordered
+// scrolling list, height-reactive — at least 96 dp of talk, growing with the
+// window (12% of the room the strip is given) so a taller screen shows more
+// of it without eating into what is above it. line renders message i, so each
+// strip keeps its own idea of what a line says.
+func (a *App) chatLogBox(gtx C, lst *widget.List, n int, line func(i int) (string, colorN)) D {
+	return bordered(gtx, func(gtx C) D {
+		if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
+			gtx.Constraints.Max.Y = maxH
+		}
+		return material.List(a.th, lst).Layout(gtx, n, func(gtx C, i int) D {
+			txt, col := line(i)
+			return layout.Inset{Top: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, a.body(txt, col))
+		})
+	})
+}
+
+// chatComposer is the row under the log, in both strips: the editor and Send.
+func (a *App) chatComposer(gtx C, ed *widget.Editor, send *widget.Clickable, hint string) D {
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Flexed(1, func(gtx C) D { return a.editorBox(gtx, ed, hint) }),
+		layout.Rigid(hSpacer(6)),
+		layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, send, "Send") }),
+	)
 }
 
 // gameChatLog is this game's chat as the panel shows it: the game's own
@@ -643,21 +656,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 // the y under the last section drawn.
 func (a *App) controlsLegend(gtx C, y, limit int, hold bool) int {
 	gtx.Constraints.Min = image.Point{} // the legend's parts at their own sizes, not the column's
-	keys := [][2]string{{"← →", "move · hold slides"}, {"↓", "soft drop"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
-	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
-	if hold {
-		keys = append(keys, [2]string{"C", "hold"})
-		touch = append(touch, [2]string{"swipe ↑", "hold"})
-	}
-	keys = append(keys, [2]string{"TAB", "chat / board"})
-	sections := []struct {
-		header string
-		rows   [][2]string
-	}{{"KEYS", keys}, {"TOUCH", touch}}
-	if a.touchUI {
-		sections[0], sections[1] = sections[1], sections[0]
-	}
-	for _, s := range sections {
+	for _, s := range a.controlsSections(hold) {
 		macro := op.Record(gtx.Ops)
 		d := a.controlsHint(gtx, s.header, s.rows)
 		call := macro.Stop()
@@ -671,6 +670,35 @@ func (a *App) controlsLegend(gtx C, y, limit int, hold bool) int {
 		y += d.Size.Y + gtx.Dp(12)
 	}
 	return y
+}
+
+// controlsSection is one block of the legend: a heading and the mappings
+// under it, each a key (or gesture) and the move it makes.
+type controlsSection struct {
+	header string
+	rows   [][2]string
+}
+
+// controlsSections is what the legend says, wherever it is drawn — the game's
+// menu column (controlsLegend) and the lobby's (lobbyMenu). This screen's own
+// scheme comes first: a touch player wants the gestures at the top and reads
+// the keys as the footnote, and a player with a keyboard the other way round.
+// hold adds the hold key and its gesture, and only a game whose rules carry
+// the hold queue can promise it — the lobby, which has no game yet, says
+// nothing about it rather than teaching a key that may do nothing.
+func (a *App) controlsSections(hold bool) []controlsSection {
+	keys := [][2]string{{"← →", "move · hold slides"}, {"↓", "soft drop"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
+	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
+	if hold {
+		keys = append(keys, [2]string{"C", "hold"})
+		touch = append(touch, [2]string{"swipe ↑", "hold"})
+	}
+	keys = append(keys, [2]string{"TAB", "chat / board"})
+	sections := []controlsSection{{"KEYS", keys}, {"TOUCH", touch}}
+	if a.touchUI {
+		sections[0], sections[1] = sections[1], sections[0]
+	}
+	return sections
 }
 
 // controlsHint is one section of the controls legend: the header, then a

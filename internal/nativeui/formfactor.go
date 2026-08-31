@@ -161,3 +161,51 @@ func (a *App) hudVisible() bool {
 	}
 	return !a.form.compact
 }
+
+// The lobby screen's three switches (lobby.go) answer the same way as the
+// game screen's four above, and for the same reason: the player's standing
+// choice once they have made one, and the room the screen has until they do.
+// They are the LOBBY's own preferences and not the game's — the two screens
+// stand different things beside their content, and a menu shut over a
+// playfield says nothing about whether one is wanted beside a list of games.
+
+// lobbyMenuVisible reports whether the lobby's menu column — who we are,
+// which server, the address to share while hosting one, Disconnect — stands
+// beside the panel. A screen with room keeps it up, the way the lobby has
+// always carried that line across its top; a compact one starts without it,
+// because there the menu has to be drawn OVER the panel (lobbyMenuBeside).
+func (a *App) lobbyMenuVisible() bool {
+	switch {
+	case a.lobbyMenuPref > 0:
+		return true
+	case a.lobbyMenuPref < 0:
+		return false
+	}
+	return !a.form.compact
+}
+
+// lobbyPlayersVisible reports whether everyone in the lobby shows in a column
+// beside the panel — the counterpart of the game screen's opponents' boards,
+// and decided the same way: a screen with width to spare shows them, a narrow
+// one gives that width to the games instead until asked.
+func (a *App) lobbyPlayersVisible() bool {
+	switch {
+	case a.lobbyPlayersPref > 0:
+		return true
+	case a.lobbyPlayersPref < 0:
+		return false
+	}
+	return !a.form.compact
+}
+
+// lobbyChatVisible reports whether the lobby chat strip shows under the
+// panel, on the same terms the game's chat strip shows under the board.
+func (a *App) lobbyChatVisible() bool {
+	switch {
+	case a.lobbyChatPref > 0:
+		return true
+	case a.lobbyChatPref < 0:
+		return false
+	}
+	return !a.form.compact
+}

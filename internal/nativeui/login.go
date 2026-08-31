@@ -160,15 +160,24 @@ func (a *App) layoutLogin(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
 					// The title flanked by NATS "N" logos, arcade-marquee style,
-					// centered over the card.
-					return layout.Center.Layout(gtx, func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
-							layout.Rigid(hSpacer(14)),
-							layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
-							layout.Rigid(hSpacer(14)),
-							layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
-						)
+					// centered over the card. On a compact screen it centres in
+					// the room the version plate leaves it (versionBadge, the
+					// frame's top-right corner) rather than running its second
+					// logo under the plate.
+					inset := layout.Inset{}
+					if a.form.compact {
+						inset.Right = unit.Dp(96)
+					}
+					return inset.Layout(gtx, func(gtx C) D {
+						return layout.Center.Layout(gtx, func(gtx C) D {
+							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+								layout.Rigid(hSpacer(14)),
+								layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
+								layout.Rigid(hSpacer(14)),
+								layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+							)
+						})
 					})
 				}),
 				layout.Rigid(spacer(14)),
@@ -181,16 +190,7 @@ func (a *App) layoutLogin(gtx C) D {
 					})
 				}),
 				layout.Rigid(spacer(14)),
-				layout.Rigid(func(gtx C) D {
-					// Branding tagline at the foot of the login card.
-					return layout.Center.Layout(gtx, func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Rigid(a.pixel(unit.Sp(9), "peer to peer · made with ", colMuted).Layout),
-							layout.Rigid(a.natsTag(18, 9)),
-							layout.Rigid(a.pixel(unit.Sp(9), " JetStream", colAccent).Layout),
-						)
-					})
-				}),
+				layout.Rigid(a.loginTagline),
 				layout.Rigid(a.updateNotice),
 			)
 		}),
@@ -230,7 +230,7 @@ func (a *App) modalScrim(gtx C) D {
 // fresh-install defaults come back, and asks before doing it.
 func (a *App) confirmResetOverlay(gtx C) D {
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = min(gtx.Dp(460), gtx.Constraints.Max.X-gtx.Dp(12))
+		gtx.Constraints.Max.X = modalW(gtx, 460)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colErr, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {
@@ -905,6 +905,36 @@ func (a *App) persistFavorites() {
 	}
 }
 
+// loginTagline is the branding line at the foot of the login card. It runs
+// along one line where the card holds it and breaks after "made with" where
+// it does not: squeezed, its last rigid child was left a few dp and split
+// "JetStream" across two lines mid-word.
+func (a *App) loginTagline(gtx C) D {
+	const lead = "peer to peer · made with "
+	tag := func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.natsTag(18, 9)),
+			layout.Rigid(a.pixel(unit.Sp(9), " JetStream", colAccent).Layout),
+		)
+	}
+	// The lead, the "N" chip and the two words beside it, measured in the
+	// pixel face they are set in.
+	want := a.pixelWidth(gtx, unit.Sp(9), lead+"NATS.io JetStream") + gtx.Dp(30)
+	return layout.Center.Layout(gtx, func(gtx C) D {
+		if want <= gtx.Constraints.Max.X {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.pixel(unit.Sp(9), lead, colMuted).Layout),
+				layout.Rigid(tag),
+			)
+		}
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.pixel(unit.Sp(9), "peer to peer · made with", colMuted).Layout),
+			layout.Rigid(spacer(4)),
+			layout.Rigid(tag),
+		)
+	})
+}
+
 // closeAddForm collapses the add-favorite form and clears its fields.
 func (a *App) closeAddForm() {
 	a.connAddOpen = false
@@ -918,9 +948,17 @@ func (a *App) connPage(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.header("CONNECT TO")),
 		layout.Rigid(func(gtx C) D {
+			// The two tabs name themselves in full where the card is wide
+			// enough for both and in short where it is not: a chip squeezed
+			// under its label does not elide, it wraps the label into stacked
+			// lines and grows up over the tab beside it.
+			browser, lan := "NATS SERVER BROWSER", "LAN PARTY MODE (EMBEDDED NATS SERVER)"
+			if a.pixelWidth(gtx, unit.Sp(8), browser+lan)+gtx.Dp(52) > gtx.Constraints.Max.X {
+				browser, lan = "SERVER BROWSER", "LAN PARTY MODE"
+			}
 			return layout.Flex{Alignment: layout.End}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
-					return a.connTabChip(gtx, &a.connTabBtns[0], "NATS SERVER BROWSER", a.connTab == connTabBrowser)
+					return a.tabChip(gtx, &a.connTabBtns[0], browser, a.connTab == connTabBrowser)
 				}),
 				layout.Rigid(func(gtx C) D {
 					if !embeddedAvailable {
@@ -932,7 +970,7 @@ func (a *App) connPage(gtx C) D {
 					if !embeddedAvailable {
 						return D{}
 					}
-					return a.connTabChip(gtx, &a.connTabBtns[1], "LAN PARTY MODE (EMBEDDED NATS SERVER)", a.connTab == connTabLAN)
+					return a.tabChip(gtx, &a.connTabBtns[1], lan, a.connTab == connTabLAN)
 				}),
 			)
 		}),
@@ -953,10 +991,11 @@ func (a *App) connPage(gtx C) D {
 	)
 }
 
-// connTabChip is one tab: a pixel-face label on a chunky chip — accent-filled
+// tabChip is one tab: a pixel-face label on a chunky chip — accent-filled
 // while active, panel-colored with a muted label otherwise — sitting on the
-// panel's top border like a file-folder tab.
-func (a *App) connTabChip(gtx C, btn *widget.Clickable, label string, active bool) D {
+// panel's top border like a file-folder tab. The connection page's two tabs
+// and the lobby's (lobbyPanel) are the same chip.
+func (a *App) tabChip(gtx C, btn *widget.Clickable, label string, active bool) D {
 	bg, fg, border := colPanel, colMuted, colBorder
 	if active {
 		bg, fg, border = colAccent, colBg, colAccent
@@ -1143,37 +1182,57 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing map[s
 					return rowButton(gtx, func(gtx C) D {
 						gtx.Constraints.Min.X = gtx.Constraints.Max.X
 						return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-								layout.Flexed(1, func(gtx C) D {
-									return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-										layout.Rigid(a.body(e.label, labelCol)),
-										layout.Rigid(func(gtx C) D {
-											if e.detail == "" {
-												return D{}
-											}
-											l := material.Caption(a.th, e.detail)
-											l.Color = detailCol
-											return l.Layout(gtx)
-										}),
-									)
-								}),
-								layout.Rigid(func(gtx C) D {
-									txt, col := probeSummary(probes[e.key], probing[e.key])
-									if !e.dialable {
-										txt, col = undialableHint, withAlpha(colMuted, 0.8)
-									}
-									if txt == "" {
-										return D{}
-									}
-									summary := a.pixel(unit.Sp(8), txt, col).Layout
-									return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-										if !selected {
-											return summary(gtx)
+							nameCol := func(gtx C) D {
+								return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+									layout.Rigid(a.body(e.label, labelCol)),
+									layout.Rigid(func(gtx C) D {
+										if e.detail == "" {
+											return D{}
 										}
-										return background(gtx, colBg, func(gtx C) D {
-											return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(5), Right: unit.Dp(5)}.Layout(gtx, summary)
-										})
-									})
+										// One line: a URL longer than the row
+										// ends in an ellipsis rather than
+										// growing the row a second line.
+										l := material.Caption(a.th, e.detail)
+										l.Color, l.MaxLines = detailCol, 1
+										return l.Layout(gtx)
+									}),
+								)
+							}
+							txt, col := probeSummary(probes[e.key], probing[e.key])
+							if !e.dialable {
+								txt, col = undialableHint, withAlpha(colMuted, 0.8)
+							}
+							if txt == "" {
+								return nameCol(gtx)
+							}
+							summary := func(gtx C) D {
+								lbl := a.pixel(unit.Sp(8), txt, col).Layout
+								if !selected {
+									return lbl(gtx)
+								}
+								return background(gtx, colBg, func(gtx C) D {
+									return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(5), Right: unit.Dp(5)}.Layout(gtx, lbl)
+								})
+							}
+							// The readout gives way before the NAME does. It
+							// is a pixel-face line — "21 ms · 2 players · 3
+							// agents" is 200 dp of it — and as a rigid child
+							// beside a flexed name it took the row's width
+							// first, leaving "Jetris EU central" to come out
+							// one letter per line down the list. Beside the
+							// name where both fit, under it where they do not.
+							if a.bodyWidth(gtx, e.label)+gtx.Dp(16)+a.pixelWidth(gtx, unit.Sp(8), txt) <= gtx.Constraints.Max.X {
+								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+									layout.Flexed(1, nameCol),
+									layout.Rigid(func(gtx C) D {
+										return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, summary)
+									}),
+								)
+							}
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(nameCol),
+								layout.Rigid(func(gtx C) D {
+									return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, summary)
 								}),
 							)
 						})

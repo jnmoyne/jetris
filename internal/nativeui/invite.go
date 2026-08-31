@@ -542,7 +542,7 @@ func (a *App) invitePickerOverlay(gtx C) D {
 	}
 
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(500)
+		gtx.Constraints.Max.X = modalW(gtx, 500)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {
@@ -598,23 +598,89 @@ func (a *App) invitePickerOverlay(gtx C) D {
 								})
 							}),
 							layout.Rigid(spacer(14)),
-							layout.Rigid(func(gtx C) D {
-								// The hint is the Flexed child so it wraps if space is
-								// tight; the buttons stay at their natural width.
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Flexed(1, a.body("The game starts on its own once every seat is filled and ready.", colMuted)),
-									layout.Rigid(hSpacer(8)),
-									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.inviteCancelBtn, "Cancel game") }),
-									layout.Rigid(hSpacer(8)),
-									layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.inviteCloseBtn, "Close") }),
-								)
-							}),
+							layout.Rigid(func(gtx C) D { return a.invitePickerFooter(gtx) }),
 						)
 					})
 				})
 			})
 		})
 	})
+}
+
+// bodyWidth measures txt in the body face, unconstrained: what it WOULD take
+// on one line, which is how a row chooses between one line and two.
+func (a *App) bodyWidth(gtx C, txt string) int {
+	m := gtx
+	m.Constraints.Min = image.Point{}
+	m.Constraints.Max.X = 1 << 20
+	rec := op.Record(gtx.Ops)
+	d := a.body(txt, colFg)(m)
+	rec.Stop() // measure only — discard the recorded ops
+	return d.Size.X
+}
+
+// inviteNameCell is a picker row's left-hand column: who the player is, and
+// where their invitation stands. The two run along one line where the column
+// holds them and stack where it does not. They have to be measured because a
+// phone's picker leaves this column about 200 dp: the pair squeezed into that
+// wrapped the status into a three-line stack, and the row — a Flex aligned on
+// the BASELINE, which reports the first line — then drew it straight over the
+// text underneath.
+func (a *App) inviteNameCell(name, status string, statusCol colorN) layout.Widget {
+	return func(gtx C) D {
+		if status == "" {
+			return a.body(name, colFg)(gtx)
+		}
+		if a.bodyWidth(gtx, name)+gtx.Dp(8)+a.bodyWidth(gtx, status) <= gtx.Constraints.Max.X {
+			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+				layout.Rigid(a.body(name, colFg)),
+				layout.Rigid(hSpacer(8)),
+				layout.Rigid(a.body(status, statusCol)),
+			)
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.body(name, colFg)),
+			layout.Rigid(a.body(status, statusCol)),
+		)
+	}
+}
+
+// invitePickerFooter is the picker's last row: what happens next, and the two
+// ways out of it. The hint sits beside the buttons where there is a line's
+// worth of room for it and takes a line of its own where there is not — on a
+// phone the flexed hint was squeezed into a column one word wide beside them.
+func (a *App) invitePickerFooter(gtx C) D {
+	hint := a.body("The game starts on its own once every seat is filled and ready.", colMuted)
+	buttons := func(cancel, close *widget.Clickable) layout.Widget {
+		return func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, cancel, "Cancel game") }),
+				layout.Rigid(hSpacer(8)),
+				layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, close, "Close") }),
+			)
+		}
+	}
+	// What the buttons want, measured into a discarded macro on throwaway
+	// widget state so the real ones' presses are not spent on it.
+	var mCancel, mClose widget.Clickable
+	m := gtx
+	m.Constraints.Min = image.Point{}
+	rec := op.Record(gtx.Ops)
+	btnW := buttons(&mCancel, &mClose)(m).Size.X
+	rec.Stop()
+	real := buttons(&a.inviteCancelBtn, &a.inviteCloseBtn)
+	if gtx.Constraints.Max.X-btnW-gtx.Dp(8) >= gtx.Dp(200) {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Flexed(1, hint),
+			layout.Rigid(hSpacer(8)),
+			layout.Rigid(real),
+		)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(hint),
+		layout.Rigid(spacer(10)),
+		layout.Rigid(real),
+	)
 }
 
 // inviteSelfRow is the pinned first row of the picker: the creator's own
@@ -640,13 +706,7 @@ func (a *App) inviteSelfRow(gtx C, g lobby.GameListing, selfName string, teams b
 	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Min.Y = gtx.Dp(inviteRowHeight) // match the candidate rows' fixed height
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-					layout.Rigid(a.body("You ("+selfName+")", colFg)),
-					layout.Rigid(hSpacer(8)),
-					layout.Rigid(a.body(status, statusCol)),
-				)
-			}),
+			layout.Flexed(1, a.inviteNameCell("You ("+selfName+")", status, statusCol)),
 			layout.Rigid(func(gtx C) D {
 				if !teams {
 					cb := material.CheckBox(a.th, &a.inviteSelfSel, "Play")
@@ -687,17 +747,7 @@ func (a *App) inviteRow(gtx C, c *inviteChoice, st inviteRowStatus, teams bool) 
 		// otherwise the row shrinks and the rows below jump up.
 		gtx.Constraints.Min.Y = gtx.Dp(inviteRowHeight)
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-					layout.Rigid(a.body(agentName(c.name, c.agent), colFg)),
-					layout.Rigid(func(gtx C) D {
-						if status == "" {
-							return D{}
-						}
-						return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.body(status, statusCol))
-					}),
-				)
-			}),
+			layout.Flexed(1, a.inviteNameCell(agentName(c.name, c.agent), status, statusCol)),
 			layout.Rigid(func(gtx C) D {
 				if st == rowJoined || st == rowReady {
 					return D{} // seated: nothing to select or retract
@@ -781,7 +831,7 @@ func (a *App) incomingInviteOverlay(gtx C, inv *lobby.Invitation) D {
 	}
 
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(420)
+		gtx.Constraints.Max.X = modalW(gtx, 420)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colNATSGreen, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {

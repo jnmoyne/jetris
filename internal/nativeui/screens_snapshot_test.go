@@ -306,6 +306,26 @@ func TestScreenSnapshots(t *testing.T) {
 		})
 	})
 
+	// The lobby's panel with something in it — the games on offer on one tab
+	// and the games played on the other. The panel is drawn on its own rather
+	// than through the lobby screen because a lobby with no NATS behind it
+	// has no games and no history to list.
+	t.Run("lobby_panel", func(t *testing.T) {
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		for _, tab := range []string{lobbyTabGames, lobbyTabHistory} {
+			a.lobbyTab = tab
+			snapshotPNG(t, w, dir, "screen_lobby_panel_"+tab, func(gtx C) {
+				fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
+				layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
+					return a.lobbyPanel(gtx, sampleLobbyGames(), map[string]bool{"gone-game-9999": true},
+						a.archivesForDisplay(sampleLobbyArchives()))
+				})
+				scanlines(gtx)
+			})
+		}
+	})
+
 	// A history row for a game with a replay archive: the Replay action next
 	// to View board.
 	t.Run("history_row_replay", func(t *testing.T) {

@@ -36,6 +36,23 @@ func (a *App) closeArchive() {
 	a.invalidate()
 }
 
+const (
+	// archiveRosterW and archiveChatW are the viewer's two fixed columns —
+	// the player roster and the preserved conversation — and
+	// archiveBoardsMinW the board area worth standing between them.
+	archiveRosterW    = 190
+	archiveChatW      = 320
+	archiveBoardsMinW = 260
+)
+
+// archiveColumnsFit reports whether the roster, the boards and the chat panel
+// can stand side by side in the width gtx measures. Where they cannot the
+// three stack, because a Flex squeezes its FLEXED child first and that child
+// is the boards — the one thing this screen exists to show.
+func archiveColumnsFit(gtx C) bool {
+	return gtx.Constraints.Max.X-gtx.Dp(archiveRosterW)-gtx.Dp(archiveChatW) >= gtx.Dp(archiveBoardsMinW)
+}
+
 func (a *App) layoutArchive(gtx C) D {
 	a.mu.Lock()
 	rec := a.archiveSel
@@ -69,6 +86,30 @@ func (a *App) layoutArchive(gtx C) D {
 				// always there, saying so when the record has no conversation
 				// (an empty game, or one archived before chat was preserved),
 				// rather than silently vanishing.
+				if !archiveColumnsFit(gtx) {
+					// No room for the three of them side by side — a
+					// phone's whole screen is less than the roster and the
+					// chat panel together — and a Flex squeezes its FLEXED
+					// child first, so the boards, which are the whole point of
+					// this screen, came out nothing wide. They stack instead,
+					// playfields first, the column scrolling as one.
+					return material.List(a.th, &a.archiveColLst).Layout(gtx, 1, func(gtx C, _ int) D {
+						return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(boards),
+							layout.Rigid(spacer(16)),
+							layout.Rigid(func(gtx C) D { return a.archiveRoster(gtx, *rec) }),
+							layout.Rigid(spacer(16)),
+							layout.Rigid(func(gtx C) D {
+								// Its own height here, rather than the slack
+								// of a Flexed child: the column it is in
+								// scrolls, so there is no slack to take.
+								gtx.Constraints.Max.Y = gtx.Dp(220)
+								gtx.Constraints.Min.Y = gtx.Dp(220)
+								return a.archiveChatPanel(gtx, rec.Chat)
+							}),
+						)
+					})
+				}
 				children := []layout.FlexChild{
 					layout.Rigid(func(gtx C) D {
 						return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
@@ -77,8 +118,8 @@ func (a *App) layoutArchive(gtx C) D {
 					}),
 					layout.Flexed(1, boards),
 					layout.Rigid(func(gtx C) D {
-						gtx.Constraints.Max.X = gtx.Dp(320)
-						gtx.Constraints.Min.X = gtx.Dp(320)
+						gtx.Constraints.Max.X = gtx.Dp(archiveChatW)
+						gtx.Constraints.Min.X = gtx.Dp(archiveChatW)
 						return a.archiveChatPanel(gtx, rec.Chat)
 					}),
 				}
@@ -177,8 +218,8 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 // the winning team's header in gold; cooperative players share one board, so
 // they list plainly (no per-player color, no winner) under a PLAYERS header.
 func (a *App) archiveRoster(gtx C, rec config.ArchiveRecord) D {
-	gtx.Constraints.Min.X = gtx.Dp(190)
-	gtx.Constraints.Max.X = gtx.Dp(190)
+	gtx.Constraints.Min.X = gtx.Dp(archiveRosterW)
+	gtx.Constraints.Max.X = gtx.Dp(archiveRosterW)
 	var children []layout.FlexChild
 	switch rec.Mode {
 	case config.ModeTeams:

@@ -182,7 +182,7 @@ func (a *App) createWizardOverlay(gtx C) D {
 	// chrome is what it may take before scrolling.
 	bodyMaxY := max(gtx.Constraints.Max.Y-gtx.Dp(200), gtx.Dp(120))
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(480)
+		gtx.Constraints.Max.X = modalW(gtx, 480)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {

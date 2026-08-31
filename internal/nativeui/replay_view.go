@@ -236,7 +236,7 @@ func (a *App) handleReplayChoice(gtx C) bool {
 // at the recorded pace, or as fast as the messages can be delivered.
 func (a *App) replayChoiceOverlay(gtx C, rec config.ArchiveRecord) D {
 	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = gtx.Dp(430)
+		gtx.Constraints.Max.X = modalW(gtx, 430)
 		return hardShadow(gtx, func(gtx C) D {
 			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 				return background(gtx, colBg, func(gtx C) D {

@@ -38,7 +38,7 @@ func TestTrophyTierFor(t *testing.T) {
 
 func TestReplayWinnersAndVerdict(t *testing.T) {
 	// Competitive: the surviving player's board (boards are in sorted-ID order).
-	rv := newReplayView(sampleReplayRecord(), true)
+	rv := newReplayView(sampleReplayRecord())
 	won, banner := replayWinners(rv)
 	if !won[rv.byPlayer["alice"]] || len(won) != 1 || banner != "WINNER" {
 		t.Errorf("competitive: won %v banner %q, want alice's board alone, WINNER", won, banner)
@@ -47,7 +47,7 @@ func TestReplayWinnersAndVerdict(t *testing.T) {
 		t.Errorf("competitive verdict %q", v)
 	}
 	// Teams: the winning team's board.
-	rv = newReplayView(sampleTeamsReplayRecord(), true)
+	rv = newReplayView(sampleTeamsReplayRecord())
 	won, banner = replayWinners(rv)
 	if !won[1] || len(won) != 1 || banner != "WINNERS" {
 		t.Errorf("teams: won %v banner %q, want team B's board alone, WINNERS", won, banner)
@@ -56,7 +56,7 @@ func TestReplayWinnersAndVerdict(t *testing.T) {
 		t.Errorf("teams verdict %q", v)
 	}
 	// Cooperative: the one shared board, the run's score as the verdict.
-	rv = newReplayView(sampleCoopReplayRecord(), true)
+	rv = newReplayView(sampleCoopReplayRecord())
 	won, banner = replayWinners(rv)
 	if !won[0] || len(won) != 1 || banner != "GAME OVER" {
 		t.Errorf("co-op: won %v banner %q", won, banner)
@@ -67,7 +67,7 @@ func TestReplayWinnersAndVerdict(t *testing.T) {
 	// Draws crown nobody.
 	rec := sampleReplayRecord()
 	rec.Players[0].Winner = false
-	rv = newReplayView(rec, true)
+	rv = newReplayView(rec)
 	if won, _ := replayWinners(rv); len(won) != 0 {
 		t.Errorf("competitive draw crowned %v", won)
 	}
@@ -76,7 +76,7 @@ func TestReplayWinnersAndVerdict(t *testing.T) {
 	}
 	rec = sampleTeamsReplayRecord()
 	rec.WinningTeam = -1
-	rv = newReplayView(rec, true)
+	rv = newReplayView(rec)
 	if won, _ := replayWinners(rv); len(won) != 0 {
 		t.Errorf("teams draw crowned %v", won)
 	}
@@ -186,7 +186,7 @@ func TestReplayEndingRenders(t *testing.T) {
 	for _, rec := range recs {
 		for rank := 1; rank <= 12; rank += 3 {
 			a := newTestApp()
-			rv := newReplayView(rec, false)
+			rv := newReplayView(rec)
 			rv.rank, rv.of = rank, 12
 			rv.done, rv.doneAt = true, time.Now()
 			a.replayView = rv

@@ -98,7 +98,7 @@ func archiveTestGame(t *testing.T, js jetstream.JetStream, rec config.ArchiveRec
 // shared replay stream.
 func hasReplay(t *testing.T, js jetstream.JetStream, gameID string) bool {
 	t.Helper()
-	_, err := natspkg.GetReplayMarker(context.Background(), js, gameID)
+	_, _, err := natspkg.GetReplayMarker(context.Background(), js, gameID)
 	if err == nil {
 		return true
 	}

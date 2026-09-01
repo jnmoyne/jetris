@@ -269,17 +269,25 @@ func PurgeReplay(ctx context.Context, js jetstream.JetStream, gameID string) err
 }
 
 // GetReplayMarker returns the stream sequence of one game's copy-complete
-// marker, or jetstream.ErrMsgNotFound if the game has no (finished) replay.
-func GetReplayMarker(ctx context.Context, js jetstream.JetStream, gameID string) (uint64, error) {
+// marker and the number of messages the copy holds, or
+// jetstream.ErrMsgNotFound if the game has no (finished) replay.
+func GetReplayMarker(ctx context.Context, js jetstream.JetStream, gameID string) (seq, msgs uint64, err error) {
 	s, err := js.Stream(ctx, config.ReplayStream)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	msg, err := s.GetLastMsgForSubject(ctx, config.ReplayMarkerSubject(gameID))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return msg.Sequence, nil
+	// The marker's own payload counts the copies that precede it — how many
+	// messages a whole-replay load has to read, which is what a viewer
+	// loading one shows progress against.
+	var m struct {
+		Msgs uint64 `json:"msgs"`
+	}
+	_ = json.Unmarshal(msg.Data, &m)
+	return msg.Sequence, m.Msgs, nil
 }
 
 // ListReplayGameIDs returns the game IDs with a finished replay — the games

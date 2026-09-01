@@ -372,19 +372,35 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_replay_dialog", func(gtx C) { a.layout(gtx) })
 	})
 
-	// The replay screen mid-replay: two competitive boards being rebuilt from
-	// the replay stream.
+	// The replay screen mid-playback: two competitive boards seeked to the
+	// playhead, the transport under them — the clear timeline with its
+	// player-colored markers, the scrub slider, the keys and the speeds.
 	t.Run("replay", func(t *testing.T) {
 		a := newTestApp()
-		rv := newReplayView(sampleReplayRecord(), false)
-		fillReplayBoards(rv)
+		rv := loadedReplay(sampleReplayRecord())
 		a.replayView = rv
 		a.screen = screenReplay
 		snapshotPNG(t, w, dir, "screen_replay", func(gtx C) { a.layout(gtx) })
 
-		// The same replay paused: PAUSED status line, Resume in place of Pause.
-		rv.gate.set(true, time.Now())
+		// The same replay paused: PAUSED status line, PLAY in place of PAUSE.
+		rv.playing = false
 		snapshotPNG(t, w, dir, "screen_replay_paused", func(gtx C) { a.layout(gtx) })
+
+		// And at 8×, cued near the end — the slider all but full.
+		rv.playing, rv.speed = true, 8
+		rv.head = rv.tl.dur - 20*time.Second
+		snapshotPNG(t, w, dir, "screen_replay_fast", func(gtx C) { a.layout(gtx) })
+	})
+
+	// The replay still loading: the copy's own message count as a progress
+	// bar, and no transport until there is something to play.
+	t.Run("replay_loading", func(t *testing.T) {
+		a := newTestApp()
+		rv := newReplayView(sampleReplayRecord())
+		rv.loaded, rv.total = 3600, 9400
+		a.replayView = rv
+		a.screen = screenReplay
+		snapshotPNG(t, w, dir, "screen_replay_loading", func(gtx C) { a.layout(gtx) })
 	})
 
 	// The replay's opening: the recorded countdown popping over the boards
@@ -394,17 +410,20 @@ func TestScreenSnapshots(t *testing.T) {
 		now := time.Date(2026, 7, 23, 14, 0, 0, 0, time.Local)
 		cases := []struct {
 			name string
-			n    int
-			age  time.Duration
-		}{{"three", 3, 200 * time.Millisecond}, {"go", 0, countdownAnimDur}}
+			head time.Duration
+		}{{"three", 2500 * time.Millisecond}, {"go", 5200 * time.Millisecond}}
 		for _, tc := range cases {
 			a := newTestApp()
-			rv := newReplayView(sampleReplayRecord(), false)
-			rv.countdown, rv.countdownAt = tc.n, now.Add(-tc.age)
+			rv := loadedReplay(sampleReplayRecord())
+			rv.head = tc.head
 			a.replayView = rv
 			a.screen = screenReplay
+			// Two frames: the first notices the number and starts its pop,
+			// the second (200ms on) draws it mid-pop.
 			snapshotPNG(t, w, dir, "screen_replay_countdown_"+tc.name, func(gtx C) {
 				gtx.Now = now
+				a.layout(gtx)
+				gtx.Now = now.Add(200 * time.Millisecond)
 				a.layout(gtx)
 			})
 		}
@@ -459,9 +478,9 @@ func TestScreenSnapshots(t *testing.T) {
 		}
 		for _, tc := range cases {
 			a := newTestApp()
-			rv := newReplayView(tc.rec, false)
-			fillReplayBoards(rv)
+			rv := loadedReplay(tc.rec)
 			rv.rank, rv.of = tc.rank, tc.of
+			rv.head = rv.tl.dur // the playhead at the end IS the ending
 			rv.done, rv.doneAt = true, time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local)
 			a.replayView = rv
 			a.screen = screenReplay
@@ -557,6 +576,33 @@ func snapshotSpectateDone(t *testing.T, w *headless.Window, dir string) {
 			scanlines(gtx)
 		})
 	}
+}
+
+// loadedReplay is a replay view as it stands once its recording is loaded:
+// boards filled from the sample board, and a timeline that carries the
+// countdown, a scatter of clear markers and a length — but no cells, so the
+// boards keep the picture fillReplayBoards put there instead of being seeked
+// out from under it. The playhead sits two and a half minutes in.
+func loadedReplay(rec config.ArchiveRecord) *replayView {
+	rv := newReplayView(rec)
+	fillReplayBoards(rv)
+	tl := &replayTimeline{dur: 6 * time.Minute, startOff: 5700 * time.Millisecond}
+	for i, n := range []int{5, 4, 3, 2, 1, 0} {
+		tl.counts = append(tl.counts, countMark{off: time.Duration(i) * time.Second, n: n})
+	}
+	// A clear every eleven seconds or so, sizes and players cycling, so the
+	// timeline reads as a game with a shape rather than a picket fence.
+	for i := 0; i < 30; i++ {
+		tl.marks = append(tl.marks, clearMark{
+			off:   tl.startOff + time.Duration(i*11+3)*time.Second,
+			color: i % max(len(rv.boards), 1),
+			lines: []int{1, 1, 2, 1, 4, 1, 2, 3}[i%8],
+		})
+	}
+	rv.tl = tl
+	rv.head = 2*time.Minute + 30*time.Second
+	rv.playing = true // a load hands the screen a replay already running
+	return rv
 }
 
 // fillReplayBoards seeds a replay view's boards from the sample board: the

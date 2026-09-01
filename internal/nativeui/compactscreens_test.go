@@ -121,6 +121,16 @@ func TestPhoneOverlaysLayout(t *testing.T) {
 		{"replay-choice", func(a *App) layout.Widget {
 			return func(gtx C) D { return a.replayChoiceOverlay(gtx, rec) }
 		}},
+		{"replay-loading", func(a *App) layout.Widget {
+			a.replayView, a.screen = newReplayView(rec), screenReplay
+			a.replayView.loaded, a.replayView.total = 900, 4000
+			return a.layoutReplay
+		}},
+		{"replay-player", func(a *App) layout.Widget {
+			// The transport splits its row on a phone: keys over speeds.
+			a.replayView, a.screen = loadedReplay(rec), screenReplay
+			return a.layoutReplay
+		}},
 		{"leave-game", func(a *App) layout.Widget { return a.confirmLeaveOverlay }},
 		{"reset-favorites", func(a *App) layout.Widget { return a.confirmResetOverlay }},
 		{"archive-viewer", func(a *App) layout.Widget {

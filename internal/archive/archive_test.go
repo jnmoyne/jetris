@@ -125,7 +125,7 @@ func TestArchiveAndCleanupRecordFirstThenGrace(t *testing.T) {
 	// The replay copy follows the record (every finished game is "recent").
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, err := natspkg.GetReplayMarker(ctx, js, gameID); err == nil {
+		if _, _, err := natspkg.GetReplayMarker(ctx, js, gameID); err == nil {
 			break
 		} else if !errors.Is(err, jetstream.ErrMsgNotFound) && !errors.Is(err, jetstream.ErrStreamNotFound) {
 			t.Fatal(err)

@@ -549,17 +549,24 @@ type App struct {
 	// side (layoutArchive).
 	archiveColLst widget.List // the record's preserved chat history
 
-	// game replay: the history rows' Replay buttons, the speed-choice dialog
+	// game replay: the history rows' Replay buttons, the confirm dialog
 	// (replayChoice non-nil while it is open; UI goroutine only, like
-	// confirmDeleteID), and the live replay session shown on screenReplay
-	// (replayView is written by the replay consumer goroutine — guarded by mu).
+	// confirmDeleteID), and the replay session shown on screenReplay
+	// (replayView's load fields are written by the loader goroutine — guarded
+	// by mu). The transport is a tape deck: five keys, a speed selector, and
+	// the scrub drag, all of which do nothing but move replayView.head.
 	replayBtns      []widget.Clickable    // one per history row (indexed by list position)
-	replayChoice    *config.ArchiveRecord // game awaiting the speed choice (nil = dialog closed)
-	replayNormalBtn widget.Clickable      // dialog: replay at the original speed
-	replayFastBtn   widget.Clickable      // dialog: replay as fast as possible
+	replayChoice    *config.ArchiveRecord // game awaiting the confirm (nil = dialog closed)
+	replayWatchBtn  widget.Clickable      // dialog: open the replay
 	replayCancelBtn widget.Clickable      // dialog: close without replaying
 	replayBackBtn   widget.Clickable      // "Back to Lobby" from the replay screen
-	replayPauseBtn  widget.Clickable      // Pause / Resume on the replay screen (flips replayView.gate)
+	replayPlayBtn   widget.Clickable      // transport: play / pause
+	replayStartBtn  widget.Clickable      // transport: back to the start
+	replayRewBtn    widget.Clickable      // transport: back ten recorded seconds
+	replayFwdBtn    widget.Clickable      // transport: on ten recorded seconds
+	replayEndBtn    widget.Clickable      // transport: jump to the end (the ending reveal)
+	replaySpeedBtns [5]widget.Clickable   // transport: one per replaySpeeds entry
+	replayScrub     gesture.Drag          // transport: the scrub slider's drag
 	replayView      *replayView           // the active replay session (nil = none)
 
 	// Horizontal board strips that scroll when the boards together exceed the

@@ -567,6 +567,7 @@ type App struct {
 	replayEndBtn    widget.Clickable      // transport: jump to the end (the ending reveal)
 	replaySpeedBtns [5]widget.Clickable   // transport: one per replaySpeeds entry
 	replayScrub     gesture.Drag          // transport: the scrub slider's drag
+	replayTag       int                   // address used as the replay screen's key-input focus tag
 	replayView      *replayView           // the active replay session (nil = none)
 
 	// Horizontal board strips that scroll when the boards together exceed the

@@ -2,9 +2,12 @@ package nativeui
 
 import (
 	"image"
+	"math"
 	"time"
 
 	"gioui.org/gesture"
+	"gioui.org/io/event"
+	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/semantic"
 	"gioui.org/layout"
@@ -84,6 +87,114 @@ func (a *App) replayTransportEvents(gtx C, rv *replayView) {
 			rv.cue(time.Duration(f*float64(dur)), gtx.Now)
 		}
 	}
+}
+
+// replayKeys are the transport's keyboard, the shortcuts a tape deck has
+// always had: the space bar plays and pauses, the arrows move the playhead —
+// left and right by a skip, up and down through the speeds — HOME and END run
+// it to either end, and ESC leaves. They are the same actions the keys of the
+// deck take, and they are drained in the same place, so a replay can be driven
+// entirely from either.
+//
+// The leading key.FocusFilter is REQUIRED: a tag only becomes a focusable key
+// target when one is registered for it that frame (the same rule the board's
+// filters carry, boardKeyFilters). Nothing else on this screen wants the keys,
+// so the tag simply takes them back whenever a click on a button has borrowed
+// them — otherwise the space bar would press the button it left focused
+// instead of pausing the replay.
+func replayKeyFilters(tag event.Tag) []event.Filter {
+	fs := []event.Filter{key.FocusFilter{Target: tag}}
+	for _, n := range []key.Name{
+		key.NameSpace,
+		key.NameLeftArrow, key.NameRightArrow, key.NameUpArrow, key.NameDownArrow,
+		key.NameHome, key.NameEnd, key.NameEscape,
+	} {
+		fs = append(fs, key.Filter{Focus: tag, Name: n})
+	}
+	return fs
+}
+
+// replayKeys drains the replay screen's keyboard and reports whether it asked
+// to leave (ESC), which the caller does OUTSIDE the lock this takes — closing
+// the replay locks it too.
+func (a *App) replayKeys(gtx C, rv *replayView) (leave bool) {
+	tag := &a.replayTag
+	if !gtx.Source.Focused(tag) {
+		gtx.Source.Execute(key.FocusCmd{Tag: tag})
+	}
+	filters := replayKeyFilters(tag)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for {
+		ev, ok := gtx.Source.Event(filters...)
+		if !ok {
+			return leave
+		}
+		e, ok := ev.(key.Event)
+		if !ok || e.State != key.Press {
+			continue // releases and focus changes drive nothing here
+		}
+		if e.Name == key.NameEscape {
+			leave = true
+			continue
+		}
+		if rv.tl == nil {
+			continue // still loading: there is no playhead to move yet
+		}
+		switch e.Name {
+		case key.NameSpace:
+			if rv.head >= rv.tl.dur {
+				rv.head = 0 // play again, from the top
+			}
+			rv.playing = !rv.playing
+			rv.anchor = gtx.Now
+		case key.NameLeftArrow:
+			rv.cue(rv.head-replaySkip, gtx.Now)
+		case key.NameRightArrow:
+			rv.cue(rv.head+replaySkip, gtx.Now)
+		case key.NameUpArrow:
+			rv.speed = replayStepSpeed(rv.speed, 1)
+			rv.anchor = gtx.Now
+		case key.NameDownArrow:
+			rv.speed = replayStepSpeed(rv.speed, -1)
+			rv.anchor = gtx.Now
+		case key.NameHome:
+			rv.cue(0, gtx.Now)
+		case key.NameEnd:
+			rv.cue(rv.tl.dur, gtx.Now)
+		}
+	}
+}
+
+// replayStepSpeed moves one step along replaySpeeds from the rate nearest sp,
+// stopping at either end.
+func replayStepSpeed(sp float64, step int) float64 {
+	at := 0
+	for i, s := range replaySpeeds {
+		if math.Abs(s-sp) < math.Abs(replaySpeeds[at]-sp) {
+			at = i
+		}
+	}
+	return replaySpeeds[min(max(at+step, 0), len(replaySpeeds)-1)]
+}
+
+// replayKeyHint is the one-line legend under the deck — the shortcuts spelled
+// out, so the keyboard is discoverable without a manual. A touch screen has no
+// keyboard to spell out and gets the keys of the deck instead.
+func (a *App) replayKeyHint(gtx C) D {
+	return a.keyHintLine(gtx, "SPACE PLAY/PAUSE · ← → SKIP 10s · ↑ ↓ SPEED · HOME END · ESC LOBBY")
+}
+
+// keyHintLine centers one line of shortcut legend under whatever it belongs
+// to — nothing at all on a touch screen, which has no keyboard to spell out.
+func (a *App) keyHintLine(gtx C, txt string) D {
+	if a.touchUI {
+		return D{}
+	}
+	return layout.Center.Layout(gtx, func(gtx C) D {
+		gtx.Constraints.Min.X = 0
+		return a.pixel(unit.Sp(8), txt, colMuted).Layout(gtx)
+	})
 }
 
 // replayTransport is the whole deck: the scrubber (clear timeline over scrub

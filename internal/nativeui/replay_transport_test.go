@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gioui.org/io/input"
+	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/semantic"
 	"gioui.org/layout"
@@ -216,6 +217,91 @@ func TestReplayPlaybackStopsAtTheEnd(t *testing.T) {
 	}
 	if rv.head != rv.tl.dur || rv.playing {
 		t.Fatalf("playhead %v playing=%v, want %v stopped", rv.head, rv.playing, rv.tl.dur)
+	}
+}
+
+// press queues a key press and release and runs the frames that dispatch it.
+func (g *replayRig) press(name key.Name) {
+	g.r.Queue(key.Event{Name: name, State: key.Press}, key.Event{Name: name, State: key.Release})
+	g.frame(0)
+	g.frame(0)
+}
+
+// The keyboard drives the same deck the buttons do: space plays and pauses,
+// the arrows skip and change speed, HOME and END run to either end, and ESC
+// leaves the replay.
+func TestReplayKeysDriveTheTransport(t *testing.T) {
+	g := newReplayRig(t)
+	rv, dur := g.rv, g.rv.tl.dur
+
+	g.press(key.NameSpace)
+	if rv.playing {
+		t.Fatal("space did not pause")
+	}
+	at := rv.head
+	g.press(key.NameRightArrow)
+	if want := at + replaySkip; rv.head != want {
+		t.Fatalf("→ left the playhead at %v, want %v", rv.head, want)
+	}
+	g.press(key.NameLeftArrow)
+	if rv.head != at {
+		t.Fatalf("← left the playhead at %v, want %v", rv.head, at)
+	}
+
+	// Up and down step through the speeds and stop at the ends.
+	for _, want := range []float64{2, 4, 8, 8} {
+		g.press(key.NameUpArrow)
+		if rv.speed != want {
+			t.Fatalf("↑ set the speed to %v, want %v", rv.speed, want)
+		}
+	}
+	for _, want := range []float64{4, 2, 1, 0.5, 0.5} {
+		g.press(key.NameDownArrow)
+		if rv.speed != want {
+			t.Fatalf("↓ set the speed to %v, want %v", rv.speed, want)
+		}
+	}
+
+	g.press(key.NameEnd)
+	if rv.head != dur || !rv.done {
+		t.Fatalf("END left the playhead at %v (done=%v), want %v revealed", rv.head, rv.done, dur)
+	}
+	g.press(key.NameSpace) // playing from the end starts over
+	if rv.head != 0 || !rv.playing {
+		t.Fatalf("space at the end left the playhead at %v (playing=%v), want it playing from 0", rv.head, rv.playing)
+	}
+	g.press(key.NameEnd)
+	g.press(key.NameHome)
+	if rv.head != 0 {
+		t.Fatalf("HOME left the playhead at %v, want 0", rv.head)
+	}
+
+	// A click borrows the keys and the screen takes them straight back: an
+	// arrow — which no button answers — still moves the playhead afterwards.
+	g.tap(t, "PLAY")
+	at = rv.head
+	g.press(key.NameRightArrow)
+	if want := at + replaySkip; rv.head != want {
+		t.Fatalf("after a click the keys are still the button's: → left the playhead at %v, want %v", rv.head, want)
+	}
+
+	// ESC leaves.
+	g.press(key.NameEscape)
+	if g.a.replayView != nil || g.a.screen == screenReplay {
+		t.Fatal("ESC did not leave the replay")
+	}
+}
+
+// ESC works before there is anything to play: a replay that is still loading
+// can be walked away from with the keyboard.
+func TestReplayKeysLeaveWhileLoading(t *testing.T) {
+	g := newReplayRig(t)
+	g.a.replayView, g.a.screen = newReplayView(sampleReplayRecord()), screenReplay
+	g.frame(0)
+	g.press(key.NameSpace) // nothing to drive: must not panic on a nil timeline
+	g.press(key.NameEscape)
+	if g.a.replayView != nil || g.a.screen == screenReplay {
+		t.Fatal("ESC while loading did not leave the replay")
 	}
 }
 

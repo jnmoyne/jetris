@@ -450,7 +450,9 @@ func (a *App) layoutReplay(gtx C) D {
 		a.mu.Unlock()
 		return D{}
 	}
-	if a.replayBackBtn.Clicked(gtx) {
+	// The way out, by button or by ESC, is taken before the lock: closing the
+	// replay takes it too.
+	if a.replayBackBtn.Clicked(gtx) || a.replayKeys(gtx, rv) {
 		a.closeReplay()
 		return D{}
 	}
@@ -458,7 +460,7 @@ func (a *App) layoutReplay(gtx C) D {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if rv.tl == nil {
-		return a.layoutReplayLoading(gtx, rv)
+		return pointerArea(gtx, &a.replayTag, func(gtx C) D { return a.layoutReplayLoading(gtx, rv) })
 	}
 	a.replayTransportEvents(gtx, rv)
 	rv.advance(gtx.Now)
@@ -521,38 +523,45 @@ func (a *App) layoutReplay(gtx C) D {
 		}
 	}
 
-	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(a.brandBanner("")),
-			layout.Rigid(spacer(8)),
-			layout.Rigid(a.header("GAME REPLAY")),
-			layout.Rigid(spacer(4)),
-			layout.Rigid(a.spansLine(replaySummary(rv.rec, reveal))),
-			layout.Rigid(spacer(8)),
-			layout.Rigid(statusLine),
-			layout.Rigid(spacer(14)),
-			layout.Flexed(1, func(gtx C) D {
-				// The boards stay centered with or without the countdown
-				// Stack — the same reason the spectator's boards go through
-				// a Center of their own (gameBoardArea): the Flexed slot
-				// hands down tight constraints that would pin the strip to
-				// the top-left the moment the overlay goes away.
-				content := func(gtx C) D {
-					return layout.Center.Layout(gtx, func(gtx C) D {
-						return a.boardsStrip(gtx, &a.replayBoardsList, boards)
-					})
-				}
-				if !counting {
-					return content(gtx)
-				}
-				return layout.Stack{Alignment: layout.Center}.Layout(gtx,
-					layout.Expanded(content),
-					layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, count, rv.shownAt) }),
-				)
-			}),
-			layout.Rigid(spacer(10)),
-			layout.Rigid(func(gtx C) D { return a.replayTransport(gtx, rv) }),
-		)
+	// The whole screen is the transport's key-input area: the tag has to be
+	// in the frame's op tree for its filters to live (pointerArea), and a
+	// click anywhere on the screen hands the keys back to it.
+	return pointerArea(gtx, &a.replayTag, func(gtx C) D {
+		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.brandBanner("")),
+				layout.Rigid(spacer(8)),
+				layout.Rigid(a.header("GAME REPLAY")),
+				layout.Rigid(spacer(4)),
+				layout.Rigid(a.spansLine(replaySummary(rv.rec, reveal))),
+				layout.Rigid(spacer(8)),
+				layout.Rigid(statusLine),
+				layout.Rigid(spacer(14)),
+				layout.Flexed(1, func(gtx C) D {
+					// The boards stay centered with or without the countdown
+					// Stack — the same reason the spectator's boards go through
+					// a Center of their own (gameBoardArea): the Flexed slot
+					// hands down tight constraints that would pin the strip to
+					// the top-left the moment the overlay goes away.
+					content := func(gtx C) D {
+						return layout.Center.Layout(gtx, func(gtx C) D {
+							return a.boardsStrip(gtx, &a.replayBoardsList, boards)
+						})
+					}
+					if !counting {
+						return content(gtx)
+					}
+					return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+						layout.Expanded(content),
+						layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, count, rv.shownAt) }),
+					)
+				}),
+				layout.Rigid(spacer(10)),
+				layout.Rigid(func(gtx C) D { return a.replayTransport(gtx, rv) }),
+				layout.Rigid(spacer(8)),
+				layout.Rigid(a.replayKeyHint),
+			)
+		})
 	})
 }
 
@@ -602,6 +611,8 @@ func (a *App) layoutReplayLoading(gtx C, rv *replayView) D {
 					return a.secondaryButton(gtx, &a.replayBackBtn, "Back to Lobby")
 				})
 			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx C) D { return a.keyHintLine(gtx, "ESC LOBBY") }),
 		)
 	})
 }

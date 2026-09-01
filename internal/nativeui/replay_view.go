@@ -186,12 +186,12 @@ func newReplayView(rec config.ArchiveRecord, fast bool) *replayView {
 	switch rec.Mode {
 	case config.ModeCooperative:
 		rv.boards = []*replayBoard{newReplayBoard("", -1,
-			rec.PlayerCount*config.StandardWidth,
+			config.SharedBoardWidth(rec.PlayerCount, rec.ExtraColumns),
 			config.HeadroomRows+config.VisibleRows, config.VisibleRowStart)}
 	case config.ModeTeams:
 		for t := 0; t < config.TeamCount; t++ {
 			rv.boards = append(rv.boards, newReplayBoard("Team "+teamName(t), t,
-				config.TeamBoardWidth(rec.TeamSize),
+				config.TeamBoardWidth(rec.TeamSize, rec.ExtraColumns),
 				config.TeamTotalRows(rec.TeamSize), config.TeamVisibleRowStart(rec.TeamSize)))
 		}
 	default: // competitive

@@ -254,7 +254,7 @@ func (a *App) rankLiveGame(eng *engine.Engine, view gameView, oc liveOutcome, gm
 func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.GameMode, now time.Time) config.ArchiveRecord {
 	rec := config.ArchiveRecord{
 		GameID: eng.GameID(), Mode: gmode, PlayerCount: eng.PlayerCount(), TeamSize: eng.TeamSize(),
-		WinningTeam: oc.winTeam, FinishedAt: now,
+		ExtraColumns: eng.ExtraColumns(), WinningTeam: oc.winTeam, FinishedAt: now,
 	}
 	for _, p := range view.players {
 		rec.Players = append(rec.Players, config.PlayerResult{

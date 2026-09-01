@@ -89,6 +89,7 @@ type GameMeta struct {
 	Mode               GameMode   `json:"mode"`
 	PlayerCount        int        `json:"player_count"`
 	TeamSize           int        `json:"team_size,omitempty"`            // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
+	ExtraColumns       int        `json:"extra_columns,omitempty"`        // shared boards (cooperative, teams): columns every seat beyond the first adds to the board's standard 10 (MinExtraColumns..MaxExtraColumns), and the spacing between neighbouring spawn points. Absent — every meta written before the field — reads as MaxExtraColumns: the historical full section per player (see ExtraColumnsPerPlayer). Meaningless in competitive, where each player has a board of their own
 	NextCount          int        `json:"next_count"`                     // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
 	NoGhost            bool       `json:"no_ghost,omitempty"`             // hard-drop ghost preview disabled for this game; inverted so the zero value — and metas written before the field — keep the ghost SHOWN (the default). Meta, not listing: like NextCount it is one rule for every player
 	Hold               bool       `json:"hold,omitempty"`                 // the Guideline hold queue is on: a player may swap the falling piece for a held one, once per piece, the piece coming out re-entering at the spawn point (see GameRules.Hold). Unset — the default, and every meta written before the field — no hold. One rule for every seat, like NextCount; agents may use it or ignore it
@@ -182,20 +183,21 @@ type PlayerResult struct {
 
 // ArchiveRecord is published to the archive stream when a game finishes.
 type ArchiveRecord struct {
-	GameID      string         `json:"game_id"`
-	Mode        GameMode       `json:"mode"`
-	PlayerCount int            `json:"player_count"`
-	Players     []PlayerResult `json:"players"`
-	StartedAt   time.Time      `json:"started_at"`
-	FinishedAt  time.Time      `json:"finished_at"`
-	TotalScore  int            `json:"total_score,omitempty"` // cooperative
-	FinalLevel  int            `json:"final_level,omitempty"` // cooperative: shared level at game end
-	TeamSize    int            `json:"team_size,omitempty"`   // teams mode
-	WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
-	TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team (indexed by team)
-	TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team (indexed by team)
-	Boards      []BoardPicture `json:"boards,omitempty"`      // end-of-game playfield snapshot(s) for the lobby's history view
-	Chat        []ChatLine     `json:"chat,omitempty"`        // the game's chat history (last ArchiveChatCap lines), captured before the chat purge
+	GameID       string         `json:"game_id"`
+	Mode         GameMode       `json:"mode"`
+	PlayerCount  int            `json:"player_count"`
+	Players      []PlayerResult `json:"players"`
+	StartedAt    time.Time      `json:"started_at"`
+	FinishedAt   time.Time      `json:"finished_at"`
+	TotalScore   int            `json:"total_score,omitempty"`   // cooperative
+	FinalLevel   int            `json:"final_level,omitempty"`   // cooperative: shared level at game end
+	TeamSize     int            `json:"team_size,omitempty"`     // teams mode
+	ExtraColumns int            `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns) — what the replay rebuilds the board's width from
+	WinningTeam  int            `json:"winning_team"`            // teams mode: 0 or 1; -1 = draw or not a team game
+	TeamScores   []int          `json:"team_scores,omitempty"`   // teams mode: final score per team (indexed by team)
+	TeamLevels   []int          `json:"team_levels,omitempty"`   // teams mode: final level per team (indexed by team)
+	Boards       []BoardPicture `json:"boards,omitempty"`        // end-of-game playfield snapshot(s) for the lobby's history view
+	Chat         []ChatLine     `json:"chat,omitempty"`          // the game's chat history (last ArchiveChatCap lines), captured before the chat purge
 }
 
 // ChatLine is one chat message preserved in an ArchiveRecord. The game's chat
@@ -511,6 +513,19 @@ const (
 	// rows). The holes of one raise share their columns on every row it lands.
 	MaxGarbageHoles = 4
 
+	// A shared board (cooperative, or one team's board) is StandardWidth
+	// columns for its first player and GameMeta.ExtraColumns more for every
+	// player after them — the create wizard's board-width slider, between
+	// MinExtraColumns and MaxExtraColumns. The extra columns are also the
+	// spacing between neighbouring spawn points (SharedSpawnOffset), so at
+	// the minimum of 4 the seats sit shoulder to shoulder (a 4-wide I still
+	// clears its neighbour's spawn box) and at the maximum of 10 every player
+	// gets a full standard section of their own — the board Jetris had before
+	// the slider, which is why a meta without the field reads as 10.
+	MinExtraColumns     = 4
+	MaxExtraColumns     = StandardWidth
+	DefaultExtraColumns = MinExtraColumns
+
 	// LockDelay is the Guideline lock delay: a piece that lands on the stack
 	// (or the floor) locks this long after landing, unless a successful shift
 	// or rotation restarts the timer — at most LockDelayMoveResets times per
@@ -565,10 +580,41 @@ func CompetitiveVisibleRowStart(playerCount int) int {
 	return HeadroomRows
 }
 
-// TeamBoardWidth returns the width of one team's shared board: one standard
-// 10-column section per teammate, like the cooperative board.
-func TeamBoardWidth(teamSize int) int {
-	return teamSize * StandardWidth
+// ExtraColumnsPerPlayer clamps a game's extra-columns setting to its legal
+// range. Zero — the value every meta, listing and archive record written
+// before the field carries — means the historical board: a full StandardWidth
+// section per player, which is exactly MaxExtraColumns, so an old game still
+// reconstructs at the width it was played on.
+func ExtraColumnsPerPlayer(extraCols int) int {
+	if extraCols <= 0 {
+		return MaxExtraColumns
+	}
+	return min(max(extraCols, MinExtraColumns), MaxExtraColumns)
+}
+
+// SharedBoardWidth returns the width of a board shared by players seats — the
+// cooperative board (players = PlayerCount) or one team's board (players =
+// TeamSize): the standard 10 columns the first seat needs, plus extraCols for
+// every seat after it. So a game created with the slider's default of 4 seats
+// two players on 14 columns, three on 18, four on 22.
+func SharedBoardWidth(players, extraCols int) int {
+	return StandardWidth + max(players-1, 0)*ExtraColumnsPerPlayer(extraCols)
+}
+
+// SharedSpawnOffset returns the column a shared board's section'th seat
+// spawns its pieces at, relative to the standard spawn column: seats are
+// spaced one extraCols step apart, so the first spawns at the board's left
+// edge and the last exactly StandardWidth columns short of its right edge —
+// every spawn box lands wholly on the board (SharedBoardWidth).
+func SharedSpawnOffset(section, extraCols int) int {
+	return max(section, 0) * ExtraColumnsPerPlayer(extraCols)
+}
+
+// TeamBoardWidth returns the width of one team's shared board: the standard
+// 10 columns plus extraCols per teammate beyond the first, like the
+// cooperative board.
+func TeamBoardWidth(teamSize, extraCols int) int {
+	return SharedBoardWidth(teamSize, extraCols)
 }
 
 // TeamVisibleRows returns the visible rows for a team board. Like competitive,

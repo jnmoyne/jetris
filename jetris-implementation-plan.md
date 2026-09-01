@@ -78,6 +78,7 @@ type GameMeta struct {
     Mode        GameMode   `json:"mode"`
     PlayerCount int        `json:"player_count"`
     TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
+    ExtraColumns int       `json:"extra_columns,omitempty"` // shared boards: columns every seat beyond the first adds to the standard 10 (MinExtraColumns..MaxExtraColumns); absent = MaxExtraColumns, the historical full section per seat
     NextCount   int        `json:"next_count"`          // piece-preview size 0..MaxNextCount (see Phase 14); NOT omitempty — 0 is meaningful, pre-field metas unmarshal to 0
     Seed        uint64     `json:"seed"`
     Status      GameStatus `json:"status"`
@@ -137,10 +138,37 @@ func CompetitiveVisibleRowStart(playerCount int) int {
     return HeadroomRows
 }
 
-// TeamBoardWidth returns the width of one team's shared board: one standard
-// 10-column section per teammate, like the cooperative board.
-func TeamBoardWidth(teamSize int) int {
-    return teamSize * StandardWidth
+// ExtraColumnsPerPlayer clamps a game's extra-columns setting to its legal
+// range (MinExtraColumns..MaxExtraColumns). Zero — every meta, listing and
+// archive record written before the setting — means the historical board: a
+// full StandardWidth section per player, i.e. MaxExtraColumns.
+func ExtraColumnsPerPlayer(extraCols int) int {
+    if extraCols <= 0 {
+        return MaxExtraColumns
+    }
+    return min(max(extraCols, MinExtraColumns), MaxExtraColumns)
+}
+
+// SharedBoardWidth returns the width of a board shared by players seats — the
+// cooperative board (players = PlayerCount) or one team's (players =
+// TeamSize): the standard 10 columns the first seat needs plus extraCols for
+// every seat after it.
+func SharedBoardWidth(players, extraCols int) int {
+    return StandardWidth + max(players-1, 0)*ExtraColumnsPerPlayer(extraCols)
+}
+
+// SharedSpawnOffset returns the column a shared board's section'th seat spawns
+// at, relative to the standard spawn column: the seats are one extraCols step
+// apart, so every spawn box lands wholly on the board.
+func SharedSpawnOffset(section, extraCols int) int {
+    return max(section, 0) * ExtraColumnsPerPlayer(extraCols)
+}
+
+// TeamBoardWidth returns the width of one team's shared board: the standard 10
+// columns plus extraCols per teammate beyond the first, like the cooperative
+// board.
+func TeamBoardWidth(teamSize, extraCols int) int {
+    return SharedBoardWidth(teamSize, extraCols)
 }
 
 // TeamVisibleRows returns the visible rows for a team board. Like competitive,
@@ -182,6 +210,7 @@ type ArchiveRecord struct {
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only
     FinalLevel  int            `json:"final_level,omitempty"` // cooperative: shared level at game end
     TeamSize    int            `json:"team_size,omitempty"`   // teams mode
+    ExtraColumns int           `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns)
     WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
     TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team
     TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team

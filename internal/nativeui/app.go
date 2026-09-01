@@ -317,6 +317,13 @@ type App struct {
 	wizList        widget.List      // wizard: the step's body, scrolling when the step is taller than the window leaves it (the custom rules step in a garbage mode at the minimum window height)
 	modeEnum       widget.Enum
 	countEd        widget.Editor
+	// The board-width slider of wizard step 1, shown for the modes that
+	// share a board (cooperative and teams): extraCols is how many columns
+	// every seat beyond the first adds to the board's standard 10
+	// (config.MinExtraColumns..config.MaxExtraColumns), extraColsFloat the
+	// slider's position, snapped to the whole-column detents.
+	extraColsFloat widget.Float
+	extraCols      int
 	allowAgentsCb  widget.Bool   // wizard agents step: allow idle agents to take seats
 	maxAgentsEd    widget.Editor // wizard agents step: how many seats agents may take
 	rulesEnum      widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
@@ -580,7 +587,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		uninviteBtns:    map[string]*widget.Clickable{},
 		msgGroupOf:      map[string]int{},
 	}
-	a.ghostCb.Value = true     // hard-drop ghost preview on by default
+	a.ghostCb.Value = true // hard-drop ghost preview on by default
+	a.setExtraColumns(config.DefaultExtraColumns)
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.dispMode = int(displayAck)
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF)

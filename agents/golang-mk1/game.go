@@ -35,7 +35,7 @@ type Game struct {
 	mode     int // modeCooperative / modeCompetitive / modeTeams
 	team     int // teams: 0 = A, 1 = B
 	teamSlot int // teams: section index on the team board
-	w        int // board width (competitive 10, coop playerCount×10, teams teamSize×10)
+	w        int // board width (competitive 10; a shared board 10 + extra_columns per seat beyond the first — sharedWidth)
 	spawnC   int // our spawn column (section-centered on shared boards)
 	runCtx   context.Context
 
@@ -1248,19 +1248,20 @@ func (g *Game) run(ctx context.Context) bool {
 	// Board geometry and our spawn section (gameplays §2/§3/§5). Every seat
 	// tracks its own piece index on shared boards; competitive keeps the
 	// legacy meta counter.
+	extra := extraColumns(meta.int("extra_columns"))
 	g.w, g.spawnC = width, spawnCol
 	switch g.mode {
 	case modeCooperative:
-		g.w = g.playerCount * width
-		g.spawnC = g.idx*width + spawnCol
+		g.w = sharedWidth(g.playerCount, extra)
+		g.spawnC = g.idx*extra + spawnCol
 	case modeTeams:
 		for _, p := range g.roster {
 			if p.PlayerID == g.a.name {
 				g.team, g.teamSlot = p.Team, p.TeamSlot
 			}
 		}
-		g.w = (g.playerCount / 2) * width
-		g.spawnC = g.teamSlot*width + spawnCol
+		g.w = sharedWidth(g.playerCount/2, extra)
+		g.spawnC = g.teamSlot*extra + spawnCol
 	default:
 		g.pieceIdx = meta.int("piece_idx")
 	}
@@ -1685,6 +1686,12 @@ func (g *Game) archive(ctx context.Context) {
 		"finished_at":  firstNonEmpty(meta.str("finished_at"), nowRFC()),
 		"winning_team": -1,
 		"boards":       g.boardPictures(ctx),
+	}
+	// The shared board's width setting travels with the record: without it
+	// a replay would rebuild the board a full section per seat wide and lay
+	// the recorded cells out on the wrong geometry.
+	if extra := meta.int("extra_columns"); extra > 0 && g.mode != modeCompetitive {
+		record["extra_columns"] = extra
 	}
 	switch g.mode {
 	case modeCooperative:

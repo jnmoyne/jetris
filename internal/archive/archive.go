@@ -179,15 +179,16 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	}
 
 	record := config.ArchiveRecord{
-		GameID:      eng.GameID(),
-		Mode:        meta.Mode,
-		PlayerCount: meta.PlayerCount,
-		StartedAt:   meta.StartedAt,
-		FinishedAt:  meta.FinishedAt,
-		Players:     results,
-		TeamSize:    meta.TeamSize,
-		WinningTeam: winningTeam,
-		Chat:        gameChatHistory(lb, eng.GameID()),
+		GameID:       eng.GameID(),
+		Mode:         meta.Mode,
+		PlayerCount:  meta.PlayerCount,
+		StartedAt:    meta.StartedAt,
+		FinishedAt:   meta.FinishedAt,
+		Players:      results,
+		TeamSize:     meta.TeamSize,
+		ExtraColumns: meta.ExtraColumns,
+		WinningTeam:  winningTeam,
+		Chat:         gameChatHistory(lb, eng.GameID()),
 	}
 	if meta.Mode == config.ModeCooperative {
 		record.TotalScore = eng.Score()
@@ -286,7 +287,7 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 	switch meta.Mode {
 	case config.ModeCooperative:
 		pic, ok := capturePicture(ctx, js, gameID,
-			meta.PlayerCount*config.StandardWidth, config.HeadroomRows+config.VisibleRows, config.VisibleRowStart,
+			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns), config.HeadroomRows+config.VisibleRows, config.VisibleRowStart,
 			"", -1, func(r, c int) string { return config.CoopCellSubject(gameID, r, c) })
 		if !ok {
 			return nil
@@ -294,7 +295,7 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 		return []config.BoardPicture{pic}
 
 	case config.ModeTeams:
-		w := config.TeamBoardWidth(meta.TeamSize)
+		w := config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns)
 		h := config.TeamTotalRows(meta.TeamSize)
 		vs := config.TeamVisibleRowStart(meta.TeamSize)
 		var out []config.BoardPicture

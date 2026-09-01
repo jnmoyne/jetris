@@ -661,7 +661,11 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 
 // CreateGame creates a new game. For teams mode, teamSize is the number of
 // players per team and playerCount must be the total (TeamCount*teamSize);
-// other modes pass teamSize 0.
+// other modes pass teamSize 0. extraCols is the board-width setting of the
+// modes that share a board (cooperative, teams): the columns every seat
+// beyond the first adds to the standard 10 — see config.SharedBoardWidth;
+// competitive passes 0, and so may any caller that wants the historical
+// full-section-per-player board.
 // CreateGame creates a game and its stream and writes the lobby listing.
 // maxAgents is the creator's agent policy: how many roster seats agent players
 // may take (0 = agents may not join); enforced atomically by JoinGame's CAS
@@ -676,7 +680,7 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // hold — or plain "guideline" when the rules are the Guideline preset). The
 // ghost rule is stored inverted as GameMeta.NoGhost so pre-field metas keep
 // the ghost shown.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, maxAgents int, rules config.GameRules, inviteOnly bool) (string, error) {
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, extraCols, maxAgents int, rules config.GameRules, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	if maxAgents < 0 {
 		maxAgents = 0
@@ -685,6 +689,13 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		maxAgents = playerCount
 	}
 	rules = rules.Normalized(mode)
+	// Only a shared board has a width to set; competitive boards are always
+	// the standard 10 columns, so its meta records no setting at all.
+	if mode == config.ModeCompetitive {
+		extraCols = 0
+	} else if extraCols > 0 {
+		extraCols = config.ExtraColumnsPerPlayer(extraCols)
+	}
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
@@ -695,6 +706,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Mode:               mode,
 		PlayerCount:        playerCount,
 		TeamSize:           teamSize,
+		ExtraColumns:       extraCols,
 		NextCount:          rules.NextCount,
 		NoGhost:            !rules.Ghost,
 		Hold:               rules.Hold,
@@ -721,6 +733,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Status:             config.GameStatusCreated,
 		PlayerCount:        playerCount,
 		TeamSize:           teamSize,
+		ExtraColumns:       extraCols,
 		MaxAgents:          maxAgents,
 		NextCount:          rules.NextCount,
 		NoGhost:            !rules.Ghost,

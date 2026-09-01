@@ -58,6 +58,15 @@ const (
 	clearRows  = 2 // ...and two rows deep: the O piece completes both, a double
 )
 
+// The staged game is one the create wizard would make today: a 2v2 with the
+// board-width slider at its default, so each team's board is the standard 10
+// columns plus shotExtraCols for the second teammate — the width a README
+// reader gets when they create a teams game themselves.
+const shotExtraCols = config.DefaultExtraColumns
+
+// shotBoardWidth is the staged team board's width.
+func shotBoardWidth() int { return config.TeamBoardWidth(2, shotExtraCols) }
+
 // raise is one garbage attack from an earlier exchange as it sits on a team
 // board: rows rows sent by a clear of player by. The game raises clean
 // Guideline garbage — one hole per row — and the rows of one raise share
@@ -97,7 +106,7 @@ func publishCell(t *testing.T, js jetstream.JetStream, gameID string, team, row,
 // a hole is forced somewhere along the floor row.
 func prefillTeamBoard(t *testing.T, js jetstream.JetStream, gameID string, team int, raises []raise, slot bool, rng *rand.Rand) {
 	t.Helper()
-	width := config.TeamBoardWidth(2)
+	width := shotBoardWidth()
 	row := config.TeamTotalRows(2) - 1 // the bottom row
 	prevHole := -1
 	for _, r := range raises {
@@ -255,7 +264,8 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	}
 	meta := config.GameMeta{
 		GameID: gameID, Mode: config.ModeTeams, PlayerCount: 4, TeamSize: 2,
-		NextCount: 3, // the player view shows the HUD's NEXT preview panel
+		ExtraColumns: shotExtraCols,
+		NextCount:    3, // the player view shows the HUD's NEXT preview panel
 		// Guideline-style garbage: every garbage row comes with one hole,
 		// the rows of one raise share it (RandomGarbageHoles off), and a
 		// clear attacks by the Guideline table — the victims' engines raise

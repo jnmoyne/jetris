@@ -26,6 +26,31 @@ const (
 	modeTeams       = 2
 )
 
+// A shared board (cooperative, or one team's board) is `width` columns for
+// its first seat and the game's `extra_columns` more for every seat after
+// it — the creator's board-width setting, between minExtraColumns and
+// maxExtraColumns (gameplays §2). The same step spaces the seats' spawn
+// points, so seat i spawns at i×extra + spawnCol.
+const (
+	minExtraColumns = 4
+	maxExtraColumns = width
+)
+
+// extraColumns clamps the meta's extra_columns to its legal range. Absent —
+// zero, as every game created before the setting existed reads — means the
+// historical board: a full `width` section per seat, i.e. maxExtraColumns.
+func extraColumns(v int) int {
+	if v <= 0 {
+		return maxExtraColumns
+	}
+	return min(max(v, minExtraColumns), maxExtraColumns)
+}
+
+// sharedWidth is the width of a board shared by seats players.
+func sharedWidth(seats, extra int) int {
+	return width + max(seats-1, 0)*extra
+}
+
 // gravityInterval is the guideline speed curve (gameplays §7): seconds per
 // row = (0.8 − (L − 1) × 0.007)^(L − 1) with L = level + 1, to the
 // millisecond, floored at one 60 Hz frame. Shared boards level up as lines

@@ -46,8 +46,11 @@ func TestSubjectBuilders(t *testing.T) {
 
 func TestTeamDimensions(t *testing.T) {
 	for _, teamSize := range []int{1, 2, 3} {
-		if got, want := TeamBoardWidth(teamSize), teamSize*StandardWidth; got != want {
-			t.Errorf("TeamBoardWidth(%d) = %d, want %d", teamSize, got, want)
+		// A record with no extra-columns setting — every game archived
+		// before the board-width slider — keeps the historical board: one
+		// full standard section per teammate.
+		if got, want := TeamBoardWidth(teamSize, 0), teamSize*StandardWidth; got != want {
+			t.Errorf("TeamBoardWidth(%d, 0) = %d, want %d", teamSize, got, want)
 		}
 		if got, want := TeamVisibleRows(teamSize), VisibleRows+teamSize; got != want {
 			t.Errorf("TeamVisibleRows(%d) = %d, want %d", teamSize, got, want)
@@ -58,6 +61,46 @@ func TestTeamDimensions(t *testing.T) {
 		if got := TeamVisibleRowStart(teamSize); got != HeadroomRows {
 			t.Errorf("TeamVisibleRowStart(%d) = %d, want %d", teamSize, got, HeadroomRows)
 		}
+	}
+}
+
+// The board-width setting: a shared board is the standard 10 columns for its
+// first seat and extraCols more for every seat after it, with the seats'
+// spawn points one extraCols step apart — so the last seat's spawn box ends
+// exactly on the board's last column, whatever the setting.
+func TestSharedBoardWidth(t *testing.T) {
+	for _, tc := range []struct{ players, extra, want int }{
+		{1, 4, 10}, {2, 4, 14}, {3, 4, 18}, {4, 4, 22},
+		{2, 10, 20}, {3, 10, 30}, // the maximum: a full section per player
+		{2, 0, 20}, {3, 0, 30}, // absent: the historical board, as if 10
+		{2, -3, 20}, {2, 1, 14}, {2, 99, 20}, // out of range: clamped
+	} {
+		if got := SharedBoardWidth(tc.players, tc.extra); got != tc.want {
+			t.Errorf("SharedBoardWidth(%d, %d) = %d, want %d", tc.players, tc.extra, got, tc.want)
+		}
+	}
+	for _, extra := range []int{MinExtraColumns, 7, MaxExtraColumns, 0} {
+		for _, players := range []int{1, 2, 3, 5} {
+			w := SharedBoardWidth(players, extra)
+			if got, want := SharedSpawnOffset(0, extra), 0; got != want {
+				t.Errorf("SharedSpawnOffset(0, %d) = %d, want %d", extra, got, want)
+			}
+			// The last seat's 10-wide spawn box has to end on the board.
+			if got := SharedSpawnOffset(players-1, extra) + StandardWidth; got != w {
+				t.Errorf("last spawn box of %d players at extra %d ends at %d, board is %d wide", players, extra, got, w)
+			}
+		}
+	}
+}
+
+func TestExtraColumnsPerPlayer(t *testing.T) {
+	for in, want := range map[int]int{0: MaxExtraColumns, -1: MaxExtraColumns, 1: MinExtraColumns, 4: 4, 7: 7, 10: 10, 11: MaxExtraColumns} {
+		if got := ExtraColumnsPerPlayer(in); got != want {
+			t.Errorf("ExtraColumnsPerPlayer(%d) = %d, want %d", in, got, want)
+		}
+	}
+	if DefaultExtraColumns != MinExtraColumns {
+		t.Errorf("DefaultExtraColumns = %d, want the slider's low end %d", DefaultExtraColumns, MinExtraColumns)
 	}
 }
 

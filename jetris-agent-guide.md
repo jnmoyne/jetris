@@ -232,7 +232,7 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore |
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
@@ -408,7 +408,10 @@ agree on eliminations and outcomes without a coordinator.
    conversation (the archive purges the game's messages from the chat stream,
    so copy them into the record FIRST — last 200 lines; the GUI's
    archived-game viewer replays them). Best-effort: a record without `chat`
-   simply shows no conversation.
+   simply shows no conversation. On a shared board the record must also carry
+   the meta's `extra_columns` — the replay viewer rebuilds the board's width
+   from it, and without it the recorded cells are laid out on the wrong
+   geometry.
 6. **Replay archive** (part of archiving, AFTER the record publish and BEFORE
    the stream deletion): copy the ENTIRE game stream into the ONE shared
    file-backed **`JETRIS_REPLAY`** stream so the GUI can replay the game

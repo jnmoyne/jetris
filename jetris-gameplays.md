@@ -147,7 +147,7 @@ and no difficulty setting or flag of the agent's can raise it, only use less of 
 | Total rows | 28 |
 | Headroom rows | 4 (rows 0-3, not rendered) |
 | Visible rows | 24 (rows 4-27) in cooperative mode; for competitive and teams this number depends on the number of players in the game |
-| Standard width | 10 columns in competitive mode; for cooperative the width is `playerCount × 10`; for teams each team's board is `teamSize × 10` |
+| Standard width | 10 columns in competitive mode. A SHARED board — cooperative, or one team's — is `10 + (seats − 1) × extraColumns` wide, where `seats` is `playerCount` (cooperative) or `teamSize` (teams) and `extraColumns` is the game's `meta.extra_columns` (4–10, the create wizard's board-width slider, default 4). A meta without the field — every game created before the slider — reads as 10, the historical `seats × 10` board |
 
 **Cell states:**
 
@@ -168,7 +168,7 @@ On shared boards (cooperative, teams), active cells carry a `PlayerIdx` field (0
 
 ### Playfield
 
-The playfield is a single shared board of width `playerCount x 10`. Each player controls it's own piece. All players' pieces exist on the same playfield and can move anywhere on it — they are not restricted to any section, however player's tetrominoes can _not_ overlap.
+The playfield is a single shared board of width `10 + (playerCount − 1) × extraColumns` — the standard 10 columns the first player needs plus the game's `meta.extra_columns` (§2) for each player after them, so 2 players share 14 columns at the default of 4, 3 players 18, and at the maximum of 10 every player has a full 10-column section of their own. Each player controls it's own piece. All players' pieces exist on the same playfield and can move anywhere on it — they are not restricted to any section, however player's tetrominoes can _not_ overlap.
 
 ### Piece Spawning
 
@@ -177,7 +177,7 @@ Players share the same RNG seed (`meta.Seed`) and produce the identical piece se
 Each player tracks their own `pieceIdx` independently.
 
 **Spawn position:** Each player's piece spawns centered in their section, but can immediately move anywhere:
-- Player N spawns at column `N * 10 + 3` (center of their 10-column section)
+- Player N spawns at column `N * extraColumns + 3` — the seats are spaced one `extra_columns` step apart, the same step the board's width is built from, so the first seat spawns at the left edge and the last one's 10-wide spawn box ends exactly on the board's last column. (At the maximum of 10 this is the historical `N * 10 + 3`, the center of an own 10-column section; at the default of 4 the seats sit shoulder to shoulder — a horizontal I spans 4 columns, so no two spawn boxes ever overlap.)
 - Anchor row 2 for **all** piece types, so every piece's lowest cell sits at row 3 (just inside the headroom) and they all become visible after the same number of gravity ticks. (Spawning the I one row higher made it appear a tick later than the rest, so a player hard-dropping each piece on sight would drop the I before seeing it.)
 
 **Spawn blocked (shared boards):** the same distinction gravity makes applies at spawn time. If the spawn cells are held by **locked cells**, the player tops out. If they are covered **only by another player's active (falling) piece** — a transient obstacle that will itself fall away — the spawn does **not** top out: it is deferred and retried as soon as the shared board changes (every incoming cell message may be the blocker moving away — at agent speeds a piece crosses the spawn cells in milliseconds), with the gravity tick as the backstop, until it succeeds or the cells become locked (a genuine top-out). Detection mirrors movement: `CanPlaceCoop` fails but `CanPlace` (which ignores active cells) succeeds. Without this rule, a teammate's piece merely crossing the spawn area would spuriously eliminate the player (and in cooperative end the game for everyone). The engine also runs a piece-less **watchdog** on the same gravity tick: an alive player with no piece and no deferred spawn for two consecutive ticks gets a forced (re)spawn, healing a spawn whose publish was lost on a board that has since gone silent. Neither the deferral retry nor the watchdog runs before the game starts.
@@ -392,11 +392,11 @@ Two teams of equal size ("A" = team 0, "B" = team 1). **Within a team, play is c
 
 ### Playfield
 
-One shared board per team: width `teamSize × 10`, visible rows `24 + teamSize` (plus 4 headroom rows). Like competitive, the extra rows leave room for garbage; the producer here is the opposing team's `teamSize` piece-locking players. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the two boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
+One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 — 14 columns for a team of 2 at the default setting of 4), visible rows `24 + teamSize` (plus 4 headroom rows). Like competitive, the extra rows leave room for garbage; the producer here is the opposing team's `teamSize` piece-locking players. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the two boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
 
 ### Piece Spawning
 
-Coop rules per team: player at team slot N spawns centered in their section at column `N×10 + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so both teams see the identical, fair piece sequence.
+Coop rules per team: player at team slot N spawns centered in their section at column `N×extraColumns + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so both teams see the identical, fair piece sequence.
 
 ### Movement, Gravity, Hard Drop, Lock-In
 
@@ -483,7 +483,13 @@ Games are created through a **create-game wizard**: the lobby carries a single
 embossed bevel and a diagonal glint sweeping across it every few seconds, so
 the lobby's main call to action can't be missed) that opens a modal walking the creator through the
 game's attributes one step at a time — **1. game type & players** (co-op /
-competitive / teams radios and the seat count, per-team in teams mode),
+competitive / teams radios, the seat count, per-team in teams mode, and — for
+the modes whose players share a board — the **board-width slider**: how many
+columns every seat beyond the first adds to the board's standard 10, 4 to 10,
+default 4, so a co-op pair or a team of two plays 14 columns wide, three 18,
+and the slider's top of 10 restores the historical full 10-column section per
+player. The same step spaces the seats' spawn points (§2, §3, §5).
+Competitive never shows it — every player has a standard board of their own),
 **2. game rules** (a single radio: the **Guideline** preset — the default,
 listed read-only — or **custom**: the next-piece count, 0-6, default 6, the
 "Show ghost piece" checkbox, on by default, the "Hold piece" checkbox, off by

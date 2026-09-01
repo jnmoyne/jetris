@@ -42,6 +42,7 @@ func main() {
 	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	players := flag.Int("players", 2, "player count when creating a game (with --create; teams: players per team)")
 	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
+	extraCols := flag.Int("extra-cols", minExtraColumns, "shared-board width when creating a cooperative or teams game: columns every seat beyond the first adds to the standard 10 (4-10)")
 	next := flag.Int("next", maxNextCount, "upcoming pieces the game reveals when creating a game (0-6, 0 = none)")
 	holes := flag.Int("holes", 0, "holes per garbage row when creating a competitive or teams game (0-4, 0 = solid rows that never clear)")
 	randomHoles := flag.Bool("random-holes", false, "every garbage row draws its own hole columns when creating a game (default: the rows of one attack share a draw)")
@@ -87,7 +88,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mode %q (want cooperative, competitive or teams)\n", *modeStr)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold}
+		host = &hosting{mode: mode, players: *players, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
 			host.next, host.holes, host.random, host.guideline, host.hold = maxNextCount, 1, false, true, true

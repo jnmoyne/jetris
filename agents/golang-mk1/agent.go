@@ -57,6 +57,7 @@ type connChoice struct {
 type hosting struct {
 	mode      int  // modeCooperative / modeCompetitive / modeTeams
 	players   int  // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
+	extraCols int  // shared boards: columns every seat beyond the first adds to the standard 10 (clamped 4..10)
 	maxAgents int  // agent seats, this agent included (<=0 = all seats)
 	next      int  // revealed upcoming pieces (clamped 0..maxNextCount)
 	holes     int  // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
@@ -732,6 +733,12 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if maxAgents <= 0 || maxAgents > players {
 		maxAgents = players // agent-hosted games are agent-friendly by default
 	}
+	// A shared board's width setting; competitive boards are always the
+	// standard 10 columns, so its meta records none.
+	extra := 0
+	if h.mode != modeCompetitive {
+		extra = extraColumns(h.extraCols)
+	}
 	next := min(max(h.next, 0), maxNextCount)
 	holes := min(max(h.holes, 0), maxGarbageHoles)
 	random := h.random && holes > 0
@@ -759,6 +766,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	meta.set("player_count", players)
 	if teamSize > 0 {
 		meta.set("team_size", teamSize)
+	}
+	if extra > 0 {
+		meta.set("extra_columns", extra)
 	}
 	meta.set("next_count", next)
 	if holes > 0 {
@@ -791,6 +801,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	listing.set("player_count", players)
 	if teamSize > 0 {
 		listing.set("team_size", teamSize)
+	}
+	if extra > 0 {
+		listing.set("extra_columns", extra)
 	}
 	listing.set("max_agents", maxAgents)
 	listing.set("next_count", next)

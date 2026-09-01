@@ -35,7 +35,7 @@ func TestSetReady(t *testing.T) {
 	a, b := lbs[0], lbs[1]
 	ctx := context.Background()
 
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{Ghost: true}, false)
+	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestRejoinKeepsSeat(t *testing.T) {
 	a, b := lbs[0], lbs[1]
 	ctx := context.Background()
 
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{Ghost: true}, false)
+	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestLobbyEventsPublished(t *testing.T) {
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, config.GameRules{Ghost: true}, true)
+	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1598,6 +1598,12 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	}
 	info := fmt.Sprintf("%s · %s · %d/%d", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount)
 	var extra string
+	// Shared boards are as wide as their seat count and the creator's
+	// board-width setting make them (config.SharedBoardWidth) — the one
+	// number that says what a joiner is walking onto.
+	if g.Mode != config.ModeCompetitive {
+		extra += fmt.Sprintf(" · board %d wide", g.BoardWidth())
+	}
 	if g.InviteOnly {
 		extra += " · invite only"
 	}

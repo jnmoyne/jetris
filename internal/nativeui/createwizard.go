@@ -55,26 +55,59 @@ func (a *App) handleCreateWizard(gtx C) bool {
 	return a.createWizStep != 0
 }
 
+// wizardMode is the game type step 1 currently has picked.
+func (a *App) wizardMode() config.GameMode {
+	switch a.modeEnum.Value {
+	case "competitive":
+		return config.ModeCompetitive
+	case "teams":
+		return config.ModeTeams
+	default:
+		return config.ModeCooperative
+	}
+}
+
+// wizardCount reads step 1's seat-count editor for a game of mode: players
+// PER TEAM in teams mode, the total player count otherwise. Blank or junk
+// falls back to the smallest game the mode can hold, so the step's live
+// board-width readout and the create itself always agree.
+func (a *App) wizardCount(mode config.GameMode) int {
+	count, err := strconv.Atoi(strings.TrimSpace(a.countEd.Text()))
+	if mode == config.ModeTeams {
+		if err != nil || count < 1 {
+			return 1
+		}
+		return count
+	}
+	if err != nil || count < 2 {
+		return 2
+	}
+	return count
+}
+
+// extraColsRange maps the board-width slider's 0..1 position to the whole
+// number of columns one seat adds, and back to that column's detent.
+var extraColsRange = knobRange{config.MinExtraColumns, config.MaxExtraColumns, 1}
+
+// setExtraColumns sets the board-width knob — how many columns a shared
+// board gains per seat beyond the first — and mirrors it onto its slider.
+func (a *App) setExtraColumns(v int) {
+	a.extraCols = min(max(v, config.MinExtraColumns), config.MaxExtraColumns)
+	a.extraColsFloat.Value = extraColsRange.pos(a.extraCols)
+}
+
 // finishCreateWizard reads the wizard's widgets, clamps them to legal values,
 // closes the wizard, and launches the game: an invite-only game is created and
 // hands off to the invitee picker, an open game is created directly with its
 // agent policy.
 func (a *App) finishCreateWizard() {
-	mode := config.ModeCooperative
-	switch a.modeEnum.Value {
-	case "competitive":
-		mode = config.ModeCompetitive
-	case "teams":
-		mode = config.ModeTeams
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(a.countEd.Text()))
-	if mode == config.ModeTeams {
-		// For teams the count editor means players PER TEAM.
-		if err != nil || count < 1 {
-			count = 1
-		}
-	} else if err != nil || count < 2 {
-		count = 2
+	mode := a.wizardMode()
+	count := a.wizardCount(mode)
+	// The board-width knob only shapes a shared board; a competitive game
+	// gives every player a standard 10-column board of their own.
+	extraCols := 0
+	if mode != config.ModeCompetitive {
+		extraCols = a.extraCols
 	}
 	// The play rules: the Guideline preset as chosen on step 2, or the
 	// custom editors' read-out; either way clamped for the mode (a
@@ -86,7 +119,7 @@ func (a *App) finishCreateWizard() {
 	rules = rules.Normalized(mode)
 	a.createWizStep = 0
 	if a.createJoinEnum.Value == "invite" {
-		go a.openInvitePicker(mode, count, rules)
+		go a.openInvitePicker(mode, count, extraCols, rules)
 		return
 	}
 	// Agent policy: how many seats idle agent players may take.
@@ -98,15 +131,13 @@ func (a *App) finishCreateWizard() {
 		if mode == config.ModeTeams {
 			total = config.TeamCount * count
 		}
-		maxAgents, err = strconv.Atoi(strings.TrimSpace(a.maxAgentsEd.Text()))
-		if err != nil || maxAgents < 1 {
-			maxAgents = 1
+		n, err := strconv.Atoi(strings.TrimSpace(a.maxAgentsEd.Text()))
+		if err != nil || n < 1 {
+			n = 1
 		}
-		if maxAgents > total {
-			maxAgents = total
-		}
+		maxAgents = min(n, total)
 	}
-	go func() { a.createGame(mode, count, maxAgents, rules, false) }()
+	go func() { a.createGame(mode, count, extraCols, maxAgents, rules, false) }()
 }
 
 // customRules reads the wizard's custom-rules widgets. The upcoming-piece
@@ -231,10 +262,12 @@ func (a *App) wizardRadio(enum *widget.Enum, value, label string) layout.Widget 
 	}
 }
 
-// wizardModeStep is step 1: pick the game type and how many players it seats
-// (players per team in teams mode).
+// wizardModeStep is step 1: pick the game type, how many players it seats
+// (players per team in teams mode) and — for the modes whose players share
+// one board — how wide that board grows per seat.
 func (a *App) wizardModeStep(gtx C) D {
-	teams := a.modeEnum.Value == "teams"
+	mode := a.wizardMode()
+	teams := mode == config.ModeTeams
 	countLabel := "Players:"
 	if teams {
 		countLabel = "Players per team:"
@@ -262,6 +295,53 @@ func (a *App) wizardModeStep(gtx C) D {
 				}),
 			)
 		}),
+		layout.Rigid(func(gtx C) D {
+			if mode == config.ModeCompetitive {
+				return D{} // a board each, always the standard 10 columns
+			}
+			return a.wizardBoardWidth(gtx, mode)
+		}),
+	)
+}
+
+// wizardBoardWidth is step 1's board-width slider, drawn for the modes whose
+// players share a board (cooperative, and teams within each team): how many
+// columns every seat beyond the first adds to the board's standard 10. At the
+// default of 4 the seats sit shoulder to shoulder — two players on 14
+// columns, three on 18 — and at the maximum of 10 every player gets a full
+// standard section of their own, the board Jetris had before the slider. The
+// same step spaces the spawn points, so a wider board is also a roomier one
+// to spawn into. Competitive never sees it: each player has their own board.
+func (a *App) wizardBoardWidth(gtx C, mode config.GameMode) D {
+	if a.extraColsFloat.Update(gtx) {
+		a.extraCols = extraColsRange.value(a.extraColsFloat.Value)
+		a.extraColsFloat.Value = extraColsRange.pos(a.extraCols) // rest on the detent
+	}
+	seats := a.wizardCount(mode)
+	hint := fmt.Sprintf("The shared board is %d columns for the first player and %d more for every player after — %d columns for %d players.",
+		config.StandardWidth, a.extraCols, config.SharedBoardWidth(seats, a.extraCols), seats)
+	if mode == config.ModeTeams {
+		hint = fmt.Sprintf("Each team's board is %d columns for the first teammate and %d more for every teammate after — %d columns for teams of %d.",
+			config.StandardWidth, a.extraCols, config.TeamBoardWidth(seats, a.extraCols), seats)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(spacer(12)),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.body(fmt.Sprintf("Extra columns per player (%d–%d):", config.MinExtraColumns, config.MaxExtraColumns), colMuted)),
+				layout.Rigid(hSpacer(8)),
+				layout.Flexed(1, func(gtx C) D {
+					gtx.Constraints.Max.Y = gtx.Dp(20) // a row, not a touch target
+					s := material.Slider(a.th, &a.extraColsFloat)
+					s.Color = colAccent
+					return s.Layout(gtx)
+				}),
+				layout.Rigid(hSpacer(8)),
+				layout.Rigid(a.body(strconv.Itoa(a.extraCols), colFg)),
+			)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body(hint, colMuted)),
 	)
 }
 
@@ -291,13 +371,7 @@ func (a *App) wizardNextStep(gtx C) D {
 // (config.GuidelineRules) for the game type being created: one line per
 // rule, so the creator sees exactly what the game will play by.
 func (a *App) wizardGuidelineRules(gtx C) D {
-	mode := config.ModeCooperative
-	switch a.modeEnum.Value {
-	case "competitive":
-		mode = config.ModeCompetitive
-	case "teams":
-		mode = config.ModeTeams
-	}
+	mode := a.wizardMode()
 	kids := []layout.FlexChild{
 		layout.Rigid(a.body("The settings closest to the Tetris Guideline this game can offer:", colMuted)),
 		layout.Rigid(spacer(8)),

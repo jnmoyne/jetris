@@ -292,10 +292,37 @@ func CompetitiveVisibleRowStart(playerCount int) int {
     return HeadroomRows
 }
 
-// TeamBoardWidth returns the width of one team's shared board: one standard
-// 10-column section per teammate, like the cooperative board.
-func TeamBoardWidth(teamSize int) int {
-    return teamSize * StandardWidth
+// ExtraColumnsPerPlayer clamps a game's extra-columns setting to its legal
+// range (MinExtraColumns..MaxExtraColumns). Zero — every meta, listing and
+// archive record written before the setting — means the historical board: a
+// full StandardWidth section per player, i.e. MaxExtraColumns.
+func ExtraColumnsPerPlayer(extraCols int) int {
+    if extraCols <= 0 {
+        return MaxExtraColumns
+    }
+    return min(max(extraCols, MinExtraColumns), MaxExtraColumns)
+}
+
+// SharedBoardWidth returns the width of a board shared by players seats — the
+// cooperative board (players = PlayerCount) or one team's (players =
+// TeamSize): the standard 10 columns the first seat needs plus extraCols for
+// every seat after it.
+func SharedBoardWidth(players, extraCols int) int {
+    return StandardWidth + max(players-1, 0)*ExtraColumnsPerPlayer(extraCols)
+}
+
+// SharedSpawnOffset returns the column a shared board's section'th seat spawns
+// at, relative to the standard spawn column: the seats are one extraCols step
+// apart, so every spawn box lands wholly on the board.
+func SharedSpawnOffset(section, extraCols int) int {
+    return max(section, 0) * ExtraColumnsPerPlayer(extraCols)
+}
+
+// TeamBoardWidth returns the width of one team's shared board: the standard 10
+// columns plus extraCols per teammate beyond the first, like the cooperative
+// board.
+func TeamBoardWidth(teamSize, extraCols int) int {
+    return SharedBoardWidth(teamSize, extraCols)
 }
 
 // TeamVisibleRows returns the visible rows for a team board. Like competitive,
@@ -342,6 +369,7 @@ type ArchiveRecord struct {
     TotalScore  int            `json:"total_score,omitempty"` // cooperative mode only (unset for teams)
     FinalLevel  int            `json:"final_level,omitempty"` // cooperative: shared level at game end
     TeamSize    int            `json:"team_size,omitempty"`   // teams mode
+    ExtraColumns int           `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns) — what the replay rebuilds the board's width from
     WinningTeam int            `json:"winning_team"`          // teams mode: 0 or 1; -1 = draw or not a team game
     TeamScores  []int          `json:"team_scores,omitempty"` // teams mode: final score per team (indexed by team)
     TeamLevels  []int          `json:"team_levels,omitempty"` // teams mode: final level per team (indexed by team)
@@ -532,6 +560,15 @@ type GameMeta struct {
     Mode        GameMode   `json:"mode"`          // cooperative, competitive, or teams
     PlayerCount int        `json:"player_count"`  // max players (teams: TeamCount×TeamSize)
     TeamSize    int        `json:"team_size,omitempty"` // teams mode: players per team
+
+    // Board width (shared boards only): how many columns every seat beyond
+    // the first adds to the board's standard 10, and the step between
+    // neighbouring spawn points. MinExtraColumns..MaxExtraColumns, the create
+    // wizard's slider. omitempty, and absent reads as MaxExtraColumns — every
+    // meta written before the setting keeps the historical full section per
+    // seat. Meaningless in competitive, where each player has a board of
+    // their own.
+    ExtraColumns int       `json:"extra_columns,omitempty"`
 
     // Piece preview: how many upcoming pieces the game reveals
     // (0..config.MaxNextCount). One horizon for everyone — the UI's NEXT
@@ -1508,7 +1545,7 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 
 **Cooperative mode design:**
 
-In cooperative mode both players share a SINGLE wide playfield of width `playerCount × StandardWidth` (20 columns for 2 players). Cell subjects carry no player token — the shared board publishes to `jetris.game.<id>.playfield.cell.<row>.<col>` (every player publishes to and consumes from the same subjects) via the `config.CoopCellSubject` scheme, distinct from the competitive `config.CompetitiveCellSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
+In cooperative mode both players share a SINGLE wide playfield of width `SharedBoardWidth(playerCount, meta.ExtraColumns)` — the standard 10 columns plus the game's extra-columns setting for every player beyond the first (14 columns for 2 players at the default of 4; 20 at the setting's maximum of 10, the historical board). Cell subjects carry no player token — the shared board publishes to `jetris.game.<id>.playfield.cell.<row>.<col>` (every player publishes to and consumes from the same subjects) via the `config.CoopCellSubject` scheme, distinct from the competitive `config.CompetitiveCellSubject` scheme. Per-player filtering is never needed in coop, so the player identity lives entirely in the payload rather than the subject. Both players' active pieces exist on the same playfield and can move anywhere on it — they are not restricted to their own section. Each cell of an active piece is tagged with `Cell.PlayerIdx` (0 for creator, 1 for joiner) so the engine can distinguish which player's piece each cell belongs to.
 
 Each player spawns their piece centered in their section (player 0: center of cols 0–9, player 1: center of cols 10–19) but can move it anywhere on the full-width board. `ActivePieceForPlayer(playerIdx)` finds only the piece belonging to that player (by matching `Cell.PlayerIdx`). `SetActivePieceForPlayer(p, playerIdx)` only clears active cells with matching `PlayerIdx` before setting new ones. Collision detection (`CanPlaceCoop`) treats the other player's active cells as obstacles in addition to locked cells.
 
@@ -2297,6 +2334,7 @@ type GameListing struct {
     Status      config.GameStatus `json:"status"`        // the string status type from config
     PlayerCount int               `json:"player_count"`  // configured max players
     TeamSize    int               `json:"team_size,omitempty"` // teams mode: players per team
+    ExtraColumns int              `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first, mirrors GameMeta.ExtraColumns for the lobby row's board-width tag
     NextCount   int               `json:"next_count,omitempty"` // piece-preview size, mirrors GameMeta.NextCount for the lobby row's "next N" tag
     GarbageHoles int              `json:"garbage_holes,omitempty"` // holes per garbage row, mirrors GameMeta.GarbageHoles for the lobby row's "holes N" tag
     RandomGarbageHoles bool       `json:"random_garbage_holes,omitempty"` // each row draws its own holes, mirrors GameMeta.RandomGarbageHoles ("random holes N" tag)

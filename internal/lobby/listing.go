@@ -13,6 +13,7 @@ type GameListing struct {
 	Status             config.GameStatus `json:"status"`
 	PlayerCount        int               `json:"player_count"`
 	TeamSize           int               `json:"team_size,omitempty"`            // teams mode: players per team
+	ExtraColumns       int               `json:"extra_columns,omitempty"`        // shared boards: columns per seat beyond the first; mirrors GameMeta.ExtraColumns for the lobby row's board-width tag
 	MaxAgents          int               `json:"max_agents,omitempty"`           // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
 	NextCount          int               `json:"next_count,omitempty"`           // how many upcoming pieces are shown (0..config.MaxNextCount); mirrors GameMeta.NextCount for the lobby row
 	NoGhost            bool              `json:"no_ghost,omitempty"`             // the hard-drop ghost is off; mirrors GameMeta.NoGhost (inverted like it) so the row's "guideline" tag matches the preset exactly
@@ -46,6 +47,20 @@ func (g GameListing) Rules() config.GameRules {
 		GarbageHoles:       g.GarbageHoles,
 		RandomGarbageHoles: g.RandomGarbageHoles,
 		GuidelineGarbage:   g.GuidelineGarbage,
+	}
+}
+
+// BoardWidth returns the width of the board this game plays on: the shared
+// board of a cooperative or teams game (which the ExtraColumns setting
+// widens per seat), or the standard 10 columns each competitive player gets.
+func (g GameListing) BoardWidth() int {
+	switch g.Mode {
+	case config.ModeCooperative:
+		return config.SharedBoardWidth(g.PlayerCount, g.ExtraColumns)
+	case config.ModeTeams:
+		return config.TeamBoardWidth(g.TeamSize, g.ExtraColumns)
+	default:
+		return config.StandardWidth
 	}
 }
 

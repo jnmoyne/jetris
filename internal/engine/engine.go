@@ -77,6 +77,12 @@ type Engine struct {
 	teamIdx          int // teams mode: which team this player is on (0 = A, 1 = B)
 	teamSlot         int // teams mode: section index within the team board (spawn column offset)
 	teamSize         int // teams mode: players per team (from meta at Start)
+	// extraCols is the shared board's width setting (GameMeta.ExtraColumns at
+	// Start): the columns every seat beyond the first adds to the standard
+	// 10, and the step between neighbouring spawn points. Zero — a meta
+	// written before the setting existed — reads as a full section per seat
+	// (config.ExtraColumnsPerPlayer), the board Jetris always had.
+	extraCols int
 
 	// gameStarted flips true when this engine learns the game is in_progress
 	// (at Start, or from the meta consumer). The piece-less watchdog is gated
@@ -313,6 +319,7 @@ func (e *Engine) Start() error {
 	}
 	e.playerCount = meta.PlayerCount
 	e.teamSize = meta.TeamSize
+	e.extraCols = meta.ExtraColumns
 	e.nextCount = meta.NextCount
 	e.noGhost = meta.NoGhost
 	e.hold = meta.Hold
@@ -340,7 +347,7 @@ func (e *Engine) Start() error {
 		e.pieceIdx.Store(0)
 		// Shared wide playfield with standard height
 		e.playfield = game.NewPlayfieldWithHeight(
-			meta.PlayerCount*config.StandardWidth,
+			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns),
 			config.HeadroomRows+config.VisibleRows,
 		)
 	case config.ModeTeams:
@@ -350,7 +357,7 @@ func (e *Engine) Start() error {
 		e.seq = rng.New(meta.Seed)
 		e.pieceIdx.Store(0)
 		e.playfield = game.NewPlayfieldWithHeight(
-			config.TeamBoardWidth(meta.TeamSize),
+			config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns),
 			config.TeamTotalRows(meta.TeamSize),
 		)
 	default:
@@ -556,7 +563,7 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 		e.mu.Unlock()
 		return
 	}
-	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize), config.TeamTotalRows(e.teamSize))
+	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TeamTotalRows(e.teamSize))
 	e.opponentPlayfields[key] = pf
 	e.mu.Unlock()
 
@@ -1133,14 +1140,16 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 // spawnPosition is where a piece of type pt enters play on this engine's
 // board: the standard spawn (game.SpawnPiece) offset, on a shared board, to
 // the player's own section — coop sections are laid out by playerIdx, team
-// boards by the slot within the team. Shared by the queue spawn and the hold.
+// boards by the slot within the team, both one extra-columns step apart
+// (config.SharedSpawnOffset, the same step the board's width is built from).
+// Shared by the queue spawn and the hold.
 func (e *Engine) spawnPosition(pt game.PieceType) game.Piece {
 	p := game.SpawnPiece(pt, config.StandardWidth)
 	switch e.gameMode {
 	case config.ModeCooperative:
-		p.Col += e.playerIdx * config.StandardWidth
+		p.Col += config.SharedSpawnOffset(e.playerIdx, e.extraCols)
 	case config.ModeTeams:
-		p.Col += e.teamSlot * config.StandardWidth
+		p.Col += config.SharedSpawnOffset(e.teamSlot, e.extraCols)
 	}
 	return p
 }
@@ -1268,6 +1277,7 @@ func (e *Engine) PlayerIdx() int       { return e.playerIdx }
 func (e *Engine) TeamIdx() int         { return e.teamIdx }
 func (e *Engine) TeamSlot() int        { return e.teamSlot }
 func (e *Engine) TeamSize() int        { return e.teamSize }
+func (e *Engine) ExtraColumns() int    { return e.extraCols }
 func (e *Engine) VisibleRowStart() int { return e.visibleRowStart }
 func (e *Engine) PlayfieldHeight() int { return e.playfield.Height }
 func (e *Engine) IsEliminated(id string) bool {

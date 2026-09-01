@@ -29,11 +29,12 @@ import (
 // we are, which server, the address to share, Disconnect), the players in the
 // lobby, the chat strip — every one of them shows or it does not, and none of
 // them is a window: there is no scrim, nothing to dismiss, and the button that
-// shows a column is the only thing that hides it. Each starts wherever the
-// screen can afford it (lobbyMenuVisible, lobbyPlayersVisible,
-// lobbyChatVisible) and stays wherever the player last put it, so a lobby on
-// a desktop opens with all three up and a phone opens with the games and
-// nothing else.
+// shows a column is the only thing that hides it. Each starts ON
+// (lobbyMenuVisible, lobbyPlayersVisible, lobbyChatVisible — panels.go) and
+// stays wherever the player last put it, past this session as well as through
+// it, so a lobby opens with all three up on a desktop and on a phone alike;
+// what the phone changes is where they go, its menu column standing over the
+// panel rather than beside it and its players moving to a strip.
 //
 // What is left in the middle is one panel with the two lists a lobby has in
 // it, on tabs: the games on offer now, and the games already played. They are
@@ -332,7 +333,10 @@ func (a *App) lobbyPlayersColW(gtx C, w int) int {
 func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 	// Each switch is just that: the button that shows a column is the button
 	// that hides it, and nothing else does.
-	flip := func(btn *widget.Clickable, pref *int8, on bool) {
+	// A flip is the player's standing answer, so it outlives the session
+	// (panels.go).
+	flipped := false
+	flip := func(btn *widget.Clickable, shown *bool) {
 		n := 0
 		for btn.Clicked(gtx) {
 			n++
@@ -340,15 +344,14 @@ func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 		if n == 0 || modal {
 			return
 		}
-		if on {
-			*pref = -1
-		} else {
-			*pref = 1
-		}
+		*shown, flipped = !*shown, true
 	}
-	flip(&a.barLobbyMenuBtn, &a.lobbyMenuPref, a.lobbyMenuVisible())
-	flip(&a.barLobbyPlayersBtn, &a.lobbyPlayersPref, a.lobbyPlayersVisible())
-	flip(&a.barLobbyChatBtn, &a.lobbyChatPref, a.lobbyChatVisible())
+	flip(&a.barLobbyMenuBtn, &a.lobbyMenuShown)
+	flip(&a.barLobbyPlayersBtn, &a.lobbyPlayersShown)
+	flip(&a.barLobbyChatBtn, &a.lobbyChatShown)
+	if flipped {
+		a.persistPanels()
+	}
 	for _, t := range []struct {
 		btn *widget.Clickable
 		tab string

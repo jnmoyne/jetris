@@ -569,7 +569,7 @@ func TestAutoShiftPadHold(t *testing.T) {
 	a.screen = screenGame
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.touchUI = true
-	a.padPref = 1 // the pad on, whatever the window's default
+	a.padShown = true // the pad on, whatever the window's default
 	var r input.Router
 	base := time.Unix(4000, 0)
 
@@ -761,7 +761,7 @@ func TestPadDownArmSoftDrops(t *testing.T) {
 	a.screen = screenGame
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.touchUI = true
-	a.padPref = 1 // the pad on, whatever the window's default
+	a.padShown = true // the pad on, whatever the window's default
 	var r input.Router
 	base := time.Unix(7000, 0)
 

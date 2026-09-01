@@ -122,32 +122,33 @@ func TestLobbyBarSwitches(t *testing.T) {
 	}
 }
 
-// TestLobbyCompactOpensBare: a phone's lobby opens on the games and nothing
-// else, and there its menu is drawn OVER the panel rather than beside it —
-// what is left of a 390 dp screen after a menu column is no games list.
-func TestLobbyCompactOpensBare(t *testing.T) {
+// TestLobbyCompactOpensWhole: a phone's lobby opens with all three of its
+// switches on, as every screen does — what a phone changes is only where they
+// go, the menu being drawn OVER the panel rather than beside it, because what
+// is left of a 390 dp screen after a menu column is no games list. And the
+// switch is still the player's: pressing it takes the menu away, and pressing
+// it again puts it back.
+func TestLobbyCompactOpensWhole(t *testing.T) {
 	const w, h = 390, 844
 	g := newLobbyRig(t, image.Pt(w, h), devicePhone)
 	if !g.a.form.compact {
 		t.Fatalf("a %dx%d phone did not get the compact form: %+v", w, h, g.a.form)
 	}
-	if g.a.lobbyMenuVisible() || g.a.lobbyPlayersVisible() || g.a.lobbyChatVisible() {
-		t.Errorf("a phone's lobby opened with a column up: menu=%v players=%v chat=%v",
+	if !g.a.lobbyMenuVisible() || !g.a.lobbyPlayersVisible() || !g.a.lobbyChatVisible() {
+		t.Errorf("a phone's lobby opened with a column away: menu=%v players=%v chat=%v",
 			g.a.lobbyMenuVisible(), g.a.lobbyPlayersVisible(), g.a.lobbyChatVisible())
 	}
 	if g.a.lobbyMenuBeside(looseCtx(w, h)) {
 		t.Errorf("a %d dp screen claims room for the menu column beside the panel", w)
 	}
-	// And the switch is still the player's: pressing it puts the menu up, over
-	// the panel, and pressing it again takes it away.
 	y := g.barY()
-	g.tap(barMenuX(), y)
-	if !g.a.lobbyMenuVisible() {
-		t.Error("the menu button did not open the menu on a phone")
-	}
 	g.tap(barMenuX(), y)
 	if g.a.lobbyMenuVisible() {
 		t.Error("the menu button did not close the menu on a phone")
+	}
+	g.tap(barMenuX(), y)
+	if !g.a.lobbyMenuVisible() {
+		t.Error("the menu button did not open the menu on a phone")
 	}
 }
 
@@ -223,9 +224,9 @@ func TestLobbyPanelShapes(t *testing.T) {
 // its three switches can be in, at a desktop window and a phone's.
 func TestLobbyScreenShapes(t *testing.T) {
 	for _, sz := range []image.Point{{X: 1280, Y: 820}, {X: 390, Y: 844}} {
-		for _, prefs := range [][3]int8{
-			{-1, -1, -1}, {1, -1, -1}, {-1, 1, -1}, {-1, -1, 1},
-			{1, 1, -1}, {1, -1, 1}, {-1, 1, 1}, {1, 1, 1},
+		for _, switches := range [][3]bool{
+			{false, false, false}, {true, false, false}, {false, true, false}, {false, false, true},
+			{true, true, false}, {true, false, true}, {false, true, true}, {true, true, true},
 		} {
 			a := newTestApp()
 			a.lobby = lobby.New(nil, nil, "tester", "tester")
@@ -233,7 +234,7 @@ func TestLobbyScreenShapes(t *testing.T) {
 			a.connName, a.connURL = "your embedded server", "nats://192.168.1.23:4222"
 			a.usingEmbedded, a.embAddr = true, "192.168.1.23:4222"
 			a.chatLog = []lobby.ChatMessage{{Name: "alice", Text: "ready when you are"}}
-			a.lobbyMenuPref, a.lobbyPlayersPref, a.lobbyChatPref = prefs[0], prefs[1], prefs[2]
+			a.lobbyMenuShown, a.lobbyPlayersShown, a.lobbyChatShown = switches[0], switches[1], switches[2]
 			var ops op.Ops
 			gtx := layout.Context{
 				Ops:         &ops,
@@ -241,7 +242,7 @@ func TestLobbyScreenShapes(t *testing.T) {
 				Constraints: layout.Exact(sz),
 			}
 			if d := a.layout(gtx); d.Size.X == 0 || d.Size.Y == 0 {
-				t.Fatalf("lobby %v switches %v drew nothing", sz, prefs)
+				t.Fatalf("lobby %v switches %v drew nothing", sz, switches)
 			}
 		}
 	}

@@ -7,9 +7,11 @@ package nativeui
 // carrying the score and the switches for everything that costs the playfield
 // room, and the board with all the rest. Every switch is just that — the menu
 // column, the opponents' boards, the chat strip, the on-screen pad show or
-// they do not, and none of them takes the game away while it is up. A phone
-// and a desktop get the same screen; what changes between them is what that
-// screen can afford, which is what this file works out.
+// they do not, and none of them takes the game away while it is up. Whether
+// each one is showing is the player's standing choice and lives in panels.go;
+// what this file works out is what the screen can AFFORD — a phone and a
+// desktop get the same screen and the same panels, and what changes between
+// them is where those panels go.
 //
 // `compact` is that affordability, not a second layout: a phone always, a
 // tablet held portrait, and any window too small to spend freely — the
@@ -91,121 +93,4 @@ func (a *App) formOf(gtx C) screenForm {
 		(f.device == deviceTablet && f.portrait) ||
 		f.w < compactW || f.h < compactH
 	return f
-}
-
-// padVisible reports whether the on-screen control pad is laid out at all.
-// It is the player's call (the game screen's pad button flips padPref, which
-// then holds for the session); until they make one, the default is the one
-// that leaves the playfield biggest: everywhere but a phone held portrait the
-// pad is free — the board is bound by the screen's height, and the pad sits
-// beside it in room the playfield could not have used anyway — while in
-// portrait it sits UNDER the board and takes a third of its rows, which the
-// touch gestures (gesture.go) already play without.
-func (a *App) padVisible() bool {
-	switch {
-	case a.padPref > 0:
-		return true
-	case a.padPref < 0:
-		return false
-	}
-	return !(a.form.device == devicePhone && a.form.portrait)
-}
-
-// oppVisible reports whether the opponents' playfields show beside the
-// board. As with the pad, it is the player's call once they make one (the
-// bar's boards button sets oppPref, which then holds for the session); until
-// then it follows the room. A screen with width to spare shows them, as the
-// game always has on a desktop; a narrow one does not, because there every
-// dp of that column is dp the playfield does not get.
-func (a *App) oppVisible() bool {
-	switch {
-	case a.oppPref > 0:
-		return true
-	case a.oppPref < 0:
-		return false
-	}
-	return !a.narrowWells()
-}
-
-// chatVisible reports whether the chat strip shows under the board. The
-// bar's chat button is the player's say (chatPref) and holds for the
-// session; until they use it the screen decides, as it does for the pad and
-// the opponents: a screen with room keeps the conversation up, the way this
-// game always has on a desktop, and a narrow one gives those rows to the
-// playfield until asked.
-func (a *App) chatVisible() bool {
-	switch {
-	case a.chatPref > 0:
-		return true
-	case a.chatPref < 0:
-		return false
-	}
-	return !a.form.compact
-}
-
-// hudVisible reports whether the menu column (the stats, the controls legend,
-// the lab switches, Back to Lobby) stands beside the board. The bar's menu
-// button is the player's say (hudPref) and holds for the session; until they
-// use it the screen decides, as it does for the others. A screen with room
-// keeps the column up — it is where the lab switches live and the game plays
-// on beside it, which is how this game looked on a desktop before the column
-// went behind a button — while a compact one starts without it, because there
-// the menu has to be drawn OVER the board (hudBeside) and the game would
-// begin with the playfield covered.
-func (a *App) hudVisible() bool {
-	switch {
-	case a.hudPref > 0:
-		return true
-	case a.hudPref < 0:
-		return false
-	}
-	return !a.form.compact
-}
-
-// The lobby screen's three switches (lobby.go) answer the same way as the
-// game screen's four above, and for the same reason: the player's standing
-// choice once they have made one, and the room the screen has until they do.
-// They are the LOBBY's own preferences and not the game's — the two screens
-// stand different things beside their content, and a menu shut over a
-// playfield says nothing about whether one is wanted beside a list of games.
-
-// lobbyMenuVisible reports whether the lobby's menu column — who we are,
-// which server, the address to share while hosting one, Disconnect — stands
-// beside the panel. A screen with room keeps it up, the way the lobby has
-// always carried that line across its top; a compact one starts without it,
-// because there the menu has to be drawn OVER the panel (lobbyMenuBeside).
-func (a *App) lobbyMenuVisible() bool {
-	switch {
-	case a.lobbyMenuPref > 0:
-		return true
-	case a.lobbyMenuPref < 0:
-		return false
-	}
-	return !a.form.compact
-}
-
-// lobbyPlayersVisible reports whether everyone in the lobby shows in a column
-// beside the panel — the counterpart of the game screen's opponents' boards,
-// and decided the same way: a screen with width to spare shows them, a narrow
-// one gives that width to the games instead until asked.
-func (a *App) lobbyPlayersVisible() bool {
-	switch {
-	case a.lobbyPlayersPref > 0:
-		return true
-	case a.lobbyPlayersPref < 0:
-		return false
-	}
-	return !a.form.compact
-}
-
-// lobbyChatVisible reports whether the lobby chat strip shows under the
-// panel, on the same terms the game's chat strip shows under the board.
-func (a *App) lobbyChatVisible() bool {
-	switch {
-	case a.lobbyChatPref > 0:
-		return true
-	case a.lobbyChatPref < 0:
-		return false
-	}
-	return !a.form.compact
 }

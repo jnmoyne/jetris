@@ -101,6 +101,16 @@ func (g *screenRig) frame() {
 	g.r.Frame(ops)
 }
 
+// bare puts the game screen's four panels away and lays the screen out
+// again. Everything starts ON (panels.go), so this is the state of a player
+// who has switched the lot off — and the one the geometry and gesture tests
+// below want: a board column with nothing beside it and nothing under it.
+func (g *screenRig) bare() *screenRig {
+	g.a.hudShown, g.a.oppShown, g.a.padShown, g.a.chatShown = false, false, false, false
+	g.frame()
+	return g
+}
+
 // tap queues a touch press and release at a window position and runs the
 // frames that dispatch it.
 func (g *screenRig) tap(x, y float32) {
@@ -182,8 +192,12 @@ func TestCompactBoardSpansThePhone(t *testing.T) {
 	if !g.a.form.compact {
 		t.Fatalf("a %dx%d phone did not get the compact screen: %+v", w, h, g.a.form)
 	}
+	// This is about the board's own width, so the panels go away first: on a
+	// phone every one of them takes some of it, the pad stacking UNDER the
+	// board and the menu covering it.
+	g.bare()
 	if g.a.padVisible() {
-		t.Fatal("the on-screen pad is on by default on a phone held portrait")
+		t.Fatal("the pad button did not put the pad away")
 	}
 	board, field := g.boardPx(), g.field(t)
 	if board.X*2 <= w {
@@ -214,6 +228,7 @@ func TestCompactWellsFlankTheBoard(t *testing.T) {
 	if !g.a.form.compact {
 		t.Fatalf("a %dx%d phone did not get the compact screen", w, h)
 	}
+	g.bare() // the wells against the board alone, with no panel over either
 	cell := g.a.gest.cell
 	if wc := g.a.wellCell(cell); wc >= cell || wc < narrowWellMinCell {
 		t.Fatalf("well cell %d px against a %d px board cell: want it smaller but legible", wc, cell)
@@ -252,25 +267,26 @@ func TestCompactWellsFlankTheBoard(t *testing.T) {
 	}
 }
 
-// TestCompactOpponentsToggle: the opposing boards are off by default on the
-// compact screen and the bar's switch brings them in beside the playfield,
-// which costs the board width — the reason they are a switch at all.
+// TestCompactOpponentsToggle: the bar's boards switch brings the opposing
+// boards in beside the playfield and takes them away again, and on a phone
+// that column costs the board width — the reason they are a switch at all.
 func TestCompactOpponentsToggle(t *testing.T) {
 	const w, h = 390, 844
 	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-opps", config.ModeCompetitive))
+	g.bare()
 	if g.a.oppVisible() {
-		t.Fatal("the opponents' boards are on by default on a narrow screen")
+		t.Fatal("the boards switch did not put the opponents away")
 	}
 	if !g.a.hasOpponents(g.a.eng, engine.ModePlayer, config.ModeCompetitive) {
 		t.Skip("no opponent snapshot arrived yet")
 	}
 	without := g.a.gest.cell
-	g.a.oppPref = 1
+	g.a.oppShown = true
 	g.frame()
 	if g.a.gest.cell >= without {
 		t.Fatalf("with the opponents shown the cell is %d px, not under the %d px it had without", g.a.gest.cell, without)
 	}
-	g.a.oppPref = -1
+	g.a.oppShown = false
 	g.frame()
 	if g.a.gest.cell != without {
 		t.Fatalf("cell back to %d px, want the %d px it had before", g.a.gest.cell, without)
@@ -294,7 +310,7 @@ func TestSwipeSurfaceRotateSplitFollowsTheWell(t *testing.T) {
 	newEng := func() *engine.Engine {
 		return engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	}
-	probe := newScreenRig(t, image.Pt(390, 844), devicePhone, newEng())
+	probe := newScreenRig(t, image.Pt(390, 844), devicePhone, newEng()).bare()
 	field := probe.field(t)
 	cell := probe.a.gest.cell
 	cx := float32(field.Min.X + field.Dx()/2)
@@ -310,7 +326,7 @@ func TestSwipeSurfaceRotateSplitFollowsTheWell(t *testing.T) {
 		{"off the board, at the surface's right edge", float32(field.Max.X) - 3, engine.RotateCW},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			g := newScreenRig(t, image.Pt(390, 844), devicePhone, newEng())
+			g := newScreenRig(t, image.Pt(390, 844), devicePhone, newEng()).bare()
 			g.tap(c.x, cy)
 			if got := g.a.eng.BufferedMoves(); !reflect.DeepEqual(got, []engine.MoveType{c.want}) {
 				t.Fatalf("tap %s: moves %v, want exactly [%v]", c.name, got, c.want)
@@ -326,12 +342,18 @@ func TestSwipeSurfaceRotateSplitFollowsTheWell(t *testing.T) {
 func TestBarSwitchesShowAndHideTheColumns(t *testing.T) {
 	const w, h = 390, 844
 	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-panels", config.ModeCompetitive))
+	// Everything starts up, a phone included; the button is what puts it away
+	// and the same button is what brings it back.
+	if !g.a.hudVisible() {
+		t.Fatal("the menu column is not up to begin with")
+	}
+	g.tap(barMenuX(), barCenterY())
 	if g.a.hudVisible() {
-		t.Fatal("the menu column is up by default on a phone, where it covers the board")
+		t.Fatal("the menu button did not hide the menu column")
 	}
 	g.tap(barMenuX(), barCenterY())
 	if !g.a.hudVisible() {
-		t.Fatal("the menu button did not show the menu column")
+		t.Fatal("the menu button did not show the column it hid")
 	}
 	// A tap on the playfield leaves the menu exactly where the player put it:
 	// there is no scrim to tap through and nothing about the board shuts it.
@@ -345,22 +367,22 @@ func TestBarSwitchesShowAndHideTheColumns(t *testing.T) {
 		t.Fatal("the menu button did not hide the column it showed")
 	}
 
-	// The chat button shows and hides the strip. Both can be up at once, and
+	// The chat button hides and shows the strip. Both can be up at once, and
 	// neither blocks play.
+	if !g.a.chatVisible() {
+		t.Fatal("the chat strip is not up to begin with")
+	}
+	g.tap(barChatX(w), barCenterY())
 	if g.a.chatVisible() {
-		t.Fatal("the chat strip is up by default on a phone")
+		t.Fatal("the chat button did not hide the strip")
 	}
 	g.tap(barChatX(w), barCenterY())
 	if !g.a.chatVisible() {
-		t.Fatal("the chat button did not show the strip")
+		t.Fatal("the chat button did not show the strip again")
 	}
 	g.tap(barMenuX(), barCenterY())
 	if !g.a.chatVisible() || !g.a.hudVisible() {
 		t.Fatalf("menu and chat cannot be up together: chat=%v menu=%v", g.a.chatVisible(), g.a.hudVisible())
-	}
-	g.tap(barChatX(w), barCenterY())
-	if g.a.chatVisible() {
-		t.Fatal("the chat button did not hide the strip again")
 	}
 }
 
@@ -376,7 +398,7 @@ func TestMenuColumnLeavesTheGamePlayable(t *testing.T) {
 	// would be one of theirs.
 	eng := engine.New(nil, "menu-playable", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	g := newScreenRig(t, image.Pt(w, h), deviceDesktop, eng)
-	g.a.padPref = -1
+	g.a.padShown = false
 	g.frame()
 	if !g.a.hudVisible() {
 		t.Fatal("a wide window does not start with the menu column up")
@@ -486,9 +508,9 @@ func TestMenuColumnNeverPushesTheBoardOffScreen(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			eng := engine.New(nil, "menu-fit", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 			g := newScreenRig(t, c.sz, c.dev, eng)
-			// From the board as it is with no menu — which on a screen roomy
-			// enough is not how it starts (hudVisible), so switch it away.
-			g.a.hudPref = -1
+			// From the board as it is with no menu — which is never how it
+			// starts (panels.go), so switch it away first.
+			g.a.hudShown = false
 			g.frame()
 			was, wasCell := g.field(t), g.a.gest.cell
 			gtx := boardAreaCtx(c.sz.X, c.sz.Y)
@@ -521,29 +543,30 @@ func TestMenuColumnNeverPushesTheBoardOffScreen(t *testing.T) {
 }
 
 // TestCompactPadButtonTogglesThePad: the bar's pad button is the player's
-// standing answer on the on-screen controls — it brings the pad back on a
-// phone held portrait, at the price in board the default was avoiding, and
-// takes it away again.
+// standing answer on the on-screen controls. The pad starts on, as everything
+// does; on a phone held portrait it stacks UNDER the board and takes rows off
+// it, so switching it away is what buys those rows back — and switching it on
+// again spends them.
 func TestCompactPadButtonTogglesThePad(t *testing.T) {
 	const w, h = 390, 844
 	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-pad", config.ModeCompetitive))
-	if g.a.padVisible() {
-		t.Fatal("the pad starts on for a phone held portrait")
+	if !g.a.padVisible() {
+		t.Fatal("the pad does not start on")
 	}
-	without := g.a.gest.cell
+	with := g.a.gest.cell
+	g.tap(barPadX(w), barCenterY())
+	if g.a.padVisible() {
+		t.Fatal("the pad button did not switch the pad off")
+	}
+	if g.a.gest.cell <= with {
+		t.Fatalf("without the pad the cell is %d px, not over the %d px it had with it", g.a.gest.cell, with)
+	}
 	g.tap(barPadX(w), barCenterY())
 	if !g.a.padVisible() {
-		t.Fatal("the pad button did not switch the pad on")
+		t.Fatal("the pad button did not switch the pad back on")
 	}
-	if g.a.gest.cell >= without {
-		t.Fatalf("with the pad on the cell is %d px, not under the %d px it had without", g.a.gest.cell, without)
-	}
-	g.tap(barPadX(w), barCenterY())
-	if g.a.padVisible() {
-		t.Fatal("the pad button did not switch the pad back off")
-	}
-	if g.a.gest.cell != without {
-		t.Fatalf("cell back to %d px, want the %d px it had before the pad came and went", g.a.gest.cell, without)
+	if g.a.gest.cell != with {
+		t.Fatalf("cell back to %d px, want the %d px it had before the pad went and came back", g.a.gest.cell, with)
 	}
 }
 
@@ -637,12 +660,12 @@ func TestCompactScreensLayoutWithoutPanic(t *testing.T) {
 						// The menu shuts itself on a screen's first frame,
 						// so this one has to look like a screen already up.
 						a.screenEng = a.eng
-						a.hudPref = -1
+						a.hudShown = false
 						if panel == "hud" {
-							a.hudPref = 1
+							a.hudShown = true
 						}
 						if panel == "chat" {
-							a.chatPref = 1
+							a.chatShown = true
 						}
 						a.showMsgs.Value = true
 						if d := a.layout(testCtx(sz.X, sz.Y)); d.Size.X == 0 || d.Size.Y == 0 {
@@ -667,11 +690,12 @@ func TestCompactChatUnreadMark(t *testing.T) {
 	a.screen = screenGame
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.chatLog = []lobby.ChatMessage{{GameID: "g1", Name: "bob", Text: "gl hf"}}
+	a.chatShown = false // the strip put away: the state the dot exists for
 	a.layout(testCtx(390, 844))
 	if a.chatSeen != 0 {
 		t.Fatalf("chatSeen = %d with the strip hidden, want 0 — the dot would never show", a.chatSeen)
 	}
-	a.chatPref = 1
+	a.chatShown = true
 	a.layout(testCtx(390, 844))
 	if a.chatSeen != 1 {
 		t.Fatalf("chatSeen = %d after showing the panel, want the 1 message it showed", a.chatSeen)
@@ -712,10 +736,11 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.chatLog = []lobby.ChatMessage{{GameID: "g1", Name: "bob", Text: "gl hf"}}
 	a.layout(testCtx(390, 844)) // the game screen's first frame
-	a.hudPref, a.chatPref = 1, 1
+	// The player puts the menu away and leaves the chat strip up.
+	a.hudShown = false
 	a.layout(testCtx(390, 844))
-	if !a.hudVisible() || a.chatSeen != 1 {
-		t.Fatalf("first game: menu up=%v seen=%d, want up with the one message read", a.hudVisible(), a.chatSeen)
+	if a.hudVisible() || a.chatSeen != 1 {
+		t.Fatalf("first game: menu up=%v seen=%d, want it away with the one message read", a.hudVisible(), a.chatSeen)
 	}
 	// A second game: a new engine, so a new screen.
 	a.eng = engine.New(nil, "g2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
@@ -723,17 +748,17 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	if a.chatSeen != 0 {
 		t.Errorf("chatSeen = %d on the new game, want 0", a.chatSeen)
 	}
-	if !a.hudVisible() {
+	if a.hudVisible() {
 		t.Error("the player's menu choice did not carry into the next game")
 	}
 	// The bar's switches are the player's own and survive the move.
 	if !a.chatVisible() {
 		t.Error("the player's chat choice did not carry into the next game")
 	}
-	a.padPref = 1
+	a.padShown = false
 	a.eng = engine.New(nil, "g3", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	a.layout(testCtx(390, 844))
-	if !a.padVisible() {
+	if a.padVisible() {
 		t.Error("the player's pad choice did not carry into the next game")
 	}
 }

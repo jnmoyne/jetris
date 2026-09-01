@@ -17,14 +17,13 @@ package nativeui
 // on runs edge to edge of the board area, well past the board's own columns.
 //
 // The bar's switches are the menu, the opponents' boards, the on-screen pad
-// and the chat. Each starts wherever the screen can afford it (hudVisible,
-// padVisible, oppVisible, chatVisible) and stays wherever the player last put
-// it: on a phone held portrait the pad stacks UNDER the playfield and takes
-// about a third of its rows, so it starts off there, while on any screen with
-// width to spare the opponents start on and the menu column stands beside the
-// board from the first frame, as they both did on a desktop before either went
-// behind a button. A compact screen starts without the menu, because there it
-// has to be drawn over the board.
+// and the chat. Every one of them starts ON — the screen arrives whole rather
+// than folded away behind buttons nobody has been told about — and stays
+// wherever the player last put it, past this session as well as through it
+// (panels.go). What a small screen changes is where a panel goes and not
+// whether it is there: on a phone held portrait the pad stacks UNDER the
+// playfield and the menu column is drawn OVER the board, both being room the
+// screen has not got beside it.
 
 import (
 	"fmt"
@@ -188,41 +187,25 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 		// player's own and do carry over.
 		a.screenEng, a.chatSeen = eng, 0
 	}
-	for a.barHudBtn.Clicked(gtx) {
-		// The menu is a switch like the others: the button that shows the
-		// column is the button that hides it, and nothing else does — no
-		// scrim to tap through, no ✕ in a corner, and no press on the board
-		// that puts it away while the player meant to play.
-		if a.hudVisible() {
-			a.hudPref = -1
-		} else {
-			a.hudPref = 1
+	// Each switch is just that: the button that shows a panel is the button
+	// that hides it, and nothing else does — no scrim to tap through, no ✕ in
+	// a corner, and no press on the board that puts the menu away while the
+	// player meant to play. Every flip is the player's standing answer, so it
+	// is written out (panels.go) and comes back at the next launch.
+	flipped := false
+	flip := func(btn *widget.Clickable, shown *bool) {
+		for btn.Clicked(gtx) {
+			*shown, flipped = !*shown, true
 		}
 	}
-	for a.barChatBtn.Clicked(gtx) {
-		// Showing the chat and typing into it are separate: this only puts
-		// the strip on screen. The keys move on a click or Tab (input.go).
-		if a.chatVisible() {
-			a.chatPref = -1
-		} else {
-			a.chatPref = 1
-		}
-	}
-	for a.barOppBtn.Clicked(gtx) {
-		if a.oppVisible() {
-			a.oppPref = -1
-		} else {
-			a.oppPref = 1
-		}
-	}
-	for a.barPadBtn.Clicked(gtx) {
-		// The player's standing answer on the on-screen pad, from whatever
-		// the device's default happened to be showing.
-		if a.padVisible() {
-			a.padPref = -1
-		} else {
-			a.padPref = 1
-		}
+	flip(&a.barHudBtn, &a.hudShown)
+	// Showing the chat and typing into it are separate: this only puts the
+	// strip on screen. The keys move on a click or Tab (input.go).
+	flip(&a.barChatBtn, &a.chatShown)
+	flip(&a.barOppBtn, &a.oppShown)
+	flip(&a.barPadBtn, &a.padShown)
+	if flipped {
+		a.persistPanels()
 	}
 }
 
@@ -428,13 +411,20 @@ func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.Game
 		line += "  " + formatRTT(view.rtt)
 		col = rttColor(view.rtt)
 	}
-	// And, last so it is the first thing a narrow bar gives up, which server
-	// this session is on — the same reminder the full screen's HUD column
-	// carries (sessionLine), for the bars wide enough to hold it. The HUD
-	// panel, one tap away, always has it.
+	// And, last so it is the first thing a narrow bar gives up, who we are
+	// and which server this session is on — "tester @ Jetris EU central", the
+	// lobby bar's own line (lobbyBarLine) and the HUD column's (sessionLine)
+	// carried onto the board, because every move in this game is a round trip
+	// to that server and a player reading an RTT off this very bar should not
+	// have to remember which one it is. The HUD panel, one tap away, always
+	// has it.
 	a.mu.Lock()
 	server := a.connName
 	a.mu.Unlock()
+	who := ""
+	if lb := a.getLobby(); lb != nil {
+		who = lb.PlayerName()
+	}
 	return layout.W.Layout(gtx, func(gtx C) D {
 		// A text label handed a tall minimum height takes that height and
 		// sits its glyphs at the top of it; zeroed, it is its own height and
@@ -446,11 +436,20 @@ func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.Game
 		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
 			layout.Rigid(a.pixel(unit.Sp(10), line, col).Layout),
 			layout.Flexed(1, func(gtx C) D {
-				// Whole or not at all: a server name cut to "..." is noise
-				// where a phone's bar has no room, and the HUD panel one tap
-				// away carries it in full either way.
+				// Whole or not at all: a name cut to "..." is noise where a
+				// phone's bar has no room, and the HUD panel one tap away
+				// carries it in full either way. The player's name is the
+				// half this line can spare — the server is what it exists to
+				// say — so a bar too narrow for both drops it and keeps the
+				// "@ server" alone.
+				fits := func(s string) bool {
+					return a.pixelWidth(gtx, unit.Sp(8), s) <= gtx.Constraints.Max.X
+				}
 				txt := "  @ " + server
-				if a.pixelWidth(gtx, unit.Sp(8), txt) > gtx.Constraints.Max.X {
+				switch {
+				case who != "" && fits("  "+who+" @ "+server):
+					txt = "  " + who + " @ " + server
+				case !fits(txt):
 					return D{}
 				}
 				return a.pixel(unit.Sp(8), txt, colMuted).Layout(gtx)

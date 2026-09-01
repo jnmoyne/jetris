@@ -55,37 +55,3 @@ func TestFormOf(t *testing.T) {
 		})
 	}
 }
-
-// TestPadVisibleDefaults: the on-screen pad starts off only where it would
-// cost the playfield its rows — a phone held portrait, where it stacks under
-// the board — and one tap on the bar's pad button settles it either way for
-// the rest of the session, whatever the device then does.
-func TestPadVisibleDefaults(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		form screenForm
-		want bool
-	}{
-		{"desktop", screenForm{device: deviceDesktop}, true},
-		{"tablet portrait", screenForm{device: deviceTablet, portrait: true}, true},
-		{"phone landscape", screenForm{device: devicePhone}, true},
-		{"phone portrait", screenForm{device: devicePhone, portrait: true}, false},
-	} {
-		a := newTestApp()
-		a.form = c.form
-		if got := a.padVisible(); got != c.want {
-			t.Errorf("%s: padVisible = %v, want %v", c.name, got, c.want)
-		}
-	}
-	a := newTestApp()
-	a.form = screenForm{device: devicePhone, portrait: true}
-	a.padPref = 1
-	if !a.padVisible() {
-		t.Error("phone portrait, pad switched on: still hidden")
-	}
-	a.form = screenForm{device: deviceDesktop}
-	a.padPref = -1
-	if a.padVisible() {
-		t.Error("desktop, pad switched off: still shown")
-	}
-}

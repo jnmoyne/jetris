@@ -111,7 +111,8 @@ type App struct {
 	// afterwards. connCfg carries any --user/--password flags through to URL
 	// connects; connCtxURLs is each context's server URL for display (best
 	// effort, "" when unknown); favSave persists the favorites and
-	// handlingSave the DAS/ARR/SDF knobs (prefs.Save* — tests stub them).
+	// handlingSave the DAS/ARR/SDF knobs and panelsSave the two screens'
+	// panel switches (prefs.Save* — tests stub them).
 	needConn     bool
 	connContexts []string
 	connSelected string
@@ -119,6 +120,7 @@ type App struct {
 	connCfg      config.Config
 	favSave      func([]prefs.Favorite) error
 	handlingSave func(prefs.Handling) error
+	panelsSave   func(prefs.Panels) error
 
 	// Server probes — a browser row's click, the page-opening refresh of every
 	// favorite, "Refresh all servers", and LAN mode's "Check embedded
@@ -446,13 +448,13 @@ type App struct {
 	deviceHint   deviceKind
 	deviceHinted bool
 	form         screenForm
-	// The game screen's switches (gamescreen.go), each the player's standing
-	// answer on one thing that costs the playfield room: 0 for the screen's
-	// own default, ±1 once they have used that bar button. hudPref is the
-	// menu column (hudVisible), padPref the on-screen pad (padVisible),
-	// oppPref the opponents' playfields beside the board (oppVisible) and
-	// chatPref the chat strip under it (chatVisible). UI goroutine only.
-	hudPref, padPref, oppPref, chatPref int8
+	// The game screen's switches (panels.go), each the player's standing
+	// answer on one thing that costs the playfield room: hudShown is the menu
+	// column (hudVisible), padShown the on-screen pad (padVisible), oppShown
+	// the opponents' playfields beside the board (oppVisible) and chatShown
+	// the chat strip under it (chatVisible). All four start on and every flip
+	// saves the set (persistPanels). UI goroutine only.
+	hudShown, padShown, oppShown, chatShown bool
 	// Its chrome: the bar's menu / pad / boards / chat switches. Every one of
 	// them is a switch and nothing more — no scrim, no close button.
 	barHudBtn, barPadBtn, barChatBtn, barOppBtn widget.Clickable
@@ -462,13 +464,13 @@ type App struct {
 	// (every game entry makes one) shuts the menu and forgets what was read.
 	screenEng *engine.Engine
 	// The lobby screen's switches (lobby.go), the same idiom one screen over:
-	// lobbyMenuPref is the menu column (lobbyMenuVisible), lobbyPlayersPref
+	// lobbyMenuShown is the menu column (lobbyMenuVisible), lobbyPlayersShown
 	// the players column beside the panel (lobbyPlayersVisible) and
-	// lobbyChatPref the chat strip under it (lobbyChatVisible). 0 for the
-	// screen's own default, ±1 once the player has used that bar button. They
-	// are the lobby's own and NOT the game's: the two screens stand different
-	// things beside their content. UI goroutine only.
-	lobbyMenuPref, lobbyPlayersPref, lobbyChatPref       int8
+	// lobbyChatShown the chat strip under it (lobbyChatVisible). They start on
+	// and save with the game's, but they are the lobby's OWN and not the
+	// game's: the two screens stand different things beside their content.
+	// UI goroutine only.
+	lobbyMenuShown, lobbyPlayersShown, lobbyChatShown    bool
 	barLobbyMenuBtn, barLobbyPlayersBtn, barLobbyChatBtn widget.Clickable
 	lobbyMenuTag                                         int // pointer-area tag of a lobby menu column drawn OVER the panel
 	lobbyChatSeen                                        int // lobby messages the strip last showed: the bar's unread dot
@@ -600,6 +602,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.dispMode = int(displayAck)
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF)
+	a.setDefaultPanels() // every panel on until a saved set says otherwise
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
 	a.chatEd.SingleLine = true
@@ -670,6 +673,7 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.favorites = append([]prefs.Favorite(nil), favorites...)
 	a.favSave = prefs.SaveFavorites
 	a.handlingSave = prefs.SaveHandling
+	a.panelsSave = prefs.SavePanels
 	a.connProbes = map[string]probeResult{}
 	a.connProbing = map[string]bool{}
 	a.connRound = map[string]bool{}

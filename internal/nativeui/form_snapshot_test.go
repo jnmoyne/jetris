@@ -1,11 +1,12 @@
 package nativeui
 
 // Opt-in visual verification of the responsive game screen (formfactor.go,
-// gamescreen.go): the screen on a phone in both orientations and on a tablet
-// held portrait — where the menu column starts off and comes up OVER the
-// board — with the chat strip and the on-screen pad switched on, and the same
-// screen on a tablet held landscape and on a desktop, where the menu stands
-// beside the board from the first frame and can be switched away. Renders a
+// gamescreen.go, panels.go): the screen as it OPENS on a phone in both
+// orientations, on a tablet held either way and on a desktop — every panel on,
+// which is where every screen starts — and then, on a phone held portrait,
+// each panel on its own against a bare board, since that is the screen with
+// the least room to give and the one where the menu is drawn OVER the board.
+// Plus the roomy screens with the menu switched away. Renders a
 // real competitive game
 // consuming a real stream on an embedded server, through a headless GPU
 // window, and writes PNGs for inspection. Skipped unless FW_SNAPSHOT_DIR is
@@ -49,6 +50,9 @@ func TestFormSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	// bare is every game-screen switch off: the board and nothing else, which
+	// is what the one-panel shots below are read against.
+	bare := func(a *App) { a.hudShown, a.oppShown, a.padShown, a.chatShown = false, false, false, false }
 	cases := []struct {
 		name   string
 		size   image.Point
@@ -56,24 +60,25 @@ func TestFormSnapshots(t *testing.T) {
 		tweak  func(*App)
 	}{
 		{name: "form_phone_portrait", size: image.Pt(390, 844), device: devicePhone},
+		{name: "form_phone_portrait_bare", size: image.Pt(390, 844), device: devicePhone, tweak: bare},
 		{name: "form_phone_portrait_pad", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.padPref = 1 }},
+			tweak: func(a *App) { bare(a); a.padShown = true }},
 		{name: "form_phone_portrait_hud", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.hudPref = 1 }},
+			tweak: func(a *App) { bare(a); a.hudShown = true }},
 		{name: "form_phone_portrait_chat", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.chatPref = 1 }},
+			tweak: func(a *App) { bare(a); a.chatShown = true }},
 		{name: "form_phone_portrait_opps", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.oppPref = 1 }},
+			tweak: func(a *App) { bare(a); a.oppShown = true }},
 		{name: "form_phone_portrait_opps_pad", size: image.Pt(390, 844), device: devicePhone,
-			tweak: func(a *App) { a.oppPref, a.padPref = 1, 1 }},
+			tweak: func(a *App) { bare(a); a.oppShown, a.padShown = true, true }},
 		{name: "form_phone_landscape", size: image.Pt(844, 390), device: devicePhone},
 		{name: "form_tablet_portrait", size: image.Pt(820, 1180), device: deviceTablet},
 		{name: "form_tablet_landscape", size: image.Pt(1180, 740), device: deviceTablet},
 		{name: "form_tablet_landscape_nomenu", size: image.Pt(1180, 740), device: deviceTablet,
-			tweak: func(a *App) { a.hudPref = -1 }},
+			tweak: func(a *App) { a.hudShown = false }},
 		{name: "form_desktop", size: image.Pt(1280, 820), device: deviceDesktop},
 		{name: "form_desktop_nomenu", size: image.Pt(1280, 820), device: deviceDesktop,
-			tweak: func(a *App) { a.hudPref = -1 }},
+			tweak: func(a *App) { a.hudShown = false }},
 	}
 	for i, c := range cases {
 		gameID := fmt.Sprintf("form-shots-%d", i)

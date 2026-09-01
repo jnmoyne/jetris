@@ -49,8 +49,13 @@ func main() {
 	if err != nil {
 		log.Printf("warning: loading handling tuning: %v", err)
 	}
+	panels, err := prefs.LoadPanels()
+	if err != nil {
+		log.Printf("warning: loading panel switches: %v", err)
+	}
 	a := nativeui.NewWithPicker(cfg, names, selected, favorites)
 	a.SetHandling(handling.DASMs, handling.ARRMs, handling.SDF)
+	a.SetPanels(panels)
 	if !noUpdateCheck {
 		go checkForUpdate(ctx, a)
 	}

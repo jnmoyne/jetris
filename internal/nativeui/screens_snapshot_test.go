@@ -387,6 +387,29 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_replay_paused", func(gtx C) { a.layout(gtx) })
 	})
 
+	// The replay's opening: the recorded countdown popping over the boards
+	// before the first cell of the game lands — the number mid-pop (gold) and
+	// the final GO! (green), the status line counting down with them.
+	t.Run("replay_countdown", func(t *testing.T) {
+		now := time.Date(2026, 7, 23, 14, 0, 0, 0, time.Local)
+		cases := []struct {
+			name string
+			n    int
+			age  time.Duration
+		}{{"three", 3, 200 * time.Millisecond}, {"go", 0, countdownAnimDur}}
+		for _, tc := range cases {
+			a := newTestApp()
+			rv := newReplayView(sampleReplayRecord(), false)
+			rv.countdown, rv.countdownAt = tc.n, now.Add(-tc.age)
+			a.replayView = rv
+			a.screen = screenReplay
+			snapshotPNG(t, w, dir, "screen_replay_countdown_"+tc.name, func(gtx C) {
+				gtx.Now = now
+				a.layout(gtx)
+			})
+		}
+	})
+
 	// The replay's ending, three seconds into the winner show: the WINNER
 	// banner floated up out of the winning well under the trophy and its
 	// rank caption, the winner's name gold in bold italic on the board and

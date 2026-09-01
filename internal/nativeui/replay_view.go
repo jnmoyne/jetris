@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,8 +27,10 @@ import (
 // gaps. StartedAt is stamped by the client that ran the countdown while the
 // copied timestamps come from the server, so the guard also keeps a fast
 // client clock from fast-forwarding through the game's first cell writes.
-// It costs at most a couple of paced seconds (the countdown tail) at the
-// start of an original-speed replay.
+// It costs at most a couple of paced seconds at the start of an
+// original-speed replay — and the countdown itself no longer depends on the
+// guard's width: its first number opens the schedule where it was recorded
+// (replayPacer.open), so the whole 5-4-3-2-1-GO replays at its own pace.
 const replayStartGuard = 2 * time.Second
 
 // replayPacer schedules an original-speed replay from the copied messages'
@@ -56,6 +59,18 @@ func (p *replayPacer) delay(ts, now time.Time) time.Duration {
 		return d
 	}
 	return 0
+}
+
+// open lowers the pre-game cutoff to ts so that message — and everything
+// recorded after it — is paced rather than fast-forwarded. The countdown's
+// first number calls it: the countdown IS the game starting as the stream
+// recorded it, so its own server timestamp is a truer — and skew-free — start
+// of the paced window than StartedAt−guard, which falls in the middle of the
+// count and would fast-forward everything before it.
+func (p *replayPacer) open(ts time.Time) {
+	if !ts.IsZero() && ts.Before(p.thresh) {
+		p.thresh = ts
+	}
 }
 
 // shift moves the schedule's anchor forward by d — the wall-clock span the
@@ -173,16 +188,26 @@ type replayView struct {
 	gate     *replayGate    // Pause / Resume (its own lock; see replayWait)
 	cancel   context.CancelFunc
 	rank, of int
-	done     bool
-	doneAt   time.Time
-	err      string
+	// The replayed pre-game countdown, folded from the countdown and meta
+	// messages as they come by (applyReplayCountdown) and drawn over the
+	// boards exactly as the live screen draws it: countdown is -1 until the
+	// first number, then 5..1 and 0 for GO!; countdownAt is the wall-clock
+	// moment that number was applied, which the pop animation runs from; and
+	// started is set by the first replayed meta whose status has moved past
+	// the pre-game ones, ending the count.
+	countdown   int
+	countdownAt time.Time
+	started     bool
+	done        bool
+	doneAt      time.Time
+	err         string
 }
 
 // newReplayView builds the mode-appropriate board set: one shared board for
 // cooperative, one per player (sorted by ID, matching the archive viewer's
 // coloring) for competitive, one per team for teams.
 func newReplayView(rec config.ArchiveRecord, fast bool) *replayView {
-	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}, gate: newReplayGate(), rank: 1, of: 1}
+	rv := &replayView{rec: rec, fast: fast, byPlayer: map[string]int{}, gate: newReplayGate(), rank: 1, of: 1, countdown: -1}
 	switch rec.Mode {
 	case config.ModeCooperative:
 		rv.boards = []*replayBoard{newReplayBoard("", -1,
@@ -380,10 +405,20 @@ func (a *App) runReplaySession(ctx context.Context, rv *replayView) {
 				a.invalidate()
 				return
 			}
-			if !replayWait(ctx, rv, &pacer, replayMsgTime(msg)) {
+			ts := replayMsgTime(msg)
+			if msg.Subject() == replayCountdownSubject(gameID) {
+				// Open the paced window at the countdown rather than at
+				// the guarded StartedAt, which falls in the middle of it:
+				// the numbers were published a second apart and are
+				// replayed a second apart, the whole count and not just
+				// its tail.
+				pacer.open(ts)
+			}
+			if !replayWait(ctx, rv, &pacer, ts) {
 				return
 			}
-			if a.applyReplayCell(rv, msg.Subject(), msg.Data()) {
+			if a.applyReplayCountdown(rv, msg.Subject(), msg.Data()) ||
+				a.applyReplayCell(rv, msg.Subject(), msg.Data()) {
 				a.invalidate()
 			}
 		}
@@ -438,10 +473,66 @@ func (a *App) setReplayErr(rv *replayView, msg string) {
 	a.invalidate()
 }
 
+// replayCountdownSubject / replayMetaSubject are the copied homes of a game's
+// countdown and meta messages in the shared replay stream.
+func replayCountdownSubject(gameID string) string {
+	return config.ReplayCopySubject(gameID, config.CountdownSubject(gameID))
+}
+
+func replayMetaSubject(gameID string) string {
+	return config.ReplayCopySubject(gameID, config.MetaSubject(gameID))
+}
+
+// applyReplayCountdown folds a replayed pre-game message into the countdown
+// overlay and reports whether the screen must repaint. A countdown message is
+// the next number, and applying it restarts the pop animation from now — so at
+// original speed the count lands over the empty boards a second at a time,
+// exactly as the players saw it. A meta message ends the count once its
+// recorded status has moved past the pre-game ones (preStartStatus), which is
+// the live screen's own rule: the number goes when the game goes, and no stale
+// GO! is left standing over the replayed gameplay.
+func (a *App) applyReplayCountdown(rv *replayView, subject string, data []byte) bool {
+	switch subject {
+	case replayCountdownSubject(rv.rec.GameID):
+		var cd struct {
+			Seconds int `json:"seconds"`
+		}
+		if err := json.Unmarshal(data, &cd); err != nil || cd.Seconds < 0 {
+			return false
+		}
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if rv.started {
+			return false // a number recorded after the start: never resurrect the count
+		}
+		rv.countdown, rv.countdownAt = cd.Seconds, time.Now()
+		return true
+	case replayMetaSubject(rv.rec.GameID):
+		var meta config.GameMeta
+		if err := json.Unmarshal(data, &meta); err != nil || preStartStatus(string(meta.Status)) {
+			return false
+		}
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		started := rv.started
+		rv.started = true
+		return !started // the count coming down is a repaint; every later meta is not
+	}
+	return false
+}
+
+// replayCountdownVisible reports whether the replayed countdown number belongs
+// over the boards: a number has arrived, the recorded game has not started
+// yet, and the replay is still running (a finished one shows its ending, and a
+// failed one its error).
+func replayCountdownVisible(countdown int, started, done bool) bool {
+	return countdown >= 0 && !started && !done
+}
+
 // applyReplayCell folds one replayed message into the session's boards and
-// reports whether anything changed. Non-cell subjects (meta, roster, events,
-// countdown, the board registers) are simply skipped — the replay redraws the
-// playfields only.
+// reports whether anything changed. Non-cell subjects (roster, events, the
+// board registers) are simply skipped — the replay redraws the playfields
+// only, the countdown and meta having been read by applyReplayCountdown.
 func (a *App) applyReplayCell(rv *replayView, subject string, data []byte) bool {
 	if config.IsGarbageSubject(subject) || config.IsTxnSubject(subject) {
 		return false
@@ -491,7 +582,10 @@ func (a *App) applyReplayCell(rv *replayView, subject string, data []byte) bool 
 }
 
 // layoutReplay is the replay screen: the boards being replayed center-stage
-// over a status line, with the game's summary up top. The summary names the
+// over a status line, with the game's summary up top. The replay opens on the
+// game's own countdown — the recorded numbers pop over the still-empty boards
+// (applyReplayCountdown), the status line counting down with them — and the
+// first cell lands when the recorded game started. The summary names the
 // players in their board colors but keeps scores and winners back until the
 // replay completes; then the ending is revealed — the winners' names go gold
 // in bold italic, the status line says who won, the beaten boards read OUT
@@ -519,6 +613,7 @@ func (a *App) layoutReplay(gtx C) D {
 
 	a.mu.Lock()
 	done, errMsg, doneAt := rv.done, rv.err, rv.doneAt
+	countdown, countdownAt, started := rv.countdown, rv.countdownAt, rv.started
 	boards := make([]labeledBoard, len(rv.boards))
 	for i, b := range rv.boards {
 		boards[i] = labeledBoard{label: b.label, idx: b.idx, snap: b.snapshot()}
@@ -535,6 +630,7 @@ func (a *App) layoutReplay(gtx C) D {
 	if rv.fast {
 		speed = "FAST"
 	}
+	counting := replayCountdownVisible(countdown, started, done)
 	status, statusCol := "REPLAYING · "+speed, colNATSGreen
 	switch {
 	case errMsg != "":
@@ -543,6 +639,8 @@ func (a *App) layoutReplay(gtx C) D {
 		status, statusCol = "REPLAY COMPLETE", colGold
 	case paused:
 		status, statusCol = "PAUSED · "+speed, colWarn
+	case counting:
+		status, statusCol = "COUNTING DOWN · "+speed, colGold
 	}
 	statusLine := a.pixel(unit.Sp(9), status, statusCol).Layout
 	if reveal {
@@ -572,9 +670,26 @@ func (a *App) layoutReplay(gtx C) D {
 			layout.Rigid(statusLine),
 			layout.Rigid(spacer(14)),
 			layout.Flexed(1, func(gtx C) D {
-				return layout.Center.Layout(gtx, func(gtx C) D {
-					return a.boardsStrip(gtx, &a.replayBoardsList, boards)
-				})
+				// The boards stay centered with or without the countdown
+				// Stack — the same reason the spectator's boards go through
+				// a Center of their own (gameBoardArea): the Flexed slot
+				// hands down tight constraints that would pin the strip to
+				// the top-left the moment the overlay goes away.
+				content := func(gtx C) D {
+					return layout.Center.Layout(gtx, func(gtx C) D {
+						return a.boardsStrip(gtx, &a.replayBoardsList, boards)
+					})
+				}
+				if !counting {
+					return content(gtx)
+				}
+				if gtx.Now.Sub(countdownAt) < countdownAnimDur {
+					animate(gtx) // keep animating the countdown pop until it settles
+				}
+				return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+					layout.Expanded(content),
+					layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, countdown, countdownAt) }),
+				)
 			}),
 			layout.Rigid(spacer(14)),
 			layout.Rigid(func(gtx C) D {

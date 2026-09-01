@@ -901,7 +901,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		if countdownVisible(view, mode) {
 			return layout.Stack{Alignment: layout.Center}.Layout(gtx,
 				layout.Expanded(content),
-				layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view) }),
+				layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, view.countdown, view.countdownAt) }),
 			)
 		}
 		return content(gtx)
@@ -1046,7 +1046,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					sz := gtx.Constraints.Min
 					gtx.Constraints.Min = image.Point{}
 					m := op.Record(gtx.Ops)
-					d := a.countdownOverlay(gtx, view)
+					d := a.countdownOverlay(gtx, view.countdown, view.countdownAt)
 					call := m.Stop()
 					defer op.Offset(image.Pt((sz.X-d.Size.X)/2, (sz.Y-d.Size.Y)/2)).Push(gtx.Ops).Pop()
 					call.Add(gtx.Ops)
@@ -1229,22 +1229,32 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 // in_progress to finished/archived, and with the last countdown value still 0
 // an is-in-progress check would resurrect a giant GO! over the final boards.
 func countdownVisible(view gameView, mode engine.Mode) bool {
-	preStart := view.status == "" ||
-		view.status == string(config.GameStatusCreated) ||
-		view.status == string(config.GameStatusStarting)
-	return view.countdown >= 0 && preStart && !view.gameOver && mode != engine.ModeGameOver
+	return view.countdown >= 0 && preStartStatus(view.status) && !view.gameOver && mode != engine.ModeGameOver
+}
+
+// preStartStatus reports whether a recorded game status is one the game has
+// not started under — the pre-game window the countdown belongs to. Shared by
+// the live screen (countdownVisible) and the replay, which reads the same
+// statuses back off the replayed meta messages.
+func preStartStatus(status string) bool {
+	return status == "" ||
+		status == string(config.GameStatusCreated) ||
+		status == string(config.GameStatusStarting)
 }
 
 // countdownOverlay draws the big centered countdown number (or "GO!") with a
 // pop-in scale + fade so each new number animates in (gold numbers, green GO!).
-func (a *App) countdownOverlay(gtx C, view gameView) D {
-	txt := fmt.Sprintf("%d", view.countdown)
+// n is the number (0 = GO!) and at the moment it arrived — the live screen
+// takes both off the countdown consumer, the replay off the countdown messages
+// as it replays them.
+func (a *App) countdownOverlay(gtx C, n int, at time.Time) D {
+	txt := fmt.Sprintf("%d", n)
 	col := colGold
-	if view.countdown == 0 {
+	if n == 0 {
 		txt = "GO!"
 		col = colGo
 	}
-	t := clampF(float64(gtx.Now.Sub(view.countdownAt))/float64(countdownAnimDur), 0, 1)
+	t := clampF(float64(gtx.Now.Sub(at))/float64(countdownAnimDur), 0, 1)
 	scale := 0.4 + 0.6*easeOutBack(t)
 	alpha := clampF(t/0.3, 0, 1)
 

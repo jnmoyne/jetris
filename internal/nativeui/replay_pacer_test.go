@@ -47,6 +47,28 @@ func TestReplayPacer(t *testing.T) {
 	if d := p.delay(rec0.Add(3*time.Second), wall.Add(2500*time.Millisecond)); d != 2500*time.Millisecond {
 		t.Fatalf("shifted delay = %v, want 2.5s", d)
 	}
+	// The countdown opens the paced window where it was recorded: its first
+	// number falls before the guarded cutoff, so without open it would
+	// fast-forward — with it, the number anchors the schedule and the one a
+	// second behind it is due a second later.
+	c := replayPacer{thresh: rec0.Add(-replayStartGuard)}
+	cd0 := rec0.Add(-5700 * time.Millisecond) // "5", the whole count ahead of the guard
+	if d := c.delay(cd0, wall); d != 0 || !c.base.IsZero() {
+		t.Fatalf("pre-open countdown delay = %v, anchored = %v", d, !c.base.IsZero())
+	}
+	c.open(cd0)
+	if d := c.delay(cd0, wall); d != 0 || !c.base.Equal(cd0) {
+		t.Fatalf("opened countdown delay = %v, anchor = %v, want 0 anchored at the number", d, c.base)
+	}
+	if d := c.delay(cd0.Add(time.Second), wall); d != time.Second {
+		t.Fatalf("next number delay = %v, want 1s", d)
+	}
+	// open only ever widens the window: a later ts leaves the cutoff alone.
+	c.open(rec0.Add(time.Minute))
+	if !c.thresh.Equal(cd0) {
+		t.Fatalf("open moved the cutoff forward to %v", c.thresh)
+	}
+
 	// An unanchored schedule has nothing to shift: the first paced message
 	// still applies at once and anchors to the moment it is applied.
 	q := replayPacer{thresh: rec0.Add(-replayStartGuard)}

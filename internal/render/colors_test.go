@@ -60,7 +60,7 @@ func TestCellStyleDecisions(t *testing.T) {
 }
 
 // TestGhostStyle pins the hard-drop ghost appearance: a faint piece-color fill
-// inside a half-bright piece-color 2px frame, flat (no bevel) — dimmer than
+// inside a dimmed piece-color 2px frame, flat (no bevel) — dimmer than
 // every committed-cell alpha so the preview can't be mistaken for a real cell.
 func TestGhostStyle(t *testing.T) {
 	for pt := game.PieceI; pt <= game.PieceL; pt++ {

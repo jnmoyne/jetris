@@ -499,12 +499,19 @@ type App struct {
 	// against. dropHeld is the space bar's physical state: a hard drop fires
 	// on its false→true edge only, so holding it drops once and not once per
 	// OS auto-repeat.
+	//
+	// holdArmed is the Shift key's: Shift holds the piece on its RELEASE, not
+	// its press, so that a shifted Tab — still the board/chat switch — moves
+	// the keys without also spending the hold. The press arms; the release
+	// spends it; a Tab, or losing the keys, disarms it unspent. (C, the
+	// other hold key, is not a modifier and holds on the press as ever.)
 	shift, soft                         autoShift
 	dasMs, arrMs, sdf                   int
 	dasFloat, arrFloat, sdfFloat        widget.Float
 	handlingDirty                       bool
 	padLeftWas, padRightWas, padDownWas bool
 	dropHeld                            bool
+	holdArmed                           bool
 	// heldMoves are gesture moves made while the board had no piece (the
 	// lock-to-spawn gap), dispatched the moment the next piece appears
 	// (handleGestures). UI goroutine only. pieceGapStart/spawnGapLast/

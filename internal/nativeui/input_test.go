@@ -37,6 +37,13 @@ func TestBoardKeyFiltersIncludeFocusFilter(t *testing.T) {
 			}
 		case key.Filter:
 			names[ff.Name] = true
+			// Shift and Ctrl are game keys now, so every game key has to
+			// match while one of them is held — and their own presses carry
+			// their own bit. A filter naming no modifier matches only an
+			// unmodified event.
+			if want := key.ModShift | key.ModCtrl; ff.Optional&want != want {
+				t.Errorf("boardKeyFilters: %q does not tolerate Shift/Ctrl (Optional=%v); it will not match while either is held", ff.Name, ff.Optional)
+			}
 		}
 	}
 	if !hasFocus {
@@ -45,6 +52,8 @@ func TestBoardKeyFiltersIncludeFocusFilter(t *testing.T) {
 	for _, n := range []key.Name{
 		key.NameLeftArrow, key.NameRightArrow, key.NameDownArrow,
 		key.NameUpArrow, key.NameSpace, "Z", "X", "C",
+		"W", "A", "S", "D",
+		key.NameCtrl, key.NameShift,
 	} {
 		if !names[n] {
 			t.Errorf("boardKeyFilters missing key.Filter for %q", n)
@@ -67,6 +76,9 @@ func TestMoveForKey(t *testing.T) {
 		{"Z", (*engine.Engine).RotateCCW},
 		{"X", (*engine.Engine).RotateCW},
 		{"C", (*engine.Engine).Hold},
+		// The Guideline's modifier controls, delivered as keys of their own.
+		{key.NameCtrl, (*engine.Engine).RotateCCW},
+		{key.NameShift, (*engine.Engine).Hold},
 	}
 	for _, c := range cases {
 		got, ok := moveForKey(c.name)
@@ -80,6 +92,29 @@ func TestMoveForKey(t *testing.T) {
 	}
 	if _, ok := moveForKey("Q"); ok {
 		t.Error("moveForKey(\"Q\"): ok=true, want false for an unmapped key")
+	}
+}
+
+// TestArrowForKey locks the WASD fold: the cluster becomes the arrows it
+// stands in for, and no other key is touched — moveForKey's own table stays
+// in arrow names, so the fold is the only place the letters exist.
+func TestArrowForKey(t *testing.T) {
+	for _, c := range []struct{ in, want key.Name }{
+		{"W", key.NameUpArrow},
+		{"A", key.NameLeftArrow},
+		{"S", key.NameDownArrow},
+		{"D", key.NameRightArrow},
+		{"Z", "Z"},
+		{"X", "X"},
+		{"C", "C"},
+		{key.NameCtrl, key.NameCtrl},
+		{key.NameShift, key.NameShift},
+		{key.NameSpace, key.NameSpace},
+		{key.NameLeftArrow, key.NameLeftArrow},
+	} {
+		if got := arrowForKey(c.in); got != c.want {
+			t.Errorf("arrowForKey(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

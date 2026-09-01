@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"image"
+	"reflect"
 	"testing"
 	"time"
 
@@ -311,6 +312,243 @@ func TestAutoShiftKeyboardDAS(t *testing.T) {
 	}
 	if a.shift.dir != 0 || a.shift.negDown {
 		t.Fatal("losing the keys did not reset the auto-shift machine")
+	}
+}
+
+// TestWASDKeysDriveThePiece drives the left hand's arrows through the same
+// router the arrow keys go through: A shifts left, D right, W rotates
+// clockwise and S soft-drops — the arrow keys' own actions, in the arrow
+// keys' own order.
+func TestWASDKeysDriveThePiece(t *testing.T) {
+	a := newTestApp()
+	a.SetHandling(60, 0, defaultSDF)
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(4000, 0)
+
+	gameFrameAt(a, &r, base) // the start frame: the board takes the keys
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys")
+	}
+
+	// A tap of each letter, released before the next: one move apiece, and
+	// none of them held long enough for DAS.
+	at := base
+	for _, k := range []key.Name{"A", "D", "W", "S"} {
+		at = at.Add(10 * ms)
+		r.Queue(key.Event{Name: k, State: key.Press})
+		gameFrameAt(a, &r, at)
+		at = at.Add(10 * ms)
+		r.Queue(key.Event{Name: k, State: key.Release})
+		gameFrameAt(a, &r, at)
+	}
+	want := []engine.MoveType{engine.MoveLeft, engine.MoveRight, engine.RotateCW, engine.MoveDown}
+	if got := a.eng.BufferedMoves(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after tapping A D W S: BufferedMoves = %v, want %v", got, want)
+	}
+}
+
+// TestWASDSharesTheArrowsAutoShift is the other half: because the letters are
+// folded onto the arrow names before any of the dispatch (arrowForKey), A and
+// ← are ONE key to the shift machine. A held A charges DAS and snaps to the
+// wall exactly as a held ← does (TestAutoShiftKeyboardDAS, the same timings),
+// a ← pressed while A is down is the duplicate press the OS repeat is —
+// ignored, the DAS clock unmoved — and releasing A stops the repeat.
+func TestWASDSharesTheArrowsAutoShift(t *testing.T) {
+	a := newTestApp()
+	a.SetHandling(60, 0, defaultSDF) // pinned: the timings below assume DAS 60 / ARR 0
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(5000, 0)
+
+	gameFrameAt(a, &r, base)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys")
+	}
+	buffered := func() int { return len(a.eng.BufferedMoves()) }
+
+	r.Queue(key.Event{Name: "A", State: key.Press})
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if buffered() != 1 {
+		t.Fatalf("after the press of A: %d moves buffered, want 1", buffered())
+	}
+
+	// ← while A is down: the same key to the machine, so it is the OS
+	// repeat's duplicate press — ignored, and the DAS clock unmoved.
+	r.Queue(key.Event{Name: key.NameLeftArrow, State: key.Press})
+	gameFrameAt(a, &r, base.Add(40*ms))
+	if buffered() != 1 {
+		t.Fatalf("← pressed while A was held: %d moves buffered, want still 1 (one key, not two)", buffered())
+	}
+
+	// DAS (60ms from the press's frame at +10ms) expires: ARR 0 slides the
+	// piece the remaining 3 columns to the wall in one frame.
+	gameFrameAt(a, &r, base.Add(80*ms))
+	if buffered() != 4 {
+		t.Fatalf("after the DAS expiry: %d moves buffered, want 4 (the slide to the wall)", buffered())
+	}
+
+	// Releasing A stops it — and the arrow's own release, of a press the
+	// machine folded away, leaves nothing running either.
+	r.Queue(key.Event{Name: "A", State: key.Release})
+	gameFrameAt(a, &r, base.Add(90*ms))
+	r.Queue(key.Event{Name: key.NameLeftArrow, State: key.Release})
+	gameFrameAt(a, &r, base.Add(200*ms))
+	gameFrameAt(a, &r, base.Add(400*ms))
+	if buffered() != 4 {
+		t.Fatalf("after releasing A: %d moves buffered, want still 4", buffered())
+	}
+	if a.shift.dir != 0 || a.shift.negDown {
+		t.Fatal("releasing A did not stop the shift machine")
+	}
+}
+
+// TestModifierKeysRotateAndHold drives the Guideline's two modifier
+// controls through the router: Ctrl rotates counter-clockwise on its press,
+// Shift holds on its RELEASE (see TestShiftTabHoldsNothing), each delivered
+// — as the backends deliver them — carrying its own modifier bit. And the
+// keys pressed WHILE one is held still arrive: a filter naming no modifier
+// would drop them, which would make holding Shift a way to freeze the piece.
+func TestModifierKeysRotateAndHold(t *testing.T) {
+	a := newTestApp()
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(6000, 0)
+
+	gameFrameAt(a, &r, base)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys")
+	}
+
+	at := base
+	for _, e := range []key.Event{
+		{Name: key.NameCtrl, Modifiers: key.ModCtrl, State: key.Press},
+		{Name: key.NameCtrl, Modifiers: key.ModCtrl, State: key.Release},
+		{Name: key.NameShift, Modifiers: key.ModShift, State: key.Press},
+		// Held Shift, and the rest of the scheme still answering: a rotate,
+		// a shift and a hard drop, each carrying the bit Shift puts on it.
+		{Name: "X", Modifiers: key.ModShift, State: key.Press},
+		{Name: "X", Modifiers: key.ModShift, State: key.Release},
+		{Name: key.NameLeftArrow, Modifiers: key.ModShift, State: key.Press},
+		{Name: key.NameLeftArrow, Modifiers: key.ModShift, State: key.Release},
+		{Name: key.NameSpace, Modifiers: key.ModShift, State: key.Press},
+		{Name: key.NameSpace, Modifiers: key.ModShift, State: key.Release},
+		{Name: key.NameShift, Modifiers: key.ModShift, State: key.Release},
+	} {
+		at = at.Add(10 * ms)
+		r.Queue(e)
+		gameFrameAt(a, &r, at)
+	}
+	// The hold lands last, on Shift's release — after the three moves made
+	// while it was down.
+	want := []engine.MoveType{
+		engine.RotateCCW,
+		engine.RotateCW, engine.MoveLeft, engine.MoveHardDrop,
+		engine.MoveHold,
+	}
+	if got := a.eng.BufferedMoves(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Ctrl, Shift, then X ← Space under a held Shift: BufferedMoves = %v, want %v", got, want)
+	}
+}
+
+// TestShiftTabHoldsNothing is why Shift holds on its release: a shifted Tab
+// is the board/chat switch, and a player reaching for the chat did not mean
+// to spend the hold. The Tab disarms the armed press, so the keys move and
+// the piece is not held — and the Shift release that lands afterwards (with
+// the chat now holding the keys) does nothing either. C, the other hold key,
+// is unaffected: it holds on the press.
+func TestShiftTabHoldsNothing(t *testing.T) {
+	a := newTestApp()
+	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
+	a.gamePlayers = []lobby.PlayerSummary{
+		{PlayerID: "alice", Name: "alice", Ready: true},
+		{PlayerID: "bob", Name: "bob"},
+	}
+	a.readyPlayers = a.gamePlayers
+	a.screen = screenGame
+	a.gameStatus = string(config.GameStatusInProgress)
+	var r input.Router
+	base := time.Unix(7000, 0)
+
+	gameFrameAt(a, &r, base)
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("board did not take the keys")
+	}
+	if !a.chatVisible() {
+		t.Fatal("a 1200x820 window does not show the chat strip by default")
+	}
+
+	// Shift down, then Tab: the keys go to the chat, the hold is disarmed.
+	r.Queue(key.Event{Name: key.NameShift, Modifiers: key.ModShift, State: key.Press})
+	gameFrameAt(a, &r, base.Add(10*ms))
+	if !a.holdArmed {
+		t.Fatal("the press of Shift did not arm the hold")
+	}
+	r.Queue(input.SystemEvent{Event: key.Event{Name: key.NameTab, Modifiers: key.ModShift, State: key.Press}})
+	gameFrameAt(a, &r, base.Add(20*ms))
+	if a.holdArmed {
+		t.Fatal("the shifted Tab left the hold armed")
+	}
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("the shifted Tab did not hand the keys to the chat editor")
+	}
+	// The release, wherever it lands, spends nothing.
+	r.Queue(key.Event{Name: key.NameShift, State: key.Release})
+	gameFrameAt(a, &r, base.Add(30*ms))
+	if got := a.eng.BufferedMoves(); len(got) != 0 {
+		t.Fatalf("a shifted Tab moved the piece: BufferedMoves = %v, want none", got)
+	}
+
+	// Back on the board, a Shift tap on its own still holds.
+	r.Queue(input.SystemEvent{Event: key.Event{Name: key.NameTab, State: key.Press}})
+	gameFrameAt(a, &r, base.Add(40*ms))
+	if !r.Source().Focused(&a.boardTag) {
+		t.Fatal("Tab did not hand the keys back to the board")
+	}
+	r.Queue(key.Event{Name: key.NameShift, Modifiers: key.ModShift, State: key.Press})
+	gameFrameAt(a, &r, base.Add(50*ms))
+	if got := a.eng.BufferedMoves(); len(got) != 0 {
+		t.Fatalf("the press alone held the piece: BufferedMoves = %v, want none until the release", got)
+	}
+	r.Queue(key.Event{Name: key.NameShift, State: key.Release})
+	gameFrameAt(a, &r, base.Add(60*ms))
+	want := []engine.MoveType{engine.MoveHold}
+	if got := a.eng.BufferedMoves(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("a Shift tap on the board: BufferedMoves = %v, want %v", got, want)
+	}
+
+	// Losing the keys with Shift still down disarms it too: the release the
+	// board never sees must not hold the next piece the moment it comes back.
+	r.Queue(key.Event{Name: key.NameShift, Modifiers: key.ModShift, State: key.Press})
+	gameFrameAt(a, &r, base.Add(70*ms))
+	press(&r, editorPressX, editorPressY) // a click into the chat, no Tab involved
+	gameFrameAt(a, &r, base.Add(80*ms))
+	gameFrameAt(a, &r, base.Add(90*ms))
+	if !r.Source().Focused(&a.gameChatEd) {
+		t.Fatal("the click in the chat strip did not hand it the keys")
+	}
+	if a.holdArmed {
+		t.Fatal("losing the keys left the hold armed")
+	}
+	if got := a.eng.BufferedMoves(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("losing the keys spent the hold: BufferedMoves = %v, want %v", got, want)
 	}
 }
 

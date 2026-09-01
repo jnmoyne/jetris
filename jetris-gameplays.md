@@ -197,13 +197,29 @@ over NATS — each move is a local intent that publishes the changed cells with 
 
 | Key | Action | Engine method |
 |-----|--------|---------------|
-| ← / → | move left / right | `MoveLeft` / `MoveRight` |
-| ↓ | soft drop (one row) | `MoveDown` |
-| ↑ or X | rotate clockwise | `RotateCW` |
-| Z | rotate counter-clockwise | `RotateCCW` |
+| ← / → or A / D | move left / right | `MoveLeft` / `MoveRight` |
+| ↓ or S | soft drop (one row) | `MoveDown` |
+| ↑ or W or X | rotate clockwise | `RotateCW` |
+| Ctrl or Z | rotate counter-clockwise | `RotateCCW` |
 | Space | hard drop | `HardDrop` |
-| C | hold (games with the hold rule, §1b; the Guideline's Shift, a modifier, is not mapped) | `Hold` |
+| Shift or C | hold (games with the hold rule, §1b); Shift acts on its **release** | `Hold` |
 | Tab | switch the keys between the piece and the chat (a shifted Tab too) | — |
+
+The WASD cluster is the arrow keys' left-hand twin: `arrowForKey` folds W A S D onto
+↑ ← ↓ → *before* any dispatch, so the two sets share one entry in the mapping table and
+one DAS/ARR machine per axis — A and ← are the same key held, not two keys racing.
+
+Ctrl and Shift are the Guideline's two modifier controls, and Gio delivers a modifier's
+own press *and release* as a `key.Event` named for it, so they are filtered as keys like
+any other. Every board key filter therefore carries `Optional: ModShift|ModCtrl` — a filter
+naming no modifier matches only an *unmodified* event, so without it holding Shift would
+kill every other control, and the modifiers' own presses (which carry their bit) would
+never arrive at all. ⌘ and Alt are deliberately left unmapped: they are the platform's.
+
+Shift is the one key that acts on its **release**, because a shifted Tab is still the
+board/chat switch and a player reaching for the chat did not mean to spend the hold: the
+press arms it, the release spends it, and a Tab in between — or losing the keys, whose
+release the board would never see — disarms it unspent. C holds on the press as ever.
 
 These are dispatched from `internal/nativeui/input.go` (the board tag is kept focused
 with Gio's `key.FocusFilter` + `key.FocusCmd`). The on-screen control pad and, on a touch

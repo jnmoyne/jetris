@@ -688,10 +688,19 @@ type controlsSection struct {
 // the hold queue can promise it — the lobby, which has no game yet, says
 // nothing about it rather than teaching a key that may do nothing.
 func (a *App) controlsSections(hold bool) []controlsSection {
-	keys := [][2]string{{"← →", "move · hold slides"}, {"↓", "soft drop · hold falls"}, {"↑ X", "rotate CW"}, {"Z", "rotate CCW"}, {"SPACE", "hard drop"}}
+	// Every key that makes a move, on the row of the move it makes — the
+	// arrows and their WASD twins (arrowForKey) together, and the
+	// Guideline's modifier controls beside the letters they double.
+	keys := [][2]string{
+		{"← → A D", "move · hold slides"},
+		{"↓ S", "soft drop · hold falls"},
+		{"↑ W X", "rotate CW"},
+		{"Z CTRL", "rotate CCW"},
+		{"SPACE", "hard drop"},
+	}
 	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
 	if hold {
-		keys = append(keys, [2]string{"C", "hold"})
+		keys = append(keys, [2]string{"C SHIFT", "hold"})
 		touch = append(touch, [2]string{"swipe ↑", "hold"})
 	}
 	keys = append(keys, [2]string{"TAB", "chat / board"})

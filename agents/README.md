@@ -24,7 +24,7 @@ speaks the protocol and follows the rules.
 
 - **Fair visibility.** Decide only on what a human sees in the UI: your committed board,
   the opponents'/team boards, the roster, scores, the countdown, and the game's piece
-  preview (`GameMeta.next_count` upcoming pieces, 0-4 — your lookahead stops there).
+  preview (`GameMeta.next_count` upcoming pieces, 0-6 — your lookahead stops there).
   The horizon is the game's setting, read from its meta (absent = 0): a difficulty
   or flag of yours may use less of it, never more. **Never** the game seed beyond
   that horizon, and never protocol internals the UI doesn't render.

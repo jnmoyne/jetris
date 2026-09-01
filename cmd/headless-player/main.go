@@ -73,12 +73,12 @@ func main() {
 	}
 
 	// 2v2 teams (TeamCount*teamSize players), agents may take the other three
-	// seats, one preview piece — or a 2-seat co-op with one agent seat.
+	// seats, the default preview — or a 2-seat co-op with one agent seat.
 	gameMode, playerCount, teamSize, maxAgents := config.ModeTeams, config.TeamCount*2, 2, 3
 	if *mode == "cooperative" {
 		gameMode, playerCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 1
 	}
-	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, maxAgents, config.GameRules{NextCount: 1, Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, maxAgents, config.GameRules{NextCount: config.MaxNextCount, Ghost: true}, false)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -595,7 +595,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.maxAgentsEd.SetText("1")
 	a.nextCountEd.SingleLine = true
 	a.nextCountEd.Filter = "0123456789"
-	a.nextCountEd.SetText("1")
+	a.nextCountEd.SetText("6")
 	a.holesEd.SingleLine = true
 	a.holesEd.Filter = "0123456789"
 	a.holesEd.SetText("0")

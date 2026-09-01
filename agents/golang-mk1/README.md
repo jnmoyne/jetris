@@ -54,7 +54,7 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
 ## Fair visibility
 
 It decides only on what a human sees: its own committed board and (for lookahead) the
-pieces the game actually reveals (`GameMeta.next_count`, 0–4). It reads the meta seed only
+pieces the game actually reveals (`GameMeta.next_count`, 0–6). It reads the meta seed only
 to generate its OWN piece sequence, which every peer must do. No board state beyond the
 revealed preview is ever consulted. The horizon is the game's, not the agent's:
 `--difficulty` only trims it (easy 0, medium 1, hard the whole preview) and can never
@@ -100,7 +100,7 @@ written to the meta as `garbage_holes` — `--random-holes`, each garbage row dr
 its own columns, `random_garbage_holes` — `--guideline-garbage`, the 0/1/2/4
 Guideline attack table, `guideline_garbage` — `--hold`, the Guideline hold queue,
 `hold`, which the agent itself never uses but the humans in its game may — and
-`--guideline`, the GUI wizard's Guideline preset in one flag: next 4, hold, 1 hole
+`--guideline`, the GUI wizard's Guideline preset in one flag: next 6, hold, 1 hole
 per garbage row, the Guideline attack table, overriding the individual rule flags),
 `--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
 `async`), `--auto-join`, `--wait`, `--once`, `--selftest`.

@@ -34,7 +34,7 @@ func difficultyTuning(d string) tuning {
 
 // maxNextCount is the game's maximum piece-preview depth (jetris-gameplays.md);
 // "hard" plans with the full revealed preview, whatever a given game exposes.
-const maxNextCount = 4
+const maxNextCount = 6
 
 // validDifficulty normalizes and validates a difficulty label.
 func validDifficulty(s string) (string, error) {

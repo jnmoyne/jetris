@@ -504,7 +504,7 @@ const (
 	// MaxNextCount caps GameMeta.NextCount, the per-game number of upcoming
 	// pieces shown to players (0 = none). The same bound applies to agents:
 	// an agent may look ahead at most NextCount pieces in the sequence.
-	MaxNextCount = 4
+	MaxNextCount = 6
 
 	// MaxGarbageHoles caps GameMeta.GarbageHoles, the per-game number of empty
 	// cells punched in every garbage row a raise lands (0 = solid, permanent

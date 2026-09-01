@@ -42,12 +42,12 @@ func main() {
 	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	players := flag.Int("players", 2, "player count when creating a game (with --create; teams: players per team)")
 	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
-	next := flag.Int("next", 1, "upcoming pieces the game reveals when creating a game (0-4, 0 = none)")
+	next := flag.Int("next", maxNextCount, "upcoming pieces the game reveals when creating a game (0-6, 0 = none)")
 	holes := flag.Int("holes", 0, "holes per garbage row when creating a competitive or teams game (0-4, 0 = solid rows that never clear)")
 	randomHoles := flag.Bool("random-holes", false, "every garbage row draws its own hole columns when creating a game (default: the rows of one attack share a draw)")
 	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (default: one row per line)")
 	hold := flag.Bool("hold", false, "the Guideline hold queue when creating a game (the agent itself never holds; the humans in the game may)")
-	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 4, hold, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage and --hold")
+	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 6, hold, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage and --hold")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
@@ -90,7 +90,7 @@ func main() {
 		host = &hosting{mode: mode, players: *players, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
-			host.next, host.holes, host.random, host.guideline, host.hold = 4, 1, false, true, true
+			host.next, host.holes, host.random, host.guideline, host.hold = maxNextCount, 1, false, true, true
 		}
 	}
 

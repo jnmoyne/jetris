@@ -35,7 +35,7 @@ Each player has a color associated with it: used for the outline color of the pi
 **Every play rule below is chosen on one step of the create-game wizard (step 2,
 GAME RULES) by a single radio.** **Guideline** — the default — plays every rule at
 the setting closest to the Tetris Guideline this game can offer
-(`config.GuidelineRules`): `next_count` 4, the ghost piece, the `hold` queue and,
+(`config.GuidelineRules`): `next_count` 6, the ghost piece, the `hold` queue and,
 for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
 sharing their hole column and `guideline_garbage`; the lobby row tags such a game
 `guideline`. **Custom** exposes each rule as its own editor or checkbox, with the
@@ -45,14 +45,14 @@ Whichever way they were chosen, the rules are stored in the game's meta record �
 the rule book every engine reads at start — and bind every seat equally.
 
 **How many upcoming pieces a game reveals is a per-game attribute**: `next_count`,
-an integer 0-4 (the custom editor's default is 1)
+an integer 0-6 (the custom editor's default is 6)
 and fixed for the life of the game in its meta record (`GameMeta.NextCount`). It applies to
 every mode and to **everyone in the game equally — humans and agents**:
 
 - **0** — nobody sees anything coming: no NEXT well, no agent lookahead (the
   original Jetris behavior, and what games created before the attribute existed
   replay as).
-- **1-4** — while playing, a **NEXT well** sits in its own framed sub-division
+- **1-6** — while playing, a **NEXT well** sits in its own framed sub-division
   hugging the playfield's top-left, classic arcade style: one mini tile per
   revealed piece, stacked top-down in play order, always your **own** queue
   (each seat advances its own `pieceIdx`, so "next" is per-seat; spectators get
@@ -485,7 +485,7 @@ the lobby's main call to action can't be missed) that opens a modal walking the 
 game's attributes one step at a time — **1. game type & players** (co-op /
 competitive / teams radios and the seat count, per-team in teams mode),
 **2. game rules** (a single radio: the **Guideline** preset — the default,
-listed read-only — or **custom**: the next-piece count, 0-4, default 1, the
+listed read-only — or **custom**: the next-piece count, 0-6, default 6, the
 "Show ghost piece" checkbox, on by default, the "Hold piece" checkbox, off by
 default, and the garbage rules for competitive/teams — see §1b),
 **3. who can join** (**open game** or **invite only**), and — open games only —
@@ -1172,7 +1172,7 @@ see `jetris-agent-guide.md`.
 | Pause between moves | 300 ms | 150 ms | 30 ms |
 | Blunder rate (P of not playing the best move) | 30% | 10% | 0 |
 | Blunder depth (picks among ranks 2..N+1) | 4 | 2 | — |
-| Lookahead (max preview pieces used in planning) | 0 | 1 | 4 |
+| Lookahead (max preview pieces used in planning) | 0 | 1 | 6 |
 
 Hard plays the best placement it finds, as fast as the NATS round-trips allow. Easy and
 medium think slower, pace their moves, and sometimes deliberately play a lower-ranked

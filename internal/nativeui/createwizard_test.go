@@ -33,7 +33,7 @@ func TestWizardRulesPreset(t *testing.T) {
 	}
 	// The custom read-out with the preset's own values IS the preset — the
 	// lobby row then tags it "guideline" like a preset-created game.
-	a.nextCountEd.SetText("4")
+	a.nextCountEd.SetText("6")
 	a.holesEd.SetText("1")
 	if !a.customRules().IsGuideline(config.ModeCompetitive) {
 		t.Fatalf("custom rules %+v should match the Guideline preset", a.customRules())

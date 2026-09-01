@@ -3629,7 +3629,7 @@ top-out, and decent agents avoid topping out) — bounded only by interruption.
 ## Phase 15 — Piece Preview (`next_count`)
 
 A per-game attribute: how many upcoming pieces the game reveals, 0 (none) to
-`config.MaxNextCount` (4), chosen at creation and fixed for the game's life. It
+`config.MaxNextCount` (6), chosen at creation and fixed for the game's life. It
 applies to the UI for humans AND to agents — one horizon for every eye — which
 re-parameterizes the fair-visibility contract from "never look ahead" to "look
 ahead at most `next_count` pieces".
@@ -3638,7 +3638,7 @@ ahead at most `next_count` pieces".
 meaningful value and metas written before the field unmarshal to 0, preserving
 their no-preview behavior) — meta because it is the game-stream protocol record
 every peer fetches; mirrored as `GameListing.NextCount` (omitempty) for the lobby
-row. `config.MaxNextCount = 4`. `CreateGame(ctx, mode, playerCount, teamSize,
+row. `config.MaxNextCount = 6`. `CreateGame(ctx, mode, playerCount, teamSize,
 maxAgents, nextCount, inviteOnly)` clamps to 0..MaxNextCount and writes both
 records; unlike `MaxAgents` (join policy, listing-only) this is gameplay and
 lives in meta.
@@ -3721,7 +3721,7 @@ the previous game's choices.
   "Open game" continues to step 4 (**"Create game"**). The header advertises
   "STEP n OF total" with total 3/4 following the who-can-join selection.
 - **Finish:** `finishCreateWizard` does the parse/clamp the old create-row
-  handler did (count ≥2, per-team ≥1; next 0-4 default 1; max agents clamped
+  handler did (count ≥2, per-team ≥1; next 0-6 default 6; max agents clamped
   to total seats) and launches: `openInvitePicker(mode, count, nextCount)` for
   invite-only (agent policy stays per-invite — maxAgents 0), else
   `createGame(mode, count, maxAgents, nextCount, false)`.

@@ -111,7 +111,7 @@ func (a *App) finishCreateWizard() {
 
 // customRules reads the wizard's custom-rules widgets. The upcoming-piece
 // preview is how many next pieces the game reveals to everyone (players,
-// spectators, agents): blank or junk falls back to the default of 1. The
+// spectators, agents): blank or junk falls back to the default of 6. The
 // ghost and the hold are per-game rules like the preview — the creator's
 // checkboxes decide them for every seat. Garbage holes are how many empty
 // cells every garbage row is raised with in the modes that raise garbage
@@ -121,7 +121,7 @@ func (a *App) finishCreateWizard() {
 func (a *App) customRules() config.GameRules {
 	nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
 	if err != nil {
-		nextCount = 1
+		nextCount = 6
 	}
 	holes, err := strconv.Atoi(strings.TrimSpace(a.holesEd.Text()))
 	if err != nil {
@@ -350,7 +350,7 @@ func (a *App) wizardCustomRules(gtx C) D {
 				layout.Rigid(func(gtx C) D {
 					gtx.Constraints.Max.X = gtx.Dp(40)
 					gtx.Constraints.Min.X = gtx.Dp(40)
-					return a.editorBox(gtx, &a.nextCountEd, "1")
+					return a.editorBox(gtx, &a.nextCountEd, "6")
 				}),
 			)
 		}),

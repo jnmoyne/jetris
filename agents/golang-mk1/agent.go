@@ -58,7 +58,7 @@ type hosting struct {
 	mode      int  // modeCooperative / modeCompetitive / modeTeams
 	players   int  // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
 	maxAgents int  // agent seats, this agent included (<=0 = all seats)
-	next      int  // revealed upcoming pieces (clamped 0..4)
+	next      int  // revealed upcoming pieces (clamped 0..maxNextCount)
 	holes     int  // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
 	random    bool // every garbage row draws its own hole columns (off = one draw per raise)
 	guideline bool // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)

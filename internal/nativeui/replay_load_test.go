@@ -50,7 +50,7 @@ func TestReplayLoadsRealGame(t *testing.T) {
 	// The board the game will start on: the bottom row filled everywhere but
 	// the I piece's landing columns, so one hard drop completes it. Written
 	// before the countdown, as the pre-game setup it stands in for.
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 	for c := 0; c < config.StandardWidth; c++ {
 		if c >= 3 && c <= 6 {
 			continue // the I piece's landing columns

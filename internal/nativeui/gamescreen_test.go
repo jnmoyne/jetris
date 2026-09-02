@@ -544,11 +544,13 @@ func TestMenuColumnNeverPushesTheBoardOffScreen(t *testing.T) {
 
 // TestCompactPadButtonTogglesThePad: the bar's pad button is the player's
 // standing answer on the on-screen controls. The pad starts on, as everything
-// does; on a phone held portrait it stacks UNDER the board and takes rows off
-// it, so switching it away is what buys those rows back — and switching it on
-// again spends them.
+// does; on a small phone held portrait it stacks UNDER the board and takes
+// cell size off it, so switching it away is what buys that back — and
+// switching it on again spends it. (A tall phone has height to spare for the
+// 20-row board, whose cell the width settles instead, and there the pad costs
+// it nothing.)
 func TestCompactPadButtonTogglesThePad(t *testing.T) {
-	const w, h = 390, 844
+	const w, h = 390, 700
 	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-pad", config.ModeCompetitive))
 	if !g.a.padVisible() {
 		t.Fatal("the pad does not start on")

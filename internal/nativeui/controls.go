@@ -738,7 +738,7 @@ func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad
 	}
 	wellsX := wells.count() * gtx.Dp(18)
 	// The cell may go smaller on the compact screen: a phone held landscape
-	// has barely 300 dp of height for a 25-row well, and a board that fits
+	// has barely 300 dp of height for a 20-row well, and a board that fits
 	// whole — small, but with its move buffer and its controls on screen —
 	// beats one held at the desktop floor and clipped off the bottom.
 	floor := unit.Dp(14)

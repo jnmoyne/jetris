@@ -52,7 +52,7 @@ const (
 	phoneShortSideDp = 560
 	// compactW/compactH are the window (dp) the FULL game screen wants: the
 	// HUD column (200 dp at its floor) beside a playfield worth the name and
-	// the opponent thumbnails past it; the chat strip under 24 rows of
+	// the opponent thumbnails past it; the chat strip under 20 rows of
 	// board. Below either, the columns and the strip cost the playfield more
 	// than they are worth and the compact screen takes over.
 	compactW = 900

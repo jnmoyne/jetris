@@ -188,6 +188,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		TeamCount:    meta.Teams(),
 		TeamSize:     meta.TeamSize,
 		ExtraColumns: meta.ExtraColumns,
+		BoardRows:    config.TotalRows,
 		WinningTeam:  winningTeam,
 		Chat:         gameChatHistory(lb, eng.GameID()),
 	}
@@ -287,7 +288,7 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 	switch meta.Mode {
 	case config.ModeCooperative:
 		pic, ok := capturePicture(ctx, js, gameID,
-			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns), config.HeadroomRows+config.VisibleRows, config.VisibleRowStart,
+			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns), config.TotalRows, config.VisibleRowStart,
 			"", -1, func(r, c int) string { return config.CoopCellSubject(gameID, r, c) })
 		if !ok {
 			return nil
@@ -296,12 +297,10 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 
 	case config.ModeTeams:
 		w := config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns)
-		h := config.TeamTotalRows(meta.Teams(), meta.TeamSize)
-		vs := config.TeamVisibleRowStart(meta.Teams(), meta.TeamSize)
 		var out []config.BoardPicture
 		for t := 0; t < meta.Teams(); t++ {
 			t := t
-			if pic, ok := capturePicture(ctx, js, gameID, w, h, vs, teamLabel(t), t,
+			if pic, ok := capturePicture(ctx, js, gameID, w, config.TotalRows, config.VisibleRowStart, teamLabel(t), t,
 				func(r, c int) string { return config.TeamCellSubject(gameID, t, r, c) }); ok {
 				out = append(out, pic)
 			}
@@ -309,9 +308,6 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 		return out
 
 	default: // competitive: one board per player, ordered by player ID for stable coloring
-		w := config.StandardWidth
-		h := config.CompetitiveTotalRows(meta.PlayerCount)
-		vs := config.CompetitiveVisibleRowStart(meta.PlayerCount)
 		ids := make([]string, 0, len(players))
 		for _, p := range players {
 			ids = append(ids, p.PlayerID)
@@ -320,7 +316,7 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 		var out []config.BoardPicture
 		for i, id := range ids {
 			id := id
-			if pic, ok := capturePicture(ctx, js, gameID, w, h, vs, id, i,
+			if pic, ok := capturePicture(ctx, js, gameID, config.StandardWidth, config.TotalRows, config.VisibleRowStart, id, i,
 				func(r, c int) string { return config.CompetitiveCellSubject(gameID, id, r, c) }); ok {
 				out = append(out, pic)
 			}

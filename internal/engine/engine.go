@@ -347,15 +347,8 @@ func (e *Engine) Start() error {
 	e.randomGarbageHoles = meta.RandomGarbageHoles && e.garbageHoles > 0
 	e.guidelineGarbage = meta.GuidelineGarbage
 
-	// Set visible row start based on mode
-	switch e.gameMode {
-	case config.ModeCompetitive:
-		e.visibleRowStart = config.CompetitiveVisibleRowStart(meta.PlayerCount)
-	case config.ModeTeams:
-		e.visibleRowStart = config.TeamVisibleRowStart(e.teamCount, meta.TeamSize)
-	default:
-		e.visibleRowStart = config.VisibleRowStart
-	}
+	// The visible region starts below the headroom on every board, in every mode.
+	e.visibleRowStart = config.VisibleRowStart
 
 	// playerIdx was supplied by the caller (lobby.JoinGame return value)
 	// at engine construction time; no discovery needed here.
@@ -365,10 +358,10 @@ func (e *Engine) Start() error {
 		// Cooperative mode: shared wide playfield, shared RNG seed
 		e.seq = rng.New(meta.Seed)
 		e.pieceIdx.Store(0)
-		// Shared wide playfield with standard height
+		// Shared wide playfield with the standard height
 		e.playfield = game.NewPlayfieldWithHeight(
 			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns),
-			config.HeadroomRows+config.VisibleRows,
+			config.TotalRows,
 		)
 	case config.ModeTeams:
 		// Teams: shared per-team board, coop-style RNG (every player gets the
@@ -388,16 +381,13 @@ func (e *Engine) Start() error {
 		e.pieceIdx.Store(0)
 		e.playfield = game.NewPlayfieldWithHeight(
 			config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns),
-			config.TeamTotalRows(e.teamCount, meta.TeamSize),
+			config.TotalRows,
 		)
 	default:
 		e.seq = rng.New(meta.Seed)
 		e.pieceIdx.Store(meta.PieceIdx)
-		// Competitive: taller playfield (extra rows per player)
-		e.playfield = game.NewPlayfieldWithHeight(
-			config.StandardWidth,
-			config.CompetitiveTotalRows(meta.PlayerCount),
-		)
+		// Competitive: a private standard board
+		e.playfield = game.NewPlayfieldWithHeight(config.StandardWidth, config.TotalRows)
 	}
 	e.metaSeq = metaSeq
 	// The echo-only replica mirrors the own board's dimensions; the snapshot
@@ -611,7 +601,7 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 		e.mu.Unlock()
 		return
 	}
-	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TeamTotalRows(e.teamCount, e.teamSize))
+	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TotalRows)
 	e.opponentPlayfields[key] = pf
 	e.mu.Unlock()
 
@@ -660,7 +650,7 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 		e.mu.Unlock()
 		return // already tracking this opponent
 	}
-	pf := game.NewPlayfieldWithHeight(config.StandardWidth, config.CompetitiveTotalRows(e.playerCount))
+	pf := game.NewPlayfieldWithHeight(config.StandardWidth, config.TotalRows)
 	e.opponentPlayfields[oppID] = pf
 	e.mu.Unlock()
 

@@ -52,20 +52,42 @@ func TestTeamDimensions(t *testing.T) {
 		if got, want := TeamBoardWidth(teamSize, 0), teamSize*StandardWidth; got != want {
 			t.Errorf("TeamBoardWidth(%d, 0) = %d, want %d", teamSize, got, want)
 		}
-		// A board grows one row per seat that can attack it: every seat on
-		// every other team. An absent team count (0) is the historical two,
-		// so an old record rebuilds at the height it was played on.
-		for _, teamCount := range []int{0, 2, 3, 6} {
-			opponents := max(NormalizeTeamCount(teamCount)-1, 1) * teamSize
-			if got, want := TeamVisibleRows(teamCount, teamSize), VisibleRows+opponents; got != want {
-				t.Errorf("TeamVisibleRows(%d, %d) = %d, want %d", teamCount, teamSize, got, want)
-			}
-			if got, want := TeamTotalRows(teamCount, teamSize), HeadroomRows+VisibleRows+opponents; got != want {
-				t.Errorf("TeamTotalRows(%d, %d) = %d, want %d", teamCount, teamSize, got, want)
-			}
-			if got := TeamVisibleRowStart(teamCount, teamSize); got != HeadroomRows {
-				t.Errorf("TeamVisibleRowStart(%d, %d) = %d, want %d", teamCount, teamSize, got, HeadroomRows)
-			}
+	}
+}
+
+// Height is fixed: 20 visible rows over 4 of headroom, whatever the mode, the
+// player count or the number of opponents that can send garbage.
+func TestBoardHeightIsFixed(t *testing.T) {
+	if VisibleRows != 20 {
+		t.Errorf("VisibleRows = %d, want 20", VisibleRows)
+	}
+	if TotalRows != HeadroomRows+VisibleRows {
+		t.Errorf("TotalRows = %d, want %d", TotalRows, HeadroomRows+VisibleRows)
+	}
+	if VisibleRowStart != HeadroomRows {
+		t.Errorf("VisibleRowStart = %d, want %d", VisibleRowStart, HeadroomRows)
+	}
+}
+
+// An archived game replays at the board it was PLAYED on: a record written
+// since every board became TotalRows tall says so, and one written before it
+// means the board of its day — 24 visible rows plus one per player that could
+// attack it.
+func TestArchiveBoardHeight(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rec  ArchiveRecord
+		want int
+	}{
+		{"recorded", ArchiveRecord{Mode: ModeCompetitive, PlayerCount: 3, BoardRows: TotalRows}, TotalRows},
+		{"legacy competitive", ArchiveRecord{Mode: ModeCompetitive, PlayerCount: 3}, 4 + 24 + 3},
+		{"legacy cooperative", ArchiveRecord{Mode: ModeCooperative, PlayerCount: 3}, 4 + 24},
+		{"legacy duel", ArchiveRecord{Mode: ModeTeams, TeamCount: 2, TeamSize: 2}, 4 + 24 + 2},
+		{"legacy three-way", ArchiveRecord{Mode: ModeTeams, TeamCount: 3, TeamSize: 2}, 4 + 24 + 4},
+		{"legacy teams, no count", ArchiveRecord{Mode: ModeTeams, TeamSize: 2}, 4 + 24 + 2},
+	} {
+		if got := tc.rec.BoardHeight(); got != tc.want {
+			t.Errorf("%s: BoardHeight() = %d, want %d", tc.name, got, tc.want)
 		}
 	}
 }

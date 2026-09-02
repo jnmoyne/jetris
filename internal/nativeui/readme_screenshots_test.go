@@ -107,7 +107,7 @@ func publishCell(t *testing.T, js jetstream.JetStream, gameID string, team, row,
 func prefillTeamBoard(t *testing.T, js jetstream.JetStream, gameID string, team int, raises []raise, slot bool, rng *rand.Rand) {
 	t.Helper()
 	width := shotBoardWidth()
-	row := config.TeamTotalRows(2, 2) - 1 // the bottom row
+	row := config.TotalRows - 1 // the bottom row
 	prevHole := -1
 	for _, r := range raises {
 		// One hole column per raise — never the column of the raise right
@@ -291,7 +291,7 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
 	prefillTeamBoard(t, js, gameID, 0, garbageA, true, rng)
 	prefillTeamBoard(t, js, gameID, 1, garbageB, false, rng)
-	height := config.TeamTotalRows(2, 2)
+	height := config.TotalRows
 	floorA := height - 1 - raisedRows(garbageA) // team A's lowest stack row: the bottom row of the slot
 
 	// Four player engines (team A: Alice+Chris, team B: Bob+David) and a

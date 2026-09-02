@@ -128,19 +128,9 @@ func (g *Game) isEnded() bool {
 	}
 }
 
-// height: 4 headroom + 24 visible + garbage room (one row per player feeding
-// the board: playerCount in competitive, every seat on every OTHER team in
-// teams; none in coop).
-func (g *Game) height() int {
-	switch g.mode {
-	case modeCooperative:
-		return 28
-	case modeTeams:
-		return 28 + g.playerCount - g.teamSize()
-	default:
-		return 28 + g.playerCount
-	}
-}
+// height: 4 headroom + 20 visible. Every board is the same height, in every
+// mode and whatever the player count.
+func (g *Game) height() int { return 24 }
 
 // teams is how many teams this game is played between (2 unless the meta says
 // otherwise), and teamSize how many seats each of them holds.

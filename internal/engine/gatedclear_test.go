@@ -100,7 +100,7 @@ func TestCompetitiveClearCollapsesHeadroom(t *testing.T) {
 	publishCompetitiveCell(t, js, "gated-clear-headroom", "p1", 2, 1, marker)
 
 	// Pre-fill the bottom row except the I's drop columns 3-6.
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 	for c := 0; c < config.StandardWidth; c++ {
 		if c >= 3 && c <= 6 {
 			continue
@@ -149,7 +149,7 @@ func TestGatedClearRejectsStaleGateAndRecomputes(t *testing.T) {
 	// Marker above the bottom row: after exactly one collapse it sits ON the
 	// bottom row; a double-applied collapse would destroy it.
 	marker := game.Cell{Occupied: true, PieceType: game.PieceJ, PlayerIdx: 0}
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 	publishCompetitiveCell(t, js, "gated-clear-race", "p1", bottom-1, 0, marker)
 	for c := 0; c < config.StandardWidth; c++ {
 		if c >= 3 && c <= 6 {

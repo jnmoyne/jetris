@@ -362,16 +362,6 @@ func TestScreenSnapshots(t *testing.T) {
 		})
 	})
 
-	// The replay speed-choice dialog over the lobby.
-	t.Run("replay_dialog", func(t *testing.T) {
-		a := newTestApp()
-		a.lobby = lobby.New(nil, nil, "tester", "tester")
-		a.screen = screenLobby
-		rec := sampleReplayRecord()
-		a.replayChoice = &rec
-		snapshotPNG(t, w, dir, "screen_replay_dialog", func(gtx C) { a.layout(gtx) })
-	})
-
 	// The replay screen mid-playback: two competitive boards seeked to the
 	// playhead, the transport under them — the clear timeline with its
 	// player-colored markers, the scrub slider, the keys and the speeds.

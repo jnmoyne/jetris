@@ -240,6 +240,7 @@ type ArchiveRecord struct {
 	TeamCount    int            `json:"team_count,omitempty"`    // teams mode: how many teams played (GameMeta.TeamCount); absent — every record written before the field — reads as DefaultTeamCount (see Teams)
 	TeamSize     int            `json:"team_size,omitempty"`     // teams mode
 	ExtraColumns int            `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns) — what the replay rebuilds the board's width from
+	BoardRows    int            `json:"board_rows,omitempty"`    // the boards' height (headroom + visible) the game was played on — what the replay rebuilds them at; absent reads as the pre-fixed-height board (see BoardHeight)
 	WinningTeam  int            `json:"winning_team"`            // teams mode: the winning team's index; -1 = draw or not a team game
 	TeamScores   []int          `json:"team_scores,omitempty"`   // teams mode: final score per team (indexed by team)
 	TeamLevels   []int          `json:"team_levels,omitempty"`   // teams mode: final level per team (indexed by team)
@@ -260,6 +261,33 @@ func (r ArchiveRecord) Teams() int {
 		return NormalizeTeamCount(len(r.TeamScores))
 	}
 	return NormalizeTeamCount(r.TeamCount)
+}
+
+// legacyVisibleRows is the visible height a board had before every board
+// became VisibleRows tall: this many rows plus one for each player that could
+// send it garbage. Nothing is played on such a board any more — it survives
+// only to rebuild an archived game at the board it was actually played on.
+const legacyVisibleRows = 24
+
+// BoardHeight is the total rows (headroom + visible) of the boards the
+// archived game was played on, which is what its replay rebuilds them at. A
+// record written since every board became the same height carries it; an
+// older one carries nothing, and means the board of its day — the visible
+// rows of the time plus one per player that could attack it (every opponent
+// in competitive, every seat on every OTHER team in teams, none in
+// cooperative) — so an old game still replays at its own board.
+func (r ArchiveRecord) BoardHeight() int {
+	if r.BoardRows > 0 {
+		return r.BoardRows
+	}
+	switch r.Mode {
+	case ModeCompetitive:
+		return HeadroomRows + legacyVisibleRows + r.PlayerCount
+	case ModeTeams:
+		return HeadroomRows + legacyVisibleRows + max(r.Teams()-1, 1)*r.TeamSize
+	default:
+		return HeadroomRows + legacyVisibleRows
+	}
 }
 
 // ChatLine is one chat message preserved in an ArchiveRecord. The game's chat
@@ -559,10 +587,14 @@ type BoardCell struct {
 }
 
 const (
-	TotalRows       = 48 // max rows (supports competitive with many players: 24 + playerCount visible + 4 headroom)
+	// Every board in every mode is the same height: 20 visible rows — the
+	// Guideline playfield — above which sit the hidden headroom rows a piece
+	// spawns in. Neither the player count nor the number of opponents that
+	// can send garbage changes it.
 	HeadroomRows    = 4
-	VisibleRows     = 24 // base visible rows (cooperative and single mode)
-	VisibleRowStart = 4  // base visible row start (for cooperative; competitive adjusts per game)
+	VisibleRows     = 20
+	VisibleRowStart = HeadroomRows
+	TotalRows       = HeadroomRows + VisibleRows
 	StandardWidth   = 10
 
 	// MaxNextCount caps GameMeta.NextCount, the per-game number of upcoming
@@ -625,23 +657,6 @@ const (
 	AbandonedUnstartedTimeout = 15 * time.Minute
 )
 
-// CompetitiveVisibleRows returns the visible rows for a competitive game.
-// Each player adds one extra row to the playfield height.
-func CompetitiveVisibleRows(playerCount int) int {
-	return VisibleRows + playerCount
-}
-
-// CompetitiveTotalRows returns the total rows (headroom + visible) for a competitive game.
-func CompetitiveTotalRows(playerCount int) int {
-	return HeadroomRows + CompetitiveVisibleRows(playerCount)
-}
-
-// CompetitiveVisibleRowStart returns the first visible row index for a competitive game.
-// Always equals HeadroomRows (headroom is constant regardless of player count).
-func CompetitiveVisibleRowStart(playerCount int) int {
-	return HeadroomRows
-}
-
 // ExtraColumnsPerPlayer clamps a game's extra-columns setting to its legal
 // range. Zero — the value every meta, listing and archive record written
 // before the field carries — means the historical board: a full StandardWidth
@@ -677,25 +692,6 @@ func SharedSpawnOffset(section, extraCols int) int {
 // cooperative board.
 func TeamBoardWidth(teamSize, extraCols int) int {
 	return SharedBoardWidth(teamSize, extraCols)
-}
-
-// TeamVisibleRows returns the visible rows for a team board. Like competitive,
-// the board grows one row per garbage-producing player it can be attacked by
-// — every seat on every OTHER team, (teamCount-1)*teamSize of them — leaving
-// room for adversarial rows. At the usual two teams that is one row per
-// opponent, exactly the board teams mode has always had.
-func TeamVisibleRows(teamCount, teamSize int) int {
-	return VisibleRows + max(NormalizeTeamCount(teamCount)-1, 1)*teamSize
-}
-
-// TeamTotalRows returns the total rows (headroom + visible) for a team board.
-func TeamTotalRows(teamCount, teamSize int) int {
-	return HeadroomRows + TeamVisibleRows(teamCount, teamSize)
-}
-
-// TeamVisibleRowStart returns the first visible row index for a team board.
-func TeamVisibleRowStart(teamCount, teamSize int) int {
-	return HeadroomRows
 }
 
 func GameStream(gameID string) string {

@@ -9,7 +9,6 @@ import (
 
 	"gioui.org/layout"
 	"gioui.org/unit"
-	"gioui.org/widget"
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
@@ -69,17 +68,21 @@ func (b *replayBoard) snapshot() engine.BoardSnapshot {
 // the competitive playerID → board index map beside it.
 func newReplayBoards(rec config.ArchiveRecord) ([]*replayBoard, map[string]int) {
 	byPlayer := map[string]int{}
+	// The height the game was PLAYED at, not today's: a game archived before
+	// every board became the same height was played on a taller one, and its
+	// replay must rebuild that board or lose its bottom rows.
+	height := rec.BoardHeight()
 	switch rec.Mode {
 	case config.ModeCooperative:
 		return []*replayBoard{newReplayBoard("", -1,
 			config.SharedBoardWidth(rec.PlayerCount, rec.ExtraColumns),
-			config.HeadroomRows+config.VisibleRows, config.VisibleRowStart)}, byPlayer
+			height, config.VisibleRowStart)}, byPlayer
 	case config.ModeTeams:
 		var boards []*replayBoard
 		for t := 0; t < rec.Teams(); t++ {
 			boards = append(boards, newReplayBoard("Team "+teamName(t), t,
 				config.TeamBoardWidth(rec.TeamSize, rec.ExtraColumns),
-				config.TeamTotalRows(rec.Teams(), rec.TeamSize), config.TeamVisibleRowStart(rec.Teams(), rec.TeamSize)))
+				height, config.VisibleRowStart))
 		}
 		return boards, byPlayer
 	default: // competitive
@@ -93,7 +96,7 @@ func newReplayBoards(rec config.ArchiveRecord) ([]*replayBoard, map[string]int) 
 			byPlayer[id] = i
 			boards = append(boards, newReplayBoard(id, i,
 				config.StandardWidth,
-				config.CompetitiveTotalRows(rec.PlayerCount), config.CompetitiveVisibleRowStart(rec.PlayerCount)))
+				height, config.VisibleRowStart))
 		}
 		return boards, byPlayer
 	}
@@ -203,57 +206,6 @@ func (rv *replayView) advance(now time.Time) {
 func (rv *replayView) cue(head time.Duration, now time.Time) {
 	rv.head = min(max(head, 0), rv.tl.dur)
 	rv.anchor = now
-}
-
-// handleReplayChoice dispatches the confirm dialog's buttons and reports
-// whether the dialog is (still) open.
-func (a *App) handleReplayChoice(gtx C) bool {
-	if a.replayChoice == nil {
-		return false
-	}
-	rec := *a.replayChoice
-	switch {
-	case a.replayWatchBtn.Clicked(gtx):
-		a.replayChoice = nil
-		a.startReplay(rec)
-	case a.replayCancelBtn.Clicked(gtx):
-		a.replayChoice = nil
-	default:
-		return true
-	}
-	return false
-}
-
-// replayChoiceOverlay is the modal that opens a recorded game.
-func (a *App) replayChoiceOverlay(gtx C, rec config.ArchiveRecord) D {
-	return layout.Center.Layout(gtx, func(gtx C) D {
-		gtx.Constraints.Max.X = modalW(gtx, 430)
-		return hardShadow(gtx, func(gtx C) D {
-			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
-				return background(gtx, colBg, func(gtx C) D {
-					return layout.UniformInset(unit.Dp(22)).Layout(gtx, func(gtx C) D {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(a.pixel(unit.Sp(13), "REPLAY GAME", colAccent).Layout),
-							layout.Rigid(spacer(12)),
-							layout.Rigid(a.body(archiveLine(rec), colFg)),
-							layout.Rigid(spacer(6)),
-							layout.Rigid(a.body("The whole game was recorded. It loads from the replay stream in one go, and then it is yours to drive: play and pause, scrub to any moment, skip, and watch it at half speed or eight times over.", colMuted)),
-							layout.Rigid(spacer(16)),
-							layout.Rigid(func(gtx C) D {
-								gtx.Constraints.Min.X = gtx.Constraints.Max.X
-								return a.primaryButton(gtx, &a.replayWatchBtn, "Watch the replay")
-							}),
-							layout.Rigid(spacer(10)),
-							layout.Rigid(func(gtx C) D {
-								gtx.Constraints.Min.X = gtx.Constraints.Max.X
-								return a.secondaryButton(gtx, &a.replayCancelBtn, "Cancel")
-							}),
-						)
-					})
-				})
-			})
-		})
-	})
 }
 
 // startReplay opens the replay screen and starts the load. The game's rank —

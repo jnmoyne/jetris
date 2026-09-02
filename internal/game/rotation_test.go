@@ -60,21 +60,22 @@ func TestSRSKickTables(t *testing.T) {
 func TestTSpinTripleKick(t *testing.T) {
 	pf := NewPlayfield(config.StandardWidth)
 	lock := func(r, c int) { pf.Rows[r].Cells[c] = Cell{Occupied: true, PieceType: PieceL} }
-	lock(20, 3) // the overhang, above the T's left cell
-	for r := 22; r <= 24; r++ {
+	slotTop := pf.Height - 6 // the three-deep slot, clear of the floor
+	lock(slotTop-2, 3)       // the overhang, above the T's left cell
+	for r := slotTop; r <= slotTop+2; r++ {
 		for c := 0; c < pf.Width; c++ {
-			if c == 3 || (r == 23 && c == 4) {
-				continue // the slot (col 3, rows 22-24) and the notch its nub fills
+			if c == 3 || (r == slotTop+1 && c == 4) {
+				continue // the slot (col 3) and the notch its nub fills
 			}
 			lock(r, c)
 		}
 	}
-	p := Piece{Type: PieceT, Orientation: 0, Row: 20, Col: 3}
+	p := Piece{Type: PieceT, Orientation: 0, Row: slotTop - 2, Col: 3}
 	if !CanPlace(p, pf) {
 		t.Fatal("setup: the T must fit above the slot")
 	}
 	got, ok := Rotate(p, true, pf)
-	want := Piece{Type: PieceT, Orientation: 1, Row: 22, Col: 2}
+	want := Piece{Type: PieceT, Orientation: 1, Row: slotTop, Col: 2}
 	if !ok || got != want {
 		t.Fatalf("T-spin triple: Rotate = %+v, %v; want %+v, true", got, ok, want)
 	}

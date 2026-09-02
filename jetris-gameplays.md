@@ -144,9 +144,9 @@ and no difficulty setting or flag of the agent's can raise it, only use less of 
 
 | Property | Value |
 |----------|-------|
-| Total rows | 28 |
+| Total rows | 24 |
 | Headroom rows | 4 (rows 0-3, not rendered) |
-| Visible rows | 24 (rows 4-27) in cooperative mode; for competitive and teams this number depends on the number of players in the game |
+| Visible rows | 20 (rows 4-23), in every mode — the height never depends on the mode or the number of players |
 | Standard width | 10 columns in competitive mode. A SHARED board — cooperative, or one team's — is `10 + (seats − 1) × extraColumns` wide, where `seats` is `playerCount` (cooperative) or `teamSize` (teams) and `extraColumns` is the game's `meta.extra_columns` (4–10, the create wizard's board-width slider, default 4). A meta without the field — every game created before the slider — reads as 10, the historical `seats × 10` board |
 
 **Cell states:**
@@ -342,7 +342,7 @@ Competitive mode supports 2 or more players. Each player has their own independe
 
 ### Playfield
 
-Each player has their own 10-column playfield. The playfield height scales with the number of players: the standard 24 visible rows plus one additional row per player. For 2 players: 26 visible rows (30 total with headroom). For 3 players: 27 visible rows (31 total). Playfields are rendered separately (own board + opponents in sidebar).
+Each player has their own 10-column playfield, 20 visible rows tall (24 with the headroom) however many players are in the game — the same board every other mode is played on. Playfields are rendered separately (own board + opponents in sidebar).
 
 ### Piece Spawning
 
@@ -396,7 +396,7 @@ Two or more teams of equal size ("A" = team 0, "B" = team 1, "C" = team 2, …).
 
 ### Playfield
 
-One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 — 14 columns for a team of 2 at the default setting of 4), visible rows `24 + (teamCount − 1) × teamSize` (plus 4 headroom rows). Like competitive, the extra rows leave room for garbage; the producers here are the piece-locking players on every OTHER team, so a duel gets `24 + teamSize` exactly as before and a three-way twice that allowance. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
+One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 — 14 columns for a team of 2 at the default setting of 4), 20 visible rows (plus 4 headroom rows) like every other board — however many teams are playing and however hard they attack, the height is the same. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
 
 ### Piece Spawning
 

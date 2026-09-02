@@ -146,6 +146,11 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 	return a.boardsStrip(gtx, &a.archiveBoardsList, entries)
 }
 
+// boardStripLabelDp is the height boardsStrip keeps over every board for its
+// label (a Body2 line) and the spacer under it, so the fitted cell leaves the
+// labels their room instead of pushing the boards past the bottom.
+const boardStripLabelDp = unit.Dp(26)
+
 // labeledBoard pairs a renderable board snapshot with its strip label (player
 // ID, team name, or "" for a single shared board) and coloring index. The
 // optional decoration is the replay ending's: a label color override and
@@ -162,15 +167,34 @@ type labeledBoard struct {
 }
 
 // boardsStrip lays labeled boards side by side — the shared body of the
-// archive viewer's final playfield and the replay screen. One wide board gets
-// a larger cell; several narrow boards get a smaller one so they fit across,
-// falling back to horizontal scrolling (scrollableBoards) when they don't.
+// archive viewer's final playfield and the replay screen. The cell is fitted
+// to the boards in hand (fitCellPx): one wide board gets a larger cell,
+// several narrow ones a smaller one so they fit across, and a board TALLER
+// than today's — a game archived before every board became config.VisibleRows
+// tall replays at the height it was played on — shrinks its cell to stand
+// whole in the room the screen gives it, rather than running off the bottom
+// at a fixed size. Boards too wide even so fall back to horizontal scrolling
+// (scrollableBoards).
 func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
-	cellDp := 16
+	maxDp := unit.Dp(16)
 	if len(boards) == 1 {
-		cellDp = 22
+		maxDp = 22
 	}
-	cell := gtx.Dp(unit.Dp(float32(cellDp)))
+	// The widest and the tallest of them: the strip gives every board the one
+	// cell, so it has to be the cell they all fit at.
+	cols, rows, labeled := 0, 0, false
+	for _, b := range boards {
+		cols = max(cols, b.snap.Width)
+		rows = max(rows, b.snap.Height-b.snap.VisibleStart)
+		labeled = labeled || b.label != ""
+	}
+	// Reserved: each board's right inset, and over it the label line with the
+	// spacer under it (boardStripLabelDp) when the boards carry labels.
+	reservedY := 0
+	if labeled {
+		reservedY = gtx.Dp(boardStripLabelDp)
+	}
+	cell := fitCellPx(gtx, cols, rows, len(boards), len(boards)*gtx.Dp(16), reservedY, 6, maxDp)
 
 	var items []layout.Widget
 	for _, b := range boards {

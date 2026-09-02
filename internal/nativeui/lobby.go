@@ -68,12 +68,11 @@ func (a *App) layoutLobby(gtx C) D {
 	wizOpen := a.handleCreateWizard(gtx)
 	pickerOpen := a.handleInvitePicker(gtx)
 	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
-	replayOpen := a.handleReplayChoice(gtx)
 	// The bar's switches and the panel's tabs, drained before anything is
 	// laid out so a column shown or hidden this frame is already in the
 	// layout that measures it — and answered only while no modal is up, since
 	// the scrim dims the bar without taking its presses.
-	a.handleLobbyBarClicks(gtx, wizOpen || pickerOpen || inviteOpen || replayOpen)
+	a.handleLobbyBarClicks(gtx, wizOpen || pickerOpen || inviteOpen)
 	// The Create button just opens the wizard; the wizard's last step does
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
@@ -251,7 +250,7 @@ func (a *App) layoutLobby(gtx C) D {
 		}),
 		layout.Flexed(1, body),
 	)
-	if !pickerOpen && !inviteOpen && !wizOpen && !replayOpen {
+	if !pickerOpen && !inviteOpen && !wizOpen {
 		return base
 	}
 	return layout.Stack{}.Layout(gtx,
@@ -268,8 +267,6 @@ func (a *App) layoutLobby(gtx C) D {
 				return a.incomingInviteOverlay(gtx, pendingInvite)
 			case pickerOpen:
 				return a.invitePickerOverlay(gtx)
-			case replayOpen:
-				return a.replayChoiceOverlay(gtx, *a.replayChoice)
 			default:
 				return a.createWizardOverlay(gtx)
 			}
@@ -790,15 +787,14 @@ func (a *App) lobbyHistoryTab(gtx C, archives []config.ArchiveRecord) D {
 						if btn.Clicked(gtx) {
 							a.openArchive(archives[i])
 						}
-						// Games whose stream was archived to a replay stream
-						// grow a Replay button; clicking it opens the
-						// speed-choice dialog.
+						// Games whose stream was archived to a replay
+						// stream grow a Replay button; clicking it opens the
+						// replay itself — there is nothing to ask first.
 						var replayBtn *widget.Clickable
 						if lb != nil && lb.HasReplay(archives[i].GameID) {
 							replayBtn = &a.replayBtns[i]
 							if replayBtn.Clicked(gtx) {
-								rec := archives[i]
-								a.replayChoice = &rec
+								a.startReplay(archives[i])
 							}
 						}
 						// Games in their bucket's all-time top 10 are marked

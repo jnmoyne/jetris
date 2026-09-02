@@ -900,7 +900,7 @@ class Game:
 
     @property
     def height(self):
-        return 28 + self.meta["player_count"]  # 4 headroom + 24 + P visible
+        return 24  # 4 headroom + 20 visible, the same board in every mode
 
     def active_cells(self):
         return piece_cells(*self.piece) if self.piece else []

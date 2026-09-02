@@ -118,9 +118,6 @@ func TestPhoneOverlaysLayout(t *testing.T) {
 		{"incoming-invite", func(a *App) layout.Widget {
 			return func(gtx C) D { return a.incomingInviteOverlay(gtx, &inv) }
 		}},
-		{"replay-choice", func(a *App) layout.Widget {
-			return func(gtx C) D { return a.replayChoiceOverlay(gtx, rec) }
-		}},
 		{"replay-loading", func(a *App) layout.Widget {
 			a.replayView, a.screen = newReplayView(rec), screenReplay
 			a.replayView.loaded, a.replayView.total = 900, 4000

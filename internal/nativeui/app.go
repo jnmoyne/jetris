@@ -191,9 +191,9 @@ type App struct {
 	// game render snapshot (written by pumpEngine)
 	score        int
 	level        int
-	teamScores   []int // teams: live per-team scores, one entry per team in index order
-	teamLevels   []int // teams: live per-team levels, one entry per team in index order
-	rtt          time.Duration         // latest publish→echo round trip from the engine
+	teamScores   []int         // teams: live per-team scores, one entry per team in index order
+	teamLevels   []int         // teams: live per-team levels, one entry per team in index order
+	rtt          time.Duration // latest publish→echo round trip from the engine
 	gameStatus   string
 	countdown    int       // -1 none, 0 GO!, >0 seconds remaining
 	countdownAt  time.Time // when the current countdown number arrived (for the pop animation)
@@ -566,26 +566,22 @@ type App struct {
 	// side (layoutArchive).
 	archiveColLst widget.List // the record's preserved chat history
 
-	// game replay: the history rows' Replay buttons, the confirm dialog
-	// (replayChoice non-nil while it is open; UI goroutine only, like
-	// confirmDeleteID), and the replay session shown on screenReplay
+	// game replay: the history rows' Replay buttons — a click opens the
+	// replay straight away — and the replay session shown on screenReplay
 	// (replayView's load fields are written by the loader goroutine — guarded
 	// by mu). The transport is a tape deck: five keys, a speed selector, and
 	// the scrub drag, all of which do nothing but move replayView.head.
-	replayBtns      []widget.Clickable    // one per history row (indexed by list position)
-	replayChoice    *config.ArchiveRecord // game awaiting the confirm (nil = dialog closed)
-	replayWatchBtn  widget.Clickable      // dialog: open the replay
-	replayCancelBtn widget.Clickable      // dialog: close without replaying
-	replayBackBtn   widget.Clickable      // "Back to Lobby" from the replay screen
-	replayPlayBtn   widget.Clickable      // transport: play / pause
-	replayStartBtn  widget.Clickable      // transport: back to the start
-	replayRewBtn    widget.Clickable      // transport: back ten recorded seconds
-	replayFwdBtn    widget.Clickable      // transport: on ten recorded seconds
-	replayEndBtn    widget.Clickable      // transport: jump to the end (the ending reveal)
-	replaySpeedBtns [5]widget.Clickable   // transport: one per replaySpeeds entry
-	replayScrub     gesture.Drag          // transport: the scrub slider's drag
-	replayTag       int                   // address used as the replay screen's key-input focus tag
-	replayView      *replayView           // the active replay session (nil = none)
+	replayBtns      []widget.Clickable  // one per history row (indexed by list position)
+	replayBackBtn   widget.Clickable    // "Back to Lobby" from the replay screen
+	replayPlayBtn   widget.Clickable    // transport: play / pause
+	replayStartBtn  widget.Clickable    // transport: back to the start
+	replayRewBtn    widget.Clickable    // transport: back ten recorded seconds
+	replayFwdBtn    widget.Clickable    // transport: on ten recorded seconds
+	replayEndBtn    widget.Clickable    // transport: jump to the end (the ending reveal)
+	replaySpeedBtns [5]widget.Clickable // transport: one per replaySpeeds entry
+	replayScrub     gesture.Drag        // transport: the scrub slider's drag
+	replayTag       int                 // address used as the replay screen's key-input focus tag
+	replayView      *replayView         // the active replay session (nil = none)
 
 	// Horizontal board strips that scroll when the boards together exceed the
 	// window width (spectator multi-board views, the archive final playfield,
@@ -796,7 +792,7 @@ func newUITheme() *material.Theme {
 // wide enough for the HUD column (≥200 dp) plus the move-buffer strip under
 // the board (~400 dp) — or the control pad flanking a minimum-cell playfield,
 // scaled down to its floor — and the window insets; tall enough for a
-// minimum-cell playfield (24 visible rows at the 14 dp fitCellPx floor) plus
+// minimum-cell playfield (20 visible rows at the 14 dp fitCellPx floor) plus
 // the move-buffer strip and the chat panel (fitBoardAndPad moves the pad
 // beside the board before it would cost the board its rows). Below this the
 // playfield and controls could no longer be displayed whole.

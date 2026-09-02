@@ -142,7 +142,7 @@ func TestCompetitiveRaiseLedgerFlow(t *testing.T) {
 	gameID := "garbage-ledger-flow"
 	js, engines := setupCompetitiveGame(t, gameID, 2)
 	a, b := engines[0], engines[1]
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 
 	prefillBottomForI(t, js, gameID, "p1", bottom)
 	waitUntil(t, 3*time.Second, func() bool {
@@ -188,7 +188,7 @@ func TestMultiLineClearSendsAllGarbage(t *testing.T) {
 	gameID := "garbage-multiline"
 	js, engines := setupCompetitiveGame(t, gameID, 2)
 	a, b := engines[0], engines[1]
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 
 	// Fill the bottom TWO rows except column 5 — the column the seed-5 I
 	// occupies after one clockwise rotation (spawn col 3 + vertical offset 2).
@@ -258,7 +258,7 @@ func TestCompetitiveSimultaneousAttacksSum(t *testing.T) {
 	gameID := "garbage-simultaneous"
 	js, engines := setupCompetitiveGame(t, gameID, 3)
 	a, b, c := engines[0], engines[1], engines[2]
-	bottom := config.CompetitiveTotalRows(3) - 1
+	bottom := config.TotalRows - 1
 
 	prefillBottomForI(t, js, gameID, "p1", bottom)
 	prefillBottomForI(t, js, gameID, "p2", bottom)
@@ -304,7 +304,7 @@ func TestShrinkCascadeTopsOutSqueezedPlayer(t *testing.T) {
 	gameID := "garbage-topout"
 	js, engines := setupCompetitiveGame(t, gameID, 2)
 	victim := engines[1]
-	height := config.CompetitiveTotalRows(2)
+	height := config.TotalRows
 
 	// Fill victim rows 4..bottom except column 0 (never completable, and the
 	// I at cols 3-6 can never rest anywhere inside it).
@@ -419,7 +419,7 @@ func TestSpectatorNeverAppliesGarbage(t *testing.T) {
 	// Nothing may have been written to the spectator's phantom board.
 	subjects := []string{
 		config.CompetitiveTxnSubject(gameID, "watcher"),
-		config.CompetitiveCellSubject(gameID, "watcher", config.CompetitiveTotalRows(2)-1, 0),
+		config.CompetitiveCellSubject(gameID, "watcher", config.TotalRows-1, 0),
 	}
 	msgs, err := natspkg.FetchPlayfieldState(context.Background(), js, gameID, subjects)
 	if err != nil {
@@ -451,7 +451,7 @@ func TestGarbageHolesClearLikeAnyLine(t *testing.T) {
 			}
 		})
 	attacker, victim := engines[0], engines[1]
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 	if attacker.GarbageHoles() != 4 || victim.GarbageHoles() != 4 || victim.RandomGarbageHoles() {
 		t.Fatalf("engines read garbage holes %d/%d random %v from the meta, want 4/4 false", attacker.GarbageHoles(), victim.GarbageHoles(), victim.RandomGarbageHoles())
 	}
@@ -522,7 +522,7 @@ func TestGuidelineGarbageSingleSendsNothing(t *testing.T) {
 	js, engines := setupCompetitiveGameWith(t, gameID, 2,
 		func(m *config.GameMeta) { m.GuidelineGarbage = true }, nil)
 	a, b := engines[0], engines[1]
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 	if !a.GuidelineGarbage() || !b.GuidelineGarbage() {
 		t.Fatal("engines should read guideline garbage from the meta")
 	}
@@ -553,7 +553,7 @@ func TestGuidelineGarbageDoubleSendsOne(t *testing.T) {
 	js, engines := setupCompetitiveGameWith(t, gameID, 2,
 		func(m *config.GameMeta) { m.GuidelineGarbage = true }, nil)
 	a, b := engines[0], engines[1]
-	bottom := config.CompetitiveTotalRows(2) - 1
+	bottom := config.TotalRows - 1
 
 	// Bottom two rows full except column 5 — the seed-5 I's column once
 	// rotated vertical (as in TestMultiLineClearSendsAllGarbage).

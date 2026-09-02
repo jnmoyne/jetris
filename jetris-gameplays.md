@@ -24,7 +24,7 @@ Seven standard tetrominoes, each with 4 orientations (0-3):
 
 **Rotation:** Super Rotation System (SRS) with standard wall kick tables. Up to 5 kick offsets are tried per rotation attempt. The I-piece has its own kick table; the O-piece does not rotate.
 
-**Piece sequence:** 7-bag randomizer — within each group of 7 pieces, all 7 types appear exactly once in a random order. The bag is shuffled using a seedable PCG RNG so the sequence is deterministic and seekable.
+**Piece sequence:** 7-bag randomizer — within each group of 7 pieces, all 7 types appear exactly once in a random order. The bag is shuffled using a seedable PCG RNG so the sequence is deterministic and seekable. (One exception, by choice: a teams game created with **split pieces** deals the seven types out between the teammates and gives each seat a bag of its own ration — §5.)
 
 Each player has a color associated with it: used for the outline color of the piece in spectator mode, and also for the outline color of the piece when it's dropped.
 
@@ -398,6 +398,16 @@ One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 �
 
 Coop rules per team: player at team slot N spawns centered in their section at column `N×extraColumns + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so both teams see the identical, fair piece sequence.
 
+#### Split pieces (`split_pieces`)
+
+A teams game can be created with the pieces **dealt out between the teammates** instead of every seat running the same full bag: `split_pieces` (`GameMeta.SplitPieces`, the create wizard's step-1 checkbox "Split the pieces between teammates", off by default, mirrored on the lobby row as a `split pieces` tag). Each seat is dealt a **ration** of one or more piece types and its sequence is a bag of that ration alone — three types means those three, shuffled, forever; one type means that one piece, forever. The deal's rules:
+
+- **Every one of the seven types goes to somebody, and nobody is left empty-handed.** The team between them still has the whole bag; it just has to co-operate to use it, because the teammate holding the I is the only one who can hand the board an I. With two seats one holds four types and the other three, with seven they hold one each, and past seven the types start doubling up (`rng.PieceSets`).
+- **The deal follows `meta.Seed`, so it is the same on every peer that computes it** — both teams' boards, a spectator's engine, an agent's own port of the function. In particular **team A's slot N holds exactly what team B's slot N holds**, which is what keeps the match fair, exactly as both teams have always seen one identical piece sequence.
+- **The ration also seeds the sequence** (`rng.NewSet`: the game's seed mixed with the ration's piece mask), so seats holding different rations draw independently while the same ration draws the same order wherever it is held. A game without the setting is bit-for-bit the sequence it always was.
+- The setting **needs teammates to split between**: it is recorded only for a teams game of two or more per team (`GameMeta.SplitsPieces`). A team of one, or any other mode, ignores it — the wizard does not even offer the box there.
+- Everything else is unchanged: the preview (§1b) shows the seat's OWN next pieces, so it only ever reveals types that seat holds; the hold queue holds what the seat was dealt; and agents read `split_pieces` and play their own ration like any other peer.
+
 ### Movement, Gravity, Hard Drop, Lock-In
 
 Identical to cooperative mode, scoped to the team board: teammates' active pieces are obstacles, a piece blocked downward only by a teammate's active piece waits instead of locking, and all engine-driven shared-cell writes use CAS merge-retry.
@@ -426,7 +436,7 @@ A team **loses when ALL its members have topped out**. At that point every membe
 
 - HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
 - When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles — and, in a game with the hold rule, the **HOLD box** off the playfield's other side (HOLD left of the playfield, NEXT right of it — and the on-screen pad's D-pad and buttons under them), showing the set-aside piece (dimmed once the hold is spent for the piece in play)
-- Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`
+- Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`. In a `split_pieces` game each name carries the seat's **ration** under it — its piece letters, each in that piece's own color (`I O Z`) — for every seat on both teams, so a player can see at a glance who on their board can supply the shape the stack is waiting for (and which opponent is holding it)
 - The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
 - Spectators see both team boards side by side
 
@@ -489,7 +499,13 @@ columns every seat beyond the first adds to the board's standard 10, 4 to 10,
 default 4, so a co-op pair or a team of two plays 14 columns wide, three 18,
 and the slider's top of 10 restores the historical full 10-column section per
 player. The same step spaces the seats' spawn points (§2, §3, §5).
-Competitive never shows it — every player has a standard board of their own),
+Competitive never shows it — every player has a standard board of their own.
+A **teams** game of two or more per team also gets the **"Split the pieces
+between teammates"** checkbox here — off by default; on, the seven piece types
+are dealt out between the teammates and each seat only ever plays its own
+ration, §5. It sits on this step, not step 2, because it shapes the TEAM the
+way the seat count and the board width do: a Guideline game may split its
+pieces too),
 **2. game rules** (a single radio: the **Guideline** preset — the default,
 listed read-only — or **custom**: the next-piece count, 0-6, default 6, the
 "Show ghost piece" checkbox, on by default, the "Hold piece" checkbox, off by
@@ -1240,6 +1256,8 @@ player:
 
 One-shot game selection remains CLI-driven: `--join <gameID>` for a specific game
 (still subject to that game's agent policy), or `--create --mode
-cooperative|competitive|teams --players N [--max-agents M] [--next K]` to host one
-(`--players` is per team in teams mode, like the GUI's count) — agent-hosted games
+cooperative|competitive|teams --players N [--max-agents M] [--next K]
+[--split-pieces]` to host one
+(`--players` is per team in teams mode, like the GUI's count; `--split-pieces`
+deals the seven types out between the teammates there, §5) — agent-hosted games
 allow agents in all seats by default, since the host itself takes one.

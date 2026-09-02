@@ -34,6 +34,7 @@ func main() {
 	seed := flag.Int64("seed", time.Now().UnixNano(), "RNG seed for the crude move generator")
 	mode := flag.String("mode", "teams", "game to create: teams (2v2, three agent seats) or cooperative (2 seats, one agent)")
 	extraCols := flag.Int("extra-cols", config.DefaultExtraColumns, "shared-board width: columns every seat beyond the first adds to the standard 10")
+	splitPieces := flag.Bool("split-pieces", false, "teams: deal the seven piece types out between the teammates, each seat playing only its own ration")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -79,7 +80,7 @@ func main() {
 	if *mode == "cooperative" {
 		gameMode, playerCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 1
 	}
-	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, *extraCols, maxAgents, config.GameRules{NextCount: config.MaxNextCount, Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamSize, *extraCols, maxAgents, *splitPieces, config.GameRules{NextCount: config.MaxNextCount, Ghost: true}, false)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -326,20 +326,27 @@ type App struct {
 	// slider's position, snapped to the whole-column detents.
 	extraColsFloat widget.Float
 	extraCols      int
-	allowAgentsCb  widget.Bool   // wizard agents step: allow idle agents to take seats
-	maxAgentsEd    widget.Editor // wizard agents step: how many seats agents may take
-	rulesEnum      widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
-	holdCb         widget.Bool   // wizard (custom rules): the Guideline hold queue
-	nextCountEd    widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
-	holesEd        widget.Editor // wizard: holes per garbage row in competitive/teams (0..config.MaxGarbageHoles; 0 = solid, unclearable rows)
-	randomHolesCb  widget.Bool   // wizard: every garbage row draws its own hole columns (off = the rows of one attack share a draw)
-	guidelineCb    widget.Bool   // wizard: attacks follow the Guideline table (1→0, 2→1, 3→2, 4→4 rows) instead of one row per line
-	quitBtn        widget.Clickable
-	chatEd         widget.Editor
-	chatBtn        widget.Clickable
-	playerList     widget.List
-	gameList       widget.List
-	archiveLst     widget.List
+	// splitPiecesCb is wizard step 1's "split the pieces" checkbox, drawn for
+	// a teams game of two or more per team: the seven piece types are dealt
+	// out between the teammates, every seat playing only its own ration
+	// (config.GameMeta.SplitPieces). Structural like the seat count and the
+	// board width, not one of step 2's play rules — a Guideline game may
+	// split its pieces too.
+	splitPiecesCb widget.Bool
+	allowAgentsCb widget.Bool   // wizard agents step: allow idle agents to take seats
+	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take
+	rulesEnum     widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
+	holdCb        widget.Bool   // wizard (custom rules): the Guideline hold queue
+	nextCountEd   widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
+	holesEd       widget.Editor // wizard: holes per garbage row in competitive/teams (0..config.MaxGarbageHoles; 0 = solid, unclearable rows)
+	randomHolesCb widget.Bool   // wizard: every garbage row draws its own hole columns (off = the rows of one attack share a draw)
+	guidelineCb   widget.Bool   // wizard: attacks follow the Guideline table (1→0, 2→1, 3→2, 4→4 rows) instead of one row per line
+	quitBtn       widget.Clickable
+	chatEd        widget.Editor
+	chatBtn       widget.Clickable
+	playerList    widget.List
+	gameList      widget.List
+	archiveLst    widget.List
 	// Game-history controls: sort selector ("score"/"date") and the
 	// show-games-with-agents filter (checked = shown).
 	histSortEnum     widget.Enum

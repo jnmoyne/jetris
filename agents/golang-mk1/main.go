@@ -48,6 +48,7 @@ func main() {
 	randomHoles := flag.Bool("random-holes", false, "every garbage row draws its own hole columns when creating a game (default: the rows of one attack share a draw)")
 	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (default: one row per line)")
 	hold := flag.Bool("hold", false, "the Guideline hold queue when creating a game (the agent itself never holds; the humans in the game may)")
+	splitPieces := flag.Bool("split-pieces", false, "when creating a TEAMS game of two or more per team: deal the seven piece types out between the teammates, each seat playing only its own ration")
 	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 6, hold, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage and --hold")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
@@ -88,7 +89,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mode %q (want cooperative, competitive or teams)\n", *modeStr)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold}
+		host = &hosting{mode: mode, players: *players, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
 			host.next, host.holes, host.random, host.guideline, host.hold = maxNextCount, 1, false, true, true
@@ -131,6 +132,44 @@ func runSelftest() {
 		for i, want := range seq {
 			if got := pieceAt(seed, i); got != want {
 				log.Fatalf("RNG mismatch seed %d index %d: %d != %d", seed, i, got, want)
+			}
+		}
+	}
+	// The teams-mode piece split (meta split_pieces): the same fixtures the
+	// repo's internal/rng produces, plus the rule the deal must always keep —
+	// all seven types dealt out, nobody empty-handed.
+	splitFixtures := map[uint64]map[int][][]int{
+		42:    {2: {{0, 1, 4}, {2, 3, 5, 6}}, 3: {{0, 4, 5}, {2, 3}, {1, 6}}},
+		12345: {2: {{0, 1, 2, 5}, {3, 4, 6}}, 3: {{1, 2}, {0, 5, 6}, {3, 4}}},
+	}
+	for seed, bySeats := range splitFixtures {
+		for seats, want := range bySeats {
+			got := pieceSets(seed, seats)
+			for slot := range want {
+				if len(got[slot]) != len(want[slot]) {
+					log.Fatalf("split mismatch seed %d seats %d slot %d: %v != %v", seed, seats, slot, got[slot], want[slot])
+				}
+				for i := range want[slot] {
+					if got[slot][i] != want[slot][i] {
+						log.Fatalf("split mismatch seed %d seats %d slot %d: %v != %v", seed, seats, slot, got[slot], want[slot])
+					}
+				}
+			}
+		}
+	}
+	for seats := 1; seats <= 9; seats++ {
+		var seen [7]bool
+		for slot, set := range pieceSets(12345, seats) {
+			if len(set) == 0 {
+				log.Fatalf("split deal of %d seats leaves slot %d empty-handed", seats, slot)
+			}
+			for _, pt := range set {
+				seen[pt] = true
+			}
+		}
+		for pt, ok := range seen {
+			if !ok {
+				log.Fatalf("split deal of %d seats leaves piece %d undealt", seats, pt)
 			}
 		}
 	}

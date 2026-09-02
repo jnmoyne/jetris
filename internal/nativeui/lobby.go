@@ -1607,6 +1607,11 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	if g.Mode != config.ModeCompetitive {
 		extra += fmt.Sprintf(" · board %d wide", g.BoardWidth())
 	}
+	// The teams-mode piece split: the seven types dealt out between the
+	// teammates, one ration each (config.GameMeta.SplitPieces).
+	if g.SplitsPieces() {
+		extra += " · split pieces"
+	}
 	if g.InviteOnly {
 		extra += " · invite only"
 	}

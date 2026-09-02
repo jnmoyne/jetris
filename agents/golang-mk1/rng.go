@@ -60,3 +60,124 @@ func pieceAt(seed uint64, index int) int {
 	}
 	return b[pos]
 }
+
+// ---- the teams-mode piece split (meta split_pieces, gameplays §5) ---------
+//
+// A teams game may deal the seven piece types out between the teammates
+// instead of giving every seat the same full bag: each seat holds a RATION of
+// one or more types and its sequence is a bag of that ration alone, so the
+// whole bag exists only across the team. The deal is the seed's, so every
+// peer computes the same one — and both teams' slot N hold the same ration,
+// which is what keeps the match fair.
+
+// dealStream is the PCG stream the deal is drawn from: bag streams count
+// upwards from 0, so the deal takes the number no bag ever reaches.
+const dealStream = ^uint64(0)
+
+// pieceSets deals the seven types among `seats` seats: every type goes to
+// somebody, every seat gets at least one, and past seven seats the types
+// start doubling up. Returns one ascending set per seat.
+func pieceSets(seed uint64, seats int) [][]int {
+	if seats <= 0 {
+		return nil
+	}
+	if seats == 1 {
+		return [][]int{{0, 1, 2, 3, 4, 5, 6}}
+	}
+	p := &pcg{hi: seed, lo: dealStream}
+	shuffle := func(n int, swap func(i, j int)) { // rand/v2's Rand.Shuffle
+		for i := n - 1; i > 0; i-- {
+			swap(i, int(p.uint64n(uint64(i+1))))
+		}
+	}
+	order := make([]int, seats)
+	for i := range order {
+		order[i] = i
+	}
+	shuffle(seats, func(i, j int) { order[i], order[j] = order[j], order[i] })
+
+	sets := make([][]int, seats)
+	deck := [7]int{}
+	deals := seats
+	if deals < 7 {
+		deals = 7
+	}
+	for i := 0; i < deals; i++ {
+		if i%7 == 0 {
+			deck = [7]int{0, 1, 2, 3, 4, 5, 6}
+			shuffle(7, func(a, b int) { deck[a], deck[b] = deck[b], deck[a] })
+		}
+		seat, pt := order[i%seats], deck[i%7]
+		if !contains(sets[seat], pt) {
+			sets[seat] = append(sets[seat], pt)
+		}
+	}
+	for i := range sets {
+		sortInts(sets[i])
+	}
+	return sets
+}
+
+// pieceSetFor returns the ration held by seat `slot` of a `seats`-seat team.
+// A slot outside the deal holds the whole bag.
+func pieceSetFor(seed uint64, seats, slot int) []int {
+	sets := pieceSets(seed, seats)
+	if slot < 0 || slot >= len(sets) {
+		return []int{0, 1, 2, 3, 4, 5, 6}
+	}
+	return sets[slot]
+}
+
+// rationSeed is the stream a ration draws its bags from: the game's seed
+// mixed (splitmix64) with the ration's 7-bit mask, so different rations
+// shuffle independently and one ration draws the same order wherever it is
+// held. The full bag keeps the raw seed (pieceAt).
+func rationSeed(seed uint64, set []int) uint64 {
+	var mask uint64
+	for _, pt := range set {
+		mask |= 1 << uint(pt)
+	}
+	x := seed + 0x9E3779B97F4A7C15*(mask+1)
+	x ^= x >> 30
+	x *= 0xBF58476D1CE4E5B9
+	x ^= x >> 27
+	x *= 0x94D049BB133111EB
+	x ^= x >> 31
+	return x
+}
+
+// pieceAtIn is pieceAt over a ration: the index's position within a shuffle of
+// that ration (a bag of |set| pieces, not seven). An empty ration is the full
+// bag.
+func pieceAtIn(seed uint64, set []int, index int) int {
+	n := len(set)
+	if n == 0 {
+		return pieceAt(seed, index)
+	}
+	bag, pos := index/n, index%n
+	p := &pcg{hi: rationSeed(seed, set), lo: uint64(bag)}
+	b := append([]int(nil), set...)
+	for i := n - 1; i > 0; i-- {
+		j := p.uint64n(uint64(i + 1))
+		b[i], b[j] = b[j], b[i]
+	}
+	return b[pos]
+}
+
+func contains(s []int, v int) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// sortInts is an insertion sort: the sets it orders are at most seven long.
+func sortInts(s []int) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}

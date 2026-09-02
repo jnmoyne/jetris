@@ -185,6 +185,26 @@ func GhostStyle(pt game.PieceType) CellAppearance {
 // PlayerColorRGBA returns the player outline color as an NRGBA (cycled).
 func PlayerColorRGBA(idx int) color.NRGBA { return nrgbaFromHex(PlayerColorHex(idx)) }
 
+// PieceLetterRGBA returns a piece type's color as TEXT on the dark UI: its
+// board color, lifted toward white until the letter carries enough luminance
+// to read. A filled cell can wear the pure color — the J's near-black blue
+// included — because it is a block with an outline; the same blue set as a
+// letter on the dark panel is barely there. The HUD writes a split-pieces
+// ration in these, so a teammate's I still reads as the cyan piece.
+func PieceLetterRGBA(pt game.PieceType) color.NRGBA {
+	c := nrgbaFromHex(pieceColorHex(pt))
+	// Perceived luminance (Rec. 601), and the floor a letter needs on this
+	// background; below it, blend toward white by exactly what it takes.
+	const minLum = 110.0
+	lum := 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
+	if lum >= minLum {
+		return c
+	}
+	t := (minLum - lum) / (255 - lum)
+	lift := func(v uint8) uint8 { return uint8(float64(v) + t*(255-float64(v)) + 0.5) }
+	return color.NRGBA{R: lift(c.R), G: lift(c.G), B: lift(c.B), A: c.A}
+}
+
 func nrgbaFromHex(h string) color.NRGBA {
 	r, g, b := hexToRGB(h)
 	return color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 0xff}

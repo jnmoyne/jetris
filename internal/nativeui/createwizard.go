@@ -109,6 +109,7 @@ func (a *App) finishCreateWizard() {
 	if mode != config.ModeCompetitive {
 		extraCols = a.extraCols
 	}
+	splitPieces := a.wizardSplit(mode, count)
 	// The play rules: the Guideline preset as chosen on step 2, or the
 	// custom editors' read-out; either way clamped for the mode (a
 	// cooperative game records no garbage rules — no misleading tag).
@@ -119,7 +120,7 @@ func (a *App) finishCreateWizard() {
 	rules = rules.Normalized(mode)
 	a.createWizStep = 0
 	if a.createJoinEnum.Value == "invite" {
-		go a.openInvitePicker(mode, count, extraCols, rules)
+		go a.openInvitePicker(mode, count, extraCols, splitPieces, rules)
 		return
 	}
 	// Agent policy: how many seats idle agent players may take.
@@ -137,7 +138,7 @@ func (a *App) finishCreateWizard() {
 		}
 		maxAgents = min(n, total)
 	}
-	go func() { a.createGame(mode, count, extraCols, maxAgents, rules, false) }()
+	go func() { a.createGame(mode, count, extraCols, maxAgents, splitPieces, rules, false) }()
 }
 
 // customRules reads the wizard's custom-rules widgets. The upcoming-piece
@@ -301,6 +302,50 @@ func (a *App) wizardModeStep(gtx C) D {
 			}
 			return a.wizardBoardWidth(gtx, mode)
 		}),
+		layout.Rigid(func(gtx C) D {
+			// Splitting the pieces only means something between teammates, so
+			// the box is only offered to a team that has some.
+			seats := a.wizardCount(mode)
+			if !teams || seats < 2 {
+				return D{}
+			}
+			return a.wizardSplitPieces(gtx, seats)
+		}),
+	)
+}
+
+// wizardSplit reads step 1's piece-split checkbox for a game of mode with
+// count seats (per team): the seven piece types are dealt out between the
+// teammates only in a teams game that HAS teammates — a team of one would be
+// dealt the whole bag anyway, and no other mode has anyone to split with, so
+// the box is neither drawn nor honoured there.
+func (a *App) wizardSplit(mode config.GameMode, count int) bool {
+	return mode == config.ModeTeams && count > 1 && a.splitPiecesCb.Value
+}
+
+// wizardSplitPieces is step 1's piece-split checkbox, drawn for a teams game
+// with teammates to split between: instead of every seat running the same
+// full 7-bag, the seven piece types are dealt out among the seats — every
+// type going to somebody, nobody left empty-handed — and each teammate plays
+// only their own. The team still has the whole bag; it just has to co-operate
+// to use it, since the player holding the I is the only one who can hand the
+// board an I. The deal follows the game's seed, so both teams get the same
+// hands and the match stays fair.
+func (a *App) wizardSplitPieces(gtx C, seats int) D {
+	hint := fmt.Sprintf("The seven piece types are dealt out between the %d teammates — every type to somebody, at least one type each — and each of them only ever plays their own. Both teams are dealt the same hands.", seats)
+	if !a.splitPiecesCb.Value {
+		hint = "Off: every teammate plays the same full 7-bag, as always."
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(spacer(12)),
+		layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.splitPiecesCb, "Split the pieces between teammates")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body(hint, colMuted)),
 	)
 }
 

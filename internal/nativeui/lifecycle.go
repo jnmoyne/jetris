@@ -375,9 +375,11 @@ func (a *App) initLobby(name string) error {
 // may not join). rules are the game's play rules (config.GameRules: the piece
 // preview, ghost, hold and garbage settings — the wizard's Guideline preset
 // or its custom read-out), clamped for the mode by lobby.CreateGame.
+// splitPieces deals the seven piece types out between teammates (teams mode
+// with two or more per team; config.GameMeta.SplitPieces).
 // inviteOnly restricts joining to invited players (the invite flow sets it
 // and then sends the invitations).
-func (a *App) createGame(mode config.GameMode, count, extraCols, maxAgents int, rules config.GameRules, inviteOnly bool) string {
+func (a *App) createGame(mode config.GameMode, count, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) string {
 	lb := a.getLobby()
 	if lb == nil {
 		return ""
@@ -387,7 +389,7 @@ func (a *App) createGame(mode config.GameMode, count, extraCols, maxAgents int, 
 		teamSize = count
 		playerCount = config.TeamCount * count
 	}
-	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, extraCols, maxAgents, rules, inviteOnly)
+	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, extraCols, maxAgents, splitPieces, rules, inviteOnly)
 	a.mu.Lock()
 	if err != nil {
 		a.lobbyErr = "Couldn't create the game: " + err.Error()

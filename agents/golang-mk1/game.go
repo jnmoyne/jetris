@@ -67,9 +67,10 @@ type Game struct {
 	metaSeed    uint64
 	playerCount int
 	nextCount   int
-	holes       int  // holes punched in every garbage row this board raises (meta garbage_holes, 0..maxGarbageHoles; 0 = solid, permanent rows)
-	randomHoles bool // every garbage row draws its own hole columns (meta random_garbage_holes; off = one draw per raise)
-	guideline   bool // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
+	holes       int   // holes punched in every garbage row this board raises (meta garbage_holes, 0..maxGarbageHoles; 0 = solid, permanent rows)
+	randomHoles bool  // every garbage row draws its own hole columns (meta random_garbage_holes; off = one draw per raise)
+	guideline   bool  // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
+	ration      []int // teams with meta split_pieces: the piece types THIS seat draws from, ascending (rng.go pieceSetFor); nil = the full 7-bag every other game runs
 	dead        bool
 
 	// The batch pipeline (pipeline.go, guide §4.3). inflight counts the move
@@ -593,6 +594,29 @@ func (g *Game) activeCells() []cell {
 	return cs[:]
 }
 
+// pieceAt returns the piece type at the given index of THIS seat's sequence:
+// the game's 7-bag, or — when the game deals its pieces out between teammates
+// (meta split_pieces) — a bag of this seat's ration alone.
+func (g *Game) pieceAt(index int) int {
+	if len(g.ration) == 0 {
+		return pieceAt(g.metaSeed, index)
+	}
+	return pieceAtIn(g.metaSeed, g.ration, index)
+}
+
+// rationNames spells a ration out in piece letters, for the log line that
+// tells the operator which hand this agent was dealt.
+func rationNames(set []int) string {
+	out := ""
+	for _, pt := range set {
+		if out != "" {
+			out += " "
+		}
+		out += string("IOTSZJL"[pt])
+	}
+	return out
+}
+
 // spawn publishes a fresh piece. Returns the spawn time, whether the piece is
 // on the board, and whether we topped out. A spawn covered by LOCKED cells is
 // the top-out; covered only by another player's falling piece it is DEFERRED —
@@ -609,7 +633,7 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 		// engine's rule of only spawning on the zero-active-cells edge.
 		return time.Now(), true, false
 	}
-	pt := pieceAt(g.metaSeed, g.pieceIdx)
+	pt := g.pieceAt(g.pieceIdx)
 	n := active{pt, 0, spawnRow, g.spawnC}
 	cs := pieceCells(pt, 0, spawnRow, g.spawnC)
 	if !g.canPlace(cs) {
@@ -1260,8 +1284,17 @@ func (g *Game) run(ctx context.Context) bool {
 				g.team, g.teamSlot = p.Team, p.TeamSlot
 			}
 		}
-		g.w = sharedWidth(g.playerCount/2, extra)
+		teamSize := g.playerCount / 2
+		g.w = sharedWidth(teamSize, extra)
 		g.spawnC = g.teamSlot*extra + spawnCol
+		// The piece split (gameplays §5): the seven types dealt out between
+		// the teammates off the game's seed, this seat playing only its own
+		// ration. A team of one has nobody to split with and is dealt the
+		// whole bag, so the deal is only read past that.
+		if meta.boolv("split_pieces") && teamSize > 1 {
+			g.ration = pieceSetFor(g.metaSeed, teamSize, g.teamSlot)
+			log.Printf("split pieces: slot %d holds %s", g.teamSlot, rationNames(g.ration))
+		}
 	default:
 		g.pieceIdx = meta.int("piece_idx")
 	}
@@ -1381,7 +1414,7 @@ func (g *Game) plan(p active) (placement, bool) {
 	gr := g.toGrid()
 	pieceIdx := g.pieceIdx
 	g.mu.Unlock()
-	upcoming := revealedPieces(g.metaSeed, pieceIdx, g.nextCount, g.a.tn.lookahead)
+	upcoming := revealedPieces(g.metaSeed, g.ration, pieceIdx, g.nextCount, g.a.tn.lookahead)
 	ranked := planPlacements(gr, p.pt, p.row, p.col, g.spawnC, upcoming)
 	return choose(ranked, g.a.tn, g.a.rng)
 }

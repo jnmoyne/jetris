@@ -276,11 +276,18 @@ func choose(ranked []placement, tn tuning, rnd *rand.Rand) (placement, bool) {
 // meta, and nothing on the agent's side (difficulty, flag, default) may reach
 // past it. A game with no preview — next_count 0, or a meta written before the
 // field existed — reveals nothing, so the planner plays one piece at a time
-// like everyone else. The seed is consulted for these indices only.
-func revealedPieces(seed uint64, pieceIdx, nextCount, lookahead int) []int {
+// like everyone else. The seed is consulted for these indices only. `ration`
+// is this seat's piece set in a split-pieces teams game (nil elsewhere): the
+// preview is of the seat's OWN sequence, so it reveals only the types this
+// seat holds.
+func revealedPieces(seed uint64, ration []int, pieceIdx, nextCount, lookahead int) []int {
 	var upcoming []int
 	for i := 1; i <= min(nextCount, lookahead); i++ {
-		upcoming = append(upcoming, pieceAt(seed, pieceIdx+i))
+		if len(ration) == 0 {
+			upcoming = append(upcoming, pieceAt(seed, pieceIdx+i))
+		} else {
+			upcoming = append(upcoming, pieceAtIn(seed, ration, pieceIdx+i))
+		}
 	}
 	return upcoming
 }

@@ -17,7 +17,7 @@ func TestLookaheadNeverExceedsGamePreview(t *testing.T) {
 			t.Errorf("%s asks for a %d-piece lookahead; no game reveals more than %d", d, tn.lookahead, maxNextCount)
 		}
 		for nextCount := 0; nextCount <= maxNextCount; nextCount++ {
-			got := revealedPieces(seed, pieceIdx, nextCount, tn.lookahead)
+			got := revealedPieces(seed, nil, pieceIdx, nextCount, tn.lookahead)
 			if want := min(nextCount, tn.lookahead); len(got) != want {
 				t.Errorf("%s in a next_count %d game plans on %d upcoming pieces, want %d", d, nextCount, len(got), want)
 			}
@@ -31,15 +31,42 @@ func TestLookaheadNeverExceedsGamePreview(t *testing.T) {
 	}
 	// No preview means no lookahead at ANY difficulty — and a meta without the
 	// field unmarshals to 0, never the create wizard's default of 1.
-	if got := revealedPieces(seed, pieceIdx, 0, maxNextCount); len(got) != 0 {
+	if got := revealedPieces(seed, nil, pieceIdx, 0, maxNextCount); len(got) != 0 {
 		t.Errorf("next_count 0 (or absent) with the deepest lookahead: planned on %d upcoming pieces, want none", len(got))
 	}
 	// A foreign host writing nonsense can't open the horizon past what the
 	// difficulty is allowed to use, and a negative count reveals nothing.
-	if got := revealedPieces(seed, pieceIdx, 99, maxNextCount); len(got) != maxNextCount {
+	if got := revealedPieces(seed, nil, pieceIdx, 99, maxNextCount); len(got) != maxNextCount {
 		t.Errorf("next_count 99: planned on %d upcoming pieces, want %d", len(got), maxNextCount)
 	}
-	if got := revealedPieces(seed, pieceIdx, -1, maxNextCount); len(got) != 0 {
+	if got := revealedPieces(seed, nil, pieceIdx, -1, maxNextCount); len(got) != 0 {
 		t.Errorf("next_count -1: planned on %d upcoming pieces, want none", len(got))
+	}
+}
+
+// TestSplitPiecesPreview pins the preview of a seat playing a RATION (the
+// teams-mode split_pieces rule): the pieces it is shown are its own
+// sequence's, so every one of them is a type the seat actually holds — a
+// planner never sees, and so never plans on, a piece only a teammate can
+// play.
+func TestSplitPiecesPreview(t *testing.T) {
+	const seed = uint64(42)
+	sets := pieceSets(seed, 3)
+	for slot, ration := range sets {
+		if len(ration) == 0 {
+			t.Fatalf("slot %d was dealt nothing", slot)
+		}
+		got := revealedPieces(seed, ration, 7, maxNextCount, maxNextCount)
+		if len(got) != maxNextCount {
+			t.Fatalf("slot %d: %d upcoming pieces, want %d", slot, len(got), maxNextCount)
+		}
+		for i, pt := range got {
+			if !contains(ration, pt) {
+				t.Errorf("slot %d: upcoming[%d] = %d, not in its ration %v", slot, i, pt, ration)
+			}
+			if exp := pieceAtIn(seed, ration, 7+1+i); pt != exp {
+				t.Errorf("slot %d: upcoming[%d] = %d, want %d", slot, i, pt, exp)
+			}
+		}
 	}
 }

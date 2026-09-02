@@ -64,6 +64,7 @@ type hosting struct {
 	random    bool // every garbage row draws its own hole columns (off = one draw per raise)
 	guideline bool // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
 	hold      bool // the Guideline hold queue (this agent never holds; humans in the game may)
+	split     bool // teams: deal the seven piece types out between the teammates, each seat playing only its ration (meta split_pieces)
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
@@ -783,6 +784,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.hold {
 		meta.set("hold", true)
 	}
+	if h.split && teamSize > 1 {
+		meta.set("split_pieces", true) // only a team with teammates has pieces to split
+	}
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
 	meta.set("creator_id", a.name)
@@ -818,6 +822,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	}
 	if h.hold {
 		listing.set("hold", true)
+	}
+	if h.split && teamSize > 1 {
+		listing.set("split_pieces", true)
 	}
 	listing.set("creator_id", a.name)
 	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included

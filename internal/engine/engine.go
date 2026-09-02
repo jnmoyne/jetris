@@ -125,6 +125,13 @@ type Engine struct {
 	pieceIdx atomic.Uint64
 	metaSeq  uint64
 
+	// The teams-mode piece split (GameMeta.SplitPieces, read at Start):
+	// pieceSets is the deal — one ration of piece types per team slot, the
+	// same on both teams — and e.seq draws only from this seat's. Nil in
+	// every other game, where every seat runs the full 7-bag. Written once in
+	// Start, read-only after, so the UI may read it unlocked.
+	pieceSets [][]game.PieceType
+
 	score             atomic.Int64
 	totalLines        atomic.Int64
 	level             atomic.Int64
@@ -353,8 +360,18 @@ func (e *Engine) Start() error {
 	case config.ModeTeams:
 		// Teams: shared per-team board, coop-style RNG (every player gets the
 		// full deterministic 7-bag from the shared seed with an independent
-		// pieceIdx, so both teams see the identical, fair piece sequence)
-		e.seq = rng.New(meta.Seed)
+		// pieceIdx, so both teams see the identical, fair piece sequence) —
+		// unless the game splits the pieces, when the seven types are dealt
+		// out between the teammates (rng.PieceSets, off the same seed, so
+		// both teams' slot N hold the same ration) and this seat draws only
+		// from its own. A spectator has no seat of its own; it keeps the deal
+		// for the HUD and reads slot 0's sequence, which it never spawns from.
+		if meta.SplitsPieces() {
+			e.pieceSets = rng.PieceSets(meta.Seed, meta.TeamSize)
+			e.seq = rng.NewSet(meta.Seed, e.PieceSet())
+		} else {
+			e.seq = rng.New(meta.Seed)
+		}
 		e.pieceIdx.Store(0)
 		e.playfield = game.NewPlayfieldWithHeight(
 			config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns),
@@ -1302,6 +1319,25 @@ func (e *Engine) PlayerScores() map[string]int {
 }
 
 func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
+
+// SplitPieces reports whether this game deals its piece types out between
+// teammates (GameMeta.SplitPieces): each seat draws only from its own ration,
+// the seven types between them (rng.PieceSets).
+func (e *Engine) SplitPieces() bool { return e.pieceSets != nil }
+
+// PieceSetForSlot returns the ration the given team slot holds — the piece
+// types that seat's sequence draws from, in piece order. Nil in a game that
+// does not split the pieces (every seat draws the whole bag there), so the
+// HUD can ask for any seat's ration and show what comes back.
+func (e *Engine) PieceSetForSlot(slot int) []game.PieceType {
+	if slot < 0 || slot >= len(e.pieceSets) {
+		return nil
+	}
+	return e.pieceSets[slot]
+}
+
+// PieceSet returns this seat's own ration (PieceSetForSlot at e.teamSlot).
+func (e *Engine) PieceSet() []game.PieceType { return e.PieceSetForSlot(e.teamSlot) }
 
 // NextCount reports how many upcoming pieces this game reveals
 // (GameMeta.NextCount, fixed at game creation; 0 = no preview).

@@ -53,7 +53,9 @@ An agent MAY use:
 - Its own falling piece (type, orientation, position).
 - **The game's piece preview**: the next `GameMeta.NextCount` pieces of its own
   sequence (`seq.Piece(pieceIdx+1 .. +NextCount)`). That is exactly what the UI's
-  NEXT well shows a human, so an agent may plan with it — and no further.
+  NEXT well shows a human, so an agent may plan with it — and no further. In a
+  teams game with `split_pieces` (below) "its own sequence" is the seat's
+  RATION, so the preview reveals only the types that seat holds.
 - Opponents' boards (competitive) and both team boards (teams) — the UI renders
   them live for everyone.
 - The roster, everyone's `agent` flags and structured names, eliminations,
@@ -94,6 +96,28 @@ humans and agents — and an agent MUST respect it:
   sequence, as every peer does, but `seq.Piece(pieceIdx + next_count)` is the
   last index you may evaluate while a piece is in play. Computing further is
   cheating even if you "only use it a little".
+
+### 1.2 Split pieces: your seat's ration (teams)
+
+A teams game whose meta carries `split_pieces: true` (and `team_size` > 1) does
+not give every seat the same 7-bag: the seven types are **dealt out between the
+teammates**, and your seat's sequence is a bag of its own ration alone. You must
+compute the same deal every other peer does, or you will spawn pieces your
+board's other clients will not accept:
+
+1. **Deal** the seven types among `team_size` seats off `seed`, and take the set
+   at YOUR `team_slot` (the roster's `team_slot`, the same number that picks your
+   spawn section). Every type goes to somebody and no seat is left empty-handed;
+   both teams' slot N get the same ration, which is what keeps the match fair.
+2. **Draw** your pieces from that ration: index `i` is position `i % k` of a
+   Fisher-Yates shuffle of the ration (`k` = its size, so bag `i / k`), seeded by
+   PCG(mix(`seed`, ration), bag) — the game's seed mixed with the ration's 7-bit
+   piece mask through splitmix64.
+
+`internal/rng` (`PieceSets`, `NewSet`) is the original; `agents/golang-mk1/rng.go`
+is the bit-exact port, pinned against it by `TestSplitParity` and by
+`--selftest`. A game without the field is the ordinary 7-bag, unchanged. The
+rule is the gameplays doc's §5 "Split pieces".
 
 The reference agent pins this with a test (`agents/golang-mk1/preview_test.go`:
 every difficulty against every preview size, plus the absent-field case). Do the
@@ -190,7 +214,8 @@ cd agents/golang-mk1 && go build .
 ```
 
 Its reading order (see its [README](agents/golang-mk1/README.md)): `pieces.go` →
-`rng.go` (the bit-exact PCG + 7-bag port) → `engine.go` → `planner.go` →
+`rng.go` (the bit-exact PCG + 7-bag port, and the `split_pieces` deal) →
+`engine.go` → `planner.go` →
 `difficulty.go` → `types.go` → `agent.go` (the lobby) → `game.go` (one game).
 
 One behavior of its move pipeline worth copying: moves that lose a CAS race are
@@ -232,7 +257,7 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore; `split_pieces` (bool, absent = false) is the TEAMS-mode piece split — the seven types are dealt out between a team's seats and your seat plays only its own ration, see below |
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
@@ -471,6 +496,7 @@ agree on eliminations and outcomes without a coordinator.
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried (pipelined/async batches allowed — a lost one drains, repairs, and re-plans; barriers settle the pipeline first, §4.3)
 - [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
+- [ ] In a teams game with the meta's `split_pieces`, pieces drawn from YOUR seat's ration — the deal computed off `seed` and `team_size` for your `team_slot` (§1.2)
 - [ ] Garbage rows raised with the meta's `garbage_holes` (one column set per raise, or one per row under `random_garbage_holes`), and a holed garbage row cleared like any line once its holes are filled — a solid garbage row never (§4.2, §4.4)
 - [ ] Attacks delivered by CAS-adding victims' garbage registers (never events), sized one row per line — or by the 0/1/2/4 Guideline table when the meta's `guideline_garbage` is true (§4.4)
 - [ ] Clears and garbage applied as txn-gated batches; deficit reconciled on join

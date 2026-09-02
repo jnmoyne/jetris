@@ -665,7 +665,9 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // modes that share a board (cooperative, teams): the columns every seat
 // beyond the first adds to the standard 10 — see config.SharedBoardWidth;
 // competitive passes 0, and so may any caller that wants the historical
-// full-section-per-player board.
+// full-section-per-player board. splitPieces deals the seven piece types out
+// between teammates (teams mode, two or more per team: config.GameMeta's
+// SplitPieces / SplitsPieces); every other game passes false.
 // CreateGame creates a game and its stream and writes the lobby listing.
 // maxAgents is the creator's agent policy: how many roster seats agent players
 // may take (0 = agents may not join); enforced atomically by JoinGame's CAS
@@ -680,7 +682,7 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // hold — or plain "guideline" when the rules are the Guideline preset). The
 // ghost rule is stored inverted as GameMeta.NoGhost so pre-field metas keep
 // the ghost shown.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, extraCols, maxAgents int, rules config.GameRules, inviteOnly bool) (string, error) {
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	if maxAgents < 0 {
 		maxAgents = 0
@@ -696,6 +698,9 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	} else if extraCols > 0 {
 		extraCols = config.ExtraColumnsPerPlayer(extraCols)
 	}
+	// Only a team with teammates has pieces to split; anywhere else the
+	// setting would deal the whole bag to everybody, so it is not recorded.
+	splitPieces = splitPieces && mode == config.ModeTeams && teamSize > 1
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
@@ -713,6 +718,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		GarbageHoles:       rules.GarbageHoles,
 		RandomGarbageHoles: rules.RandomGarbageHoles,
 		GuidelineGarbage:   rules.GuidelineGarbage,
+		SplitPieces:        splitPieces,
 		Seed:               uint64(time.Now().UnixNano()),
 		Status:             config.GameStatusCreated,
 		CreatorID:          l.playerID,
@@ -741,6 +747,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		GarbageHoles:       rules.GarbageHoles,
 		RandomGarbageHoles: rules.RandomGarbageHoles,
 		GuidelineGarbage:   rules.GuidelineGarbage,
+		SplitPieces:        splitPieces,
 		InviteOnly:         inviteOnly,
 		CreatorID:          l.playerID,
 		Players:            nil,

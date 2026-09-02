@@ -88,7 +88,7 @@ go build -o golang-mk1 .
 ./golang-mk1 --create --mode cooperative --players 2 --once
 ./golang-mk1 --create --mode teams --players 2 --once     # 2v2 (--players is per team)
 
-# offline conformance checks (RNG parity with the game, planner sanity)
+# offline conformance checks (RNG + split-deal parity with the game, planner sanity)
 ./golang-mk1 --selftest
 ```
 
@@ -99,7 +99,10 @@ Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--
 written to the meta as `garbage_holes` — `--random-holes`, each garbage row drawing
 its own columns, `random_garbage_holes` — `--guideline-garbage`, the 0/1/2/4
 Guideline attack table, `guideline_garbage` — `--hold`, the Guideline hold queue,
-`hold`, which the agent itself never uses but the humans in its game may — and
+`hold`, which the agent itself never uses but the humans in its game may —
+`--split-pieces`, the teams-mode piece split, `split_pieces`: the seven types
+dealt out between the teammates, each seat playing only its own ration (a teams
+game of two or more per team; ignored elsewhere) — and
 `--guideline`, the GUI wizard's Guideline preset in one flag: next 6, hold, 1 hole
 per garbage row, the Guideline attack table, overriding the individual rule flags),
 `--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
@@ -116,7 +119,8 @@ GUI and create a game with agents allowed — or let one instance host for anoth
 ## Reading order
 
 - `pieces.go` — tetromino geometry.
-- `rng.go` — the PCG + 7-bag piece RNG (bit-exact with the game).
+- `rng.go` — the PCG + 7-bag piece RNG, and the teams-mode piece split it deals
+  when a game's meta says `split_pieces` (both bit-exact with the game).
 - `engine.go` — the settled-board model (collision, drop, completed rows, collapse).
 - `planner.go` — the Dellacherie evaluator, placement enumeration, lookahead, blunder model.
 - `difficulty.go` — the per-difficulty knobs.

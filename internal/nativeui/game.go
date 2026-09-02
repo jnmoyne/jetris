@@ -767,11 +767,27 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 				name += " (out)"
 				textCol = colMuted
 			}
+			// In a split-pieces game the seat's ration goes under its name:
+			// which of the seven types this player — teammate or opponent —
+			// is the one who can hand their board that shape.
+			ration := eng.PieceSetForSlot(p.TeamSlot)
 			return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return swatch(gtx, render.PlayerColorRGBA(i), 12) }),
-					layout.Rigid(hSpacer(6)),
-					layout.Rigid(a.boardLabel(name, textCol, won)),
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx C) D { return swatch(gtx, render.PlayerColorRGBA(i), 12) }),
+							layout.Rigid(hSpacer(6)),
+							layout.Rigid(a.boardLabel(name, textCol, won)),
+						)
+					}),
+					layout.Rigid(func(gtx C) D {
+						if len(ration) == 0 {
+							return D{}
+						}
+						return layout.Inset{Left: unit.Dp(18), Top: unit.Dp(1)}.Layout(gtx, func(gtx C) D {
+							return a.rationRow(gtx, ration)
+						})
+					}),
 				)
 			})
 		})
@@ -807,6 +823,21 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 		children = append(children, playerRow(i, p))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// rationRow writes one seat's piece ration — the types that seat's sequence
+// draws from when the game splits the pieces between teammates — as its
+// letters, each in the piece's own board color, so the hand reads at a glance
+// (a cyan I, a purple T). Empty in every game that does not split.
+func (a *App) rationRow(gtx C, set []game.PieceType) D {
+	kids := make([]layout.FlexChild, 0, len(set)*2)
+	for i, pt := range set {
+		if i > 0 {
+			kids = append(kids, layout.Rigid(hSpacer(3)))
+		}
+		kids = append(kids, layout.Rigid(a.pixel(unit.Sp(9), pt.String(), render.PieceLetterRGBA(pt)).Layout))
+	}
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 }
 
 func (a *App) readyArea(gtx C, view gameView) D {

@@ -21,6 +21,7 @@ type GameListing struct {
 	GarbageHoles       int               `json:"garbage_holes,omitempty"`        // holes per garbage row (0..config.MaxGarbageHoles); mirrors GameMeta.GarbageHoles for the lobby row's "holes N" tag
 	RandomGarbageHoles bool              `json:"random_garbage_holes,omitempty"` // each garbage row draws its own holes; mirrors GameMeta.RandomGarbageHoles for the lobby row's "random holes N" tag
 	GuidelineGarbage   bool              `json:"guideline_garbage,omitempty"`    // Guideline attack table (0/1/2/4 rows for 1/2/3/4 lines); mirrors GameMeta.GuidelineGarbage for the lobby row's "guideline garbage" tag
+	SplitPieces        bool              `json:"split_pieces,omitempty"`         // teams: the seven piece types are dealt out between teammates; mirrors GameMeta.SplitPieces for the lobby row's "split pieces" tag (see SplitsPieces)
 	InviteOnly         bool              `json:"invite_only,omitempty"`          // players join by invitation only (creator excepted); auto-joining agents skip it
 	CreatorID          string            `json:"creator_id,omitempty"`           // who created (and may always join) the game
 	Players            []PlayerSummary   `json:"players"`
@@ -48,6 +49,13 @@ func (g GameListing) Rules() config.GameRules {
 		RandomGarbageHoles: g.RandomGarbageHoles,
 		GuidelineGarbage:   g.GuidelineGarbage,
 	}
+}
+
+// SplitsPieces reports whether this game deals its piece types out between
+// teammates — the listing's mirror of config.GameMeta.SplitsPieces, and the
+// same rule: teams mode, at least two per team.
+func (g GameListing) SplitsPieces() bool {
+	return g.SplitPieces && g.Mode == config.ModeTeams && g.TeamSize > 1
 }
 
 // BoardWidth returns the width of the board this game plays on: the shared

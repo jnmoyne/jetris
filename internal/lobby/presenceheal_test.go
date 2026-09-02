@@ -51,7 +51,7 @@ func TestPresenceHealsWhenGameDeleted(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestPresenceHealsWhenGameStampedDead(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestPresenceUntouchedWhenOtherGameDies(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	otherID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, false)
+	otherID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, config.GameRules{Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

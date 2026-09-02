@@ -57,3 +57,29 @@ func TestGuidelineSummaryPerMode(t *testing.T) {
 		}
 	}
 }
+
+// TestWizardSplitPieces pins step 1's piece-split box: it is a teams setting
+// with teammates in it. Checked in a 2v2 it splits; the same box checked for
+// a team of one, or for any other game type, is ignored — so no co-op or
+// solo-team game is ever created advertising a split that cannot happen.
+func TestWizardSplitPieces(t *testing.T) {
+	a := newTestApp()
+	if a.wizardSplit(config.ModeTeams, 2) {
+		t.Error("an unchecked box split the pieces")
+	}
+	a.splitPiecesCb.Value = true
+	if !a.wizardSplit(config.ModeTeams, 2) {
+		t.Error("a checked box in a 2v2 did not split the pieces")
+	}
+	if !a.wizardSplit(config.ModeTeams, 4) {
+		t.Error("a checked box in a 4v4 did not split the pieces")
+	}
+	if a.wizardSplit(config.ModeTeams, 1) {
+		t.Error("a team of one split its pieces")
+	}
+	for _, mode := range []config.GameMode{config.ModeCooperative, config.ModeCompetitive} {
+		if a.wizardSplit(mode, 4) {
+			t.Errorf("a %s game split its pieces", mode)
+		}
+	}
+}

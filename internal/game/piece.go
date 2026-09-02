@@ -13,6 +13,16 @@ const (
 	PieceL
 )
 
+// String returns the piece's letter — the name every Tetris player knows it
+// by, and what the HUD shows when a game deals piece types out between
+// teammates (GameMeta.SplitPieces).
+func (p PieceType) String() string {
+	if p < PieceI || p > PieceL {
+		return "?"
+	}
+	return [7]string{"I", "O", "T", "S", "Z", "J", "L"}[p]
+}
+
 // Piece represents a tetromino at a specific position and orientation.
 type Piece struct {
 	Type        PieceType

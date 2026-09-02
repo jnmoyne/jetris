@@ -455,7 +455,7 @@ func TestScreenSnapshots(t *testing.T) {
 			a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Team: 1}, {PlayerID: "bob", Name: "bob", Agent: true}}
 			a.screen = screenGame
 			a.gameOver, a.won, a.score, a.level = true, true, 4200, 4
-			a.teamScores, a.teamLevels = [config.TeamCount]int{3100, 4200}, [config.TeamCount]int{3, 4}
+			a.teamScores, a.teamLevels = []int{3100, 4200}, []int{3, 4}
 			a.fireworks = newFireworksShow(now.Add(-2500 * time.Millisecond))
 			a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = now.Add(-3300*time.Millisecond), tc.rank, tc.of, true
 			snapshotPNG(t, w, dir, "screen_game_won_"+tc.name, func(gtx C) {
@@ -521,7 +521,7 @@ func snapshotSpectateDone(t *testing.T, w *headless.Window, dir string) {
 				{PlayerID: "carol", Name: "carol", Team: 1, Agent: true}, {PlayerID: "dave", Name: "dave", Team: 1}}
 		}
 		a.eng, a.gamePlayers, a.screen = eng, roster, screenGame
-		a.teamScores, a.teamLevels = [config.TeamCount]int{3100, 4200}, [config.TeamCount]int{3, 4}
+		a.teamScores, a.teamLevels = []int{3100, 4200}, []int{3, 4}
 		snapshotPNG(t, w, dir, "screen_spectate_done_"+tc.name, func(gtx C) {
 			gtx.Now = now
 			view := a.snapshotGame(now)

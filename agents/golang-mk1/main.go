@@ -13,6 +13,7 @@
 //	golang-mk1 --join <gameID>                                # join one specific game
 //	golang-mk1 --create --players 2 --once                    # host a game, play it, exit
 //	golang-mk1 --create --mode teams --players 2              # host a 2v2 teams game
+//	golang-mk1 --create --mode teams --teams 3 --players 2    # ...or a three-way, 2 per team
 //	golang-mk1 --difficulty hard --once                       # play a single game, then exit
 //	golang-mk1 --selftest                                     # offline conformance checks
 package main
@@ -41,6 +42,7 @@ func main() {
 	create := flag.Bool("create", false, "create a game and wait for opponents")
 	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	players := flag.Int("players", 2, "player count when creating a game (with --create; teams: players per team)")
+	teams := flag.Int("teams", defaultTeamCount, "teams mode: how many teams play each other when creating a game (2-6; total seats = teams × --players)")
 	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
 	extraCols := flag.Int("extra-cols", minExtraColumns, "shared-board width when creating a cooperative or teams game: columns every seat beyond the first adds to the standard 10 (4-10)")
 	next := flag.Int("next", maxNextCount, "upcoming pieces the game reveals when creating a game (0-6, 0 = none)")
@@ -89,7 +91,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mode %q (want cooperative, competitive or teams)\n", *modeStr)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces}
+		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
 			host.next, host.holes, host.random, host.guideline, host.hold = maxNextCount, 1, false, true, true

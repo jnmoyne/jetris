@@ -28,8 +28,9 @@ import (
 const ledgerBumpMaxAttempts = 20
 
 // bumpVictimLedgers advances the garbage register of every victim board by
-// `lines` rows: competitive — every surviving opponent; teams — the opposing
-// team's board. One goroutine per victim; each runs an independent CAS-add.
+// `lines` rows: competitive — every surviving opponent; teams — ONE opposing
+// team's board, the rotation's next (nextGarbageTarget). One goroutine per
+// victim; each runs an independent CAS-add.
 func (e *Engine) bumpVictimLedgers(ctx context.Context, lines int) {
 	if lines <= 0 {
 		return
@@ -48,9 +49,27 @@ func (e *Engine) bumpVictimLedgers(ctx context.Context, lines int) {
 			go e.bumpLedger(ctx, oppID, config.CompetitiveGarbageSubject(e.gameID, oppID), lines)
 		}
 	case config.ModeTeams:
-		opposing := 1 - e.teamIdx
+		opposing := e.nextGarbageTarget()
 		go e.bumpLedger(ctx, TeamBoardKey(opposing), config.TeamGarbageSubject(e.gameID, opposing), lines)
 	}
+}
+
+// nextGarbageTarget picks the opposing team our next attack lands on. Between
+// two teams there is only ever one answer — the other one — and the rotor
+// never moves off it. Past two, an attack still weighs what it always did:
+// rather than every opponent taking the full raise (which would multiply the
+// garbage in play by the number of teams and end a six-way game in a minute),
+// each raise goes to ONE opponent and consecutive raises rotate through them,
+// so a team both sends and receives what it would in a duel. The rotor is per
+// engine, so a team's several players spread their own attacks independently.
+func (e *Engine) nextGarbageTarget() int {
+	n := e.TeamCount()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Step over our own index: the rotor counts the OTHER n-1 teams.
+	t := (e.teamIdx + 1 + e.attackRotor%max(n-1, 1)) % n
+	e.attackRotor++
+	return t
 }
 
 // bumpLedger CAS-adds `lines` to one victim board's garbage register. The

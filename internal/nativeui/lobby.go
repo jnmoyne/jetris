@@ -110,13 +110,11 @@ func (a *App) layoutLobby(gtx C) D {
 			id := g.GameID
 			go a.joinGame(id, 0)
 		}
-		if btns.joinA.Clicked(gtx) {
-			id := g.GameID
-			go a.joinGame(id, 0)
-		}
-		if btns.joinB.Clicked(gtx) {
-			id := g.GameID
-			go a.joinGame(id, 1)
+		for t := 0; t < g.Teams(); t++ {
+			if btns.joinTeam[t].Clicked(gtx) {
+				id, team := g.GameID, t
+				go a.joinGame(id, team)
+			}
 		}
 		if btns.spectate.Clicked(gtx) {
 			id := g.GameID
@@ -943,43 +941,55 @@ func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRe
 // teamStandings folds the teams-mode games among recs into overall per-team
 // totals: wins (a draw counts for neither side) and points (sum of final team
 // scores). games is how many teams games were counted.
-func teamStandings(recs []config.ArchiveRecord) (wins, points [config.TeamCount]int, games int) {
+func teamStandings(recs []config.ArchiveRecord) (wins, points []int, games int) {
+	// The board is as wide as the widest game in the history: a three-way
+	// game contributes a TEAM C column that two-team games simply never
+	// score in.
+	slots := 0
+	for _, r := range recs {
+		if r.Mode == config.ModeTeams {
+			slots = max(slots, r.Teams())
+		}
+	}
+	wins, points = make([]int, slots), make([]int, slots)
 	for _, r := range recs {
 		if r.Mode != config.ModeTeams {
 			continue
 		}
 		games++
-		if r.WinningTeam >= 0 && r.WinningTeam < config.TeamCount {
+		if r.WinningTeam >= 0 && r.WinningTeam < slots {
 			wins[r.WinningTeam]++
 		}
-		for t := 0; t < config.TeamCount && t < len(r.TeamScores); t++ {
+		for t := 0; t < slots && t < len(r.TeamScores); t++ {
 			points[t] += r.TeamScores[t]
 		}
 	}
 	return wins, points, games
 }
 
-// teamStandingsLine renders the all-time TEAM A vs TEAM B scoreboard over the
-// teams games currently listed in the history (so the agent filter applies):
-// wins and total points per team, the leading team (by wins, points as the
-// tie-break) in gold. Nothing is drawn while no teams game has finished.
+// teamStandingsLine renders the all-time TEAM A vs TEAM B (vs TEAM C…)
+// scoreboard over the teams games currently listed in the history (so the
+// agent filter applies): wins and total points per team, the leading team (by
+// wins, points as the tie-break) in gold, and no highlight at all where the
+// lead is shared. It is as wide as the widest game in the history — a column
+// per team any of them was played between. Nothing is drawn while no teams
+// game has finished.
 func (a *App) teamStandingsLine(gtx C, archives []config.ArchiveRecord) D {
 	wins, points, games := teamStandings(archives)
-	if games == 0 {
+	if games == 0 || len(wins) == 0 {
 		return D{}
 	}
-	lead := -1 // -1: dead even, no highlight
-	switch {
-	case wins[0] != wins[1]:
-		lead = 0
-		if wins[1] > wins[0] {
-			lead = 1
+	lead, tied := 0, false
+	for t := 1; t < len(wins); t++ {
+		switch {
+		case wins[t] > wins[lead] || (wins[t] == wins[lead] && points[t] > points[lead]):
+			lead, tied = t, false
+		case wins[t] == wins[lead] && points[t] == points[lead]:
+			tied = true
 		}
-	case points[0] != points[1]:
-		lead = 0
-		if points[1] > points[0] {
-			lead = 1
-		}
+	}
+	if tied {
+		lead = -1 // dead even at the top, no highlight
 	}
 	seg := func(t int) layout.FlexChild {
 		col := colFg
@@ -994,33 +1004,42 @@ func (a *App) teamStandingsLine(gtx C, archives []config.ArchiveRecord) D {
 		label = "TEAMS OVERALL (1 GAME)"
 	}
 	oneLine := func(gtx C) D {
-		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-			layout.Rigid(a.pixel(unit.Sp(8), label+"   ", colMuted).Layout),
-			seg(0),
-			layout.Rigid(a.pixel(unit.Sp(8), "  —  ", colMuted).Layout),
-			seg(1),
-		)
+		kids := []layout.FlexChild{layout.Rigid(a.pixel(unit.Sp(8), label+"   ", colMuted).Layout)}
+		for t := range wins {
+			if t > 0 {
+				kids = append(kids, layout.Rigid(a.pixel(unit.Sp(8), "  —  ", colMuted).Layout))
+			}
+			kids = append(kids, seg(t))
+		}
+		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx, kids...)
+	}
+	// What the one-line form would measure: the label plus a segment per team
+	// at its widest, separated by the dashes.
+	probe := label + "   "
+	for t := range wins {
+		if t > 0 {
+			probe += "  —  "
+		}
+		probe += " TEAM " + teamName(t) + " 00W · 000000 PTS"
 	}
 	return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-		// One line where it fits, three where it does not. A Flex hands a
-		// rigid child whatever is left and lets it be one glyph wide, which
-		// on a phone printed TEAM B's totals vertically down the edge of the
-		// table; measured, the line stacks instead.
-		if a.pixelWidth(gtx, unit.Sp(8), label+"    TEAM A 00W · 000000 PTS  —  TEAM B 00W · 000000 PTS") <= gtx.Constraints.Max.X {
+		// One line where it fits, a line per team where it does not. A Flex
+		// hands a rigid child whatever is left and lets it be one glyph wide,
+		// which on a phone printed TEAM B's totals vertically down the edge
+		// of the table; measured, the line stacks instead.
+		if a.pixelWidth(gtx, unit.Sp(8), probe) <= gtx.Constraints.Max.X {
 			return oneLine(gtx)
 		}
-		line := func(t int) layout.FlexChild {
-			return layout.Rigid(func(gtx C) D {
+		kids := []layout.FlexChild{layout.Rigid(a.pixel(unit.Sp(8), label, colMuted).Layout)}
+		for t := range wins {
+			t := t
+			kids = append(kids, layout.Rigid(func(gtx C) D {
 				return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 					return layout.Flex{}.Layout(gtx, seg(t))
 				})
-			})
+			}))
 		}
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(a.pixel(unit.Sp(8), label, colMuted).Layout),
-			line(0),
-			line(1),
-		)
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 	})
 }
 
@@ -1293,7 +1312,12 @@ func (a *App) archiveModeCell(r config.ArchiveRecord) layout.Widget {
 		case config.ModeCompetitive:
 			name = "COMPETITIVE"
 		case config.ModeTeams:
-			name, sub = "TEAMS", fmt.Sprintf("%dv%d", r.TeamSize, r.TeamSize)
+			// "2v2", and "2v2v2" for a game played between more teams.
+			shape := make([]string, r.Teams())
+			for t := range shape {
+				shape[t] = strconv.Itoa(r.TeamSize)
+			}
+			name, sub = "TEAMS", strings.Join(shape, "v")
 		}
 		// Crew line: whether the game was human-vs-human or had agent seats,
 		// so the two kinds can be told apart at a glance.
@@ -1408,9 +1432,15 @@ func competitiveRosterLines(r config.ArchiveRecord) []rosterLine {
 }
 
 func teamRosterLines(r config.ArchiveRecord) []rosterLine {
-	order := []int{0, 1}
-	if r.WinningTeam == 1 {
-		order = []int{1, 0} // winning team first
+	// Winning team first, the rest in index order.
+	order := make([]int, 0, r.Teams())
+	if r.WinningTeam >= 0 && r.WinningTeam < r.Teams() {
+		order = append(order, r.WinningTeam)
+	}
+	for t := 0; t < r.Teams(); t++ {
+		if t != r.WinningTeam {
+			order = append(order, t)
+		}
 	}
 	out := make([]rosterLine, 0, len(order))
 	for _, t := range order {
@@ -1465,8 +1495,8 @@ func archiveModeLine(r config.ArchiveRecord) string {
 		// inside wrapping text the way the old character did. The trophy is
 		// on the roster lines beside this one instead, where each entry is a
 		// row of its own — archiveRosterLines, which do carry it.
-		parts := make([]string, 0, config.TeamCount)
-		for t := 0; t < config.TeamCount; t++ {
+		parts := make([]string, 0, r.Teams())
+		for t := 0; t < r.Teams(); t++ {
 			var members []string
 			for _, p := range r.Players {
 				if p.Team == t {
@@ -1573,7 +1603,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	var names []string
 	if teams {
 		// Group the roster by team: "A: alice, bob · B: carol"
-		for t := 0; t < config.TeamCount; t++ {
+		for t := 0; t < g.Teams(); t++ {
 			var team []string
 			for _, p := range g.Players {
 				if p.Team != t {
@@ -1601,6 +1631,14 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	}
 	info := fmt.Sprintf("%s · %s · %d/%d", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount)
 	var extra string
+	// The shape of a teams game: "2v2", and "2v2v2" past the usual two teams.
+	if teams {
+		shape := make([]string, g.Teams())
+		for t := range shape {
+			shape[t] = strconv.Itoa(g.TeamSize)
+		}
+		extra += " · " + strings.Join(shape, "v")
+	}
 	// Shared boards are as wide as their seat count and the creator's
 	// board-width setting make them (config.SharedBoardWidth) — the one
 	// number that says what a joiner is walking onto.
@@ -1720,15 +1758,17 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 						}
 						if teams {
 							// One join button per team, each enabled while that team has room.
-							return layout.Flex{}.Layout(gtx,
-								layout.Rigid(func(gtx C) D {
-									return a.teamJoinButton(gtx, &btns.joinA, g, 0)
-								}),
-								layout.Rigid(hSpacer(6)),
-								layout.Rigid(func(gtx C) D {
-									return a.teamJoinButton(gtx, &btns.joinB, g, 1)
-								}),
-							)
+							kids := make([]layout.FlexChild, 0, 2*g.Teams())
+							for t := 0; t < g.Teams(); t++ {
+								if t > 0 {
+									kids = append(kids, layout.Rigid(hSpacer(6)))
+								}
+								btn, team := &btns.joinTeam[t], t
+								kids = append(kids, layout.Rigid(func(gtx C) D {
+									return a.teamJoinButton(gtx, btn, g, team)
+								}))
+							}
+							return layout.Flex{}.Layout(gtx, kids...)
 						}
 						return a.primaryButton(gtx, &btns.join, "Join")
 					}),
@@ -1830,13 +1870,8 @@ func (a *App) teamJoinButton(gtx C, btn *widget.Clickable, g lobby.GameListing, 
 	return a.primaryButton(gtx, btn, label)
 }
 
-// teamName renders a team index as its display letter.
-func teamName(team int) string {
-	if team == 0 {
-		return "A"
-	}
-	return "B"
-}
+// teamName renders a team index as its display letter (A, B, C, …).
+func teamName(team int) string { return config.TeamLetter(team) }
 
 func (a *App) handleChatSubmit(gtx C) {
 	send := a.chatBtn.Clicked(gtx)

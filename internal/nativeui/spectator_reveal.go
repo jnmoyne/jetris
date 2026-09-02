@@ -57,16 +57,18 @@ func (oc liveOutcome) fx() winnerFX { return newWinnerFX(oc.at, oc.rank, oc.of, 
 // events, and (co-op) the shared game over: whether the game is decided,
 // the winning side's player IDs, and the winning team (-1 unless teams, or
 // on a draw). Competitive is decided once all but one player are out — the
-// survivor wins; all out at once is a draw. Teams is decided once a team is
-// fully out — the other team wins; both at once is a draw. Co-op ends for
-// everyone at the first top-out, and the crew shares the board.
-func spectatorVerdict(gmode config.GameMode, players []lobby.PlayerSummary, eliminated func(string) bool, gameOver bool) (decided bool, winners map[string]bool, winTeam int) {
+// survivor wins; all out at once is a draw. Teams is decided once all but one
+// team is fully out — that last team wins; the last of them falling together
+// is a draw. Co-op ends for everyone at the first top-out, and the crew
+// shares the board.
+func spectatorVerdict(gmode config.GameMode, players []lobby.PlayerSummary, eliminated func(string) bool, gameOver bool, teamCount int) (decided bool, winners map[string]bool, winTeam int) {
 	winners, winTeam = map[string]bool{}, -1
 	switch gmode {
 	case config.ModeTeams:
-		members, alive := [config.TeamCount]int{}, [config.TeamCount]int{}
+		n := config.NormalizeTeamCount(teamCount)
+		members, alive := make([]int, n), make([]int, n)
 		for _, p := range players {
-			if p.Team < 0 || p.Team >= config.TeamCount {
+			if p.Team < 0 || p.Team >= n {
 				continue
 			}
 			members[p.Team]++
@@ -74,14 +76,20 @@ func spectatorVerdict(gmode config.GameMode, players []lobby.PlayerSummary, elim
 				alive[p.Team]++
 			}
 		}
-		out := func(t int) bool { return members[t] > 0 && alive[t] == 0 }
-		switch {
-		case out(0) && out(1):
+		// Teams that ever had a member, and of those the ones still standing.
+		seated, standing, last := 0, 0, -1
+		for t := 0; t < n; t++ {
+			if members[t] == 0 {
+				continue
+			}
+			seated++
+			if alive[t] > 0 {
+				standing, last = standing+1, t
+			}
+		}
+		if seated > 1 && standing <= 1 {
 			decided = true
-		case out(0):
-			decided, winTeam = true, 1
-		case out(1):
-			decided, winTeam = true, 0
+			winTeam = last // -1 when they all fell together: a draw
 		}
 		for _, p := range players {
 			if winTeam >= 0 && p.Team == winTeam {
@@ -153,7 +161,7 @@ func playerVerdict(gmode config.GameMode, view gameView, me string, myTeam int) 
 func liveVerdict(gmode config.GameMode, players []lobby.PlayerSummary, winners map[string]bool, winTeam int, score int) string {
 	switch gmode {
 	case config.ModeTeams:
-		if winTeam >= 0 && winTeam < config.TeamCount {
+		if winTeam >= 0 {
 			return "TEAM " + teamName(winTeam) + " WINS!"
 		}
 		return "DRAW"
@@ -194,7 +202,7 @@ func (a *App) resolveOutcome(eng *engine.Engine, view gameView, gmode config.Gam
 	var winners map[string]bool
 	var winTeam int
 	if eng.InitialMode() == engine.ModeSpectator {
-		decided, winners, winTeam = spectatorVerdict(gmode, view.players, eng.IsEliminated, view.gameOver)
+		decided, winners, winTeam = spectatorVerdict(gmode, view.players, eng.IsEliminated, view.gameOver, eng.TeamCount())
 	} else {
 		decided, winners, winTeam = playerVerdict(gmode, view, eng.PlayerID(), eng.TeamIdx())
 	}
@@ -253,7 +261,8 @@ func (a *App) rankLiveGame(eng *engine.Engine, view gameView, oc liveOutcome, gm
 // between equal headline scores.
 func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.GameMode, now time.Time) config.ArchiveRecord {
 	rec := config.ArchiveRecord{
-		GameID: eng.GameID(), Mode: gmode, PlayerCount: eng.PlayerCount(), TeamSize: eng.TeamSize(),
+		GameID: eng.GameID(), Mode: gmode, PlayerCount: eng.PlayerCount(),
+		TeamCount: eng.TeamCount(), TeamSize: eng.TeamSize(),
 		ExtraColumns: eng.ExtraColumns(), WinningTeam: oc.winTeam, FinishedAt: now,
 	}
 	for _, p := range view.players {
@@ -265,8 +274,8 @@ func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.
 	case config.ModeCooperative:
 		rec.TotalScore = view.score
 	case config.ModeTeams:
-		rec.TeamScores = append([]int(nil), view.teamScores[:]...)
-		rec.TeamLevels = append([]int(nil), view.teamLevels[:]...)
+		rec.TeamScores = append([]int(nil), view.teamScores...)
+		rec.TeamLevels = append([]int(nil), view.teamLevels...)
 	}
 	return rec
 }
@@ -283,9 +292,9 @@ func (a *App) spectatorResultBox(gtx C, view gameView, oc liveOutcome, gmode con
 	}
 	var score string
 	if gmode == config.ModeTeams {
-		score = fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
-			teamName(0), view.teamScores[0], view.teamLevels[0],
-			teamName(1), view.teamScores[1], view.teamLevels[1])
+		// A spectator has no team of their own, so the line simply runs in
+		// team order.
+		score = teamScoreLine(view, -1)
 	} else {
 		players := append([]lobby.PlayerSummary(nil), view.players...)
 		sort.SliceStable(players, func(i, j int) bool {

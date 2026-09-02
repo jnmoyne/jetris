@@ -31,33 +31,48 @@ func TestSpectatorVerdict(t *testing.T) {
 	trio := []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob"}, {PlayerID: "carol", Name: "carol"}}
 	// Competitive: undecided with one of three out; decided once all but one
 	// are out (the survivor wins); everyone out at once is a draw.
-	if d, _, _ := spectatorVerdict(config.ModeCompetitive, trio, outOf("bob"), false); d {
+	if d, _, _ := spectatorVerdict(config.ModeCompetitive, trio, outOf("bob"), false, 0); d {
 		t.Error("competitive: one of three out resolved as decided")
 	}
-	d, w, team := spectatorVerdict(config.ModeCompetitive, trio, outOf("bob", "carol"), false)
+	d, w, team := spectatorVerdict(config.ModeCompetitive, trio, outOf("bob", "carol"), false, 0)
 	if !d || !w["alice"] || len(w) != 1 || team != -1 {
 		t.Errorf("competitive: two of three out → decided %v winners %v team %d, want alice alone", d, w, team)
 	}
-	if d, w, _ := spectatorVerdict(config.ModeCompetitive, trio, outOf("alice", "bob", "carol"), false); !d || len(w) != 0 {
+	if d, w, _ := spectatorVerdict(config.ModeCompetitive, trio, outOf("alice", "bob", "carol"), false, 0); !d || len(w) != 0 {
 		t.Errorf("competitive: all out → decided %v winners %v, want a decided draw", d, w)
 	}
 	// Teams: decided once a team is fully out — the other team's members win.
 	teams := []lobby.PlayerSummary{{PlayerID: "alice", Team: 0}, {PlayerID: "bob", Team: 0}, {PlayerID: "carol", Team: 1}, {PlayerID: "dave", Team: 1}}
-	if d, _, _ := spectatorVerdict(config.ModeTeams, teams, outOf("alice", "carol"), false); d {
+	if d, _, _ := spectatorVerdict(config.ModeTeams, teams, outOf("alice", "carol"), false, 2); d {
 		t.Error("teams: one out per team resolved as decided")
 	}
-	d, w, team = spectatorVerdict(config.ModeTeams, teams, outOf("alice", "bob"), false)
+	d, w, team = spectatorVerdict(config.ModeTeams, teams, outOf("alice", "bob"), false, 2)
 	if !d || team != 1 || !w["carol"] || !w["dave"] || len(w) != 2 {
 		t.Errorf("teams: team A out → decided %v team %d winners %v, want team B's members", d, team, w)
 	}
-	if d, w, team := spectatorVerdict(config.ModeTeams, teams, outOf("alice", "bob", "carol", "dave"), false); !d || team != -1 || len(w) != 0 {
+	if d, w, team := spectatorVerdict(config.ModeTeams, teams, outOf("alice", "bob", "carol", "dave"), false, 2); !d || team != -1 || len(w) != 0 {
 		t.Errorf("teams: both out → decided %v team %d winners %v, want a decided draw", d, team, w)
 	}
+	// Three teams: one team falling decides nothing — the survivors play on
+	// until only one is left standing.
+	trioTeams := []lobby.PlayerSummary{
+		{PlayerID: "alice", Team: 0}, {PlayerID: "bob", Team: 1}, {PlayerID: "carol", Team: 2},
+	}
+	if d, _, _ := spectatorVerdict(config.ModeTeams, trioTeams, outOf("alice"), false, 3); d {
+		t.Error("three teams: one of three out resolved as decided")
+	}
+	d, w, team = spectatorVerdict(config.ModeTeams, trioTeams, outOf("alice", "carol"), false, 3)
+	if !d || team != 1 || !w["bob"] || len(w) != 1 {
+		t.Errorf("three teams: A and C out → decided %v team %d winners %v, want team B", d, team, w)
+	}
+	if d, w, team := spectatorVerdict(config.ModeTeams, trioTeams, outOf("alice", "bob", "carol"), false, 3); !d || team != -1 || len(w) != 0 {
+		t.Errorf("three teams: all out → decided %v team %d winners %v, want a decided draw", d, team, w)
+	}
 	// Co-op: the shared game over decides, and the crew shares the board.
-	if d, _, _ := spectatorVerdict(config.ModeCooperative, trio, outOf(), false); d {
+	if d, _, _ := spectatorVerdict(config.ModeCooperative, trio, outOf(), false, 0); d {
 		t.Error("co-op: resolved as decided before the game over")
 	}
-	if d, w, team := spectatorVerdict(config.ModeCooperative, trio, outOf(), true); !d || len(w) != 3 || team != -1 {
+	if d, w, team := spectatorVerdict(config.ModeCooperative, trio, outOf(), true, 0); !d || len(w) != 3 || team != -1 {
 		t.Errorf("co-op game over → decided %v winners %v team %d, want the whole crew", d, w, team)
 	}
 }
@@ -141,8 +156,8 @@ func TestLiveRecordRanksLikeTheArchive(t *testing.T) {
 		}
 	}
 	teamsOC := liveOutcome{decided: true, winTeam: 1, winners: map[string]bool{"bob": true}}
-	rec = liveRecord(eng, gameView{players: roster, teamScores: [config.TeamCount]int{3100, 4200}}, teamsOC, config.ModeTeams, now)
-	if rec.HeadlineScore() != 4200 || rec.WinningTeam != 1 || len(rec.TeamScores) != config.TeamCount {
+	rec = liveRecord(eng, gameView{players: roster, teamScores: []int{3100, 4200}}, teamsOC, config.ModeTeams, now)
+	if rec.HeadlineScore() != 4200 || rec.WinningTeam != 1 || len(rec.TeamScores) != config.DefaultTeamCount {
 		t.Errorf("teams provisional record = %+v, want headline 4200, team B", rec)
 	}
 	rec = liveRecord(eng, gameView{players: roster, score: 5200}, liveOutcome{decided: true, winTeam: -1}, config.ModeCooperative, now)
@@ -304,5 +319,28 @@ func TestSpectatorRevealRenders(t *testing.T) {
 				t.Errorf("%v result box laid out nothing", gmode)
 			}
 		}
+	}
+}
+
+// teamScoreLine writes every team's live score and level on one line, the
+// reader's own team leading and the rest in index order — and answers 0 for a
+// team whose totals have not arrived yet rather than running off the end.
+func TestTeamScoreLine(t *testing.T) {
+	view := gameView{teamScores: []int{10, 20, 30}, teamLevels: []int{1, 2, 3}}
+	for _, tc := range []struct {
+		first int
+		want  string
+	}{
+		{-1, "TEAM A 10 (lvl 1) · TEAM B 20 (lvl 2) · TEAM C 30 (lvl 3)"},
+		{0, "TEAM A 10 (lvl 1) · TEAM B 20 (lvl 2) · TEAM C 30 (lvl 3)"},
+		{2, "TEAM C 30 (lvl 3) · TEAM A 10 (lvl 1) · TEAM B 20 (lvl 2)"},
+	} {
+		if got := teamScoreLine(view, tc.first); got != tc.want {
+			t.Errorf("teamScoreLine(first=%d) = %q, want %q", tc.first, got, tc.want)
+		}
+	}
+	// Before the first stats update the slices are empty: no line, no panic.
+	if got := teamScoreLine(gameView{}, 0); got != "" {
+		t.Errorf("teamScoreLine with no totals = %q, want empty", got)
 	}
 }

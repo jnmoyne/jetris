@@ -12,6 +12,7 @@ type GameListing struct {
 	Mode               config.GameMode   `json:"mode"`
 	Status             config.GameStatus `json:"status"`
 	PlayerCount        int               `json:"player_count"`
+	TeamCount          int               `json:"team_count,omitempty"`           // teams mode: how many teams play each other; mirrors GameMeta.TeamCount for the lobby row's join buttons and roster grouping (absent = the historical two — see Teams)
 	TeamSize           int               `json:"team_size,omitempty"`            // teams mode: players per team
 	ExtraColumns       int               `json:"extra_columns,omitempty"`        // shared boards: columns per seat beyond the first; mirrors GameMeta.ExtraColumns for the lobby row's board-width tag
 	MaxAgents          int               `json:"max_agents,omitempty"`           // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
@@ -34,7 +35,7 @@ type PlayerSummary struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
 	Ready    bool   `json:"ready"`
-	Team     int    `json:"team"`            // teams mode: 0 = A, 1 = B
+	Team     int    `json:"team"`            // teams mode: 0 = A, 1 = B, …
 	TeamSlot int    `json:"team_slot"`       // teams mode: section index within the team board (join order)
 	Agent    bool   `json:"agent,omitempty"` // roster seat taken by an agent player (e.g. golang-mk1)
 }
@@ -49,6 +50,16 @@ func (g GameListing) Rules() config.GameRules {
 		RandomGarbageHoles: g.RandomGarbageHoles,
 		GuidelineGarbage:   g.GuidelineGarbage,
 	}
+}
+
+// Teams is how many teams this game is played between — the listing's mirror
+// of config.GameMeta.Teams, normalized the same way (absent reads as two) and
+// 0 outside teams mode.
+func (g GameListing) Teams() int {
+	if g.Mode != config.ModeTeams {
+		return 0
+	}
+	return config.NormalizeTeamCount(g.TeamCount)
 }
 
 // SplitsPieces reports whether this game deals its piece types out between

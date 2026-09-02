@@ -453,17 +453,17 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			e.emitFullBoardRerender()
 			e.emitTeammateClear(ev)
 		}
-		// Teams: EVERY engine — teammates, the opposing team's players, and
+		// Teams: EVERY engine — teammates, every other team's players, and
 		// spectators — folds the clear into the per-team scoreboard (the
-		// clearing player already did in handleLockIn), so the TEAM A / TEAM B
-		// scores stay live on every screen.
-		if e.gameMode == config.ModeTeams && ev.PlayerID != e.playerID {
+		// clearing player already did in handleLockIn), so every team's score
+		// stays live on every screen.
+		if e.gameMode == config.ModeTeams && ev.PlayerID != e.playerID && ev.Team >= 0 && ev.Team < e.TeamCount() {
 			e.teamScores[ev.Team].Add(int64(deltaScore))
 			e.teamLines[ev.Team].Add(int64(deltaLines))
 			e.emitTeamStats()
 			// Our own team's clear: same shared-board reasoning as cooperative
 			// above. Also fold the line count so every teammate's level/gravity
-			// stays in sync with the team's total. The opposing team's board
+			// stays in sync with the team's total. Every other team's board
 			// repaints via its own consumer.
 			if ev.Team == e.teamIdx {
 				e.score.Add(int64(deltaScore))
@@ -527,28 +527,40 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 
 // handleTeamGameOverEvent processes a teams-mode elimination event (any
 // player's, including the echo of our own). It tracks per-team elimination
-// counts and decides the game outcome exactly once: a team loses when ALL its
-// members have topped out, at which point every member of the other team —
-// alive or already eliminated — has won.
+// counts and decides the game outcome exactly once: a team is out when ALL
+// its members have topped out, and the game is over when at most one team is
+// still standing — that last team, alive members and already-eliminated ones
+// alike, has won. With the usual two teams that is the moment either side
+// falls; in a three- or six-way game the survivors play on until only one
+// team is left.
 //
 // The events subject is a single ordered stream, so all engines see the same
 // elimination order and reach the same verdict. transitionGameToFinished is
 // CAS-protected and idempotent, so every winning engine may safely call it.
 func (e *Engine) handleTeamGameOverEvent(ctx context.Context, ev GameEvent) {
+	n := e.TeamCount()
 	e.mu.Lock()
 	e.eliminatedPlayers[ev.PlayerID] = true
 	e.eliminatedTeam[ev.PlayerID] = ev.Team
-	elimMine, elimOther := 0, 0
+	elim := make([]int, n)
 	for pid := range e.eliminatedPlayers {
-		if e.eliminatedTeam[pid] == e.teamIdx {
-			elimMine++
-		} else {
-			elimOther++
+		if t := e.eliminatedTeam[pid]; t >= 0 && t < n {
+			elim[t]++
 		}
 	}
-	myTeamDead := elimMine >= e.teamSize
-	otherTeamDead := elimOther >= e.teamSize
-	decide := (myTeamDead || otherTeamDead) && !e.teamOutcomeDone
+	alive, lastAlive := 0, -1
+	for t := 0; t < n; t++ {
+		if elim[t] < e.teamSize {
+			alive++
+			lastAlive = t
+		}
+	}
+	myTeamDead := e.teamIdx >= 0 && e.teamIdx < n && elim[e.teamIdx] >= e.teamSize
+	winTeam := -1
+	if alive == 1 {
+		winTeam = lastAlive
+	}
+	decide := alive <= 1 && !e.teamOutcomeDone
 	if decide {
 		e.teamOutcomeDone = true
 	}
@@ -572,7 +584,7 @@ func (e *Engine) handleTeamGameOverEvent(ctx context.Context, ev GameEvent) {
 	e.emitUpdate(EngineUpdate{Kind: UpdateGameStatus, GameStatus: string(config.GameStatusFinished)})
 
 	switch {
-	case otherTeamDead && !myTeamDead:
+	case winTeam >= 0 && winTeam == e.teamIdx && !myTeamDead:
 		// Our team won. Alive members stop playing; already-eliminated members
 		// flip their "you lost" to the team win. Spectator engines (initialMode
 		// ModeSpectator, teamIdx 0 default) just keep watching.
@@ -580,13 +592,14 @@ func (e *Engine) handleTeamGameOverEvent(ctx context.Context, ev GameEvent) {
 			e.transitionToSpectator(true)
 			go e.transitionGameToFinished(ctx)
 		}
-	case myTeamDead && !otherTeamDead:
-		// Our team lost. Each member already transitioned individually on their
-		// own top-out; the winning team's engines transition the game meta.
+	case winTeam >= 0:
+		// Another team won. Each of our members already transitioned
+		// individually on their own top-out; the winning team's engines
+		// transition the game meta.
 	default:
-		// Defensive: both teams read as dead (shouldn't happen with an ordered
-		// event stream, where one team completes strictly first). Treat as a
-		// draw and make sure SOMEONE finishes the game so it archives.
+		// Every team read as dead (the last two fell together — with an
+		// ordered event stream one normally completes strictly first). Treat
+		// it as a draw and make sure SOMEONE finishes the game so it archives.
 		if e.initialMode == ModePlayer {
 			go e.transitionGameToFinished(ctx)
 		}

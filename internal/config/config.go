@@ -69,9 +69,34 @@ func (m GameMode) String() string {
 	}
 }
 
-// TeamCount is the number of teams in a teams-mode game. Team indices are
-// 0 ("A") and 1 ("B").
-const TeamCount = 2
+// The number of teams a teams-mode game is played between. A game records
+// its own count in GameMeta.TeamCount; two — Team A vs Team B — is the
+// default and what every meta written before the field reads as. Team
+// indices run 0..count-1 and are named by their letter (TeamLetter).
+const (
+	DefaultTeamCount = 2
+	MinTeamCount     = 2
+	MaxTeamCount     = 6
+)
+
+// NormalizeTeamCount reads a recorded team count: absent (the zero value, and
+// every meta or listing written before the field) is the historical two, and
+// anything out of range is clamped into MinTeamCount..MaxTeamCount.
+func NormalizeTeamCount(n int) int {
+	if n <= 0 {
+		return DefaultTeamCount
+	}
+	return min(max(n, MinTeamCount), MaxTeamCount)
+}
+
+// TeamLetter names a team index the way every screen shows it: A, B, C, …
+// (the index itself once past the letters, which MaxTeamCount never allows).
+func TeamLetter(team int) string {
+	if team < 0 || team >= 26 {
+		return strconv.Itoa(team)
+	}
+	return string(rune('A' + team))
+}
 
 type GameStatus string
 
@@ -88,6 +113,7 @@ type GameMeta struct {
 	GameID             string     `json:"game_id"`
 	Mode               GameMode   `json:"mode"`
 	PlayerCount        int        `json:"player_count"`
+	TeamCount          int        `json:"team_count,omitempty"`           // teams mode: how many teams play each other (MinTeamCount..MaxTeamCount). Absent — the zero value, and every meta written before the field — reads as DefaultTeamCount, the historical Team A vs Team B (see Teams)
 	TeamSize           int        `json:"team_size,omitempty"`            // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
 	ExtraColumns       int        `json:"extra_columns,omitempty"`        // shared boards (cooperative, teams): columns every seat beyond the first adds to the board's standard 10 (MinExtraColumns..MaxExtraColumns), and the spacing between neighbouring spawn points. Absent — every meta written before the field — reads as MaxExtraColumns: the historical full section per player (see ExtraColumnsPerPlayer). Meaningless in competitive, where each player has a board of their own
 	NextCount          int        `json:"next_count"`                     // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
@@ -171,6 +197,16 @@ func (m GameMeta) Rules() GameRules {
 	}
 }
 
+// Teams is the number of teams this game is played between, normalized:
+// a teams game's recorded TeamCount (two when the meta predates the field),
+// and 0 in every other mode, which has no teams at all.
+func (m GameMeta) Teams() int {
+	if m.Mode != ModeTeams {
+		return 0
+	}
+	return NormalizeTeamCount(m.TeamCount)
+}
+
 // SplitsPieces reports whether this game deals its piece types out between
 // teammates: the SplitPieces setting, which only a teams game of at least two
 // per team can honour (a team of one would be dealt the whole bag anyway, and
@@ -201,13 +237,29 @@ type ArchiveRecord struct {
 	FinishedAt   time.Time      `json:"finished_at"`
 	TotalScore   int            `json:"total_score,omitempty"`   // cooperative
 	FinalLevel   int            `json:"final_level,omitempty"`   // cooperative: shared level at game end
+	TeamCount    int            `json:"team_count,omitempty"`    // teams mode: how many teams played (GameMeta.TeamCount); absent — every record written before the field — reads as DefaultTeamCount (see Teams)
 	TeamSize     int            `json:"team_size,omitempty"`     // teams mode
 	ExtraColumns int            `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns) — what the replay rebuilds the board's width from
-	WinningTeam  int            `json:"winning_team"`            // teams mode: 0 or 1; -1 = draw or not a team game
+	WinningTeam  int            `json:"winning_team"`            // teams mode: the winning team's index; -1 = draw or not a team game
 	TeamScores   []int          `json:"team_scores,omitempty"`   // teams mode: final score per team (indexed by team)
 	TeamLevels   []int          `json:"team_levels,omitempty"`   // teams mode: final level per team (indexed by team)
 	Boards       []BoardPicture `json:"boards,omitempty"`        // end-of-game playfield snapshot(s) for the lobby's history view
 	Chat         []ChatLine     `json:"chat,omitempty"`          // the game's chat history (last ArchiveChatCap lines), captured before the chat purge
+}
+
+// Teams is the number of teams the archived game was played between,
+// normalized the way GameMeta.Teams is: the recorded TeamCount, falling back
+// to the length of the per-team totals for a record written before the field
+// (and to DefaultTeamCount for one that carries neither), and 0 outside teams
+// mode.
+func (r ArchiveRecord) Teams() int {
+	if r.Mode != ModeTeams {
+		return 0
+	}
+	if r.TeamCount <= 0 && len(r.TeamScores) > 0 {
+		return NormalizeTeamCount(len(r.TeamScores))
+	}
+	return NormalizeTeamCount(r.TeamCount)
 }
 
 // ChatLine is one chat message preserved in an ArchiveRecord. The game's chat
@@ -490,7 +542,7 @@ func (r ArchiveRecord) AgentClass() int {
 // redraw the final playfield. There is one picture for cooperative, one per
 // player for competitive, and one per team for teams mode.
 type BoardPicture struct {
-	Label  string      `json:"label,omitempty"` // player ID, "Team A"/"Team B", or "" (cooperative)
+	Label  string      `json:"label,omitempty"` // player ID, "Team A"/"Team B"/…, or "" (cooperative)
 	Idx    int         `json:"idx"`             // player/team index for coloring; -1 if not applicable
 	Width  int         `json:"w"`               // board width in cells
 	Height int         `json:"h"`               // visible row count stored (row 0 = first visible row)
@@ -628,19 +680,21 @@ func TeamBoardWidth(teamSize, extraCols int) int {
 }
 
 // TeamVisibleRows returns the visible rows for a team board. Like competitive,
-// the board grows one row per garbage-producing player on the opposing team
-// (which has teamSize players), leaving room for adversarial rows.
-func TeamVisibleRows(teamSize int) int {
-	return VisibleRows + teamSize
+// the board grows one row per garbage-producing player it can be attacked by
+// — every seat on every OTHER team, (teamCount-1)*teamSize of them — leaving
+// room for adversarial rows. At the usual two teams that is one row per
+// opponent, exactly the board teams mode has always had.
+func TeamVisibleRows(teamCount, teamSize int) int {
+	return VisibleRows + max(NormalizeTeamCount(teamCount)-1, 1)*teamSize
 }
 
 // TeamTotalRows returns the total rows (headroom + visible) for a team board.
-func TeamTotalRows(teamSize int) int {
-	return HeadroomRows + TeamVisibleRows(teamSize)
+func TeamTotalRows(teamCount, teamSize int) int {
+	return HeadroomRows + TeamVisibleRows(teamCount, teamSize)
 }
 
 // TeamVisibleRowStart returns the first visible row index for a team board.
-func TeamVisibleRowStart(teamSize int) int {
+func TeamVisibleRowStart(teamCount, teamSize int) int {
 	return HeadroomRows
 }
 

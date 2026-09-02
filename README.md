@@ -12,7 +12,7 @@ What is unique to Jetris compared to other multiplayer versions of block-stackin
 
 The cooperative mode: you are working with your teammates to complete lines on the same shared (blackboard system) playfied (that changes in width according to the number teammates). In Jetris two teammate's pieces can _not_ overlap no matter the lag (race conditions cause a colorful flash): players literally have to move around each other to achieve their common goal. 
 
-The competitive mode: there is one playfield per team (that changes in height according to the number of teams) and when one team clears a line, a 'garbage' line gets added to all the opponents' playfield (effectively shrinking their playfield's height).
+The competitive mode: there is one playfield per team (that changes in height according to the number of teams) and when one team clears a line, a 'garbage' line gets added to an opponent's playfield (effectively shrinking their playfield's height) — every opponent's in competitive, and one opposing team's, taken in turn, in teams.
 
 Jetris comes in 3 combinations of the above: **cooperative** (one team of n players), **competitive** (n teams of 1 player) and **teams** (n teams of m players).
 
@@ -342,7 +342,7 @@ All three are the same blackboard pattern with different subject schemes and col
 
 - Cooperative: 2+ players share one wide board (`playerCount × 10` columns), each controlling their own piece. Pieces can't overlap; the shared board uses per-cell CAS with merge-retry so neither player ever clobbers the other's in-flight piece. Score is shared.
 - Competitive: each player has a private board (their own subject namespace). Clearing lines owes "garbage" rows to every opponent, recorded by CAS-adding each victim board's durable garbage register — simultaneous attacks sum, and none is ever lost — which each victim applies to its own board as a txn-gated transform. A rising board pushes the falling piece up (minimally), and can eliminate the player. Last player standing wins.
-- Teams: two teams, each on a shared per-team board (like a cooperative board per side). Line clears attack the opposing team's board through the same garbage registers; pieces caught by the rising stack are pushed up (cascading through pieces above them), never buried; a team loses when all its members top out. Per-player `game_over` events give every peer the same elimination order, so all peers agree on the winner without a coordinator.
+- Teams: two to six teams (the create wizard's Teams slider; two by default), each on a shared per-team board (like a cooperative board per side). Line clears attack an opposing team's board through the same garbage registers — past two teams each attacker rotates through its opponents, so a raise still weighs what it does in a duel; pieces caught by the rising stack are pushed up (cascading through pieces above them), never buried; a team is out when all its members top out, and the last team standing wins. Per-player `game_over` events give every peer the same elimination order, so all peers agree on the winner without a coordinator.
 
 > **Protocol compatibility:** the garbage-register/gated-transform protocol and the per-kind event subjects are a breaking wire change with no version negotiation — every participant of a game (GUI and agents alike) must run a build that speaks the same protocol.
 
@@ -441,11 +441,13 @@ Agents wear their identity on their name — `<version>-<instance>-<difficulty>`
 # Host a cooperative game and play alongside an agent teammate, or a 2v2 teams game
 ./golang-mk1 --server nats://localhost:4222 --create --mode cooperative --players 2 --max-agents 1
 ./golang-mk1 --server nats://localhost:4222 --create --mode teams --players 2
+# ...a three-way, 2 per team (--teams goes up to 6)
+./golang-mk1 --server nats://localhost:4222 --create --mode teams --teams 3 --players 2
 # ...or a 2v2 where the seven piece types are dealt out between each team's two players
 ./golang-mk1 --server nats://localhost:4222 --create --mode teams --players 2 --split-pieces
 ```
 
-In cooperative games agents play for the shared score and treat your falling piece as an obstacle to work around; in teams they take a seat on the emptier team and attack the other board like any teammate would.
+In cooperative games agents play for the shared score and treat your falling piece as an obstacle to work around; in teams they take a seat on the emptiest team and attack the other boards like any teammate would.
 
 `--difficulty` is `easy`, `medium`, or `hard` (default): easy and medium think slower and sometimes blunder; hard plays the best move it can find as fast as the round-trips allow. Agents are held to a **fair-visibility contract**: they decide only on what a human player can see in the UI — the committed boards, the roster, the score, and at most the game's revealed piece preview — never the RNG seed. `--join <gameID>` targets a specific game (still subject to its agent policy); run two resident agents and create an agents-only game to spectate an agent-vs-agent match. See `golang-mk1 -h` for the full flag list and [`jetris-gameplays.md`](jetris-gameplays.md) §11 for how it plays.
 

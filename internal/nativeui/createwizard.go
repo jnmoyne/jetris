@@ -96,6 +96,27 @@ func (a *App) setExtraColumns(v int) {
 	a.extraColsFloat.Value = extraColsRange.pos(a.extraCols)
 }
 
+// teamCountRange maps the team-count slider's 0..1 position to the whole
+// number of teams a teams game is played between, and back to that detent.
+var teamCountRange = knobRange{config.MinTeamCount, config.MaxTeamCount, 1}
+
+// setTeamCount sets the team-count knob — how many teams a teams game is
+// played between — and mirrors it onto its slider.
+func (a *App) setTeamCount(v int) {
+	a.teamCount = config.NormalizeTeamCount(v)
+	a.teamCountFloat.Value = teamCountRange.pos(a.teamCount)
+}
+
+// wizardTeamCount reads step 1's team-count knob for a game of mode: the
+// number of teams a teams game is played between, and 0 in every other mode,
+// which has no teams at all.
+func (a *App) wizardTeamCount(mode config.GameMode) int {
+	if mode != config.ModeTeams {
+		return 0
+	}
+	return config.NormalizeTeamCount(a.teamCount)
+}
+
 // finishCreateWizard reads the wizard's widgets, clamps them to legal values,
 // closes the wizard, and launches the game: an invite-only game is created and
 // hands off to the invitee picker, an open game is created directly with its
@@ -103,6 +124,7 @@ func (a *App) setExtraColumns(v int) {
 func (a *App) finishCreateWizard() {
 	mode := a.wizardMode()
 	count := a.wizardCount(mode)
+	teamCount := a.wizardTeamCount(mode)
 	// The board-width knob only shapes a shared board; a competitive game
 	// gives every player a standard 10-column board of their own.
 	extraCols := 0
@@ -120,7 +142,7 @@ func (a *App) finishCreateWizard() {
 	rules = rules.Normalized(mode)
 	a.createWizStep = 0
 	if a.createJoinEnum.Value == "invite" {
-		go a.openInvitePicker(mode, count, extraCols, splitPieces, rules)
+		go a.openInvitePicker(mode, count, teamCount, extraCols, splitPieces, rules)
 		return
 	}
 	// Agent policy: how many seats idle agent players may take.
@@ -130,7 +152,7 @@ func (a *App) finishCreateWizard() {
 	if a.allowAgentsCb.Value {
 		total := count
 		if mode == config.ModeTeams {
-			total = config.TeamCount * count
+			total = teamCount * count
 		}
 		n, err := strconv.Atoi(strings.TrimSpace(a.maxAgentsEd.Text()))
 		if err != nil || n < 1 {
@@ -138,7 +160,7 @@ func (a *App) finishCreateWizard() {
 		}
 		maxAgents = min(n, total)
 	}
-	go func() { a.createGame(mode, count, extraCols, maxAgents, splitPieces, rules, false) }()
+	go func() { a.createGame(mode, count, teamCount, extraCols, maxAgents, splitPieces, rules, false) }()
 }
 
 // customRules reads the wizard's custom-rules widgets. The upcoming-piece
@@ -276,7 +298,13 @@ func (a *App) wizardModeStep(gtx C) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.wizardRadio(&a.modeEnum, "cooperative", "Co-op — everyone plays one shared board, one shared score")),
 		layout.Rigid(a.wizardRadio(&a.modeEnum, "competitive", "Competitive — own board each, last player standing wins")),
-		layout.Rigid(a.wizardRadio(&a.modeEnum, "teams", "Teams — Team A vs Team B, each team a shared board")),
+		layout.Rigid(a.wizardRadio(&a.modeEnum, "teams", "Teams — team against team, each team a shared board")),
+		layout.Rigid(func(gtx C) D {
+			if !teams {
+				return D{}
+			}
+			return a.wizardTeamCountKnob(gtx)
+		}),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -292,7 +320,8 @@ func (a *App) wizardModeStep(gtx C) D {
 						return D{}
 					}
 					return layout.Inset{Left: unit.Dp(10)}.Layout(gtx,
-						a.body(fmt.Sprintf("(total seats = %d × per team)", config.TeamCount), colMuted))
+						a.body(fmt.Sprintf("(total seats = %d × per team = %d)",
+							a.wizardTeamCount(mode), a.wizardTeamCount(mode)*a.wizardCount(mode)), colMuted))
 				}),
 			)
 		}),
@@ -311,6 +340,45 @@ func (a *App) wizardModeStep(gtx C) D {
 			}
 			return a.wizardSplitPieces(gtx, seats)
 		}),
+	)
+}
+
+// wizardTeamCountKnob is step 1's team-count slider, drawn for a teams game:
+// how many teams the game is played between. Two — Team A vs Team B — is the
+// default and the game teams mode has always been; past two every team still
+// gets a shared board of its own, an attack still weighs one raise, and each
+// raise lands on one opposing team in turn rather than on all of them, so a
+// six-way game is a longer game and not a faster death. The last team
+// standing wins.
+func (a *App) wizardTeamCountKnob(gtx C) D {
+	if a.teamCountFloat.Update(gtx) {
+		a.teamCount = teamCountRange.value(a.teamCountFloat.Value)
+		a.teamCountFloat.Value = teamCountRange.pos(a.teamCount) // rest on the detent
+	}
+	n := a.wizardTeamCount(config.ModeTeams)
+	names := make([]string, n)
+	for t := range names {
+		names[t] = config.TeamLetter(t)
+	}
+	hint := fmt.Sprintf("Team %s — each on its own shared board, each attacking the others in turn. The last team standing wins.", strings.Join(names, " vs Team "))
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(spacer(12)),
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.body(fmt.Sprintf("Teams (%d–%d):", config.MinTeamCount, config.MaxTeamCount), colMuted)),
+				layout.Rigid(hSpacer(8)),
+				layout.Flexed(1, func(gtx C) D {
+					gtx.Constraints.Max.Y = gtx.Dp(20) // a row, not a touch target
+					s := material.Slider(a.th, &a.teamCountFloat)
+					s.Color = colAccent
+					return s.Layout(gtx)
+				}),
+				layout.Rigid(hSpacer(8)),
+				layout.Rigid(a.body(strconv.Itoa(n), colFg)),
+			)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body(hint, colMuted)),
 	)
 }
 

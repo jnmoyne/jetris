@@ -28,6 +28,7 @@ package nativeui
 import (
 	"fmt"
 	"image"
+	"strings"
 
 	"gioui.org/layout"
 	"gioui.org/unit"
@@ -401,8 +402,13 @@ func (a *App) opponentBoards(gtx C, eng *engine.Engine) D {
 func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	line := fmt.Sprintf("%d  LV%d", view.score, view.level)
 	if gmode == config.ModeTeams {
-		line = fmt.Sprintf("%s %d · %s %d  LV%d",
-			teamName(0), view.teamScores[0], teamName(1), view.teamScores[1], view.level)
+		// "A 1200 · B 940 · C 310  LV3" — every team, in index order, in the
+		// room the bar has.
+		parts := make([]string, 0, len(view.teamScores))
+		for t := range view.teamScores {
+			parts = append(parts, fmt.Sprintf("%s %d", teamName(t), view.teamScore(t)))
+		}
+		line = fmt.Sprintf("%s  LV%d", strings.Join(parts, " · "), view.level)
 	}
 	col := colFg
 	if view.linkDown > 0 {

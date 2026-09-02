@@ -52,14 +52,67 @@ func TestTeamDimensions(t *testing.T) {
 		if got, want := TeamBoardWidth(teamSize, 0), teamSize*StandardWidth; got != want {
 			t.Errorf("TeamBoardWidth(%d, 0) = %d, want %d", teamSize, got, want)
 		}
-		if got, want := TeamVisibleRows(teamSize), VisibleRows+teamSize; got != want {
-			t.Errorf("TeamVisibleRows(%d) = %d, want %d", teamSize, got, want)
+		// A board grows one row per seat that can attack it: every seat on
+		// every other team. An absent team count (0) is the historical two,
+		// so an old record rebuilds at the height it was played on.
+		for _, teamCount := range []int{0, 2, 3, 6} {
+			opponents := max(NormalizeTeamCount(teamCount)-1, 1) * teamSize
+			if got, want := TeamVisibleRows(teamCount, teamSize), VisibleRows+opponents; got != want {
+				t.Errorf("TeamVisibleRows(%d, %d) = %d, want %d", teamCount, teamSize, got, want)
+			}
+			if got, want := TeamTotalRows(teamCount, teamSize), HeadroomRows+VisibleRows+opponents; got != want {
+				t.Errorf("TeamTotalRows(%d, %d) = %d, want %d", teamCount, teamSize, got, want)
+			}
+			if got := TeamVisibleRowStart(teamCount, teamSize); got != HeadroomRows {
+				t.Errorf("TeamVisibleRowStart(%d, %d) = %d, want %d", teamCount, teamSize, got, HeadroomRows)
+			}
 		}
-		if got, want := TeamTotalRows(teamSize), HeadroomRows+VisibleRows+teamSize; got != want {
-			t.Errorf("TeamTotalRows(%d) = %d, want %d", teamSize, got, want)
+	}
+}
+
+// The team count a game records: absent is the historical two, and anything
+// out of range is clamped rather than trusted. GameMeta.Teams and
+// ArchiveRecord.Teams read it back, and answer 0 where a game has no teams
+// at all.
+func TestTeamCountNormalization(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, DefaultTeamCount}, {-3, DefaultTeamCount},
+		{1, MinTeamCount}, {2, 2}, {4, 4}, {MaxTeamCount, MaxTeamCount},
+		{MaxTeamCount + 1, MaxTeamCount}, {99, MaxTeamCount},
+	} {
+		if got := NormalizeTeamCount(tc.in); got != tc.want {
+			t.Errorf("NormalizeTeamCount(%d) = %d, want %d", tc.in, got, tc.want)
 		}
-		if got := TeamVisibleRowStart(teamSize); got != HeadroomRows {
-			t.Errorf("TeamVisibleRowStart(%d) = %d, want %d", teamSize, got, HeadroomRows)
+		if got := (GameMeta{Mode: ModeTeams, TeamCount: tc.in}).Teams(); got != tc.want {
+			t.Errorf("GameMeta{TeamCount: %d}.Teams() = %d, want %d", tc.in, got, tc.want)
+		}
+		if got := (ArchiveRecord{Mode: ModeTeams, TeamCount: tc.in}).Teams(); got != tc.want {
+			t.Errorf("ArchiveRecord{TeamCount: %d}.Teams() = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+	for _, m := range []GameMode{ModeCooperative, ModeCompetitive} {
+		if got := (GameMeta{Mode: m, TeamCount: 4}).Teams(); got != 0 {
+			t.Errorf("GameMeta{Mode: %v}.Teams() = %d, want 0", m, got)
+		}
+		if got := (ArchiveRecord{Mode: m, TeamCount: 4}).Teams(); got != 0 {
+			t.Errorf("ArchiveRecord{Mode: %v}.Teams() = %d, want 0", m, got)
+		}
+	}
+	// A record written before the field: the per-team totals say how many
+	// teams played.
+	if got := (ArchiveRecord{Mode: ModeTeams, TeamScores: []int{1, 2, 3}}).Teams(); got != 3 {
+		t.Errorf("pre-field record with 3 team scores: Teams() = %d, want 3", got)
+	}
+	if got := (ArchiveRecord{Mode: ModeTeams}).Teams(); got != DefaultTeamCount {
+		t.Errorf("record with neither: Teams() = %d, want %d", got, DefaultTeamCount)
+	}
+}
+
+// TeamLetter names a team the way every screen shows it.
+func TestTeamLetter(t *testing.T) {
+	for i, want := range []string{"A", "B", "C", "D", "E", "F"} {
+		if got := TeamLetter(i); got != want {
+			t.Errorf("TeamLetter(%d) = %q, want %q", i, got, want)
 		}
 	}
 }

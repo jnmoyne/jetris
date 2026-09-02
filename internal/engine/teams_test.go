@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -138,9 +139,9 @@ func TestTeamsGarbageHitsOpposingBoardExactlyOnce(t *testing.T) {
 	// players — converges on the per-team scoreboard (the opposing team folds
 	// it off the line-clear event even though their own Score() is untouched).
 	waitUntil(t, 3*time.Second, func() bool {
-		want := [config.TeamCount]int{2, 0}
+		want := []int{2, 0}
 		for _, e := range engines {
-			if e.TeamScores() != want {
+			if !slices.Equal(e.TeamScores(), want) {
 				return false
 			}
 		}

@@ -2,8 +2,6 @@ package engine
 
 import (
 	"time"
-
-	"jetris/internal/config"
 )
 
 // UpdateKind identifies the type of engine update sent to the UI.
@@ -37,17 +35,17 @@ type EngineUpdate struct {
 	Score              int
 	Level              int
 	GameStatus         string
-	Countdown          int                   // seconds remaining (0 = GO!)
-	Won                bool                  // competitive/teams: true if this player('s team) won
-	EliminatedPlayerID string                // competitive/teams: which player was eliminated
-	Team               int                   // teams: team of the eliminated player (UpdatePlayerEliminated)
-	OpponentID         string                // which opponent's board changed (UpdateOpponentField)
-	FlashCells         [][2]int              // cells to flash (UpdateCASFlash): the piece as it stood when the step was lost
-	FlashTargetCells   [][2]int              // UpdateCASFlash, a lost step: where the piece wanted to be — the outline a UI that pre-renders the move flashes instead (nil for a lost spawn/lock, and on the spectator broadcast)
-	FlashPlayerIdx     int                   // player index for flash color
-	RTT                time.Duration         // latest publish→echo round trip (UpdateRTT)
-	TeamScores         [config.TeamCount]int // teams: both teams' scores (UpdateTeamStats)
-	TeamLevels         [config.TeamCount]int // teams: both teams' levels (UpdateTeamStats)
+	Countdown          int           // seconds remaining (0 = GO!)
+	Won                bool          // competitive/teams: true if this player('s team) won
+	EliminatedPlayerID string        // competitive/teams: which player was eliminated
+	Team               int           // teams: team of the eliminated player (UpdatePlayerEliminated)
+	OpponentID         string        // which opponent's board changed (UpdateOpponentField)
+	FlashCells         [][2]int      // cells to flash (UpdateCASFlash): the piece as it stood when the step was lost
+	FlashTargetCells   [][2]int      // UpdateCASFlash, a lost step: where the piece wanted to be — the outline a UI that pre-renders the move flashes instead (nil for a lost spawn/lock, and on the spectator broadcast)
+	FlashPlayerIdx     int           // player index for flash color
+	RTT                time.Duration // latest publish→echo round trip (UpdateRTT)
+	TeamScores         []int         // teams: every team's score, in team-index order (UpdateTeamStats)
+	TeamLevels         []int         // teams: every team's level, in team-index order (UpdateTeamStats)
 }
 
 // EventKind identifies the type of game event published to the events subject.

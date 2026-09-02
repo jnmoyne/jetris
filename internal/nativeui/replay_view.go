@@ -64,7 +64,8 @@ func (b *replayBoard) snapshot() engine.BoardSnapshot {
 
 // newReplayBoards builds the mode-appropriate board set for an archived game —
 // one shared board for cooperative, one per player (sorted by ID, matching the
-// archive viewer's coloring) for competitive, one per team for teams — with
+// archive viewer's coloring) for competitive, one per team for teams (however
+// many teams the game was played between) — with
 // the competitive playerID → board index map beside it.
 func newReplayBoards(rec config.ArchiveRecord) ([]*replayBoard, map[string]int) {
 	byPlayer := map[string]int{}
@@ -75,10 +76,10 @@ func newReplayBoards(rec config.ArchiveRecord) ([]*replayBoard, map[string]int) 
 			config.HeadroomRows+config.VisibleRows, config.VisibleRowStart)}, byPlayer
 	case config.ModeTeams:
 		var boards []*replayBoard
-		for t := 0; t < config.TeamCount; t++ {
+		for t := 0; t < rec.Teams(); t++ {
 			boards = append(boards, newReplayBoard("Team "+teamName(t), t,
 				config.TeamBoardWidth(rec.TeamSize, rec.ExtraColumns),
-				config.TeamTotalRows(rec.TeamSize), config.TeamVisibleRowStart(rec.TeamSize)))
+				config.TeamTotalRows(rec.Teams(), rec.TeamSize), config.TeamVisibleRowStart(rec.Teams(), rec.TeamSize)))
 		}
 		return boards, byPlayer
 	default: // competitive

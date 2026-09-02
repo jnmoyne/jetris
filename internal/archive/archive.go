@@ -185,6 +185,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		StartedAt:    meta.StartedAt,
 		FinishedAt:   meta.FinishedAt,
 		Players:      results,
+		TeamCount:    meta.Teams(),
 		TeamSize:     meta.TeamSize,
 		ExtraColumns: meta.ExtraColumns,
 		WinningTeam:  winningTeam,
@@ -197,9 +198,8 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	if meta.Mode == config.ModeTeams {
 		// The archiving engine folded every team's line-clear events, so its
 		// per-team scoreboard is the authoritative end-of-game team totals.
-		ts, tl := eng.TeamScores(), eng.TeamLevels()
-		record.TeamScores = append([]int(nil), ts[:]...)
-		record.TeamLevels = append([]int(nil), tl[:]...)
+		record.TeamScores = eng.TeamScores()
+		record.TeamLevels = eng.TeamLevels()
 	}
 
 	// Capture each board's final state from the game stream (latest message per
@@ -296,10 +296,10 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 
 	case config.ModeTeams:
 		w := config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns)
-		h := config.TeamTotalRows(meta.TeamSize)
-		vs := config.TeamVisibleRowStart(meta.TeamSize)
+		h := config.TeamTotalRows(meta.Teams(), meta.TeamSize)
+		vs := config.TeamVisibleRowStart(meta.Teams(), meta.TeamSize)
 		var out []config.BoardPicture
-		for t := 0; t < config.TeamCount; t++ {
+		for t := 0; t < meta.Teams(); t++ {
 			t := t
 			if pic, ok := capturePicture(ctx, js, gameID, w, h, vs, teamLabel(t), t,
 				func(r, c int) string { return config.TeamCellSubject(gameID, t, r, c) }); ok {
@@ -365,10 +365,7 @@ func isBlankCell(c game.Cell) bool {
 	return !c.Occupied && !c.Active && !c.Adversarial
 }
 
-// teamLabel is the human label stored for a team board ("Team A" / "Team B").
+// teamLabel is the human label stored for a team board ("Team A", "Team B", …).
 func teamLabel(team int) string {
-	if team == 0 {
-		return "Team A"
-	}
-	return "Team B"
+	return "Team " + config.TeamLetter(team)
 }

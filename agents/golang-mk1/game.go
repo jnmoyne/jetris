@@ -32,9 +32,10 @@ type Game struct {
 	id  string
 	idx int
 
-	mode     int // modeCooperative / modeCompetitive / modeTeams
-	team     int // teams: 0 = A, 1 = B
-	teamSlot int // teams: section index on the team board
+	mode      int // modeCooperative / modeCompetitive / modeTeams
+	team      int // teams: 0 = A, 1 = B, …
+	teamCount int // teams: how many teams the game is played between (meta team_count; 2 unless the creator asked for more)
+	teamSlot  int // teams: section index on the team board
 	w        int // board width (competitive 10; a shared board 10 + extra_columns per seat beyond the first — sharedWidth)
 	spawnC   int // our spawn column (section-centered on shared boards)
 	runCtx   context.Context
@@ -51,13 +52,18 @@ type Game struct {
 
 	sharedScore  int               // coop: the one shared score (all senders folded)
 	totalLines   int               // coop: all cleared lines (level source)
-	teamScores   [2]int            // teams: per-team scoreboard
-	teamLines    [2]int            // teams: per-team line totals (level source)
+	teamScores   []int             // teams: per-team scoreboard, one entry per team
+	teamLines    []int             // teams: per-team line totals (level source), one entry per team
 	senderTotals map[string][2]int // last cumulative {score,lines} folded per sender
 
 	eliminated map[string]bool
 	results    map[string]event
 	roster     []playerSummary
+
+	// attackRotor picks which opposing team our next attack lands on: past
+	// two teams a clear cannot go to "the other" team, so targets rotate
+	// (nextGarbageTarget). Guarded by mu.
+	attackRotor int
 
 	garbageOwed int
 	garbageBy   int
@@ -123,17 +129,29 @@ func (g *Game) isEnded() bool {
 }
 
 // height: 4 headroom + 24 visible + garbage room (one row per player feeding
-// the board: playerCount in competitive, teamSize in teams; none in coop).
+// the board: playerCount in competitive, every seat on every OTHER team in
+// teams; none in coop).
 func (g *Game) height() int {
 	switch g.mode {
 	case modeCooperative:
 		return 28
 	case modeTeams:
-		return 28 + g.playerCount/2
+		return 28 + g.playerCount - g.teamSize()
 	default:
 		return 28 + g.playerCount
 	}
 }
+
+// teams is how many teams this game is played between (2 unless the meta says
+// otherwise), and teamSize how many seats each of them holds.
+func (g *Game) teams() int {
+	if g.teamCount < minTeamCount {
+		return defaultTeamCount
+	}
+	return min(g.teamCount, maxTeamCount)
+}
+
+func (g *Game) teamSize() int { return g.playerCount / g.teams() }
 
 // ---- subjects ------------------------------------------------------------
 
@@ -864,9 +882,12 @@ func (g *Game) attackRows(lines int) int {
 	return 4
 }
 
-// bumpTeamLedger CAS-adds `lines` to the OPPOSING team's garbage register.
+// bumpTeamLedger CAS-adds `lines` to ONE opposing team's garbage register:
+// between two teams the other one, and past that the rotation's next, so an
+// attack weighs what it always did rather than hitting every opponent at once
+// (the same rule the GUI engine plays by — internal/engine/ledger.go).
 func (g *Game) bumpTeamLedger(ctx context.Context, lines int) {
-	subject := g.teamGarbageSubject(1 - g.team)
+	subject := g.teamGarbageSubject(g.nextGarbageTarget())
 	for i := 0; i < 20; i++ {
 		var total int
 		var seq uint64
@@ -1181,7 +1202,7 @@ func (g *Game) startConsumers(ctx context.Context) error {
 			if ev.PlayerID != g.a.name {
 				g.results[ev.PlayerID] = ev
 			}
-			enemyDead := g.mode == modeTeams && g.teamDead(1-g.team)
+			enemyDead := g.mode == modeTeams && g.othersDead()
 			g.mu.Unlock()
 			if g.mode == modeCooperative || enemyDead {
 				// Coop: anyone's top-out ends the game for everyone. Teams:
@@ -1262,6 +1283,7 @@ func (g *Game) run(ctx context.Context) bool {
 	g.metaSeed = meta.u64("seed")
 	g.mode = meta.int("mode")
 	g.playerCount = meta.int("player_count")
+	g.teamCount = normalizeTeamCount(meta.int("team_count")) // absent (pre-field meta) = the historical two
 	g.nextCount = meta.int("next_count")
 	g.holes = min(max(meta.int("garbage_holes"), 0), maxGarbageHoles) // absent (pre-field meta) = 0: solid rows
 	g.randomHoles = meta.boolv("random_garbage_holes") && g.holes > 0
@@ -1279,12 +1301,13 @@ func (g *Game) run(ctx context.Context) bool {
 		g.w = sharedWidth(g.playerCount, extra)
 		g.spawnC = g.idx*extra + spawnCol
 	case modeTeams:
+		g.teamScores, g.teamLines = make([]int, g.teams()), make([]int, g.teams())
 		for _, p := range g.roster {
 			if p.PlayerID == g.a.name {
 				g.team, g.teamSlot = p.Team, p.TeamSlot
 			}
 		}
-		teamSize := g.playerCount / 2
+		teamSize := g.teamSize()
 		g.w = sharedWidth(teamSize, extra)
 		g.spawnC = g.teamSlot*extra + spawnCol
 		// The piece split (gameplays §5): the seven types dealt out between
@@ -1596,7 +1619,7 @@ func (g *Game) winCheck() bool {
 	case modeCooperative:
 		return false // no winner: the game ends when anyone tops out
 	case modeTeams:
-		return g.teamDead(1-g.team) && !g.dead
+		return g.othersDead() && !g.dead
 	}
 	others := 0
 	for _, p := range g.roster {
@@ -1634,7 +1657,7 @@ func (g *Game) topOut(ctx context.Context) bool {
 		g.eliminated[g.a.name] = true
 		g.mu.Unlock()
 		g.publishGameOver(ctx)
-		log.Printf("topped out — team %s plays on", map[int]string{0: "A", 1: "B"}[g.team])
+		log.Printf("topped out — team %s plays on", teamLetter(g.team))
 		return g.waitForVerdict(ctx)
 	}
 	g.mu.Lock()
@@ -1734,17 +1757,15 @@ func (g *Game) archive(ctx context.Context) {
 		g.mu.Unlock()
 	case modeTeams:
 		g.mu.Lock()
-		wt := -1
-		switch {
-		case g.teamDead(1) && !g.teamDead(0):
-			wt = 0
-		case g.teamDead(0) && !g.teamDead(1):
-			wt = 1
+		levels := make([]int, len(g.teamLines))
+		for t, l := range g.teamLines {
+			levels[t] = min(l/10, 19)
 		}
-		record["team_size"] = g.playerCount / 2
-		record["winning_team"] = wt
-		record["team_scores"] = []int{g.teamScores[0], g.teamScores[1]}
-		record["team_levels"] = []int{min(g.teamLines[0]/10, 19), min(g.teamLines[1]/10, 19)}
+		record["team_count"] = g.teams()
+		record["team_size"] = g.teamSize()
+		record["winning_team"] = g.winningTeam()
+		record["team_scores"] = append([]int(nil), g.teamScores...)
+		record["team_levels"] = levels
 		g.mu.Unlock()
 	}
 	b, _ := json.Marshal(record)
@@ -1783,12 +1804,7 @@ func (g *Game) playerResults() []map[string]any {
 	defer g.mu.Unlock()
 	winningTeam := -1
 	if g.mode == modeTeams {
-		switch {
-		case g.teamDead(1) && !g.teamDead(0):
-			winningTeam = 0
-		case g.teamDead(0) && !g.teamDead(1):
-			winningTeam = 1
-		}
+		winningTeam = g.winningTeam()
 	}
 	out := make([]map[string]any, 0, len(g.roster))
 	for _, p := range g.roster {
@@ -1854,10 +1870,10 @@ func (g *Game) boardPictures(ctx context.Context) []map[string]any {
 			return fmt.Sprintf("jetris.game.%s.playfield.cell.%d.%d", g.id, r, c)
 		})}
 	case modeTeams:
-		pics := make([]map[string]any, 0, 2)
-		for t := 0; t < 2; t++ {
+		pics := make([]map[string]any, 0, g.teams())
+		for t := 0; t < g.teams(); t++ {
 			t := t
-			pics = append(pics, snap(map[int]string{0: "Team A", 1: "Team B"}[t], t, func(r, c int) string {
+			pics = append(pics, snap("Team "+teamLetter(t), t, func(r, c int) string {
 				return fmt.Sprintf("jetris.game.%s.team.%d.playfield.cell.%d.%d", g.id, t, r, c)
 			}))
 		}

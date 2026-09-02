@@ -3,6 +3,7 @@ package nativeui
 import (
 	"testing"
 
+	"jetris/internal/config"
 	"jetris/internal/lobby"
 )
 
@@ -20,7 +21,7 @@ func TestInviteSeatUsage(t *testing.T) {
 		{InviteeID: "b"},
 		{InviteeID: "c", Declined: true}, // declined seats are free again
 	}
-	if n := inviteSeatUsage(g, invites, false); n[0] != 3 {
+	if n := inviteSeatUsage(g, invites, false, 0); n[0] != 3 {
 		t.Errorf("competitive usage = %d, want 3 (1 joined + 2 pending)", n[0])
 	}
 
@@ -37,9 +38,31 @@ func TestInviteSeatUsage(t *testing.T) {
 		{InviteeID: "a", Team: 0},
 		{InviteeID: "b", Team: 1, Declined: true},
 	}
-	n := inviteSeatUsage(g, invites, true)
+	n := inviteSeatUsage(g, invites, true, 2)
 	if n[0] != 2 || n[1] != 1 {
 		t.Errorf("teams usage = %v, want [2 1]", n)
+	}
+
+	// Three teams: the tally is as wide as the game, and an invitation naming
+	// a team the game does not have is counted against nobody.
+	g = lobby.GameListing{
+		Mode:        config.ModeTeams,
+		PlayerCount: 6,
+		TeamCount:   3,
+		TeamSize:    2,
+		Players: []lobby.PlayerSummary{
+			{PlayerID: "host", Team: 0},
+			{PlayerID: "ann", Team: 2},
+		},
+	}
+	invites = []lobby.Invitation{
+		{InviteeID: "a", Team: 1},
+		{InviteeID: "b", Team: 2},
+		{InviteeID: "c", Team: 5}, // not a team of this game
+	}
+	n = inviteSeatUsage(g, invites, true, g.Teams())
+	if len(n) != 3 || n[0] != 1 || n[1] != 1 || n[2] != 2 {
+		t.Errorf("three-team usage = %v, want [1 1 2]", n)
 	}
 }
 

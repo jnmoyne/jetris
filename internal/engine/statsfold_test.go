@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"jetris/internal/config"
@@ -21,14 +22,39 @@ func TestTeamStatsFoldOnAllEngines(t *testing.T) {
 		Score: 20, LinesCleared: 10, TotalScore: 20, TotalLines: 10,
 	})
 
-	if got, want := e.TeamScores(), [config.TeamCount]int{0, 20}; got != want {
+	if got, want := e.TeamScores(), []int{0, 20}; !slices.Equal(got, want) {
 		t.Fatalf("TeamScores = %v, want %v", got, want)
 	}
-	if got, want := e.TeamLevels(), [config.TeamCount]int{0, 1}; got != want {
+	if got, want := e.TeamLevels(), []int{0, 1}; !slices.Equal(got, want) {
 		t.Fatalf("TeamLevels = %v, want %v", got, want)
 	}
 	if e.Score() != 0 || e.Level() != 0 {
 		t.Fatalf("own score/level = %d/%d, want 0/0 (other team's clear)", e.Score(), e.Level())
+	}
+}
+
+// TestTeamStatsFoldPastTwoTeams verifies the per-team scoreboard is as wide as
+// the game: a three-way game folds team C's clears into a third column, and a
+// stray event naming a team the game does not have is ignored rather than
+// running off the end of the board.
+func TestTeamStatsFoldPastTwoTeams(t *testing.T) {
+	e := New(nil, "g", "me", "", config.ModeTeams, ModePlayer, 0, 0, 0)
+	e.teamCount = 3
+
+	e.handleGameEvent(context.Background(), GameEvent{
+		Kind: EventLineClear, PlayerID: "them", Team: 2,
+		Score: 40, LinesCleared: 10, TotalScore: 40, TotalLines: 10,
+	})
+	e.handleGameEvent(context.Background(), GameEvent{
+		Kind: EventLineClear, PlayerID: "stray", Team: 5, // not a team of this game
+		Score: 900, LinesCleared: 90, TotalScore: 900, TotalLines: 90,
+	})
+
+	if got, want := e.TeamScores(), []int{0, 0, 40}; !slices.Equal(got, want) {
+		t.Fatalf("TeamScores = %v, want %v", got, want)
+	}
+	if got, want := e.TeamLevels(), []int{0, 0, 1}; !slices.Equal(got, want) {
+		t.Fatalf("TeamLevels = %v, want %v", got, want)
 	}
 }
 

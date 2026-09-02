@@ -367,8 +367,9 @@ func (a *App) initLobby(name string) error {
 }
 
 // createGame creates a game and returns its ID. For teams mode, count is the
-// number of players PER TEAM; for the other modes it is the total player
-// count. extraCols is the wizard's board-width setting for the modes that
+// number of players PER TEAM and teamCount how many teams play each other
+// (0 reads as the usual two); for the other modes count is the total player
+// count and teamCount is 0. extraCols is the wizard's board-width setting for the modes that
 // share a board — the columns every seat beyond the first adds to the
 // standard 10 (config.SharedBoardWidth); competitive ignores it. maxAgents is
 // the agent policy — how many seats idle agent players may take (0 = agents
@@ -379,17 +380,20 @@ func (a *App) initLobby(name string) error {
 // with two or more per team; config.GameMeta.SplitPieces).
 // inviteOnly restricts joining to invited players (the invite flow sets it
 // and then sends the invitations).
-func (a *App) createGame(mode config.GameMode, count, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) string {
+func (a *App) createGame(mode config.GameMode, count, teamCount, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) string {
 	lb := a.getLobby()
 	if lb == nil {
 		return ""
 	}
 	playerCount, teamSize := count, 0
 	if mode == config.ModeTeams {
+		teamCount = config.NormalizeTeamCount(teamCount)
 		teamSize = count
-		playerCount = config.TeamCount * count
+		playerCount = teamCount * count
+	} else {
+		teamCount = 0
 	}
-	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamSize, extraCols, maxAgents, splitPieces, rules, inviteOnly)
+	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamCount, teamSize, extraCols, maxAgents, splitPieces, rules, inviteOnly)
 	a.mu.Lock()
 	if err != nil {
 		a.lobbyErr = "Couldn't create the game: " + err.Error()
@@ -420,8 +424,9 @@ func (a *App) deleteGame(gameID string) {
 }
 
 // selfSeat applies the invite picker's "You" row: sel is "" (host without
-// playing — free the seat) or a team digit ("0"/"1"; non-teams games always
-// pass "0"). Moving between teams frees the old seat first. Only roster
+// playing — free the seat) or the team index as a string ("0", "1", …;
+// non-teams games always pass "0"). Moving between teams frees the old seat
+// first. Only roster
 // membership changes here — the engine and game screen come later, when the
 // picker sees the game fill and hands the creator over via joinGame.
 func (a *App) selfSeat(gameID, sel string) {
@@ -437,7 +442,10 @@ func (a *App) selfSeat(gameID, sel string) {
 		a.invalidate()
 		return
 	}
-	team := int(sel[0] - '0')
+	team, err := strconv.Atoi(sel)
+	if err != nil {
+		return
+	}
 	if g, ok := lb.Games()[gameID]; ok {
 		for _, p := range g.Players {
 			if p.PlayerID == lb.PlayerID() && p.Team != team {
@@ -553,8 +561,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.readyPlayers = players
 	a.score = 0
 	a.level = 0
-	a.teamScores = [config.TeamCount]int{}
-	a.teamLevels = [config.TeamCount]int{}
+	a.teamScores, a.teamLevels = nil, nil
 	a.rtt = 0
 	a.gameStatus = status
 	a.countdown = -1
@@ -720,8 +727,7 @@ func (a *App) returnToLobby() {
 	a.countdown = -1
 	a.score = 0
 	a.level = 0
-	a.teamScores = [config.TeamCount]int{}
-	a.teamLevels = [config.TeamCount]int{}
+	a.teamScores, a.teamLevels = nil, nil
 	a.rtt = 0
 	a.gameStatus = ""
 	a.resetBoardFX()

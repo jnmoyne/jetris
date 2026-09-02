@@ -217,7 +217,7 @@ func replayWinners(rv *replayView) (won map[int]bool, banner string) {
 func replayVerdict(r config.ArchiveRecord) string {
 	switch r.Mode {
 	case config.ModeTeams:
-		if r.WinningTeam >= 0 && r.WinningTeam < config.TeamCount {
+		if r.WinningTeam >= 0 && r.WinningTeam < r.Teams() {
 			return "TEAM " + teamName(r.WinningTeam) + " WINS!"
 		}
 		return "DRAW"
@@ -603,7 +603,8 @@ type span struct {
 
 // replaySummary is the replay screen's summary line: when the game was
 // played and how long it took, the mode, then every player in the color of
-// their board — teams grouped under their color-matched TEAM A / TEAM B, the
+// their board — teams grouped under their color-matched TEAM A / TEAM B / …,
+// the
 // cooperative crew plainly — with no scores and no trophies while the game
 // plays back, so the ending stays a surprise. Revealed, the winners go gold
 // with a trophy and in bold italic, the beaten keep their colors, and every
@@ -626,7 +627,7 @@ func replaySummary(r config.ArchiveRecord, reveal bool) []span {
 	sort.Slice(players, func(i, j int) bool { return players[i].PlayerID < players[j].PlayerID })
 	switch r.Mode {
 	case config.ModeTeams:
-		for t := 0; t < config.TeamCount; t++ {
+		for t := 0; t < r.Teams(); t++ {
 			if t > 0 {
 				out = append(out, sep)
 			}

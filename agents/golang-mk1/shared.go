@@ -51,6 +51,32 @@ func sharedWidth(seats, extra int) int {
 	return width + max(seats-1, 0)*extra
 }
 
+// The number of teams a teams game is played between (meta team_count). Two —
+// Team A vs Team B — is the default and what every meta written before the
+// field reads as; team indices run 0..count-1 and are named by their letter.
+const (
+	defaultTeamCount = 2
+	minTeamCount     = 2
+	maxTeamCount     = 6
+)
+
+// normalizeTeamCount reads a meta's team_count: absent is the historical two,
+// out of range is clamped.
+func normalizeTeamCount(n int) int {
+	if n <= 0 {
+		return defaultTeamCount
+	}
+	return min(max(n, minTeamCount), maxTeamCount)
+}
+
+// teamLetter names a team index the way every screen shows it: A, B, C, …
+func teamLetter(t int) string {
+	if t < 0 || t >= 26 {
+		return strconv.Itoa(t)
+	}
+	return string(rune('A' + t))
+}
+
 // gravityInterval is the guideline speed curve (gameplays §7): seconds per
 // row = (0.8 − (L − 1) × 0.007)^(L − 1) with L = level + 1, to the
 // millisecond, floored at one 60 Hz frame. Shared boards level up as lines
@@ -433,7 +459,7 @@ func (g *Game) foldLineClear(ev event) {
 		g.sharedScore += ds
 		g.totalLines += dl
 	case modeTeams:
-		if ev.Team >= 0 && ev.Team < 2 {
+		if ev.Team >= 0 && ev.Team < len(g.teamScores) {
 			g.teamScores[ev.Team] += ds
 			g.teamLines[ev.Team] += dl
 		}
@@ -456,6 +482,46 @@ func (g *Game) teamDead(t int) bool {
 		}
 	}
 	return n > 0
+}
+
+// othersDead reports whether every team but our own is fully out — the moment
+// we have won. With two teams that is simply the other one; with more it is
+// the last-team-standing rule the whole game plays by. Caller holds mu.
+func (g *Game) othersDead() bool {
+	for t := 0; t < g.teams(); t++ {
+		if t != g.team && !g.teamDead(t) {
+			return false
+		}
+	}
+	return true
+}
+
+// winningTeam is the game's verdict: the one team still standing, or -1 while
+// more than one is (and on a draw, every team out together). Caller holds mu.
+func (g *Game) winningTeam() int {
+	alive := -1
+	for t := 0; t < g.teams(); t++ {
+		if g.teamDead(t) {
+			continue
+		}
+		if alive >= 0 {
+			return -1 // more than one team left: undecided
+		}
+		alive = t
+	}
+	return alive
+}
+
+// nextGarbageTarget picks the opposing team our next attack lands on: the
+// other team in a duel, and past that the rotation's next, so consecutive
+// raises spread over the opponents instead of every one of them taking the
+// full raise. Same rule as the GUI engine's (internal/engine/ledger.go).
+// Caller holds mu (the whole lock/clear/attack path runs under it).
+func (g *Game) nextGarbageTarget() int {
+	n := g.teams()
+	t := (g.team + 1 + g.attackRotor%max(n-1, 1)) % n
+	g.attackRotor++
+	return t
 }
 
 // vacateOwnPiece removes our dead piece from the team board as a txn-gated
@@ -502,13 +568,13 @@ func (g *Game) vacateOwnPiece(ctx context.Context) {
 }
 
 // waitForVerdict is the teams endgame for an eliminated (or winning) member:
-// stay connected until one team is fully dead, then report whether OUR team
-// prevailed. The winning side archives (CAS-deduplicated).
+// stay connected until every team but one is fully dead, then report whether
+// OUR team is the one left. The winning side archives (CAS-deduplicated).
 func (g *Game) waitForVerdict(ctx context.Context) bool {
 	deadline := time.After(10 * time.Minute)
 	for {
 		g.mu.Lock()
-		enemyDead := g.teamDead(1 - g.team)
+		enemyDead := g.othersDead()
 		ownDead := g.teamDead(g.team)
 		g.mu.Unlock()
 		if enemyDead {
@@ -522,7 +588,7 @@ func (g *Game) waitForVerdict(ctx context.Context) bool {
 		select {
 		case <-g.ended:
 			g.mu.Lock()
-			enemyDead = g.teamDead(1 - g.team)
+			enemyDead = g.othersDead()
 			g.mu.Unlock()
 			return enemyDead
 		case <-ctx.Done():

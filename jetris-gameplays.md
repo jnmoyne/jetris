@@ -384,19 +384,23 @@ The game continues until only **one player remains**. When a player tops out (th
 
 ## 5. Teams Mode
 
-Two teams of equal size ("A" = team 0, "B" = team 1). **Within a team, play is cooperative** — teammates share one wide board with all the cooperative-mode mechanics (per-player sections, shared pieces as obstacles, merge-retry on the shared subjects). **Between the teams, play is competitive** — each team has its own independent board, line clears send garbage to the opposing team's board (unclearable unless the game was created with garbage holes, §1b), and the last team with a player standing wins.
+Two or more teams of equal size ("A" = team 0, "B" = team 1, "C" = team 2, …). **Within a team, play is cooperative** — teammates share one wide board with all the cooperative-mode mechanics (per-player sections, shared pieces as obstacles, merge-retry on the shared subjects). **Between the teams, play is competitive** — each team has its own independent board, line clears send garbage to an opposing team's board (unclearable unless the game was created with garbage holes, §1b), and the last team with a player standing wins.
+
+### How Many Teams
+
+`meta.team_count` (`GameMeta.TeamCount`, the create wizard's step-1 **Teams** slider, `config.MinTeamCount`..`MaxTeamCount` = 2..6) is how many teams the game is played between. **Two — Team A vs Team B — is the default**, and a meta without the field (every game created before the slider) reads as two, so an archived duel still rebuilds exactly as it was played. Everything below is written for the general case; at two teams every rule reduces to the game teams mode has always been.
 
 ### Players & Teams
 
-`TeamSize` players per team; `PlayerCount = 2 × TeamSize` total. Players **choose their team when joining** (Join A / Join B in the lobby); a join on a full team is rejected. The game transitions to `starting` when both teams are full. Each player keeps a **global** roster index (`PlayerIdx`, used for piece ownership and colors) plus a **team slot** (0..TeamSize-1, join order within the team) that selects their spawn section on the team board.
+`TeamSize` players per team; `PlayerCount = TeamCount × TeamSize` total. Players **choose their team when joining** (one Join A / Join B / Join C … button per team in the lobby, each shown while that team has room); a join on a full team — or on a team index the game does not have — is rejected. The game transitions to `starting` when every team is full. Each player keeps a **global** roster index (`PlayerIdx`, used for piece ownership and colors) plus a **team slot** (0..TeamSize-1, join order within the team) that selects their spawn section on the team board.
 
 ### Playfield
 
-One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 — 14 columns for a team of 2 at the default setting of 4), visible rows `24 + teamSize` (plus 4 headroom rows). Like competitive, the extra rows leave room for garbage; the producer here is the opposing team's `teamSize` piece-locking players. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the two boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
+One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 — 14 columns for a team of 2 at the default setting of 4), visible rows `24 + (teamCount − 1) × teamSize` (plus 4 headroom rows). Like competitive, the extra rows leave room for garbage; the producers here are the piece-locking players on every OTHER team, so a duel gets `24 + teamSize` exactly as before and a three-way twice that allowance. Cell subjects are scoped by team (`…team.<idx>.playfield.cell.<r>.<c>`), so the boards are disjoint subject trees and each one behaves exactly like the cooperative shared board for its members.
 
 ### Piece Spawning
 
-Coop rules per team: player at team slot N spawns centered in their section at column `N×extraColumns + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so both teams see the identical, fair piece sequence.
+Coop rules per team: player at team slot N spawns centered in their section at column `N×extraColumns + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so every team sees the identical, fair piece sequence.
 
 #### Split pieces (`split_pieces`)
 
@@ -414,13 +418,15 @@ Identical to cooperative mode, scoped to the team board: teammates' active piece
 
 ### Line Clears & Scoring
 
-Coop scoring within the team: a clear scores `teamSize × lines` to the **team score**; every teammate folds the clearing player's score **and line count** from the line-clear event, so the team's level (and gravity speed) stays in sync for all members. The opposing team's clears do not affect your own team's score.
+Coop scoring within the team: a clear scores `teamSize × lines` to the **team score**; every teammate folds the clearing player's score **and line count** from the line-clear event, so the team's level (and gravity speed) stays in sync for all members. Other teams' clears do not affect your own team's score.
 
-In addition to the own-team score, **every** engine — both teams' players, eliminated players, and spectators — folds **every** team's line-clear events into a per-team scoreboard: `TEAM A` / `TEAM B` score totals **and** per-team cleared-line totals, from which each team's level is derived. Both teams' scores (and, for spectators, levels) are therefore visible and live on every screen. Line-clear events live on per-sender subjects and carry the sender's **cumulative** totals, and receivers fold deltas against the last total seen from that sender — so a trimmed intermediate event is subsumed by the next one, and a spectator who joins mid-game reconstructs the full scoreboard from each sender's last retained event.
+In addition to the own-team score, **every** engine — every team's players, eliminated players, and spectators — folds **every** team's line-clear events into a per-team scoreboard: a `TEAM A` / `TEAM B` / … score total **and** a per-team cleared-line total, from which each team's level is derived. Every team's score (and, for spectators, level) is therefore visible and live on every screen. Line-clear events live on per-sender subjects and carry the sender's **cumulative** totals, and receivers fold deltas against the last total seen from that sender — so a trimmed intermediate event is subsumed by the next one, and a spectator who joins mid-game reconstructs the full scoreboard from each sender's last retained event.
 
 ### Garbage Attack (team shrink)
 
-When a team clears N lines, N adversarial rows — or the Guideline table's 0/1/2/4 in a `guideline_garbage` game (§1b) — are owed to the **opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost. The rows land solid (permanent) or punched with the game's `garbage_holes` (§1b) — one random column set per raise across the whole team-wide row, or one per row with `random_garbage_holes` — and a holed garbage row a teammate fills clears like any other team line. Application uses the same txn-gated transform, with three shared-board specifics:
+When a team clears N lines, N adversarial rows — or the Guideline table's 0/1/2/4 in a `guideline_garbage` game (§1b) — are owed to **one opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost.
+
+**Which opponent, past two teams.** In a duel there is only one answer and the rule never comes up. With three or more teams a raise still weighs exactly what it always did: it goes to **one** opponent, and each attacker **rotates** through the others — attack 1 to the next team up, attack 2 to the one after, wrapping around and skipping its own. (Giving every opponent the full raise would multiply the garbage in play by the number of teams and end a six-way game in a minute; rotating keeps a team both sending and receiving what it would in a duel.) The rotor is per **engine**, so a team's several players spread their own attacks independently, and over a game the raises land evenly across the opponents. Nothing on the wire changes: the victim reads its own garbage register and cannot tell — nor need it — which of its opponents was on rotation. The rows land solid (permanent) or punched with the game's `garbage_holes` (§1b) — one random column set per raise across the whole team-wide row, or one per row with `random_garbage_holes` — and a holed garbage row a teammate fills clears like any other team line. Application uses the same txn-gated transform, with three shared-board specifics:
 
 - **Any teammate applies; the gate makes it exactly-once.** Every alive member of the receiving team may react to the register. Each applies the deficit as a txn-gated batch, and the gate's per-subject CAS admits exactly one — a loser's entire batch is atomically rejected (nothing stored), and its recompute from fresh state finds the deficit already zero. No merge-retry, no double-shift.
 - **Pieces are pushed up, never crushed.** Every falling piece on the board — whoever owns it — holds its on-screen position unless the risen stack or garbage overlaps it, then lifts by the **minimum** rows that clear the conflict. Lifts **cascade**: a lifted piece is an obstacle for the pieces above it, so a rising stack can push a whole column of stacked falling pieces upward, each moving just enough; a piece is never merged into the risen stack. A piece pushed off the top eliminates its owner — the batch's txn record lists them (delivered before the vacating cells), so the owner's engine treats the resulting zero-active edge as an elimination, not a lock-in. If the shift pushes **locked** rows past the top, the whole board is full and every remaining player on it is eliminated (the team is out).
@@ -430,15 +436,15 @@ When a team clears N lines, N adversarial rows — or the Guideline table's 0/1/
 
 **A player out is not a team out.** When a player tops out (their next spawn cannot be placed on locked cells — a spawn blocked only by a teammate's falling piece is deferred, not fatal — or a garbage raise pushed their falling piece off the top; a raise that pushes locked rows past the top takes the whole board and every remaining player on it), they vacate any of their active cells from the team board (a txn-gated transform, so a racing garbage application can never resurrect the dead piece from a stale snapshot), publish their elimination, and become a spectator of their own team's board — but their teammates play on. The UI shows "YOU'RE OUT — your team plays on" until the game resolves.
 
-A team **loses when ALL its members have topped out**. At that point every member of the other team — alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Losers see "YOUR TEAM LOST". In both cases (and on the interim "you're out" box) the overlay shows both teams' scores and levels with the player's own team first — `TEAM A 42 (lvl 3) · TEAM B 17 (lvl 1)` — above the "Back to Lobby" button. All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines. Every member of the winning team — including already-eliminated members, whose engines re-emit the win — gets the same victory fireworks show as a competitive winner (rockets bursting into small NATS "N" logos that then blow apart) on their own screen.
+A team is **out when ALL its members have topped out**, and the game is over when **at most one team is still standing**. In a duel that is the moment either side falls; past two teams the survivors play on, a fallen team simply stops attacking and stops being attacked, until only one team is left. That last team — every member of it, alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Everyone else sees "YOUR TEAM LOST"; the last teams falling together is a draw, nobody crowned. In every case (and on the interim "you're out" box) the overlay shows every team's score and level with the player's own team first — `TEAM A 42 (lvl 3) · TEAM B 17 (lvl 1)` — above the "Back to Lobby" button. All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines. Every member of the winning team — including already-eliminated members, whose engines re-emit the win — gets the same victory fireworks show as a competitive winner (rockets bursting into small NATS "N" logos that then blow apart) on their own screen.
 
 ### Visual Indicators
 
-- HUD shows `Teams · TEAM A/B`, a live per-team scoreboard (`TEAM A` and `TEAM B` scores, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
+- HUD shows `Teams · TEAM A/B/…`, a live per-team scoreboard (one row per team, own team highlighted), and the team level; spectators instead see each team's score **and level** inline (`42 · lvl 3`) with no single SCORE/LEVEL stat
 - When the game reveals upcoming pieces (§1b), players also get the **NEXT well** beside their playfield with their own queue as mini piece tiles — and, in a game with the hold rule, the **HOLD box** off the playfield's other side (HOLD left of the playfield, NEXT right of it — and the on-screen pad's D-pad and buttons under them), showing the set-aside piece (dimmed once the hold is spent for the piece in play)
-- Legend groups players under TEAM A / TEAM B headers with their global player colors; eliminated players are marked `(out)`. In a `split_pieces` game each name carries the seat's **ration** under it — its piece letters, each in that piece's own color (`I O Z`) — for every seat on both teams, so a player can see at a glance who on their board can supply the shape the stack is waiting for (and which opponent is holding it)
-- The opposing team's board renders in the sidebar (labeled "OPPOSING TEAM")
-- Spectators see both team boards side by side
+- Legend groups players under TEAM A / TEAM B / … headers with their global player colors; eliminated players are marked `(out)`. In a `split_pieces` game each name carries the seat's **ration** under it — its piece letters, each in that piece's own color (`I O Z`) — for every seat on every team, so a player can see at a glance who on their board can supply the shape the stack is waiting for (and which opponent is holding it)
+- Every opposing team's board renders in the sidebar, each labeled with its own team ("TEAM B", "TEAM C", …)
+- Spectators see every team's board side by side
 
 ---
 
@@ -467,7 +473,7 @@ created → starting → [countdown] → in_progress → finished → archived
 | From | To | Trigger |
 |------|----|---------|
 | — | created | Player finishes the create-game wizard (open, or invite-only per its who-can-join step) |
-| created | starting | All player slots filled (roster full; in teams mode, both teams full). A join into an already-full game is refused |
+| created | starting | All player slots filled (roster full; in teams mode, every team full). A join into an already-full game is refused |
 | starting | [countdown] | All players click READY |
 | [countdown] | in_progress | 5-second countdown completes |
 | in_progress | finished | Game over (top-out) |
@@ -493,7 +499,9 @@ Games are created through a **create-game wizard**: the lobby carries a single
 embossed bevel and a diagonal glint sweeping across it every few seconds, so
 the lobby's main call to action can't be missed) that opens a modal walking the creator through the
 game's attributes one step at a time — **1. game type & players** (co-op /
-competitive / teams radios, the seat count, per-team in teams mode, and — for
+competitive / teams radios, the seat count, per-team in teams mode (with the
+**Teams** slider beside it — 2 to 6, default 2 — setting how many such teams
+the game is played between, so the total seat count is teams × per team), and — for
 the modes whose players share a board — the **board-width slider**: how many
 columns every seat beyond the first adds to the board's standard 10, 4 to 10,
 default 4, so a co-op pair or a team of two plays 14 columns wide, three 18,
@@ -532,7 +540,7 @@ per-invitation; choosing open continues to the agents step, whose button reads
   The picker's first row is **you**: by default the creator is listed
   **unselected** — you host as a spectator (the row reads **spectating when the
   game starts**) and will watch once the game fills. Select yourself to also take
-  a seat and play (team A by default in teams mode, switchable), and the row
+  a seat and play (team A by default in teams mode, switchable to any team), and the row
   switches to **joined ✓**. Below you the
   picker lists every OTHER player **currently idle in the lobby** (players already
   in a game can't be invited — you can only invite people free to play). The list
@@ -542,7 +550,7 @@ per-invitation; choosing open continues to the agents step, whose button reads
   **joined ✓** / **joined · ready ✓** (the row's control disappears — the seat
   answers for them), or **✕ declined** (re-selecting re-invites). For
   competitive/cooperative games each row is a simple **Invite** checkbox; for
-  **teams** games each row is a three-way selector (**— / A / B**) so you invite
+  **teams** games each row is a selector (**— / A / B / …**, one entry per team) so you invite
   each player to a specific team (changing the team re-invites them to the new
   one). A prominent header line tallies the seats live, broken out so it's
   obvious at a glance — **k/size seats filled — j joined · p invited · o open**

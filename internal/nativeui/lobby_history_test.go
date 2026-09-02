@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -92,11 +93,29 @@ func TestTeamStandings(t *testing.T) {
 	if games != 4 {
 		t.Fatalf("games = %d, want 4", games)
 	}
-	if wins != [config.TeamCount]int{2, 1} {
+	if !slices.Equal(wins, []int{2, 1}) {
 		t.Fatalf("wins = %v, want [2 1]", wins)
 	}
-	if points != [config.TeamCount]int{170, 155} {
+	if !slices.Equal(points, []int{170, 155}) {
 		t.Fatalf("points = %v, want [170 155]", points)
+	}
+
+	// A three-way game widens the board: TEAM C gets a column of its own,
+	// which the two-team games above simply never scored in.
+	wide := append(append([]config.ArchiveRecord(nil), recs...),
+		config.ArchiveRecord{Mode: config.ModeTeams, TeamCount: 3, WinningTeam: 2, TeamScores: []int{1, 2, 300}})
+	wins, points, games = teamStandings(wide)
+	if games != 5 {
+		t.Fatalf("games = %d, want 5", games)
+	}
+	if !slices.Equal(wins, []int{2, 1, 1}) {
+		t.Fatalf("wins = %v, want [2 1 1]", wins)
+	}
+	if !slices.Equal(points, []int{171, 157, 300}) {
+		t.Fatalf("points = %v, want [171 157 300]", points)
+	}
+	if d := newTestApp().teamStandingsLine(testCtx(1200, 60), wide); d.Size.X == 0 {
+		t.Fatal("standings line should render a three-team history")
 	}
 
 	// The rendered line appears only when a teams game exists.

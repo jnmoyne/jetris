@@ -107,7 +107,7 @@ func publishCell(t *testing.T, js jetstream.JetStream, gameID string, team, row,
 func prefillTeamBoard(t *testing.T, js jetstream.JetStream, gameID string, team int, raises []raise, slot bool, rng *rand.Rand) {
 	t.Helper()
 	width := shotBoardWidth()
-	row := config.TeamTotalRows(2) - 1 // the bottom row
+	row := config.TeamTotalRows(2, 2) - 1 // the bottom row
 	prevHole := -1
 	for _, r := range raises {
 		// One hole column per raise — never the column of the raise right
@@ -291,7 +291,7 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
 	prefillTeamBoard(t, js, gameID, 0, garbageA, true, rng)
 	prefillTeamBoard(t, js, gameID, 1, garbageB, false, rng)
-	height := config.TeamTotalRows(2)
+	height := config.TeamTotalRows(2, 2)
 	floorA := height - 1 - raisedRows(garbageA) // team A's lowest stack row: the bottom row of the slot
 
 	// Four player engines (team A: Alice+Chris, team B: Bob+David) and a
@@ -360,7 +360,7 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 		return garbageRowsOf(spec, 0) == rowsA && garbageRowsOf(spec, 1) == rowsB &&
 			garbageRowsOf(bob, 0) == rowsA && garbageRowsOf(bob, 1) == rowsB
 	})
-	for team := 0; team < config.TeamCount; team++ {
+	for team := 0; team < config.DefaultTeamCount; team++ {
 		if rows := completedRowsOf(spec, team); len(rows) > 0 {
 			t.Fatalf("team %d prefill produced complete rows %v before the staged clear", team, rows)
 		}
@@ -381,8 +381,8 @@ func TestCaptureREADMEScreenshots(t *testing.T) {
 	// A game well under way: teams score two points a line (one per
 	// teammate) and climb a level every ten lines — team A is 34 lines in,
 	// its double just counted, team B 27.
-	teamScores := [config.TeamCount]int{68, 54}
-	teamLevels := [config.TeamCount]int{3, 2}
+	teamScores := []int{68, 54}
+	teamLevels := []int{3, 2}
 
 	w, err := headless.NewWindow(shotW, shotH)
 	if err != nil {

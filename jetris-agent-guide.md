@@ -108,7 +108,7 @@ board's other clients will not accept:
 1. **Deal** the seven types among `team_size` seats off `seed`, and take the set
    at YOUR `team_slot` (the roster's `team_slot`, the same number that picks your
    spawn section). Every type goes to somebody and no seat is left empty-handed;
-   both teams' slot N get the same ration, which is what keeps the match fair.
+   every team's slot N gets the same ration, which is what keeps the match fair.
 2. **Draw** your pieces from that ration: index `i` is position `i % k` of a
    Fisher-Yates shuffle of the ration (`k` = its size, so bag `i / k`), seeded by
    PCG(mix(`seed`, ration), bag) — the game's seed mixed with the ration's 7-bit
@@ -257,7 +257,7 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore; `split_pieces` (bool, absent = false) is the TEAMS-mode piece split — the seven types are dealt out between a team's seats and your seat plays only its own ration, see below |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore; `split_pieces` (bool, absent = false) is the TEAMS-mode piece split — the seven types are dealt out between a team's seats and your seat plays only its own ration, see below; `team_count` (2-6, absent = 2) is how many teams a TEAMS game is played between and `team_size` how many seats each of them holds, so `player_count = team_count × team_size`, team indices run `0..team_count-1`, a team board's visible rows are `24 + (team_count − 1) × team_size`, and the game is over once at most one team still has a member standing (§5 of the gameplays) |
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
@@ -358,13 +358,25 @@ board's GARBAGE register and applied by the victim as a GATED transform:
   meta's `guideline_garbage` is true, the Guideline table: 0 for a single, 1
   for a double, 2 for a triple, 4 for a Tetris (owing 0 means you touch no
   register at all). For every victim board (competitive:
-  each surviving opponent; teams: the opposing board), CAS-add the garbage
+  each surviving opponent; teams: ONE opposing team's board — see below),
+  CAS-add the garbage
   register: read its last message (`{"total": T}` at sequence S, or 0/0 if
   never written), publish `{"total": T+rows, "by": <yourPlayerIdx>}` with
   `Nats-Expected-Last-Subject-Sequence: S`, and on a CAS rejection refresh
   and re-add (bounded retries). Simultaneous attackers serialize on the
   expectation and the register converges to the exact sum — an attack can
   never be lost, trimmed, or double-counted.
+
+  In teams, **which** opposing board takes the raise follows the game's
+  `team_count`. With two teams there is only one answer. Past two, a raise
+  still goes to exactly ONE opponent and your attacks **rotate** through the
+  others — attack 1 to `(yourTeam + 1) % teamCount`, attack 2 to the next,
+  wrapping around and skipping your own — so consecutive raises spread evenly
+  instead of every opponent taking the full one (which would multiply the
+  garbage in play by the number of teams). Keep the rotor per agent; the
+  reference agent does, and the GUI engine does the same per engine. Nothing
+  else on the wire changes: a victim reads its own register and cannot tell
+  which opponent was on rotation.
 - **Applying (your register grew).** Your deficit is `garbage.total −
   txn.applied`. Apply it as ONE atomic batch whose FIRST message is your txn
   register — `{"applied": <new total>, "op": "shrink", "by": <you>}` with a

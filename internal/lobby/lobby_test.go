@@ -54,7 +54,7 @@ func TestLobbyCreateGame(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestLobbyCreateGameSplitPieces(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	split, err := lb.CreateGame(ctx, config.ModeTeams, 4, 2, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
+	split, err := lb.CreateGame(ctx, config.ModeTeams, 4, 2, 2, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestLobbyCreateGameSplitPieces(t *testing.T) {
 	}
 
 	// A team of one has nobody to split with, and a co-op game no teams.
-	solo, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
+	solo, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestLobbyCreateGameSplitPieces(t *testing.T) {
 	if meta.SplitPieces {
 		t.Error("a team of one recorded a piece split")
 	}
-	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
+	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 2}, false)
+	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 2}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Errorf("listing garbage_holes = %d, want 2", g.GarbageHoles)
 	}
 
-	over, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 9}, false)
+	over, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 9}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Error("random holes should be off unless asked for")
 	}
 
-	random, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 3, RandomGarbageHoles: true}, false)
+	random, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 3, RandomGarbageHoles: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 	}
 
 	// Random holes without holes is meaningless: stored off.
-	solidRandom, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, RandomGarbageHoles: true}, false)
+	solidRandom, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, RandomGarbageHoles: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Error("random holes at 0 holes should be stored off")
 	}
 
-	under, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: -1}, false)
+	under, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: -1}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true}, false)
+	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 		t.Error("guideline garbage should be off unless asked for")
 	}
 
-	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GuidelineGarbage: true}, false)
+	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GuidelineGarbage: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true}, false)
+	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 		t.Error("next 1 / no hold is not the Guideline preset")
 	}
 
-	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 1, 0, 0, false, config.GuidelineRules(), false)
+	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GuidelineRules(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 		t.Errorf("the preset's listing %+v should read back as the Guideline preset", g.Rules())
 	}
 
-	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, false, config.GuidelineRules(), false)
+	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, false, config.GuidelineRules(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

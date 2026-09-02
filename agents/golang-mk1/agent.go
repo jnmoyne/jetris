@@ -57,6 +57,7 @@ type connChoice struct {
 type hosting struct {
 	mode      int  // modeCooperative / modeCompetitive / modeTeams
 	players   int  // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
+	teams     int  // teams mode: how many teams play each other (clamped 2..6; the total seat count is teams × players)
 	extraCols int  // shared boards: columns every seat beyond the first adds to the standard 10 (clamped 4..10)
 	maxAgents int  // agent seats, this agent included (<=0 = all seats)
 	next      int  // revealed upcoming pieces (clamped 0..maxNextCount)
@@ -532,27 +533,29 @@ func joinable(g obj) bool {
 }
 
 // pickTeam returns the team an agent should join: the invited team when the
-// invitation names one (want >= 0), else the least-populated team with room.
-// Returns -1 when no team has a free seat.
+// invitation names one (want >= 0), else the least-populated team with room —
+// over however many teams the game is played between (listing team_count;
+// absent is the historical two). Returns -1 when no team has a free seat.
 func pickTeam(g obj, want int) int {
+	teamCount := normalizeTeamCount(g.int("team_count"))
 	teamSize := g.int("team_size")
 	if teamSize <= 0 {
-		teamSize = g.int("player_count") / 2
+		teamSize = g.int("player_count") / teamCount
 	}
-	var counts [2]int
+	counts := make([]int, teamCount)
 	for _, p := range g.players() {
-		if p.Team >= 0 && p.Team < 2 {
+		if p.Team >= 0 && p.Team < teamCount {
 			counts[p.Team]++
 		}
 	}
-	if want >= 0 && want < 2 {
+	if want >= 0 && want < teamCount {
 		if counts[want] < teamSize {
 			return want
 		}
 		return -1
 	}
 	best, bestCount := -1, teamSize
-	for t := 0; t < 2; t++ {
+	for t := 0; t < teamCount; t++ {
 		if counts[t] < bestCount {
 			best, bestCount = t, counts[t]
 		}
@@ -719,14 +722,16 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 // The caller then joins its own game like any other player. Returns the new
 // game id.
 func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
-	players, teamSize := h.players, 0
+	players, teamSize, teamCount := h.players, 0, 0
 	if h.mode == modeTeams {
-		// The count is players PER TEAM, like the GUI's editor.
+		// The count is players PER TEAM, like the GUI's editor, and the game
+		// seats one such team per team the creator asked for.
 		if players < 1 {
 			players = 1
 		}
+		teamCount = normalizeTeamCount(h.teams)
 		teamSize = players
-		players = 2 * teamSize
+		players = teamCount * teamSize
 	} else if players < 2 {
 		players = 2
 	}
@@ -766,6 +771,7 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	meta.set("mode", h.mode)
 	meta.set("player_count", players)
 	if teamSize > 0 {
+		meta.set("team_count", teamCount)
 		meta.set("team_size", teamSize)
 	}
 	if extra > 0 {
@@ -804,6 +810,7 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	listing.set("status", "created")
 	listing.set("player_count", players)
 	if teamSize > 0 {
+		listing.set("team_count", teamCount)
 		listing.set("team_size", teamSize)
 	}
 	if extra > 0 {
@@ -840,9 +847,13 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	})
 	_ = a.nc.Publish("jetris.lobby.event.game.created", ev)
 
-	log.Printf("created %s game %s for %d players (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v) — waiting for opponents",
+	shape := ""
+	if teamCount > 0 {
+		shape = fmt.Sprintf(" in %d teams of %d", teamCount, teamSize)
+	}
+	log.Printf("created %s game %s for %d players%s (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v) — waiting for opponents",
 		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
-		gameID, players, maxAgents, next, holes, random, h.guideline, h.hold)
+		gameID, players, shape, maxAgents, next, holes, random, h.guideline, h.hold)
 	return gameID, nil
 }
 

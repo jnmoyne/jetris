@@ -659,9 +659,10 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 	}
 }
 
-// CreateGame creates a new game. For teams mode, teamSize is the number of
-// players per team and playerCount must be the total (TeamCount*teamSize);
-// other modes pass teamSize 0. extraCols is the board-width setting of the
+// CreateGame creates a new game. For teams mode, teamCount is how many teams
+// play each other (config.MinTeamCount..MaxTeamCount; 0 reads as the usual
+// two), teamSize is the number of players per team and playerCount must be
+// the total (teamCount*teamSize); other modes pass 0 for both. extraCols is the board-width setting of the
 // modes that share a board (cooperative, teams): the columns every seat
 // beyond the first adds to the standard 10 — see config.SharedBoardWidth;
 // competitive passes 0, and so may any caller that wants the historical
@@ -682,8 +683,16 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // hold — or plain "guideline" when the rules are the Guideline preset). The
 // ghost rule is stored inverted as GameMeta.NoGhost so pre-field metas keep
 // the ghost shown.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamSize, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) (string, error) {
+func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamCount, teamSize, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
+	// Only a teams game has teams; elsewhere the count is not recorded at all
+	// (and a teams game normalizes it, so a caller passing 0 gets the usual
+	// Team A vs Team B).
+	if mode == config.ModeTeams {
+		teamCount = config.NormalizeTeamCount(teamCount)
+	} else {
+		teamCount = 0
+	}
 	if maxAgents < 0 {
 		maxAgents = 0
 	}
@@ -710,6 +719,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		GameID:             gameID,
 		Mode:               mode,
 		PlayerCount:        playerCount,
+		TeamCount:          teamCount,
 		TeamSize:           teamSize,
 		ExtraColumns:       extraCols,
 		NextCount:          rules.NextCount,
@@ -738,6 +748,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		Mode:               mode,
 		Status:             config.GameStatusCreated,
 		PlayerCount:        playerCount,
+		TeamCount:          teamCount,
 		TeamSize:           teamSize,
 		ExtraColumns:       extraCols,
 		MaxAgents:          maxAgents,
@@ -855,7 +866,7 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 
 		summary = PlayerSummary{PlayerID: l.playerID, Name: l.name, Agent: l.isAgent}
 		if g.Mode == config.ModeTeams {
-			if team < 0 || team >= config.TeamCount {
+			if team < 0 || team >= g.Teams() {
 				return JoinResult{}, fmt.Errorf("invalid team %d", team)
 			}
 			if g.TeamMemberCount(team) >= g.TeamSize {

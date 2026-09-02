@@ -41,7 +41,8 @@ type boardFX struct {
 
 // Board tint strength: how far an empty square's fill and its grid line are
 // lerped toward boardFX.tint — a little color on the ground, the way the
-// teams rendering lights Team A's well cyan and Team B's magenta, while the
+// teams rendering lights Team A's well cyan and Team B's magenta (and on
+// past them, each team's own color), while the
 // pieces keep their own palette. The grid lines take more than the fill so
 // the color reads as the board's own rather than as a haze over it.
 const (

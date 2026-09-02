@@ -58,7 +58,7 @@ func TestTeamsJoinAssignsSlotsAndRejectsFullTeam(t *testing.T) {
 	ctx := context.Background()
 
 	// 2v2 teams game: PlayerCount is the total, TeamSize per team.
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 4, 2, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 4, 2, 2, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,13 +129,70 @@ func TestTeamsJoinAssignsSlotsAndRejectsFullTeam(t *testing.T) {
 	}
 }
 
+// A teams game past the usual two: the meta and listing record the count, a
+// seat on every team is joinable, and a team the game does not have is
+// refused. The roster only fills — and the game only starts — once every team
+// is full.
+func TestTeamsThreeWayJoin(t *testing.T) {
+	lbs := setupLobbies(t, 3)
+	ctx := context.Background()
+
+	// Three teams of one: PlayerCount is the total, TeamCount the teams.
+	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 3, 3, 1, 0, 0, false, config.GameRules{Ghost: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, lbs[0].GetJS(), gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Teams() != 3 || meta.TeamSize != 1 || meta.PlayerCount != 3 {
+		t.Fatalf("meta = %d teams of %d, %d seats; want 3 of 1, 3 seats", meta.Teams(), meta.TeamSize, meta.PlayerCount)
+	}
+
+	// A team the game does not have is refused; every team it does have is
+	// joinable.
+	if _, err := lbs[0].JoinGame(ctx, gameID, 3); err == nil {
+		t.Fatal("join on team 3 of a three-team game: want an error")
+	}
+	for i, lb := range lbs {
+		r, err := lb.JoinGame(ctx, gameID, i)
+		if err != nil {
+			t.Fatalf("join team %d: %v", i, err)
+		}
+		if r.Team != i || r.TeamSlot != 0 {
+			t.Fatalf("join team %d: got %+v, want team %d slot 0", i, r, i)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		g, ok := lbs[0].Games()[gameID]
+		if ok && g.Status == config.GameStatusStarting {
+			if g.Teams() != 3 {
+				t.Fatalf("listing Teams() = %d, want 3", g.Teams())
+			}
+			for team := 0; team < 3; team++ {
+				if got := g.TeamMemberCount(team); got != 1 {
+					t.Fatalf("team %d member count = %d, want 1", team, got)
+				}
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the three-team game to transition to starting")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestTeamsConcurrentJoinsRespectCapacity(t *testing.T) {
 	lbs := setupLobbies(t, 3)
 	ctx := context.Background()
 
 	// 1v1: a single slot per team — concurrent joins on team 0 must produce
 	// exactly one member (the CAS loop serializes the capacity check).
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 2, 1, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GameRules{Ghost: true}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

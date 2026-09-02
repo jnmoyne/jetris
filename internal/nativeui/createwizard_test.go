@@ -83,3 +83,58 @@ func TestWizardSplitPieces(t *testing.T) {
 		}
 	}
 }
+
+// TestWizardTeamCount pins step 1's team-count knob: it defaults to the usual
+// two, clamps to the legal range, reads back only for a teams game (no other
+// mode has teams at all), and its slider position round-trips through every
+// detent so a dragged slider always rests on a whole number of teams.
+func TestWizardTeamCount(t *testing.T) {
+	a := newTestApp()
+	if got := a.wizardTeamCount(config.ModeTeams); got != config.DefaultTeamCount {
+		t.Errorf("a fresh wizard offers %d teams, want %d", got, config.DefaultTeamCount)
+	}
+	for _, mode := range []config.GameMode{config.ModeCooperative, config.ModeCompetitive} {
+		if got := a.wizardTeamCount(mode); got != 0 {
+			t.Errorf("a %s game reads %d teams, want 0", mode, got)
+		}
+	}
+	for _, tc := range []struct{ set, want int }{
+		{1, config.MinTeamCount}, {2, 2}, {4, 4},
+		{config.MaxTeamCount, config.MaxTeamCount}, {config.MaxTeamCount + 3, config.MaxTeamCount},
+	} {
+		a.setTeamCount(tc.set)
+		if got := a.wizardTeamCount(config.ModeTeams); got != tc.want {
+			t.Errorf("setTeamCount(%d) → %d teams, want %d", tc.set, got, tc.want)
+		}
+		// The knob and its slider agree: the stored position reads back as
+		// the same count.
+		if got := teamCountRange.value(a.teamCountFloat.Value); got != tc.want {
+			t.Errorf("setTeamCount(%d): slider reads %d teams, want %d", tc.set, got, tc.want)
+		}
+	}
+	for n := config.MinTeamCount; n <= config.MaxTeamCount; n++ {
+		if got := teamCountRange.value(teamCountRange.pos(n)); got != n {
+			t.Errorf("team-count detent %d round-tripped to %d", n, got)
+		}
+	}
+}
+
+// The create wizard's step 1 draws for a teams game at every legal team
+// count: the mode radios, the Teams slider (whose hint names every team), the
+// per-team seat editor, the board-width slider and the piece-split box, all
+// in one modal that must lay out in the narrowest window Jetris runs in.
+func TestWizardModeStepRendersEveryTeamCount(t *testing.T) {
+	for n := config.MinTeamCount; n <= config.MaxTeamCount; n++ {
+		a := newTestApp()
+		a.modeEnum.Value = "teams"
+		a.setTeamCount(n)
+		a.countEd.SetText("2")
+		a.splitPiecesCb.Value = true
+		a.createWizStep = wizStepMode
+		for _, size := range [][2]int{{360, 640}, {1200, 800}} {
+			if d := a.createWizardOverlay(testCtx(size[0], size[1])); d.Size.X == 0 || d.Size.Y == 0 {
+				t.Fatalf("%d teams at %dx%d: wizard laid out empty", n, size[0], size[1])
+			}
+		}
+	}
+}

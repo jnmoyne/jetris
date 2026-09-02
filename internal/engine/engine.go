@@ -74,9 +74,21 @@ type Engine struct {
 	// table (0/1/2/4 rows for 1/2/3/4 lines — game.AttackRows) instead of
 	// one row per line (GameMeta.GuidelineGarbage at Start).
 	guidelineGarbage bool
-	teamIdx          int // teams mode: which team this player is on (0 = A, 1 = B)
+	teamIdx          int // teams mode: which team this player is on (0 = A, 1 = B, …)
 	teamSlot         int // teams mode: section index within the team board (spawn column offset)
 	teamSize         int // teams mode: players per team (from meta at Start)
+	// teamCount is how many teams the game is played between (GameMeta.Teams
+	// at Start — two unless the creator asked for more). Team indices run
+	// 0..teamCount-1; every team but our own is an opponent, so the number
+	// also sizes the opposing-board consumers, the garbage rotation and the
+	// endgame count.
+	teamCount int
+	// attackRotor picks which opposing team our next attack lands on: with
+	// more than two teams a clear cannot go to "the other" team, so targets
+	// rotate — consecutive attacks spread evenly over the opponents rather
+	// than multiplying the garbage in the game (see nextGarbageTarget).
+	// Guarded by e.mu.
+	attackRotor int
 	// extraCols is the shared board's width setting (GameMeta.ExtraColumns at
 	// Start): the columns every seat beyond the first adds to the standard
 	// 10, and the step between neighbouring spawn points. Zero — a meta
@@ -135,17 +147,17 @@ type Engine struct {
 	score             atomic.Int64
 	totalLines        atomic.Int64
 	level             atomic.Int64
-	ownClearScore     atomic.Int64                   // cumulative score from OWN clears only — the line_clear event's TotalScore
-	ownClearLines     atomic.Int64                   // cumulative lines from OWN clears only — the line_clear event's TotalLines
-	teamScores        [config.TeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (both teams' players and spectators)
-	teamLines         [config.TeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
-	hadActivePiece    bool                           // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
-	spawnPending      bool                           // shared boards: spawn deferred because another player's ACTIVE piece covers the spawn cells; guarded by e.mu; retried from runInput's gravity tick (retrySpawnIfPending). Never set in competitive mode.
-	pieceLessTicks    int                            // consecutive gravity ticks spent alive with NO active piece and NO pending spawn; guarded by e.mu; at 2 the piece-less watchdog forces a spawn (see retrySpawnIfPending)
-	eliminatedPlayers map[string]bool                // players who have topped out (competitive/teams); guarded by e.mu
-	eliminatedTeam    map[string]int                 // teams: eliminated player → team; guarded by e.mu
-	teamOutcomeDone   bool                           // teams: win/loss/draw already decided; guarded by e.mu
-	visibleRowStart   int                            // first visible row index (varies per game mode/player count)
+	ownClearScore     atomic.Int64                      // cumulative score from OWN clears only — the line_clear event's TotalScore
+	ownClearLines     atomic.Int64                      // cumulative lines from OWN clears only — the line_clear event's TotalLines
+	teamScores        [config.MaxTeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (every team's players and spectators); only the game's first teamCount entries are ever read
+	teamLines         [config.MaxTeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
+	hadActivePiece    bool                              // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
+	spawnPending      bool                              // shared boards: spawn deferred because another player's ACTIVE piece covers the spawn cells; guarded by e.mu; retried from runInput's gravity tick (retrySpawnIfPending). Never set in competitive mode.
+	pieceLessTicks    int                               // consecutive gravity ticks spent alive with NO active piece and NO pending spawn; guarded by e.mu; at 2 the piece-less watchdog forces a spawn (see retrySpawnIfPending)
+	eliminatedPlayers map[string]bool                   // players who have topped out (competitive/teams); guarded by e.mu
+	eliminatedTeam    map[string]int                    // teams: eliminated player → team; guarded by e.mu
+	teamOutcomeDone   bool                              // teams: win/loss/draw already decided; guarded by e.mu
+	visibleRowStart   int                               // first visible row index (varies per game mode/player count)
 
 	// Garbage ledger + txn gate mirrors (competitive/teams; guarded by e.mu).
 	// garbageOwed/garbageOwedSeq mirror the own board's garbage register (rows
@@ -325,6 +337,7 @@ func (e *Engine) Start() error {
 		return err
 	}
 	e.playerCount = meta.PlayerCount
+	e.teamCount = meta.Teams()
 	e.teamSize = meta.TeamSize
 	e.extraCols = meta.ExtraColumns
 	e.nextCount = meta.NextCount
@@ -339,7 +352,7 @@ func (e *Engine) Start() error {
 	case config.ModeCompetitive:
 		e.visibleRowStart = config.CompetitiveVisibleRowStart(meta.PlayerCount)
 	case config.ModeTeams:
-		e.visibleRowStart = config.TeamVisibleRowStart(meta.TeamSize)
+		e.visibleRowStart = config.TeamVisibleRowStart(e.teamCount, meta.TeamSize)
 	default:
 		e.visibleRowStart = config.VisibleRowStart
 	}
@@ -375,7 +388,7 @@ func (e *Engine) Start() error {
 		e.pieceIdx.Store(0)
 		e.playfield = game.NewPlayfieldWithHeight(
 			config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns),
-			config.TeamTotalRows(meta.TeamSize),
+			config.TeamTotalRows(e.teamCount, meta.TeamSize),
 		)
 	default:
 		e.seq = rng.New(meta.Seed)
@@ -440,13 +453,17 @@ func (e *Engine) Start() error {
 		go e.runRosterConsumer(ctx)
 	}
 
-	// Teams: one consumer over the opposing team's shared board (rendered in
+	// Teams: one consumer over every OTHER team's shared board (rendered in
 	// the opponent sidebar). The roster is fixed before the game starts and
 	// elimination events carry the player's team, so no roster consumer is
 	// needed. Spectators consume team 0 as their "own" board (teamIdx defaults
-	// to 0) and team 1 here.
+	// to 0) and every remaining team here.
 	if e.gameMode == config.ModeTeams {
-		e.startTeamBoardConsumer(ctx, 1-e.teamIdx)
+		for t := 0; t < e.teamCount; t++ {
+			if t != e.teamIdx {
+				e.startTeamBoardConsumer(ctx, t)
+			}
+		}
 	}
 
 	// 6. Start events consumer and meta consumer
@@ -569,6 +586,20 @@ func (e *Engine) OpponentSnapshots() map[string]BoardSnapshot {
 // team board consumer files the given team's board (teams mode).
 func TeamBoardKey(team int) string { return "team-" + strconv.Itoa(team) }
 
+// TeamFromBoardKey is TeamBoardKey read back: the team index a board key
+// names, and false for any other opponent key (a competitive player ID).
+func TeamFromBoardKey(key string) (int, bool) {
+	rest, ok := strings.CutPrefix(key, "team-")
+	if !ok {
+		return 0, false
+	}
+	t, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return t, true
+}
+
 // startTeamBoardConsumer creates a playfield and consumer for the given team's
 // shared board (teams mode). It is the team-board analog of
 // startOpponentConsumer and files the board in opponentPlayfields under
@@ -580,7 +611,7 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 		e.mu.Unlock()
 		return
 	}
-	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TeamTotalRows(e.teamSize))
+	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TeamTotalRows(e.teamCount, e.teamSize))
 	e.opponentPlayfields[key] = pf
 	e.mu.Unlock()
 
@@ -680,21 +711,22 @@ func (e *Engine) Level() int       { return int(e.level.Load()) }
 // at Start and immutable after — the game is full before it can begin).
 func (e *Engine) PlayerCount() int { return e.playerCount }
 
-// TeamScores returns both teams' current scores (teams mode). The line-clear
-// events subject is consumed by every engine, so the totals converge on both
-// teams' players, eliminated players, and spectators alike.
-func (e *Engine) TeamScores() [config.TeamCount]int {
-	var ts [config.TeamCount]int
+// TeamScores returns every team's current score (teams mode), one entry per
+// team in index order. The line-clear events subject is consumed by every
+// engine, so the totals converge on every team's players, eliminated players,
+// and spectators alike.
+func (e *Engine) TeamScores() []int {
+	ts := make([]int, e.TeamCount())
 	for i := range ts {
 		ts[i] = int(e.teamScores[i].Load())
 	}
 	return ts
 }
 
-// TeamLevels returns both teams' current levels (teams mode), derived from the
+// TeamLevels returns every team's current level (teams mode), derived from the
 // per-team cleared-line totals the same way TeamScores converges everywhere.
-func (e *Engine) TeamLevels() [config.TeamCount]int {
-	var tl [config.TeamCount]int
+func (e *Engine) TeamLevels() []int {
+	tl := make([]int, e.TeamCount())
 	for i := range tl {
 		tl[i] = game.Level(int(e.teamLines[i].Load()))
 	}
@@ -1290,10 +1322,20 @@ func (e *Engine) retrySpawnIfPending(ctx context.Context) {
 	}
 }
 
-func (e *Engine) PlayerIdx() int       { return e.playerIdx }
-func (e *Engine) TeamIdx() int         { return e.teamIdx }
-func (e *Engine) TeamSlot() int        { return e.teamSlot }
-func (e *Engine) TeamSize() int        { return e.teamSize }
+func (e *Engine) PlayerIdx() int { return e.playerIdx }
+func (e *Engine) TeamIdx() int   { return e.teamIdx }
+func (e *Engine) TeamSlot() int  { return e.teamSlot }
+func (e *Engine) TeamSize() int  { return e.teamSize }
+
+// TeamCount is how many teams this game is played between (teams mode; 0 in
+// every other mode). Captured from the meta at Start and immutable after.
+func (e *Engine) TeamCount() int {
+	if e.gameMode != config.ModeTeams {
+		return 0
+	}
+	return config.NormalizeTeamCount(e.teamCount)
+}
+
 func (e *Engine) ExtraColumns() int    { return e.extraCols }
 func (e *Engine) VisibleRowStart() int { return e.visibleRowStart }
 func (e *Engine) PlayfieldHeight() int { return e.playfield.Height }

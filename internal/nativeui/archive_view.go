@@ -214,7 +214,8 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 // each player's name in its board color, winners marked with a trophy and
 // their name in gold. Competitive players are colored by the same
 // sorted-by-PlayerID index the boards use (see archive.buildBoardPictures);
-// teams players are grouped under their color-matched TEAM A / TEAM B header,
+// teams players are grouped under their color-matched TEAM A / TEAM B / …
+// header,
 // the winning team's header in gold; cooperative players share one board, so
 // they list plainly (no per-player color, no winner) under a PLAYERS header.
 func (a *App) archiveRoster(gtx C, rec config.ArchiveRecord) D {
@@ -279,11 +280,11 @@ func (a *App) rosterCoop(rec config.ArchiveRecord) []layout.FlexChild {
 	return children
 }
 
-// rosterTeams groups players under their color-matched TEAM A / TEAM B header;
-// the winning team's header and members are highlighted in gold.
+// rosterTeams groups players under their color-matched TEAM A / TEAM B / …
+// header; the winning team's header and members are highlighted in gold.
 func (a *App) rosterTeams(rec config.ArchiveRecord) []layout.FlexChild {
 	var children []layout.FlexChild
-	for t := 0; t < config.TeamCount; t++ {
+	for t := 0; t < rec.Teams(); t++ {
 		t := t
 		teamCol := render.PlayerColorRGBA(t)
 		won := rec.WinningTeam == t

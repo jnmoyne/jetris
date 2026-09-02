@@ -90,8 +90,7 @@ var (
 // gameRowBtns are the per-game-listing action buttons (rebuilt lazily per game).
 type gameRowBtns struct {
 	join     widget.Clickable
-	joinA    widget.Clickable // teams mode: join team A
-	joinB    widget.Clickable // teams mode: join team B
+	joinTeam [config.MaxTeamCount]widget.Clickable // teams mode: one join button per team (only the game's first Teams() are drawn)
 	spectate widget.Clickable
 	reinvite widget.Clickable // invite-only creator: re-open the invitee picker
 	del      widget.Clickable // abandoned games: opens the delete confirmation
@@ -192,8 +191,8 @@ type App struct {
 	// game render snapshot (written by pumpEngine)
 	score        int
 	level        int
-	teamScores   [config.TeamCount]int // teams: live per-team scores
-	teamLevels   [config.TeamCount]int // teams: live per-team levels
+	teamScores   []int // teams: live per-team scores, one entry per team in index order
+	teamLevels   []int // teams: live per-team levels, one entry per team in index order
 	rtt          time.Duration         // latest publish→echo round trip from the engine
 	gameStatus   string
 	countdown    int       // -1 none, 0 GO!, >0 seconds remaining
@@ -326,6 +325,14 @@ type App struct {
 	// slider's position, snapped to the whole-column detents.
 	extraColsFloat widget.Float
 	extraCols      int
+	// The team-count slider of wizard step 1, shown for teams mode: teamCount
+	// is how many teams play each other
+	// (config.MinTeamCount..config.MaxTeamCount, default two — Team A vs Team
+	// B), teamCountFloat the slider's position, snapped to the whole-team
+	// detents. The seat editor beside it stays per-team, so the game's total
+	// is teamCount × that.
+	teamCountFloat widget.Float
+	teamCount      int
 	// splitPiecesCb is wizard step 1's "split the pieces" checkbox, drawn for
 	// a teams game of two or more per team: the seven piece types are dealt
 	// out between the teammates, every seat playing only its own ration
@@ -390,8 +397,9 @@ type App struct {
 	invitePickerMode   config.GameMode // captured when the picker opens
 	invitePickerPC     int             // playerCount of the game being invited to
 	invitePickerTS     int             // teamSize (teams mode)
+	invitePickerTC     int             // teamCount (teams mode)
 	inviteSelfSel      widget.Bool     // the pinned "You" row (non-teams): checked = playing
-	inviteSelfTeam     widget.Enum     // the pinned "You" row (teams): "", "0" or "1"
+	inviteSelfTeam     widget.Enum     // the pinned "You" row (teams): "" or the team index as a string
 	inviteSelfLastSel  bool            // last self intent applied (non-teams)
 	inviteSelfLastTeam string          // last self intent applied (teams)
 	inviteList         widget.List
@@ -606,6 +614,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	}
 	a.ghostCb.Value = true // hard-drop ghost preview on by default
 	a.setExtraColumns(config.DefaultExtraColumns)
+	a.setTeamCount(config.DefaultTeamCount)
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.dispMode = int(displayAck)
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF)

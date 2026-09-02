@@ -24,8 +24,8 @@ import (
 // layout never reads fields the pump goroutine is writing.
 type gameView struct {
 	score, level         int
-	teamScores           [config.TeamCount]int
-	teamLevels           [config.TeamCount]int
+	teamScores           []int // teams: per-team scores in index order — read through teamScore, which answers 0 before the first stats update arrives
+	teamLevels           []int // teams: per-team levels in index order — read through teamLevel
 	rtt                  time.Duration
 	linkDown             time.Duration // how long the NATS link has been down (0 = up) — the HUD's LINK stat
 	status               string
@@ -45,6 +45,24 @@ type gameView struct {
 	// Keyboard owner while the keys drive the piece (handleGameFocus): the
 	// white focus outline goes on whichever of the two holds them.
 	boardFocused, chatFocused bool
+}
+
+// teamScore and teamLevel read one team's live total out of the view. The
+// slices arrive with the engine's first UpdateTeamStats, so every screen that
+// draws a scoreboard before then (and any index a stale roster could hand us)
+// reads a plain 0 rather than running off the end.
+func (v gameView) teamScore(team int) int {
+	if team < 0 || team >= len(v.teamScores) {
+		return 0
+	}
+	return v.teamScores[team]
+}
+
+func (v gameView) teamLevel(team int) int {
+	if team < 0 || team >= len(v.teamLevels) {
+		return 0
+	}
+	return v.teamLevels[team]
 }
 
 func (a *App) snapshotGame(now time.Time) gameView {
@@ -540,14 +558,14 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		// events on every engine), shown to players and spectators alike. The
 		// player's own team is highlighted; spectators have no own team and see
 		// each team's level inline instead of the single LEVEL stat.
-		for t := 0; t < config.TeamCount; t++ {
+		for t := 0; t < eng.TeamCount(); t++ {
 			valCol := colFg
 			if mode != engine.ModeSpectator && t == eng.TeamIdx() {
 				valCol = colAccent
 			}
-			val := fmt.Sprintf("%d", view.teamScores[t])
+			val := fmt.Sprintf("%d", view.teamScore(t))
 			if mode == engine.ModeSpectator {
-				val = fmt.Sprintf("%d · lvl %d", view.teamScores[t], view.teamLevels[t])
+				val = fmt.Sprintf("%d · lvl %d", view.teamScore(t), view.teamLevel(t))
 			}
 			children = append(children,
 				layout.Rigid(a.hudStatColored("TEAM "+teamName(t), val, valCol)))
@@ -794,9 +812,11 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 	}
 
 	if gmode == config.ModeTeams {
-		// Group players under TEAM A / TEAM B headers. Swatch colors stay
-		// keyed by the GLOBAL roster index, matching Cell.PlayerIdx on boards.
-		for t := 0; t < config.TeamCount; t++ {
+		// Group players under their TEAM A / TEAM B / … headers. Swatch colors
+		// stay keyed by the GLOBAL roster index, matching Cell.PlayerIdx on
+		// boards.
+		teams := eng.TeamCount()
+		for t := 0; t < teams; t++ {
 			hdr := a.header("TEAM " + teamName(t))
 			if oc.decided && oc.winTeam == t {
 				// The winning team's header: gold, in the synthesized bold
@@ -811,7 +831,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 					children = append(children, playerRow(i, p))
 				}
 			}
-			if t < config.TeamCount-1 {
+			if t < teams-1 {
 				children = append(children, layout.Rigid(spacer(6)))
 			}
 		}
@@ -1421,7 +1441,12 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 		snap := opps[id]
 		label := id
 		if eng.GameMode() == config.ModeTeams {
+			// "team-3" → "TEAM D": with more than two teams the sidebar
+			// stacks several opposing boards, so each needs its own name.
 			label = "OPPOSING TEAM"
+			if t, ok := engine.TeamFromBoardKey(id); ok {
+				label = "TEAM " + teamName(t)
+			}
 		}
 		children = append(children,
 			layout.Rigid(a.body(label, colMuted)),
@@ -1433,29 +1458,35 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
-// spectatorTeamBoards renders both teams' shared boards side by side for a
+// spectatorTeamBoards renders every team's shared board side by side for a
 // teams-mode spectator. The spectator engine consumes team 0 as its "own"
-// board and team 1 via the opponent consumer (see Engine.Start). Each board
-// wears its team's color: the label, and a light tint on the empty squares
-// and grid lines (boardFX.tint), so the two wells tell apart at a glance. A
-// fully eliminated team is the decision itself (view.outcome): the other
-// team's board wears the winner show and the beaten one the OUT wash; both
-// out at once is a draw — both washed, nobody crowned.
+// board and each remaining team via an opponent consumer (see Engine.Start).
+// Each board wears its team's color: the label, and a light tint on the empty
+// squares and grid lines (boardFX.tint), so the wells tell apart at a glance.
+// One team left standing is the decision itself (view.outcome): its board
+// wears the winner show and every beaten one the OUT wash; all out at once is
+// a draw — all washed, nobody crowned.
 func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
-	// Reactive cells: both team boards side by side, scrolling below the minimum.
+	// Reactive cells: the team boards side by side, scrolling below the minimum.
 	dims := eng.Snapshot()
-	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, 2, 2*gtx.Dp(16), gtx.Dp(26), 10, 40)
-	teamB, okB := eng.OpponentSnapshots()[engine.TeamBoardKey(1)]
+	teams := eng.TeamCount()
+	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, teams, teams*gtx.Dp(16), gtx.Dp(26), 10, 40)
+	opps := eng.OpponentSnapshots()
 	oc := view.outcome
 
-	boards := []struct {
+	type teamBoard struct {
 		label string
 		snap  engine.BoardSnapshot
 		ok    bool
 		team  int
-	}{
-		{"TEAM A", eng.Snapshot(), true, 0},
-		{"TEAM B", teamB, okB, 1},
+	}
+	boards := make([]teamBoard, 0, teams)
+	for t := 0; t < teams; t++ {
+		snap, ok := eng.Snapshot(), true
+		if t != eng.TeamIdx() {
+			snap, ok = opps[engine.TeamBoardKey(t)]
+		}
+		boards = append(boards, teamBoard{"TEAM " + teamName(t), snap, ok, t})
 	}
 	var items []layout.Widget
 	for _, b := range boards {
@@ -1486,6 +1517,27 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 		})
 	}
 	return a.scrollableBoards(gtx, &a.specTeamBoardsList, items)
+}
+
+// teamScoreLine writes every team's live score and level as one line — "TEAM
+// A 1200 (lvl 3) · TEAM B 940 (lvl 2)" — with the team named by `first` (the
+// reader's own, where they have one) leading and the rest following in index
+// order. Shared by the player's game-over box and the spectator's result box.
+func teamScoreLine(view gameView, first int) string {
+	order := make([]int, 0, len(view.teamScores))
+	if first >= 0 && first < len(view.teamScores) {
+		order = append(order, first)
+	}
+	for t := range view.teamScores {
+		if t != first {
+			order = append(order, t)
+		}
+	}
+	parts := make([]string, 0, len(order))
+	for _, t := range order {
+		parts = append(parts, fmt.Sprintf("TEAM %s %d (lvl %d)", teamName(t), view.teamScore(t), view.teamLevel(t)))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // gameOverBox is the panel shown beside the board once the local player is out
@@ -1538,11 +1590,11 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam in
 					case config.ModeCompetitive:
 						scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
 					case config.ModeTeams:
-						if myTeam >= 0 && myTeam < config.TeamCount {
-							other := 1 - myTeam
-							scoreLine = fmt.Sprintf("TEAM %s %d (lvl %d) · TEAM %s %d (lvl %d)",
-								teamName(myTeam), view.teamScores[myTeam], view.teamLevels[myTeam],
-								teamName(other), view.teamScores[other], view.teamLevels[other])
+						// Our team first, then the rest in index order — with
+						// six teams the line is long, so the one that matters
+						// leads it.
+						if myTeam >= 0 {
+							scoreLine = teamScoreLine(view, myTeam)
 						}
 					}
 					if scoreLine != "" {

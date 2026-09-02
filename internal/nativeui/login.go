@@ -68,6 +68,10 @@ type connEntry struct {
 	url    string // dial target for URL entries
 	ctx    string // context name for context entries
 	fav    int    // index into a.favorites for deletable rows, -1 otherwise
+	// named marks a row whose label is a name someone chose for the server —
+	// a favorite's, or the one a join link gave — rather than where the row
+	// came from. The lobby header shows those, "<name> (<url>)".
+	named bool
 	// dialable is false for a URL this build cannot dial (a nats:// one in
 	// the browser): the row is listed greyed out and cannot be selected.
 	dialable bool
@@ -87,6 +91,17 @@ func ctxKey(name string) string { return "ctx:" + name }
 func (a *App) layoutLogin(gtx C) D {
 	// --- event handling ---
 	submitted := a.loginBtn.Clicked(gtx)
+	// A name that came with the connection (--name, or the join page's
+	// ?player=) plays this screen's Play button for it, once: the server was
+	// chosen by whoever wrote the link and the name is answered, so there is
+	// nothing here left to ask. Cleared before the submit, so a connect that
+	// fails leaves the player on this screen — error shown, name still in the
+	// field, every server in the browser one tap away — and quitting the
+	// lobby comes back here without rejoining.
+	if a.autoLogin {
+		a.autoLogin = false
+		submitted = true
+	}
 	for {
 		ev, ok := a.loginEd.Update(gtx)
 		if !ok {
@@ -323,9 +338,10 @@ func (a *App) submitLogin() {
 		a.setLoginErr(err.Error())
 		return
 	}
-	// A server picked from the favorites keeps its name for the lobby header.
+	// A server that has a name — a favorite's, or the one a join link gave —
+	// keeps it for the lobby header.
 	favorite := ""
-	if e, ok := a.connEntry(a.connSel); ok && !cfg.RunEmbedded && e.fav >= 0 {
+	if e, ok := a.connEntry(a.connSel); ok && !cfg.RunEmbedded && e.named {
 		favorite = e.label
 	}
 	a.setLoginErr("")
@@ -371,6 +387,13 @@ func (a *App) entryConfig(key string) (config.Config, error) {
 	cfg.EmbeddedHost, cfg.EmbeddedPort = "", 0
 	e, ok := a.connEntry(key)
 	if !ok {
+		// Nothing selected. When a URL was handed to this build that it
+		// cannot dial — a nats:// one in a browser, a ws:// one on an https
+		// page — it was listed but never selected (NewWithPicker), and
+		// saying so beats sending the player back to a list to find out.
+		if u := a.connCfg.NATSURL; u != "" && !dialable(u) {
+			return cfg, errors.New(u + ": " + undialableErr)
+		}
 		return cfg, errors.New("select a server in the browser (or add one to your favorites)")
 	}
 	if !e.dialable {
@@ -515,7 +538,7 @@ func (a *App) connSections() []connSection {
 		if detail == f.Label {
 			detail = ""
 		}
-		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i, dialable: dialable(f.URL)})
+		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i, named: true, dialable: dialable(f.URL)})
 	}
 	ctxs := connSection{title: secContexts, hint: "no NATS CLI contexts on this machine (nats context add …)"}
 	for _, name := range a.connContexts {
@@ -529,8 +552,15 @@ func (a *App) connSections() []connSection {
 	}
 	sections := []connSection{favs, ctxs}
 	if url := a.connCfg.NATSURL; url != "" && !a.isFavorite(url) {
+		// Where the row came from is its label — unless the link that
+		// brought the URL also named the server (the page's ?name=), which
+		// is a better thing to show than "--server".
+		label, named := "--server", false
+		if a.connCfg.ServerLabel != "" {
+			label, named = a.connCfg.ServerLabel, true
+		}
 		sections = append(sections, connSection{title: secCLI, entries: []connEntry{
-			{key: urlKey(url), label: "--server", detail: url, url: url, fav: -1, dialable: dialable(url)},
+			{key: urlKey(url), label: label, detail: url, url: url, fav: -1, named: named, dialable: dialable(url)},
 		}})
 	}
 	return sections
@@ -1109,14 +1139,14 @@ func (a *App) connSelectedLine(gtx C) D {
 }
 
 // selectionCaption words a browser entry for the SELECTED line: a favorite's
-// name and URL; a context as "context <name>" (without the row's nats-CLI
-// marker) and its URL when known; the --server flag's row as its URL,
-// attributed to the flag.
+// name and URL, and likewise a server a join link named; a context as
+// "context <name>" (without the row's nats-CLI marker) and its URL when
+// known; an unnamed --server row as its URL, attributed to the flag.
 func selectionCaption(e connEntry) (label, detail string) {
 	switch {
 	case e.ctx != "":
 		return "context " + e.ctx, e.detail
-	case e.fav < 0:
+	case !e.named:
 		return e.url, "from --server"
 	}
 	return e.label, e.detail

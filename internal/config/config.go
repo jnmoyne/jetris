@@ -14,6 +14,15 @@ type Config struct {
 	NATSURL      string
 	NATSUser     string
 	NATSPassword string
+	// PlayerName is a name given before the login screen is ever drawn
+	// (--name, or the browser page's ?player=, which the join page sets):
+	// the screen plays its own Play button with it and goes straight to the
+	// lobby. Empty means the usual "type your name" login.
+	PlayerName string
+	// ServerLabel names NATSURL for the player (the browser page's ?name=):
+	// the server browser's row shows it instead of "--server", and the lobby
+	// header reads "<label> (<url>)" the way a favorite's does.
+	ServerLabel  string
 	RunEmbedded  bool   // run an in-process JetStream-enabled nats-server and connect to it
 	EmbeddedHost string // address the embedded server is advertised and dialed on ("" = auto-detected LAN IP); it always LISTENS on every interface, so this only overrides a wrong auto-detection
 	EmbeddedPort int    // port for the embedded server (0 = DefaultEmbeddedPort)

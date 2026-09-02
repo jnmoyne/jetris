@@ -120,6 +120,12 @@ type App struct {
 	favSave      func([]prefs.Favorite) error
 	handlingSave func(prefs.Handling) error
 	panelsSave   func(prefs.Panels) error
+	// autoLogin: the player's name came with the connection (--name, or the
+	// join page's ?player=), so the login screen submits itself on its first
+	// frame. One-shot — read and cleared on the UI goroutine, so it needs no
+	// lock — which is what leaves a failed connect, and a later quit back to
+	// this screen, in the player's hands.
+	autoLogin bool
 
 	// Server probes — a browser row's click, the page-opening refresh of every
 	// favorite, "Refresh all servers", and LAN mode's "Check embedded
@@ -691,10 +697,22 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 // context (added to the list if it isn't among the discovered ones); with
 // neither flag the first favorite starts selected (see the precedence below);
 // --user/--password ride along in connCfg and apply to URL connects.
+// cfg.PlayerName (--name, or the browser page's ?player=) is the exception
+// that does connect: it fills the name field and arms the screen's
+// one-shot auto-submit (App.autoLogin), so the player lands in the lobby
+// without seeing the screen — unless something fails, when they see it with
+// the error and their name still in place.
 func NewWithPicker(cfg config.Config, contexts []string, selected string, favorites []prefs.Favorite) *App {
 	a := New(nil, nil)
 	a.needConn = true
 	a.connCfg = cfg
+	// A name given up front fills the field and arms the auto-submit; the
+	// screen is still drawn (and still shown on failure), it just doesn't
+	// wait to be told what it already knows.
+	if cfg.PlayerName != "" {
+		a.loginEd.SetText(cfg.PlayerName)
+		a.autoLogin = true
+	}
 	a.connContexts = append([]string(nil), contexts...)
 	a.connSelected = selected
 	a.favorites = append([]prefs.Favorite(nil), favorites...)

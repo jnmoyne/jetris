@@ -34,7 +34,9 @@ func main() {
 	// The window opens immediately; the login screen combines name entry with
 	// the connection page (NATS server browser / LAN mode), and the app dials
 	// NATS when the player hits Play. --server/--context don't connect here —
-	// they only seed the browser's selection.
+	// they only seed the browser's selection. --name does connect: with the
+	// name already answered there is nothing left on that screen to ask, so
+	// it plays its own Play button on the first frame.
 	nativeui.SetVersion(version) // shown in the window's top-right corner
 
 	names, selected, err := natspkg.ListContexts()
@@ -110,6 +112,7 @@ func parseFlags() (cfg config.Config, noUpdateCheck bool) {
 	flag.StringVar(&cfg.NATSURL, "server", "", "NATS server URL to preselect in the login screen's server browser (overrides --context as the default choice)")
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
+	flag.StringVar(&cfg.PlayerName, "name", "", "player name: given here, the login screen skips itself and joins the selected server's lobby straight away")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.BoolVar(&noUpdateCheck, "no-update-check", false, "skip the startup check for a newer release on GitHub")
 	flag.Parse()

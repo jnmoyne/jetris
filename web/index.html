@@ -21,6 +21,11 @@
 
     /* Landing page */
     #landing { max-width: 880px; margin: 0 auto; padding: 48px 24px 64px; text-align: center; }
+    /* A page opened straight at the game (a join link, or #play) never shows
+       the landing page at all: play() hides it, but only once the script at
+       the foot of the body has run, and on a phone coming off the join form
+       that is long enough to see it flash past. */
+    html.direct #landing { display: none; }
     h1 { margin: 0 0 12px; font: 700 56px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .1em;
          color: var(--accent); text-shadow: 0 0 28px rgba(143, 255, 221, .35); }
     .tagline { max-width: 660px; margin: 0 auto 28px; font-size: 18px; }
@@ -62,6 +67,13 @@
     #loading.error { color: var(--err); }
     #status { max-width: 80vw; text-align: center; }
   </style>
+  <script>
+    // Set before the body is parsed, so the rule above applies to the first
+    // paint. The condition is the one play() uses at the foot of this file.
+    if (location.hash === "#play" || new URLSearchParams(location.search).has("server")) {
+      document.documentElement.classList.add("direct");
+    }
+  </script>
 </head>
 <body>
   <main id="landing">
@@ -419,7 +431,10 @@
       }
       playBtn.addEventListener("click", play);
       // Direct links skip the landing page: …/#play, or a preselected server
-      // (…/?server=wss://host:port, which the game reads from location.search).
+      // (…/?server=wss://host:port, which the game reads from
+      // location.search, with &name= naming it and &player= giving the
+      // player's name — with that last one the game skips its login screen
+      // and joins the lobby outright, which is what join.html sends here).
       if (location.hash === "#play" || new URLSearchParams(location.search).has("server")) play();
       window.addEventListener("hashchange", () => { if (location.hash === "#play") play(); });
     })();

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Join a Jetris server: enter your name and play in your browser.">
+  <meta name="robots" content="noindex">
+  <title>Jetris — join a server</title>
+  <link rel="icon" href="favicon.ico?v=__JETRIS_VERSION__">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=__JETRIS_VERSION__">
+  <style>
+    :root { color-scheme: dark; --bg: #000; --fg: #e8f4f2; --muted: #8aa39e; --line: #1f2d2a; --accent: #8fd; --link: #5cc8ff; --err: #ff7b7b; }
+    html, body { margin: 0; padding: 0; min-height: 100%; background: var(--bg); color: var(--fg);
+                 font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    html { overscroll-behavior: none; touch-action: manipulation; }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    main { max-width: 560px; margin: 0 auto; padding: 40px 20px 48px; }
+    h1 { margin: 0 0 28px; text-align: center;
+         font: 700 40px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .1em;
+         color: var(--accent); text-shadow: 0 0 28px rgba(143, 255, 221, .35); }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 22px 20px; background: #060b0a; }
+    .lead { margin: 0 0 4px; color: var(--muted); font-size: 14px; letter-spacing: .08em; text-transform: uppercase; }
+    .server { margin: 0 0 4px; font-size: 22px; font-weight: 600; overflow-wrap: anywhere; }
+    .url { margin: 0 0 20px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+
+    label { display: block; margin: 0 0 6px; color: var(--muted); font-size: 14px; letter-spacing: .08em; text-transform: uppercase; }
+    input { width: 100%; box-sizing: border-box; padding: 12px 14px; font: 18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            color: var(--fg); background: #0d1614; border: 1px solid var(--line); border-radius: 8px; }
+    input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button { width: 100%; margin-top: 14px; font: 700 20px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em;
+             color: #00201a; background: var(--accent); border: 0; border-radius: 8px; padding: 16px; cursor: pointer;
+             box-shadow: 0 0 24px rgba(143, 255, 221, .35); }
+    button:hover { filter: brightness(1.08); }
+    button:focus-visible { outline: 3px solid var(--link); outline-offset: 3px; }
+    button[disabled] { background: #23423c; color: #6d8a84; box-shadow: none; cursor: default; }
+
+    .err { margin: 12px 0 0; color: var(--err); font-size: 15px; }
+    .err:empty { display: none; }
+    .note { margin: 18px auto 0; color: var(--muted); font-size: 13px; text-align: center; }
+    .meta { margin-top: 26px; color: var(--muted); font-size: 13px; text-align: center; }
+    .meta span + span::before { content: " · "; color: #3a4a47; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>JETRIS</h1>
+
+    <!-- The join form, shown once the link's server checks out. -->
+    <form class="card" id="form" hidden>
+      <p class="lead">Connect to</p>
+      <p class="server" id="server-name"></p>
+      <p class="url mono" id="server-url"></p>
+      <label for="player">Your name</label>
+      <input id="player" name="player" type="text" maxlength="32" autocomplete="nickname"
+             autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" required>
+      <button type="submit" id="join">▶ JOIN</button>
+      <p class="err" id="err" role="alert"></p>
+    </form>
+
+    <!-- Shown instead when the link carries no server we could dial. -->
+    <div class="card" id="bad" hidden>
+      <p class="lead">Can't use this link</p>
+      <p class="err" id="bad-why" style="margin-top:8px"></p>
+      <p class="note" style="text-align:left">A join link looks like
+        <code>join.html?server=wss://host:443&amp;name=My%20server</code> — build one with
+        <code>go run scripts/gen-qr.go</code>, which prints it as a QR code too.</p>
+    </div>
+
+    <p class="note">Runs as WebAssembly right here, nothing to install. <a href="./">Pick a server yourself instead →</a></p>
+    <p class="meta"><span>Jetris __JETRIS_VERSION__</span><span><a href="https://github.com/jnmoyne/jetris#readme">How it works</a></span><span><a href="https://github.com/jnmoyne/jetris">Source on GitHub</a></span></p>
+  </main>
+
+  <script>
+    (() => {
+      // This page is the whole of what someone scanning a QR code has to do:
+      // it carries the server in its own URL (?server=…, optionally &name=…),
+      // asks for the one thing a link cannot know — who is playing — and
+      // hands all three to the game page, which loads the wasm module and
+      // goes straight to that server's lobby (cmd/jetris/flags_js.go reads
+      // them back off the query string). It deliberately loads no wasm
+      // itself: the game page carries the touch workarounds a tablet needs,
+      // and there is no sense in two copies of them.
+      const params = new URLSearchParams(location.search);
+      const server = (params.get("server") || "").trim();
+      const label = (params.get("name") || "").trim();
+      const form = document.getElementById("form");
+      const input = document.getElementById("player");
+      const errLine = document.getElementById("err");
+      const NAME_KEY = "jetris.playerName";
+
+      function refuse(why) {
+        document.getElementById("bad-why").textContent = why;
+        document.getElementById("bad").hidden = false;
+      }
+
+      // What the game could only find out after a ~25 MB download is settled
+      // here, while it costs nothing: the scheme a browser can actually open
+      // a socket on, and the one pairing that is always refused — an https
+      // page may not open a plain ws:// socket (mixed content).
+      function serverProblem(url) {
+        if (!url) return "This link has no server in it (no ?server= parameter).";
+        let u;
+        try { u = new URL(url); } catch { return `“${url}” is not a valid URL.`; }
+        if (u.protocol === "nats:" || u.protocol === "tls:") {
+          return `${url} is a ${u.protocol}// URL. A browser can only dial ws:// or wss:// — ask for the server's WebSocket address instead.`;
+        }
+        if (u.protocol !== "ws:" && u.protocol !== "wss:") return `${url} is not a ws:// or wss:// URL.`;
+        if (location.protocol === "https:" && u.protocol === "ws:") {
+          return `This page is served over https, and a browser refuses a plain ws:// connection from an https page. The link needs a wss:// server.`;
+        }
+        return "";
+      }
+
+      // The same rule the game applies (config.ValidatePlayerName): a name is
+      // a NATS subject token, so it is at most 32 BYTES and holds none of the
+      // characters a subject gives meaning to. Checked here so a typo costs a
+      // keystroke rather than a download.
+      function nameProblem(name) {
+        if (!name) return "Enter your name.";
+        if (new TextEncoder().encode(name).length > 32) return "That name is too long (32 characters at most).";
+        for (const c of name) {
+          if (".* >\t\n\r\0".includes(c)) {
+            return `Your name can't contain ${c === " " ? "spaces" : `“${c}”`}.`;
+          }
+        }
+        return "";
+      }
+
+      const problem = serverProblem(server);
+      if (problem) {
+        refuse(problem);
+        return;
+      }
+
+      document.getElementById("server-name").textContent = label || server;
+      const urlLine = document.getElementById("server-url");
+      // With no name to head the card the URL is already the title; showing
+      // it twice just makes the card look broken.
+      if (label) urlLine.textContent = server; else urlLine.hidden = true;
+      form.hidden = false;
+
+      // A rejoin — the same QR, scanned again after a game — is one tap.
+      // Storage throws outright in some private-browsing modes.
+      try {
+        const last = localStorage.getItem(NAME_KEY);
+        if (last) input.value = last;
+      } catch {}
+      input.focus();
+      input.select();
+
+      form.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const name = input.value.trim();
+        const bad = nameProblem(name);
+        errLine.textContent = bad;
+        if (bad) { input.focus(); return; }
+        try { localStorage.setItem(NAME_KEY, name); } catch {}
+        // No going back to a half-filled form: the game page takes over from
+        // here, and the browser's Back button should reach whatever came
+        // before this link, not this form again.
+        const next = new URLSearchParams({ server: server });
+        if (label) next.set("name", label);
+        next.set("player", name);
+        document.getElementById("join").disabled = true;
+        document.getElementById("join").textContent = "STARTING…";
+        location.replace("./?" + next.toString());
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -4,6 +4,10 @@
 #   wasm_exec.js    Go's JS runtime shim, copied from the local Go toolchain
 #   index.html      the landing page + loader (from web/), with the version and
 #                   the module's size stamped in
+#   join.html       the join page (from web/): a link or QR code carrying a
+#                   server (?server=…&name=…) opens it, it asks for a player
+#                   name and hands all three to index.html — see
+#                   scripts/gen-qr.go, which builds those links
 #   screenshot.png  the landing page's screenshot (Jetris-screenshot-1.png)
 # The release workflow (.github/workflows/release.yml) runs this on every tag,
 # attaches the directory to the release as jetris-<tag>-web.tar.gz and
@@ -36,5 +40,9 @@ install -m 0644 web/favicon.ico web/apple-touch-icon.png "$OUT/" # the tab and h
 size=$(wc -c < "$OUT/jetris.wasm" | tr -d ' ')
 sed -e "s|__JETRIS_VERSION__|$VERSION|g" -e "s|__JETRIS_WASM_SIZE__|$size|g" web/index.html > "$OUT/index.html"
 chmod 0644 "$OUT/index.html"
+# The join page loads no wasm of its own — it only needs the version, for the
+# icons' cache-bust and the line at its foot.
+sed -e "s|__JETRIS_VERSION__|$VERSION|g" web/join.html > "$OUT/join.html"
+chmod 0644 "$OUT/join.html"
 
 ls -lh "$OUT"

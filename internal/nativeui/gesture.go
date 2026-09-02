@@ -473,6 +473,11 @@ func (a *App) handleGestures(gtx C, eng *engine.Engine, active bool) {
 		switch {
 		case !active:
 		case noPiece && m == engine.MoveHardDrop:
+		case m == engine.MoveHardDrop:
+			// Through the guard, like the space bar and the pad's arm
+			// (dropguard.go): a flick begun for the piece that locked on its
+			// own is refused for a moment after it.
+			a.hardDrop(gtx, eng)
 		case noPiece:
 			if len(a.heldMoves) < maxHeldMoves {
 				a.heldMoves = append(a.heldMoves, m)

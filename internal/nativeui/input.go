@@ -128,8 +128,10 @@ func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 // level's gravity), so a soft drop starts repeating straight away. Space is
 // the opposite: one hard drop per physical press, the OS repeat's extra
 // presses ignored (dropHeld), or a held space would drop every piece that
-// spawned under it. The remaining keys (rotate, hold) dispatch on the press
-// as ever, the OS repeat included. The board's key.FocusEvent arrives in the
+// spawned under it — and refused outright for the moment after a piece has
+// locked on its own (dropguard.go), so the press that was meant for it cannot
+// take the piece behind it too. The remaining keys (rotate, hold) dispatch on
+// the press as ever, the OS repeat included. The board's key.FocusEvent arrives in the
 // same drain (the FocusFilter registers it): losing the keys — to the chat,
 // the modal, a window blur — resets both machines and the held space, so a
 // Release the board never saw cannot leave a repeat running.
@@ -211,7 +213,10 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 				eng.Hold()
 			case key.NameSpace:
 				// One drop per press, however long it is held: a Press with
-				// no Release since the last one is the OS auto-repeat.
+				// no Release since the last one is the OS auto-repeat. The
+				// press is spent either way — a drop the guard refuses
+				// (dropguard.go) does not fire when the guard lifts under a
+				// space still held down.
 				if e.State != key.Press {
 					a.dropHeld = false
 					continue
@@ -220,7 +225,7 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 					continue
 				}
 				a.dropHeld = true
-				eng.HardDrop()
+				a.hardDrop(gtx, eng)
 			default:
 				if e.State != key.Press {
 					continue

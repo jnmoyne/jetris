@@ -529,6 +529,11 @@ type App struct {
 	// the keys without also spending the hold. The press arms; the release
 	// spends it; a Tab, or losing the keys, disarms it unspent. (C, the
 	// other hold key, is not a modifier and holds on the press as ever.)
+	//
+	// dropGuard is the accidental-drop guard (dropguard.go), the section's
+	// fourth knob (dropGuardMs, dropGuardFloat — ms, 0..maxHandlingMs, 0
+	// off): it watches the pieces go by and refuses the hard drop for the
+	// knob's window around a lock the player did not make.
 	shift, soft                         autoShift
 	dasMs, arrMs, sdf                   int
 	dasFloat, arrFloat, sdfFloat        widget.Float
@@ -536,6 +541,9 @@ type App struct {
 	padLeftWas, padRightWas, padDownWas bool
 	dropHeld                            bool
 	holdArmed                           bool
+	dropGuard                           dropGuard
+	dropGuardMs                         int
+	dropGuardFloat                      widget.Float
 	// heldMoves are gesture moves made while the board had no piece (the
 	// lock-to-spawn gap), dispatched the moment the next piece appears
 	// (handleGestures). UI goroutine only. pieceGapStart/spawnGapLast/
@@ -613,7 +621,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.setTeamCount(config.DefaultTeamCount)
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.dispMode = int(displayAck)
-	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF)
+	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF, defaultDropGuardMs)
 	a.setDefaultPanels() // every panel on until a saved set says otherwise
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true

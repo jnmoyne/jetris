@@ -172,6 +172,10 @@ func (a *App) layoutGame(gtx C) D {
 	// — while playing they converge to one or the other within a frame.
 	view.chatFocused = playing && (gtx.Source.Focused(&a.gameChatEd) || gtx.Source.Focused(&a.gameChatBtn))
 	view.boardFocused = playing && !view.chatFocused
+	// The accidental-drop guard watches the pieces go by (dropguard.go):
+	// first, so every hard drop the handlers below dispatch is judged against
+	// the board as this frame finds it.
+	a.observeDropGuard(gtx, eng, mode == engine.ModePlayer && started)
 	// Dispatch moves (the board's key filters are registered here every
 	// frame; its key-input target, event.Op, is the root pointerArea below).
 	if mode == engine.ModePlayer && started {

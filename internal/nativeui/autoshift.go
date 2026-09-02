@@ -18,7 +18,9 @@ package nativeui
 //
 // All three are in the game menu's HANDLING section (handlingKnobs): DAS and
 // ARR in milliseconds, 0..maxHandlingMs; SDF a multiple of gravity,
-// minSDF..maxSDF.
+// minSDF..maxSDF. GUARD, the section's fourth slider, tunes nothing here: it
+// is the accidental-drop guard's window (dropguard.go), in milliseconds on
+// the same scale as the first two.
 //
 // autoShift is the machine: a pure struct in the boardGesture mold — fed key
 // edges and the frame clock, emitting through a callback, no router and no
@@ -82,6 +84,9 @@ const (
 	minSDF     = prefs.MinSDF
 	maxSDF     = prefs.MaxSDF
 	defaultSDF = prefs.DefaultSDF
+	// The accidental-drop guard's window (dropguard.go): milliseconds on the
+	// same 0..maxHandlingMs scale as DAS and ARR, 0 being off.
+	defaultDropGuardMs = prefs.DefaultDropGuardMs
 	// maxAutoShiftPerFrame caps a slow frame's ARR catch-up at ten steps — a
 	// board's width of shifts, or as many rows of soft drop.
 	maxAutoShiftPerFrame = 10
@@ -466,15 +471,18 @@ func (r knobRange) pos(v int) float32 {
 	return float32(min(max(v, r.lo), r.hi)-r.lo) / float32(r.hi-r.lo)
 }
 
-// SetHandling sets the three knobs — DAS and ARR in ms (0..maxHandlingMs),
-// SDF a multiple of gravity (minSDF..maxSDF) — and mirrors them into the menu
-// sliders: the loaded preferences' way in (cmd/jetris/main.go), before Run.
-func (a *App) SetHandling(dasMs, arrMs, sdf int) {
+// SetHandling sets the four knobs — DAS, ARR and the drop guard in ms
+// (0..maxHandlingMs), SDF a multiple of gravity (minSDF..maxSDF) — and
+// mirrors them into the menu sliders: the loaded preferences' way in
+// (cmd/jetris/main.go), before Run.
+func (a *App) SetHandling(dasMs, arrMs, sdf, dropGuardMs int) {
 	a.dasMs, a.arrMs = clampHandlingMs(dasMs), clampHandlingMs(arrMs)
 	a.sdf = min(max(sdf, minSDF), maxSDF)
+	a.dropGuardMs = clampHandlingMs(dropGuardMs)
 	a.dasFloat.Value = msRange.pos(a.dasMs)
 	a.arrFloat.Value = msRange.pos(a.arrMs)
 	a.sdfFloat.Value = sdfRange.pos(a.sdf)
+	a.dropGuardFloat.Value = msRange.pos(a.dropGuardMs)
 }
 
 // persistHandling saves the knobs. A failure is silent: the game screen has
@@ -483,14 +491,21 @@ func (a *App) persistHandling() {
 	if a.handlingSave == nil {
 		return
 	}
-	_ = a.handlingSave(prefs.Handling{DASMs: a.dasMs, ARRMs: a.arrMs, SDF: a.sdf})
+	_ = a.handlingSave(prefs.Handling{
+		DASMs:       a.dasMs,
+		ARRMs:       a.arrMs,
+		SDF:         a.sdf,
+		DropGuardMs: a.dropGuardMs,
+	})
 }
 
 // handlingKnobs is the menu's HANDLING section: a slider per knob — DAS and
-// ARR, the shift's, in ms, and SDF, the soft drop's, as a multiple of gravity
-// (MAX being instant). Each snaps to its own detents and drives dasMs/arrMs/
-// sdf directly — the machines read those every frame, so a change applies to
-// the very next press or tick. widget.Float is drag-only (no Clickable), so
+// ARR, the shift's, in ms, SDF, the soft drop's, as a multiple of gravity
+// (MAX being instant), and GUARD, the hard drop's, in ms again: how long a
+// piece that locked on its own keeps the drop unavailable (dropguard.go), OFF
+// at 0. Each snaps to its own detents and drives dasMs/arrMs/sdf/dropGuardMs
+// directly — the machines read those every frame, so a change applies to the
+// very next press or tick. widget.Float is drag-only (no Clickable), so
 // tuning never takes the keys from the board.
 func (a *App) handlingKnobs(gtx C) D {
 	row := func(label string, f *widget.Float, val *int, r knobRange, text func(int) string) layout.Widget {
@@ -502,7 +517,10 @@ func (a *App) handlingKnobs(gtx C) D {
 			}
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
-					gtx.Constraints.Min.X = gtx.Dp(30) // DAS over ARR, sliders aligned
+					// The longest label's width, so the four sliders start on
+					// the same column (the pixel face is monospace: one em a
+					// character, GUARD the widest at five).
+					gtx.Constraints.Min.X = gtx.Dp(50)
 					return a.pixelLabelFit(gtx, unit.Sp(10), label, colFg)
 				}),
 				layout.Flexed(1, func(gtx C) D {
@@ -519,7 +537,8 @@ func (a *App) handlingKnobs(gtx C) D {
 		}
 	}
 	// A finished drag (every thumb at rest) persists the set once.
-	if a.handlingDirty && !a.dasFloat.Dragging() && !a.arrFloat.Dragging() && !a.sdfFloat.Dragging() {
+	if a.handlingDirty && !a.dasFloat.Dragging() && !a.arrFloat.Dragging() &&
+		!a.sdfFloat.Dragging() && !a.dropGuardFloat.Dragging() {
 		a.handlingDirty = false
 		a.persistHandling()
 	}
@@ -532,6 +551,12 @@ func (a *App) handlingKnobs(gtx C) D {
 		}
 		return fmt.Sprintf("%5dx", v)
 	}
+	guard := func(v int) string {
+		if v <= 0 {
+			return "   OFF" // no guard: every press is the player's, as it always was
+		}
+		return ms(v)
+	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.header("HANDLING")),
 		layout.Rigid(row("DAS", &a.dasFloat, &a.dasMs, msRange, ms)),
@@ -539,5 +564,7 @@ func (a *App) handlingKnobs(gtx C) D {
 		layout.Rigid(row("ARR", &a.arrFloat, &a.arrMs, msRange, ms)),
 		layout.Rigid(spacer(4)),
 		layout.Rigid(row("SDF", &a.sdfFloat, &a.sdf, sdfRange, factor)),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(row("GUARD", &a.dropGuardFloat, &a.dropGuardMs, msRange, guard)),
 	)
 }

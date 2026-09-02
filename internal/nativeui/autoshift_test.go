@@ -256,7 +256,7 @@ func gameFrameAt(a *App, r *input.Router, now time.Time) {
 // where it stays glued, and losing the keys to the chat resets the machine.
 func TestAutoShiftKeyboardDAS(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(60, 0, defaultSDF) // pinned: the timings below assume DAS 60 / ARR 0
+	a.SetHandling(60, 0, defaultSDF, defaultDropGuardMs) // pinned: the timings below assume DAS 60 / ARR 0
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
@@ -321,7 +321,7 @@ func TestAutoShiftKeyboardDAS(t *testing.T) {
 // keys' own order.
 func TestWASDKeysDriveThePiece(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(60, 0, defaultSDF)
+	a.SetHandling(60, 0, defaultSDF, defaultDropGuardMs)
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
 	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
@@ -361,7 +361,7 @@ func TestWASDKeysDriveThePiece(t *testing.T) {
 // ignored, the DAS clock unmoved — and releasing A stops the repeat.
 func TestWASDSharesTheArrowsAutoShift(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(60, 0, defaultSDF) // pinned: the timings below assume DAS 60 / ARR 0
+	a.SetHandling(60, 0, defaultSDF, defaultDropGuardMs) // pinned: the timings below assume DAS 60 / ARR 0
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
@@ -560,7 +560,7 @@ func TestShiftTabHoldsNothing(t *testing.T) {
 // the click nor leaves the repeat running.
 func TestAutoShiftPadHold(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(60, 0, defaultSDF) // pinned: the timings below assume DAS 60 / ARR 0
+	a.SetHandling(60, 0, defaultSDF, defaultDropGuardMs) // pinned: the timings below assume DAS 60 / ARR 0
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	// A T at Col 4 (cells in cols 4..6): exactly 4 columns of room to its left.
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
@@ -686,7 +686,7 @@ func TestSoftDropAutoRepeat(t *testing.T) {
 	// Pinned: DAS 150 (which ↓ must ignore), ARR 20 (which is the shift's
 	// and not the soft drop's), SDF 20 — 20x the level-0 gravity of 1000ms,
 	// so one row every 50ms.
-	a.SetHandling(150, 20, 20)
+	a.SetHandling(150, 20, 20, defaultDropGuardMs)
 	if got := a.softARR(nil); got != 50*ms {
 		t.Fatalf("soft drop interval = %v, want 50ms (level 0 gravity / SDF 20)", got)
 	}
@@ -753,7 +753,7 @@ func TestSoftDropAutoRepeat(t *testing.T) {
 // has it).
 func TestPadDownArmSoftDrops(t *testing.T) {
 	a := newTestApp()
-	a.SetHandling(150, 20, 20) // pinned: DAS 150 (ignored by ↓), SDF 20 = one row per 50ms
+	a.SetHandling(150, 20, 20, defaultDropGuardMs) // pinned: DAS 150 (ignored by ↓), SDF 20 = one row per 50ms
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	a.eng.SeedActivePiece(game.Piece{Type: game.PieceT, Row: 8, Col: 4})
 	a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
@@ -824,7 +824,7 @@ func TestSoftARRFollowsGravity(t *testing.T) {
 	}
 	// No engine yet (a frame before the game): level 0 stands in.
 	a := newTestApp()
-	a.SetHandling(defaultDASMs, defaultARRMs, 20)
+	a.SetHandling(defaultDASMs, defaultARRMs, 20, defaultDropGuardMs)
 	if got := a.softARR(nil); got != 50*ms {
 		t.Errorf("with no engine: interval %v, want the level-0 rate 50ms", got)
 	}
@@ -832,15 +832,15 @@ func TestSoftARRFollowsGravity(t *testing.T) {
 
 // TestHandlingKnobsRoundTrip: each slider's position and its knob agree, so
 // the HANDLING section opens showing the tuning that is actually in force —
-// and the saved set carries all three.
+// and the saved set carries all four.
 func TestHandlingKnobsRoundTrip(t *testing.T) {
 	a := newTestApp()
 	var saved prefs.Handling
 	a.handlingSave = func(h prefs.Handling) error { saved = h; return nil }
 
-	a.SetHandling(85, 35, 12)
-	if a.dasMs != 85 || a.arrMs != 35 || a.sdf != 12 {
-		t.Fatalf("knobs = %d/%d/%d, want 85/35/12", a.dasMs, a.arrMs, a.sdf)
+	a.SetHandling(85, 35, 12, 45)
+	if a.dasMs != 85 || a.arrMs != 35 || a.sdf != 12 || a.dropGuardMs != 45 {
+		t.Fatalf("knobs = %d/%d/%d/%d, want 85/35/12/45", a.dasMs, a.arrMs, a.sdf, a.dropGuardMs)
 	}
 	for _, c := range []struct {
 		name string
@@ -851,22 +851,25 @@ func TestHandlingKnobsRoundTrip(t *testing.T) {
 		{"DAS", a.dasFloat.Value, msRange, 85},
 		{"ARR", a.arrFloat.Value, msRange, 35},
 		{"SDF", a.sdfFloat.Value, sdfRange, 12},
+		{"GUARD", a.dropGuardFloat.Value, msRange, 45},
 	} {
 		if got := c.r.value(c.pos); got != c.want {
 			t.Errorf("%s slider at %v reads back as %d, want %d", c.name, c.pos, got, c.want)
 		}
 	}
 	// Out of range on the way in: clamped, sliders and all.
-	a.SetHandling(9000, -5, 9000)
-	if a.dasMs != maxHandlingMs || a.arrMs != 0 || a.sdf != maxSDF {
-		t.Fatalf("clamped knobs = %d/%d/%d, want %d/0/%d", a.dasMs, a.arrMs, a.sdf, maxHandlingMs, maxSDF)
+	a.SetHandling(9000, -5, 9000, 9000)
+	if a.dasMs != maxHandlingMs || a.arrMs != 0 || a.sdf != maxSDF || a.dropGuardMs != maxHandlingMs {
+		t.Fatalf("clamped knobs = %d/%d/%d/%d, want %d/0/%d/%d",
+			a.dasMs, a.arrMs, a.sdf, a.dropGuardMs, maxHandlingMs, maxSDF, maxHandlingMs)
 	}
 	if got := sdfRange.value(a.sdfFloat.Value); got != maxSDF {
 		t.Errorf("SDF slider at the top reads back as %d, want %d", got, maxSDF)
 	}
 
 	a.persistHandling()
-	if want := (prefs.Handling{DASMs: maxHandlingMs, ARRMs: 0, SDF: maxSDF}); saved != want {
+	want := prefs.Handling{DASMs: maxHandlingMs, ARRMs: 0, SDF: maxSDF, DropGuardMs: maxHandlingMs}
+	if saved != want {
 		t.Fatalf("persisted %+v, want %+v", saved, want)
 	}
 }

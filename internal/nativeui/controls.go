@@ -955,7 +955,9 @@ func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
 		{&a.padUp, (*engine.Engine).RotateCW},
 		{&a.padCCW, (*engine.Engine).RotateCCW},
 		{&a.padCW, (*engine.Engine).RotateCW},
-		{&a.padDrop, (*engine.Engine).HardDrop},
+		// The drop arm goes through the guard like the space bar and the
+		// flick do (dropguard.go), and never straight to the engine.
+		{&a.padDrop, func(eng *engine.Engine) { a.hardDrop(gtx, eng) }},
 		{&a.padHold, (*engine.Engine).Hold},
 		{&a.holdBoxBtn, (*engine.Engine).Hold},
 	}

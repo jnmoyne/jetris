@@ -54,7 +54,7 @@ func main() {
 		log.Printf("warning: loading panel switches: %v", err)
 	}
 	a := nativeui.NewWithPicker(cfg, names, selected, favorites)
-	a.SetHandling(handling.DASMs, handling.ARRMs, handling.SDF)
+	a.SetHandling(handling.DASMs, handling.ARRMs, handling.SDF, handling.DropGuardMs)
 	a.SetPanels(panels)
 	if !noUpdateCheck {
 		go checkForUpdate(ctx, a)

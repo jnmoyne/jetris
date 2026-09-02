@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"image"
 	"math"
 	"time"
 
@@ -11,9 +12,10 @@ import (
 )
 
 // Client-local arcade effects: the hard-drop ghost, the landed-garbage
-// detection behind the attacker-colored row strobes, and the impact shake.
-// Everything here is derived on the UI side from committed board state —
-// nothing is published and nothing changes gameplay.
+// detection behind the attacker-colored row strobes, the impact shake, and
+// the recoil a rejected write gives the piece. Everything here is derived on
+// the UI side from committed board state — nothing is published and nothing
+// changes gameplay.
 
 // shakeDur/shakeCycles shape the garbage impact judder: a horizontal sine
 // wobble that decays to rest over shakeDur.
@@ -33,6 +35,57 @@ func boardShakeOffset(cellPx int, since time.Duration) int {
 	t := float64(since) / float64(shakeDur)
 	amp := float64(cellPx) / 3 * (1 - t)
 	return int(amp * math.Sin(2*math.Pi*shakeCycles*t))
+}
+
+// A rejected write's recoil (bridge.go, drawBoard): casKickDur/casKickCycles
+// shape the vibration the piece does where the CAS failure puts it back. It
+// is deliberately NOT the garbage impact's wobble — half its duration, a
+// sixth of a cell against that one's third, and it moves the piece alone
+// rather than the whole well — so a lost move never reads as an attack
+// landing. casWantBlink is the period of the outline blinking where the lost
+// step wanted the piece instead: four blinks across flashDur, lit for the
+// first half of each, the same hard arcade square wave as the row strobes.
+const (
+	casKickDur    = 240 * time.Millisecond
+	casKickCycles = 3
+	casWantBlink  = 150 * time.Millisecond
+)
+
+// casKickOffset is the recoil's paint offset (px) at `since` past the kick
+// epoch: a shudder back and forth along one diagonal — a sixth of a cell
+// across, half that up and down — decaying linearly to rest across
+// casKickCycles swings, and starting and ending exactly at rest. Three swings
+// in 240 ms is a buzz a 60 Hz frame can still resolve; faster would only
+// alias into a jitter. Zero outside the window, including the idle zero-epoch
+// state, whose `since` is enormous.
+func casKickOffset(cellPx int, since time.Duration) image.Point {
+	if since < 0 || since >= casKickDur {
+		return image.Point{}
+	}
+	t := float64(since) / float64(casKickDur)
+	swing := float64(cellPx) / 6 * (1 - t) * math.Sin(2*math.Pi*casKickCycles*t)
+	return image.Pt(int(math.Round(swing)), int(math.Round(swing/2)))
+}
+
+// activePieceCells is the local player's falling piece exactly as the drawn
+// board has it — read off the snapshot rather than from a piece the engine
+// holds, so the recoil vibrates whatever the player is looking at (the piece
+// snapped back, and the moves the repair replays behind it). Nil when no
+// piece of theirs is on the board.
+func activePieceCells(snap engine.BoardSnapshot, playerIdx int) map[[2]int]bool {
+	var cells map[[2]int]bool
+	for r := 0; r < snap.Height && r < len(snap.Rows); r++ {
+		row := snap.Rows[r]
+		for c := 0; c < snap.Width && c < len(row.Cells); c++ {
+			if cell := row.Cells[c]; cell.Active && cell.PlayerIdx == playerIdx {
+				if cells == nil {
+					cells = make(map[[2]int]bool, 4)
+				}
+				cells[[2]int{r, c}] = true
+			}
+		}
+	}
+	return cells
 }
 
 // ghostCells returns the hard-drop ghost for the local player's falling piece:

@@ -35,6 +35,8 @@ type gameView struct {
 	myReady              bool
 	players, readyPlayer []lobby.PlayerSummary
 	flash                map[[2]int]time.Time
+	casWant              map[[2]int]time.Time         // own board: the outline blinking where a rejected step wanted the piece
+	casKickAt            time.Time                    // own board: CAS-recoil epoch — the piece vibrates where the rejection put it back (zero = idle)
 	specFlash            map[int]map[[2]int]time.Time // spectator: per-board (playerIdx or team) flashes
 	flashActive          bool
 	rowStrobes           map[int]rowStrobe         // own board: arcade row strobes (clears + landed garbage)
@@ -74,6 +76,15 @@ func (a *App) snapshotGame(now time.Time) gameView {
 			fc[k] = v
 		} else {
 			delete(a.flash, k)
+		}
+	}
+	// The lost step's outline, on the own board: pruned the same way.
+	cw := make(map[[2]int]time.Time)
+	for k, v := range a.casWant {
+		if now.Sub(v) < flashDur {
+			cw[k] = v
+		} else {
+			delete(a.casWant, k)
 		}
 	}
 	// Spectator per-board flashes: prune expired cells (and empty boards).
@@ -137,8 +148,10 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		players:        append([]lobby.PlayerSummary(nil), a.gamePlayers...),
 		readyPlayer:    append([]lobby.PlayerSummary(nil), a.readyPlayers...),
 		flash:          fc,
+		casWant:        cw,
+		casKickAt:      a.casKickAt,
 		specFlash:      sf,
-		flashActive:    len(fc) > 0 || specActive,
+		flashActive:    len(fc) > 0 || len(cw) > 0 || specActive,
 		rowStrobes:     rs,
 		specRowStrobes: srs,
 		shakeStart:     a.shakeStart,
@@ -233,6 +246,9 @@ func (a *App) layoutGame(gtx C) D {
 	if len(view.rowStrobes) > 0 || len(view.specRowStrobes) > 0 || gtx.Now.Sub(view.shakeStart) < shakeDur {
 		animate(gtx) // keep the row strobes / garbage impact shake animating
 	}
+	if gtx.Now.Sub(view.casKickAt) < casKickDur {
+		animate(gtx) // keep the rejected write's recoil vibrating until it settles
+	}
 	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
 		animate(gtx) // keep animating the countdown pop until it settles
 	}
@@ -244,13 +260,11 @@ func (a *App) layoutGame(gtx C) D {
 	}
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
-	// message tap (recordStreamMsg runs on the engine's consumer goroutines),
-	// and the display position into the pump's (it picks a lost move's
-	// flash cells by it). The publish mode goes straight to the engine.
+	// message tap (recordStreamMsg runs on the engine's consumer goroutines).
+	// The publish mode goes straight to the engine.
 	showMsgs := a.showMsgs.Value
 	a.mu.Lock()
 	a.msgShow = showMsgs
-	a.dispMode = int(a.displayMode())
 	a.mu.Unlock()
 	if mode == engine.ModePlayer {
 		eng.SetPublishMode(publishModeOf(a.labAsync()))
@@ -1006,6 +1020,14 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if eng.ShowGhost() && mode == engine.ModePlayer && started && !view.gameOver {
 		ghost = ghostCells(snap, localIdx, gmode)
 	}
+	// The rejected write's recoil (effects.go): the piece vibrates where the
+	// CAS failure put it back, its cells read off the very snapshot being
+	// drawn — so the judder follows the piece through the snap-back and the
+	// moves the repair replays behind it, in every display position.
+	var kick map[[2]int]bool
+	if mode == engine.ModePlayer && gtx.Now.Sub(view.casKickAt) < casKickDur {
+		kick = activePieceCells(snap, localIdx)
+	}
 	// Players with a piece preview get the NEXT well beside the playfield —
 	// per-seat queue, so spectators (no seat) never have one. Read the live
 	// queue (not just NextCount) so the space is only reserved once the
@@ -1059,7 +1081,10 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// boardOnly is the playfield itself, with its effects and the
 		// pre-game countdown over it.
 		boardOnly := func(gtx C) D {
-			fx := &boardFX{flash: view.flash, rows: view.rowStrobes, ghost: ghost, intent: intent, acked: acked}
+			fx := &boardFX{
+				flash: view.flash, want: view.casWant, kick: kick, kickAt: view.casKickAt,
+				rows: view.rowStrobes, ghost: ghost, intent: intent, acked: acked,
+			}
 			if view.boardFocused {
 				fx.frame = colFocus // the well's frame lights up: the keys drive the piece
 			}

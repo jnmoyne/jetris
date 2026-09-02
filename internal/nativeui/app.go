@@ -202,6 +202,15 @@ type App struct {
 	myReady      bool
 	readyPlayers []lobby.PlayerSummary
 	flash        map[[2]int]time.Time
+	// casWant is the own board's blinking outline where a rejected step
+	// wanted the piece — the move the CAS failure took away — keyed like
+	// flash, which keeps the plain rainbow border for a rejection with no
+	// target to point at (a lost spawn, lock or gravity step).
+	casWant map[[2]int]time.Time
+	// casKickAt is the recoil epoch that goes with it: when our last write
+	// was rejected, which vibrates the piece where the rejection put it back
+	// (zero = idle).
+	casKickAt time.Time
 	// specFlash holds CAS-failure flashes for SPECTATOR boards, broadcast
 	// by players over core NATS. Keyed by board index — the flashing
 	// player's global index (competitive) or team (teams). A player's own
@@ -414,10 +423,8 @@ type App struct {
 	backBtn  widget.Clickable
 	showMsgs widget.Bool // "Show NATS messages" checkbox
 	// The LAB switch (lab.go): labEnum is labSync (Pessimistic sync ☹, the
-	// classic game) or labAsync (Optimistic async ☺, the default); dispMode
-	// mirrors its display position under mu each frame for the pump.
-	labEnum  widget.Enum
-	dispMode int
+	// classic game) or labAsync (Optimistic async ☺, the default).
+	labEnum widget.Enum
 	// ghostCb is the create wizard's "Show ghost piece" checkbox, ON by
 	// default: whether the game being created renders the hard-drop landing
 	// preview. A per-GAME rule stored in the meta (GameMeta.NoGhost,
@@ -608,6 +615,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		screen:          screenLogin,
 		countdown:       -1,
 		flash:           map[[2]int]time.Time{},
+		casWant:         map[[2]int]time.Time{},
 		specFlash:       map[int]map[[2]int]time.Time{},
 		rowStrobes:      map[int]rowStrobe{},
 		specRowStrobes:  map[int]map[int]rowStrobe{},
@@ -620,7 +628,6 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.setExtraColumns(config.DefaultExtraColumns)
 	a.setTeamCount(config.DefaultTeamCount)
 	a.labEnum.Value = labAsync // Optimistic async, the default
-	a.dispMode = int(displayAck)
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF, defaultDropGuardMs)
 	a.setDefaultPanels() // every panel on until a saved set says otherwise
 	a.loginEd.SingleLine = true

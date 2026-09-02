@@ -14,7 +14,7 @@ import (
 // the engine every frame.
 func TestLabSwitch(t *testing.T) {
 	a := newTestApp()
-	if !a.labAsync() || a.displayMode() != displayAck || a.dispMode != int(displayAck) {
+	if !a.labAsync() || a.displayMode() != displayAck {
 		t.Fatal("a new App must start on Optimistic async, piece at once")
 	}
 	if publishModeOf(true) != engine.PublishOptimistic || publishModeOf(false) != engine.PublishSync {
@@ -32,7 +32,7 @@ func TestLabSwitch(t *testing.T) {
 	}
 	a.labEnum.Value = labSync
 	renderOnce(t, a)
-	if a.labAsync() || a.displayMode() != displayConsumer || a.dispMode != int(displayConsumer) {
+	if a.labAsync() || a.displayMode() != displayConsumer {
 		t.Fatal("Pessimistic sync must paint the consumer's board")
 	}
 	if got := a.eng.PublishMode(); got != engine.PublishSync {
@@ -86,9 +86,6 @@ func TestGameScreenLabModes(t *testing.T) {
 		a.eng.MoveDown()
 		a.labEnum.Value = v
 		renderOnce(t, a)
-		if a.dispMode != int(a.displayMode()) {
-			t.Fatalf("%s: dispMode mirrored as %d", v, a.dispMode)
-		}
 		if got, want := a.eng.PublishMode(), publishModeOf(v == labAsync); got != want {
 			t.Fatalf("%s: engine publish mode %v, want %v", v, got, want)
 		}

@@ -17,10 +17,11 @@ import (
 )
 
 // boardFX bundles the client-local overlays drawn over ONE board: rainbow
-// borders on CAS-rejected cells, full-row strobes (line clears and arriving
-// garbage), and the hard-drop ghost. Every field may be nil, and a nil
-// *boardFX draws no overlays at all (opponent thumbnails, archived boards).
-// None of it is ever published — pure local decoration over committed state.
+// borders on CAS-rejected cells, the recoil a rejected write gives the piece,
+// full-row strobes (line clears and arriving garbage), and the hard-drop
+// ghost. Every field may be nil, and a nil *boardFX draws no overlays at all
+// (opponent thumbnails, archived boards). None of it is ever published — pure
+// local decoration over committed state.
 type boardFX struct {
 	flash map[[2]int]time.Time      // CAS-rejected cells → rainbow border
 	rows  map[int]rowStrobe         // absolute row index → strobe state
@@ -35,8 +36,18 @@ type boardFX struct {
 	// it elsewhere (Optimistic async, optimisticBoard): outlined in grey, so
 	// the white outline on the piece being steered keeps the focus.
 	acked map[[2]int]bool
-	tint  color.NRGBA // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
-	frame color.NRGBA // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
+	// want is where a rejected step wanted the piece — the move the CAS
+	// failure took away: a rainbow frame blinks on those squares, over
+	// whatever is on them, for flashDur from the epoch stored per cell.
+	want map[[2]int]time.Time
+	// kick/kickAt are the recoil that goes with it: the cells of the piece as
+	// the board draws it, vibrated for casKickDur from kickAt, so the piece
+	// shudders where the rejection put it back instead of going where it was
+	// steered. Set on the local player's own board only.
+	kick   map[[2]int]bool
+	kickAt time.Time
+	tint   color.NRGBA // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
+	frame  color.NRGBA // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
 }
 
 // Board tint strength: how far an empty square's fill and its grid line are
@@ -86,6 +97,18 @@ func (fx *boardFX) rowsActive(now time.Time) bool {
 func fillRect(ops *op.Ops, r image.Rectangle, c color.NRGBA) {
 	defer clip.Rect(r).Push(ops).Pop()
 	paint.Fill(ops, c)
+}
+
+// strokeRect paints a w-px border just inside r, leaving what is already
+// there showing through the middle.
+func strokeRect(ops *op.Ops, r image.Rectangle, w int, c color.NRGBA) {
+	if w <= 0 || r.Dx() <= 2*w || r.Dy() <= 2*w {
+		return
+	}
+	fillRect(ops, image.Rect(r.Min.X, r.Min.Y, r.Max.X, r.Min.Y+w), c)
+	fillRect(ops, image.Rect(r.Min.X, r.Max.Y-w, r.Max.X, r.Max.Y), c)
+	fillRect(ops, image.Rect(r.Min.X, r.Min.Y+w, r.Min.X+w, r.Max.Y-w), c)
+	fillRect(ops, image.Rect(r.Max.X-w, r.Min.Y+w, r.Max.X, r.Max.Y-w), c)
 }
 
 // rainbow returns the CAS-flash border color for a given progress through the
@@ -179,12 +202,36 @@ func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW i
 	fillRect(ops, image.Rect(inner.Min.X+bw, inner.Min.Y+bw, inner.Min.X+2*bw, inner.Min.Y+2*bw), lighten(fill, 0.75))
 }
 
+// emptyCellStyle is how an unoccupied square on this board is painted — what
+// the squares a vibrating piece juddered out of are filled with for the frame,
+// so the recoil shows against the board rather than a smear of the piece
+// itself.
+func emptyCellStyle(localIdx int, showOutline bool, tint color.NRGBA) render.CellAppearance {
+	ap := render.CellStyle(game.Cell{}, localIdx, showOutline)
+	if tint.A != 0 {
+		ap.Fill = lerpColor(ap.Fill, tint, boardTintFill)
+		ap.Outline = lerpColor(ap.Outline, tint, boardTintGrid)
+	}
+	return ap
+}
+
+// recoilCell is one square of a vibrating piece, held back from the cell loop
+// and painted last at the frame's judder offset.
+type recoilCell struct {
+	x, y     int
+	ap       render.CellAppearance
+	outline  color.NRGBA
+	outlineW int
+}
+
 // drawBoard renders a playfield snapshot at the current transform origin and
 // returns its pixel dimensions (cells plus the surrounding "well" frame).
 // localIdx is the viewer's player index (-1 for spectators). fx (may be nil)
-// carries the client-local overlays: CAS-rejection rainbow borders, the
-// hard-drop ghost (empty squares only — real cells always win), and the
-// clear/garbage row strobes painted over the finished cells.
+// carries the client-local overlays: CAS-rejection rainbow borders and the
+// blinking outline where a rejected step wanted the piece, the recoil that
+// vibrates the piece it was taken from, the hard-drop ghost (empty squares
+// only — real cells always win), and the clear/garbage row strobes painted
+// over the finished cells.
 func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time) D {
 	fw := cellPx / 8 // chunky arcade-well frame around the playfield
 	if fw < 2 {
@@ -203,6 +250,14 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 	fillRect(gtx.Ops, image.Rect(0, h-fw, w, h), frame)
 	fillRect(gtx.Ops, image.Rect(0, 0, fw, h), frame)
 	fillRect(gtx.Ops, image.Rect(w-fw, 0, w, h), frame)
+	// The CAS recoil: while it runs, the piece's own squares are held back
+	// from the loop and painted last at the frame's judder offset, over the
+	// empty squares they shudder out of.
+	var kick image.Point
+	var recoil []recoilCell
+	if fx != nil && len(fx.kick) > 0 {
+		kick = casKickOffset(cellPx, now.Sub(fx.kickAt))
+	}
 	for r := snap.VisibleStart; r < snap.Height && r < len(snap.Rows); r++ {
 		row := snap.Rows[r]
 		y := fw + (r-snap.VisibleStart)*cellPx
@@ -237,7 +292,42 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 					}
 				}
 			}
-			drawCell(gtx.Ops, fw+c*cellPx, y, cellPx, ap.Fill, outline, outlineW, ap.Bevel)
+			x := fw + c*cellPx
+			if kick != (image.Point{}) && fx.kick[[2]int{r, c}] {
+				recoil = append(recoil, recoilCell{x: x, y: y, ap: ap, outline: outline, outlineW: outlineW})
+				e := emptyCellStyle(localIdx, showOutline, fx.tint)
+				drawCell(gtx.Ops, x, y, cellPx, e.Fill, e.Outline, e.OutlineW, false)
+				continue
+			}
+			drawCell(gtx.Ops, x, y, cellPx, ap.Fill, outline, outlineW, ap.Bevel)
+		}
+	}
+	if len(recoil) > 0 {
+		// Clipped to the playfield, so a piece juddering against a wall bumps
+		// into the well's frame rather than over it.
+		st := clip.Rect(image.Rect(fw, fw, w-fw, h-fw)).Push(gtx.Ops)
+		for _, rc := range recoil {
+			drawCell(gtx.Ops, rc.x+kick.X, rc.y+kick.Y, cellPx, rc.ap.Fill, rc.outline, rc.outlineW, rc.ap.Bevel)
+		}
+		st.Pop()
+	}
+	// Where the rejected step wanted the piece: a thick rainbow frame blinking
+	// hard on/off over whatever is on those squares — the loudest thing on the
+	// board, and painted after the recoil rather than inside it, because it
+	// marks a PLACE the piece never reached, not the piece. The half of every
+	// cycle it is dark, the squares are simply themselves again.
+	if fx != nil {
+		for rc, start := range fx.want {
+			r, c := rc[0], rc[1]
+			if r < snap.VisibleStart || r >= snap.Height || c < 0 || c >= snap.Width {
+				continue
+			}
+			el := now.Sub(start)
+			if el < 0 || el >= flashDur || el%casWantBlink >= casWantBlink/2 {
+				continue
+			}
+			x, y := fw+c*cellPx, fw+(r-snap.VisibleStart)*cellPx
+			strokeRect(gtx.Ops, image.Rect(x, y, x+cellPx, y+cellPx), max(2, cellPx/10), rainbow(el))
 		}
 	}
 	// Row strobes paint LAST, a translucent solid band across the row during

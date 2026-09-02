@@ -588,10 +588,13 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.mu.Unlock()
 }
 
-// resetBoardFX clears every client-local board overlay (CAS flashes, row
-// strobes, garbage tracking, shake) for a fresh game screen. Caller holds a.mu.
+// resetBoardFX clears every client-local board overlay (CAS flashes and the
+// recoil, row strobes, garbage tracking, shake) for a fresh game screen.
+// Caller holds a.mu.
 func (a *App) resetBoardFX() {
 	a.flash = map[[2]int]time.Time{}
+	a.casWant = map[[2]int]time.Time{}
+	a.casKickAt = time.Time{}
 	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.rowStrobes = map[int]rowStrobe{}
 	a.specRowStrobes = map[int]map[int]rowStrobe{}

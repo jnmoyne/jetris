@@ -79,18 +79,24 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 						m[[2]int{rc[0], rc[1]}] = now
 					}
 				} else {
-					// Player: our own dropped-write flash on our own board —
-					// the piece where it stood (positions 1 and 3: in 3 that
-					// is the white outline the colored piece snaps back onto),
-					// or, when the board outlines where the piece is headed
-					// (position 2) and the engine knows where the lost step
-					// was going, that outline.
-					cells := u.FlashCells
-					if a.dispMode == int(displayOutline) && len(u.FlashTargetCells) > 0 {
-						cells = u.FlashTargetCells
-					}
-					for _, rc := range cells {
-						a.flash[[2]int{rc[0], rc[1]}] = now
+					// Player: our own dropped write, told in two halves. The
+					// piece is put back where it stood and VIBRATES there
+					// (casKickAt — the recoil follows it through the snap-back
+					// and the moves replayed behind it), while the outline
+					// BLINKS where the lost step wanted it: the move that was
+					// taken away, drawn where it would have gone. A rejection
+					// with no target — a lost spawn, lock or gravity step,
+					// nothing that was headed anywhere — keeps the plain
+					// rainbow border on the piece's own cells instead.
+					a.casKickAt = now
+					if len(u.FlashTargetCells) > 0 {
+						for _, rc := range u.FlashTargetCells {
+							a.casWant[[2]int{rc[0], rc[1]}] = now
+						}
+					} else {
+						for _, rc := range u.FlashCells {
+							a.flash[[2]int{rc[0], rc[1]}] = now
+						}
 					}
 				}
 			case engine.UpdateRowsCleared:

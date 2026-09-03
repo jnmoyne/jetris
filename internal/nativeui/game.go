@@ -473,16 +473,23 @@ func (a *App) chatComposer(gtx C, ed *widget.Editor, send *widget.Clickable, hin
 
 // gameChatLog is this game's chat as the panel shows it: the game's own
 // messages plus the lobby's (GameID ""), which the panel prefixes "@lobby".
+// The lobby's join/leave notices stay in the lobby: who is coming and going
+// out there is no business of a game in progress.
 func (a *App) gameChatLog(gameID string) []lobby.ChatMessage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	msgs := make([]lobby.ChatMessage, 0, len(a.chatLog))
 	for _, m := range a.chatLog {
-		if m.GameID == gameID || m.GameID == "" {
+		if inGameChat(m, gameID) {
 			msgs = append(msgs, m)
 		}
 	}
 	return msgs
+}
+
+// inGameChat: does the game's chat panel show m? See gameChatLog.
+func inGameChat(m lobby.ChatMessage, gameID string) bool {
+	return !m.System && (m.GameID == gameID || m.GameID == "")
 }
 
 // gameChatCount is how many messages gameChatLog would return — what the
@@ -493,7 +500,7 @@ func (a *App) gameChatCount(gameID string) int {
 	defer a.mu.Unlock()
 	n := 0
 	for _, m := range a.chatLog {
-		if m.GameID == gameID || m.GameID == "" {
+		if inGameChat(m, gameID) {
 			n++
 		}
 	}

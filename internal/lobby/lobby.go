@@ -296,18 +296,40 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 
 	playerID := strings.TrimPrefix(entry.Key(), "players.")
 
+	// Arrivals and departures are told in the lobby chat as system lines —
+	// but only the ones that happen while we watch: the backlog replayed at
+	// start is who was already here, not a stream of joins, and our own key
+	// is not news to us. A heartbeat re-put of a known key is neither.
+	loaded := false
+	select {
+	case <-l.initialLoadDone:
+		loaded = true
+	default:
+	}
+	notice := ""
+
 	switch entry.Operation() {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
+		if prev, ok := l.players[playerID]; ok && loaded && playerID != l.playerID {
+			notice = prev.Name + " left the lobby"
+		}
 		delete(l.players, playerID)
 	default:
 		var p PlayerPresence
 		if err := json.Unmarshal(entry.Value(), &p); err != nil {
 			return
 		}
+		if _, known := l.players[playerID]; !known && loaded && playerID != l.playerID {
+			notice = p.Name + " joined the lobby"
+		}
 		l.players[playerID] = p
 	}
 
 	l.emitUpdate(LobbyUpdate{Kind: LobbyUpdatePlayers})
+	if notice != "" {
+		cm := l.appendChatLocked(ChatMessage{Text: notice, Timestamp: time.Now(), System: true})
+		l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateChat, ChatMsg: &cm})
+	}
 }
 
 func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
@@ -391,14 +413,21 @@ func (l *Lobby) runChatConsumer(ctx context.Context) {
 			}
 			cm.GameID = config.GameIDFromChatSubject(msg.Subject())
 			l.mu.Lock()
-			l.chatLog = append(l.chatLog, cm)
-			if len(l.chatLog) > chatLogCap {
-				l.chatLog = l.chatLog[len(l.chatLog)-chatLogCap:]
-			}
+			l.appendChatLocked(cm)
 			l.mu.Unlock()
 			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateChat, ChatMsg: &cm})
 		}
 	}
+}
+
+// appendChatLocked adds one line to the log, bounded by chatLogCap. The
+// caller holds l.mu.
+func (l *Lobby) appendChatLocked(cm ChatMessage) ChatMessage {
+	l.chatLog = append(l.chatLog, cm)
+	if len(l.chatLog) > chatLogCap {
+		l.chatLog = l.chatLog[len(l.chatLog)-chatLogCap:]
+	}
+	return cm
 }
 
 // ChatLog returns a snapshot of the chat messages consumed so far (lobby and

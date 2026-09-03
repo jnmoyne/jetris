@@ -53,4 +53,10 @@ type ChatMessage struct {
 	// from the delivery subject (lobby and game chat share one stream and are
 	// distinguished purely by subject naming).
 	GameID string `json:"-"`
+	// System marks a line the client wrote itself rather than one anybody
+	// sent: "Bob joined the lobby", "Bob left the lobby". Never published —
+	// every client derives them from the presence watch, so each sees exactly
+	// one per arrival or departure (a crash or TTL expiry included) and the
+	// stream carries none of them.
+	System bool `json:"-"`
 }

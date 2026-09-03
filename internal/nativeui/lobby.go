@@ -777,6 +777,9 @@ func (a *App) lobbyChatStrip(gtx C, chat []lobby.ChatMessage) D {
 			layout.Rigid(a.header("CHAT")),
 			layout.Rigid(func(gtx C) D {
 				return a.chatLogBox(gtx, &a.chatList, len(chat), func(i int) (string, colorN) {
+					if chat[i].System {
+						return chat[i].Text, colMuted
+					}
 					return fmt.Sprintf("%s: %s", chat[i].Name, chat[i].Text), colFg
 				})
 			}),

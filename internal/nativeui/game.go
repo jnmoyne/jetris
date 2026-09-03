@@ -40,6 +40,7 @@ type gameView struct {
 	flash                map[[2]int]time.Time
 	casWant              map[[2]int]time.Time         // own board: the outline blinking where a rejected step wanted the piece
 	casKickAt            time.Time                    // own board: CAS-recoil epoch — the piece snaps back and vibrates where the rejection put it (zero = idle)
+	casKickFrom          [2]float64                   // own board: the snap-back's start, where the lost step wanted the piece relative to where it stood (cells)
 	specFlash            map[int]map[[2]int]time.Time // spectator: per-board (playerIdx or team) flashes
 	flashActive          bool
 	rowStrobes           map[int]rowStrobe         // own board: arcade row strobes (clears + landed garbage)
@@ -158,6 +159,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		flash:          fc,
 		casWant:        cw,
 		casKickAt:      a.casKickAt,
+		casKickFrom:    a.casKickFrom,
 		specFlash:      sf,
 		flashActive:    len(fc) > 0 || len(cw) > 0 || specActive,
 		rowStrobes:     rs,
@@ -1031,14 +1033,14 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	if eng.ShowGhost() && mode == engine.ModePlayer && started && !view.gameOver {
 		ghost = ghostCells(snap, localIdx, gmode)
 	}
-	// The rejected write's recoil (effects.go): the piece snaps back from
-	// where the frames before drew it and vibrates where the CAS failure put
-	// it, its cells read off the very snapshot being drawn, in every display
-	// position — until the board draws it somewhere else, which ends it.
+	// The rejected write's recoil (effects.go): the piece flies back from
+	// where the lost step wanted it and buzzes where the CAS failure put it,
+	// its cells read off the very snapshot being drawn — so it follows the
+	// piece through the repair's replay and the player steering on, in
+	// every display position.
 	var kick map[[2]int]bool
-	var kickFrom [2]float64
 	if mode == engine.ModePlayer {
-		kick, kickFrom = a.trackRecoil(gtx, snap, localIdx, view.casKickAt)
+		kick = a.trackRecoil(gtx, snap, localIdx, view.casKickAt)
 	}
 	// Players with a piece preview get the NEXT well beside the playfield —
 	// per-seat queue, so spectators (no seat) never have one. Read the live
@@ -1094,7 +1096,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// pre-game countdown over it.
 		boardOnly := func(gtx C) D {
 			fx := &boardFX{
-				flash: view.flash, want: view.casWant, kick: kick, kickAt: view.casKickAt, kickFrom: kickFrom,
+				flash: view.flash, want: view.casWant, kick: kick, kickAt: view.casKickAt, kickFrom: view.casKickFrom,
 				rows: view.rowStrobes, ghost: ghost, intent: intent, acked: acked,
 			}
 			if view.boardFocused {

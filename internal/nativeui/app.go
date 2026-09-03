@@ -230,16 +230,12 @@ type App struct {
 	casWant map[[2]int]time.Time
 	// casKickAt is the recoil epoch that goes with it: when our last write
 	// was rejected, which snaps the piece back and vibrates it where the
-	// rejection put it (zero = idle). The layout runs the recoil itself
-	// (trackRecoil): recoil is the one in progress, fixed on the piece as
-	// drawn at the kick, and drawnPiece/drawnPrev/drawnMovedAt follow the
-	// local piece as the own board draws it frame to frame — drawnPrev is
-	// where it was before its latest jump, the snap-back's start.
-	casKickAt    time.Time
-	recoil       recoilState
-	drawnPiece   map[[2]int]bool
-	drawnPrev    map[[2]int]bool
-	drawnMovedAt time.Time
+	// rejection put it (zero = idle); casKickFrom is the snap-back's start,
+	// where the lost step wanted the piece relative to where it stood, in
+	// cells (zero: nowhere, the buzz alone). The layout runs the recoil
+	// (trackRecoil).
+	casKickAt   time.Time
+	casKickFrom [2]float64
 	// specFlash holds CAS-failure flashes for SPECTATOR boards, broadcast
 	// by players over core NATS. Keyed by board index — the flashing
 	// player's global index (competitive) or team (teams). A player's own

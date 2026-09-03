@@ -83,19 +83,26 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 					}
 				} else {
 					// Player: our own dropped write, told in two halves. The
-					// piece SNAPS BACK to where it stood and VIBRATES there
-					// (casKickAt — the layout runs the recoil, trackRecoil,
-					// and cuts it short once the piece moves on), while the
+					// piece FLIES BACK to where it stood and BUZZES there
+					// (casKickAt/casKickFrom — the layout runs the recoil,
+					// trackRecoil), while the
 					// outline BLINKS where the lost step wanted it: the move
 					// that was taken away, drawn where it would have gone. A rejection
 					// with no target — a lost spawn, lock or gravity step,
 					// nothing that was headed anywhere — keeps the plain
 					// rainbow border on the piece's own cells instead.
 					a.casKickAt = now
+					a.casKickFrom = [2]float64{}
 					if len(u.FlashTargetCells) > 0 {
+						stood, wanted := map[[2]int]bool{}, map[[2]int]bool{}
+						for _, rc := range u.FlashCells {
+							stood[[2]int{rc[0], rc[1]}] = true
+						}
 						for _, rc := range u.FlashTargetCells {
+							wanted[[2]int{rc[0], rc[1]}] = true
 							a.casWant[[2]int{rc[0], rc[1]}] = now
 						}
+						a.casKickFrom = cellsDisplacement(wanted, stood)
 					} else {
 						for _, rc := range u.FlashCells {
 							a.flash[[2]int{rc[0], rc[1]}] = now

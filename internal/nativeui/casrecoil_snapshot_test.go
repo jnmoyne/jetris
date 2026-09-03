@@ -67,7 +67,7 @@ func TestCASRecoilSnapshots(t *testing.T) {
 	// Bottom row: the buzz dying down and the piece settled, the outline
 	// still blinking through the rainbow.
 	early := []time.Duration{0, 20, 40, 60, 80}
-	late := []time.Duration{240, 360, 480, 600, 800}
+	late := []time.Duration{300, 500, 700, 900, 1100}
 	ms := func(in []time.Duration) []time.Duration {
 		out := make([]time.Duration, len(in))
 		for i, v := range in {
@@ -92,8 +92,8 @@ func TestCASRecoilSnapshots(t *testing.T) {
 		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
 		from := [2]float64{-1, 0}
 		layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx C) D { return strip(gtx, from, ms([]time.Duration{0, 20, 40, 60, 80})) }),
-			layout.Rigid(func(gtx C) D { return strip(gtx, from, ms([]time.Duration{100, 120, 140, 160, 300})) }),
+			layout.Rigid(func(gtx C) D { return strip(gtx, from, ms([]time.Duration{0, 40, 80, 120, 160})) }),
+			layout.Rigid(func(gtx C) D { return strip(gtx, from, ms([]time.Duration{180, 200, 220, 240, 800})) }),
 		)
 	})
 

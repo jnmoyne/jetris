@@ -86,6 +86,7 @@ go build -o golang-mk1 .
 # host a game (agent seats open by default), play it, exit
 ./golang-mk1 --create --players 2 --once
 ./golang-mk1 --create --mode cooperative --players 2 --once
+./golang-mk1 --create --mode cooperative --players 1 --once  # solo: one seat, played for the high score
 ./golang-mk1 --create --mode teams --players 2 --once     # 2v2 (--players is per team)
 
 # offline conformance checks (RNG + split-deal parity with the game, planner sanity)

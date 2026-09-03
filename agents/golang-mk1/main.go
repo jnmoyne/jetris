@@ -41,7 +41,7 @@ func main() {
 	join := flag.String("join", "", "join this specific game id instead of scanning the lobby")
 	create := flag.Bool("create", false, "create a game and wait for opponents")
 	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
-	players := flag.Int("players", 2, "player count when creating a game (with --create; teams: players per team)")
+	players := flag.Int("players", 2, "player count when creating a game (with --create; cooperative: 1 or more, a solo game plays for the high score; teams: players per team)")
 	teams := flag.Int("teams", defaultTeamCount, "teams mode: how many teams play each other when creating a game (2-6; total seats = teams × --players)")
 	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
 	extraCols := flag.Int("extra-cols", minExtraColumns, "shared-board width when creating a cooperative or teams game: columns every seat beyond the first adds to the standard 10 (4-10)")

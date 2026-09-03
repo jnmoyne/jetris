@@ -174,11 +174,13 @@ On shared boards (cooperative, teams), active cells carry a `PlayerIdx` field (0
 
 ## 3. Cooperative Mode
 
-2 or more players, there is one piece per player, all the players see each other's pieces on the same common playfield.
+1 or more players, there is one piece per player, all the players see each other's pieces on the same common playfield.
+
+**A crew of one is allowed** (`config.MinPlayerCount`: 1 for cooperative, 2 for competitive, 1 per team): a **solo co-op game** is one player alone on the standard 10-column board, playing for the **highest score** — nobody to cooperate with, nobody to beat, only the record. Everything else is the cooperative game as written below: the shared score is the player's own, the level is theirs, the game ends at their top-out, and the score competes for the archive's solo (1-player) co-op record — the high-score fireworks (Game Over, below) play when it beats it. The create wizard's seat editor floors at 1 for a co-op game (and annotates the solo choice), an agent hosts one with `--players 1`, and the lobby starts it the moment its one seat is filled and ready.
 
 ### Playfield
 
-The playfield is a single shared board of width `10 + (playerCount − 1) × extraColumns` — the standard 10 columns the first player needs plus the game's `meta.extra_columns` (§2) for each player after them, so 2 players share 14 columns at the default of 4, 3 players 18, and at the maximum of 10 every player has a full 10-column section of their own. Each player controls it's own piece. All players' pieces exist on the same playfield and can move anywhere on it — they are not restricted to any section, however player's tetrominoes can _not_ overlap.
+The playfield is a single shared board of width `10 + (playerCount − 1) × extraColumns` — the standard 10 columns the first player needs plus the game's `meta.extra_columns` (§2) for each player after them, so 2 players share 14 columns at the default of 4, 3 players 18, and at the maximum of 10 every player has a full 10-column section of their own. A solo game is the standard 10 columns whatever the setting, so the create wizard shows a one-seat shared board no width slider. Each player controls it's own piece. All players' pieces exist on the same playfield and can move anywhere on it — they are not restricted to any section, however player's tetrominoes can _not_ overlap.
 
 ### Piece Spawning
 
@@ -296,7 +298,7 @@ Every mode scores by the Tetris Guideline (tetris.wiki/Scoring, "Recent guidelin
 
 A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when the rotation used the last SRS kick (the T-spin-triple kick); otherwise a Mini (`game.DetectTSpin`). A hard drop of zero cells is not a move, so a T rotated into its slot and hard-dropped in place is still a T-spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Tetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
 
-Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Tetris is 800 × (level + 1) whether two or six play.
+Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Tetris is 800 × (level + 1) whether one or six play.
 
 ### Shared Score
 
@@ -321,7 +323,9 @@ When **any** player tops out (newly spawned piece cannot be placed **on locked c
 
 The overlay shows the team's final result — `Score: N (level L)`, the shared total — above the "Back to Lobby" button.
 
-**High-score fireworks:** if the crew's shared score strictly beats the best archived co-op score **for the same number of players** (the `TotalScore` of past cooperative games in the lobby's GAME HISTORY; the very first co-op game at a seat count sets the first record, though a zero score never counts), every crew member's screen plays the same victory fireworks show a competitive winner gets — a new best is a win for the whole crew. Ties don't count, and the finished game never competes against its own just-written archive record.
+A solo game ends the same way at its one player's top-out (there is nobody else to end it), and its score is the shared total it competes with.
+
+**High-score fireworks:** if the crew's shared score strictly beats the best archived co-op score **for the same number of players** (the `TotalScore` of past cooperative games in the lobby's GAME HISTORY; the very first co-op game at a seat count sets the first record, though a zero score never counts — so a solo game competes only with solo games), every crew member's screen plays the same victory fireworks show a competitive winner gets — a new best is a win for the whole crew. Ties don't count, and the finished game never competes against its own just-written archive record.
 
 ### Visual Indicators
 
@@ -1284,6 +1288,6 @@ One-shot game selection remains CLI-driven: `--join <gameID>` for a specific gam
 (still subject to that game's agent policy), or `--create --mode
 cooperative|competitive|teams --players N [--max-agents M] [--next K]
 [--split-pieces]` to host one
-(`--players` is per team in teams mode, like the GUI's count; `--split-pieces`
+(`--players` is per team in teams mode, like the GUI's count, and floors like it — 1 for a cooperative game, which an agent may host and play solo for the high score, 2 for competitive; `--split-pieces`
 deals the seven types out between the teammates there, §5) — agent-hosted games
 allow agents in all seats by default, since the host itself takes one.

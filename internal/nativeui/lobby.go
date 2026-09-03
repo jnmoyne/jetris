@@ -1397,6 +1397,9 @@ func (a *App) archiveTimeCell(r config.ArchiveRecord) layout.Widget {
 func (a *App) archiveModeCell(r config.ArchiveRecord) layout.Widget {
 	return func(gtx C) D {
 		name, sub := "COOPERATIVE", fmt.Sprintf("%d PLAYERS", len(r.Players))
+		if len(r.Players) == 1 {
+			sub = "1 PLAYER" // a solo co-op game, played for the high score
+		}
 		switch r.Mode {
 		case config.ModeCompetitive:
 			name = "COMPETITIVE"

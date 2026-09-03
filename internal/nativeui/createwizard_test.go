@@ -138,3 +138,41 @@ func TestWizardModeStepRendersEveryTeamCount(t *testing.T) {
 		}
 	}
 }
+
+// TestWizardCountFloor pins step 1's seat editor's floor per mode: a co-op
+// game goes down to one player (a solo game, played for the high score), a
+// team to one member, while a competitive game keeps needing an opponent.
+// Blank or junk reads as the floor too, and the floor is the editor's hint.
+func TestWizardCountFloor(t *testing.T) {
+	a := newTestApp()
+	for _, tc := range []struct {
+		mode string
+		text string
+		want int
+	}{
+		{"cooperative", "1", 1}, {"cooperative", "0", 1}, {"cooperative", "", 1}, {"cooperative", "x", 1}, {"cooperative", "3", 3},
+		{"competitive", "1", 2}, {"competitive", "", 2}, {"competitive", "4", 4},
+		{"teams", "0", 1}, {"teams", "1", 1}, {"teams", "", 1}, {"teams", "2", 2},
+	} {
+		a.modeEnum.Value = tc.mode
+		a.countEd.SetText(tc.text)
+		if got := a.wizardCount(a.wizardMode()); got != tc.want {
+			t.Errorf("%s with %q: wizardCount = %d, want %d", tc.mode, tc.text, got, tc.want)
+		}
+	}
+}
+
+// A solo co-op game's step 1 — the co-op radio, a count of one, its solo
+// note and no board-width slider (one seat is the standard board) — lays out
+// in the narrowest window Jetris runs in, like the rest of the wizard.
+func TestWizardModeStepRendersSoloCoop(t *testing.T) {
+	a := newTestApp()
+	a.modeEnum.Value = "cooperative"
+	a.countEd.SetText("1")
+	a.createWizStep = wizStepMode
+	for _, size := range [][2]int{{360, 640}, {1200, 800}} {
+		if d := a.createWizardOverlay(testCtx(size[0], size[1])); d.Size.X == 0 || d.Size.Y == 0 {
+			t.Fatalf("solo co-op at %dx%d: wizard laid out empty", size[0], size[1])
+		}
+	}
+}

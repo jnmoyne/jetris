@@ -732,8 +732,17 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		teamCount = normalizeTeamCount(h.teams)
 		teamSize = players
 		players = teamCount * teamSize
-	} else if players < 2 {
-		players = 2
+	} else {
+		// A competitive game needs an opponent — the last player standing
+		// wins — while a cooperative game can be played alone, for the
+		// high score, on the standard 10-column board.
+		floor := 1
+		if h.mode == modeCompetitive {
+			floor = 2
+		}
+		if players < floor {
+			players = floor
+		}
 	}
 	maxAgents := h.maxAgents
 	if maxAgents <= 0 || maxAgents > players {

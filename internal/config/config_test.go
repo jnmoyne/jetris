@@ -361,3 +361,21 @@ func TestReplayKeepSet(t *testing.T) {
 		t.Error("a newer finish is more recent regardless of ID")
 	}
 }
+
+// The fewest players a game can be created for, per mode: a co-op game can
+// be played alone (for the high score), a team can be a team of one, and a
+// competitive game needs an opponent for someone to be the last standing.
+func TestMinPlayerCount(t *testing.T) {
+	for _, tc := range []struct {
+		mode GameMode
+		want int
+	}{{ModeCooperative, 1}, {ModeTeams, 1}, {ModeCompetitive, 2}} {
+		if got := MinPlayerCount(tc.mode); got != tc.want {
+			t.Errorf("MinPlayerCount(%v) = %d, want %d", tc.mode, got, tc.want)
+		}
+	}
+	// A solo co-op board is the standard one whatever the width setting.
+	if got := SharedBoardWidth(MinPlayerCount(ModeCooperative), MaxExtraColumns); got != StandardWidth {
+		t.Errorf("a solo co-op board is %d columns, want %d", got, StandardWidth)
+	}
+}

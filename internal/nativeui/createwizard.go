@@ -68,19 +68,14 @@ func (a *App) wizardMode() config.GameMode {
 }
 
 // wizardCount reads step 1's seat-count editor for a game of mode: players
-// PER TEAM in teams mode, the total player count otherwise. Blank or junk
-// falls back to the smallest game the mode can hold, so the step's live
-// board-width readout and the create itself always agree.
+// PER TEAM in teams mode, the total player count otherwise. Blank, junk or
+// too few falls back to the smallest game the mode can hold
+// (config.MinPlayerCount — a co-op game can be played alone, for the high
+// score), so the step's live readouts and the create itself always agree.
 func (a *App) wizardCount(mode config.GameMode) int {
 	count, err := strconv.Atoi(strings.TrimSpace(a.countEd.Text()))
-	if mode == config.ModeTeams {
-		if err != nil || count < 1 {
-			return 1
-		}
-		return count
-	}
-	if err != nil || count < 2 {
-		return 2
+	if floor := config.MinPlayerCount(mode); err != nil || count < floor {
+		return floor
 	}
 	return count
 }
@@ -313,21 +308,35 @@ func (a *App) wizardModeStep(gtx C) D {
 				layout.Rigid(func(gtx C) D {
 					gtx.Constraints.Max.X = gtx.Dp(48)
 					gtx.Constraints.Min.X = gtx.Dp(48)
-					return a.editorBox(gtx, &a.countEd, "2")
+					// The hint is what a blank editor creates: the
+					// smallest game the mode can hold.
+					return a.editorBox(gtx, &a.countEd, strconv.Itoa(config.MinPlayerCount(mode)))
 				}),
 				layout.Rigid(func(gtx C) D {
-					if !teams {
+					note := ""
+					switch {
+					case teams:
+						note = fmt.Sprintf("(total seats = %d × per team = %d)",
+							a.wizardTeamCount(mode), a.wizardTeamCount(mode)*a.wizardCount(mode))
+					case mode == config.ModeCooperative && a.wizardCount(mode) == 1:
+						// A crew of one: the shared board and score are
+						// theirs alone, and the game is a run at the solo
+						// co-op high score.
+						note = "(solo — you play for the high score)"
+					}
+					if note == "" {
 						return D{}
 					}
-					return layout.Inset{Left: unit.Dp(10)}.Layout(gtx,
-						a.body(fmt.Sprintf("(total seats = %d × per team = %d)",
-							a.wizardTeamCount(mode), a.wizardTeamCount(mode)*a.wizardCount(mode)), colMuted))
+					return layout.Inset{Left: unit.Dp(10)}.Layout(gtx, a.body(note, colMuted))
 				}),
 			)
 		}),
 		layout.Rigid(func(gtx C) D {
 			if mode == config.ModeCompetitive {
 				return D{} // a board each, always the standard 10 columns
+			}
+			if a.wizardCount(mode) < 2 {
+				return D{} // one seat is the standard 10 columns: no width to set
 			}
 			return a.wizardBoardWidth(gtx, mode)
 		}),
@@ -425,6 +434,9 @@ func (a *App) wizardSplitPieces(gtx C, seats int) D {
 // standard section of their own, the board Jetris had before the slider. The
 // same step spaces the spawn points, so a wider board is also a roomier one
 // to spawn into. Competitive never sees it: each player has their own board.
+// Nor does a shared board of one seat (a solo co-op game, a team of one):
+// that is the standard 10 columns whatever the setting, so the step leaves
+// the slider out until there is a second seat to widen the board for.
 func (a *App) wizardBoardWidth(gtx C, mode config.GameMode) D {
 	if a.extraColsFloat.Update(gtx) {
 		a.extraCols = extraColsRange.value(a.extraColsFloat.Value)

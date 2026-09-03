@@ -106,6 +106,21 @@ func NormalizeTeamCount(n int) int {
 	return min(max(n, MinTeamCount), MaxTeamCount)
 }
 
+// MinPlayerCount is the fewest players a game of mode can be created for:
+// the floor of the create wizard's seat count (players per team in teams
+// mode) and of an agent's --players. A cooperative game can be played
+// alone — one player on the standard 10-column board, playing for the high
+// score (the record it competes for is the best solo co-op score, since
+// co-op records are ranked per seat count) — and a team can be a team of
+// one; a competitive game needs an opponent, since the last player standing
+// wins.
+func MinPlayerCount(mode GameMode) int {
+	if mode == ModeCompetitive {
+		return 2
+	}
+	return 1
+}
+
 // TeamLetter names a team index the way every screen shows it: A, B, C, …
 // (the index itself once past the letters, which MaxTeamCount never allows).
 func TeamLetter(team int) string {

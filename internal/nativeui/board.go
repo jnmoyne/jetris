@@ -40,14 +40,17 @@ type boardFX struct {
 	// failure took away: a rainbow frame blinks on those squares, over
 	// whatever is on them, for flashDur from the epoch stored per cell.
 	want map[[2]int]time.Time
-	// kick/kickAt are the recoil that goes with it: the cells of the piece as
-	// the board draws it, vibrated for casKickDur from kickAt, so the piece
-	// shudders where the rejection put it back instead of going where it was
-	// steered. Set on the local player's own board only.
-	kick   map[[2]int]bool
-	kickAt time.Time
-	tint   color.NRGBA // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
-	frame  color.NRGBA // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
+	// kick/kickAt/kickFrom are the recoil that goes with it: the cells of the
+	// piece as the board draws it, painted from kickAt at casRecoilOffset —
+	// snapping back from kickFrom (where the board drew it before the
+	// rejection, in cells; zero: it never left) and vibrating where the
+	// rejection put it, instead of going where it was steered. Set on the
+	// local player's own board only.
+	kick     map[[2]int]bool
+	kickAt   time.Time
+	kickFrom [2]float64
+	tint     color.NRGBA // washes the EMPTY squares (fill + grid lines) toward a team/player color; zero = none
+	frame    color.NRGBA // overrides the arcade-well frame color (the keyboard-focus outline); zero = the usual colBorder
 }
 
 // Board tint strength: how far an empty square's fill and its grid line are
@@ -251,12 +254,13 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 	fillRect(gtx.Ops, image.Rect(0, 0, fw, h), frame)
 	fillRect(gtx.Ops, image.Rect(w-fw, 0, w, h), frame)
 	// The CAS recoil: while it runs, the piece's own squares are held back
-	// from the loop and painted last at the frame's judder offset, over the
-	// empty squares they shudder out of.
+	// from the loop and painted last at the frame's offset — on their way
+	// back from where the piece was steered, then juddering — over the empty
+	// squares they are drawn out of.
 	var kick image.Point
 	var recoil []recoilCell
 	if fx != nil && len(fx.kick) > 0 {
-		kick = casKickOffset(cellPx, now.Sub(fx.kickAt))
+		kick = casRecoilOffset(cellPx, fx.kickFrom, now.Sub(fx.kickAt))
 	}
 	for r := snap.VisibleStart; r < snap.Height && r < len(snap.Rows); r++ {
 		row := snap.Rows[r]

@@ -83,11 +83,11 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 					}
 				} else {
 					// Player: our own dropped write, told in two halves. The
-					// piece is put back where it stood and VIBRATES there
-					// (casKickAt — the recoil follows it through the snap-back
-					// and the moves replayed behind it), while the outline
-					// BLINKS where the lost step wanted it: the move that was
-					// taken away, drawn where it would have gone. A rejection
+					// piece SNAPS BACK to where it stood and VIBRATES there
+					// (casKickAt — the layout runs the recoil, trackRecoil,
+					// and cuts it short once the piece moves on), while the
+					// outline BLINKS where the lost step wanted it: the move
+					// that was taken away, drawn where it would have gone. A rejection
 					// with no target — a lost spawn, lock or gravity step,
 					// nothing that was headed anywhere — keeps the plain
 					// rainbow border on the piece's own cells instead.

@@ -837,6 +837,8 @@ func (a *App) resetBoardFX() {
 	a.flash = map[[2]int]time.Time{}
 	a.casWant = map[[2]int]time.Time{}
 	a.casKickAt = time.Time{}
+	a.recoil = recoilState{}
+	a.drawnPiece, a.drawnPrev, a.drawnMovedAt = nil, nil, time.Time{}
 	a.specFlash = map[int]map[[2]int]time.Time{}
 	a.rowStrobes = map[int]rowStrobe{}
 	a.specRowStrobes = map[int]map[int]rowStrobe{}

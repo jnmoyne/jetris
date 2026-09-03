@@ -37,34 +37,159 @@ func boardShakeOffset(cellPx int, since time.Duration) int {
 	return int(amp * math.Sin(2*math.Pi*shakeCycles*t))
 }
 
-// A rejected write's recoil (bridge.go, drawBoard): casKickDur/casKickCycles
-// shape the vibration the piece does where the CAS failure puts it back. It
-// is deliberately NOT the garbage impact's wobble — half its duration, a
+// A rejected write's recoil (bridge.go, trackRecoil, drawBoard): the piece
+// SNAPS BACK from where the optimistic board drew it to where the CAS
+// failure puts it, and VIBRATES there from the sudden stop. casSnapDur is
+// the snap: the piece covers the whole way back in a few frames, speeding up
+// all the way (a quadratic ease-in), so it arrives at full tilt and the buzz
+// that follows reads as the impact of stopping dead. casKickDur/casKickCycles
+// shape that buzz. It is deliberately NOT the garbage impact's wobble — a
 // sixth of a cell against that one's third, and it moves the piece alone
 // rather than the whole well — so a lost move never reads as an attack
-// landing. casWantBlink is the period of the outline blinking where the lost
-// step wanted the piece instead: four blinks across flashDur, lit for the
-// first half of each, the same hard arcade square wave as the row strobes.
+// landing. Six swings in 480 ms is a 12.5 Hz buzz a 60 Hz frame can still
+// resolve; faster would only alias into a jitter. The recoil is cut short
+// the moment the board draws the piece somewhere else (the player moved on,
+// or the repair replayed the moves behind the loss): a piece on the move
+// has nothing to shudder about. casWantBlink is the period of the outline
+// blinking where the lost step wanted the piece instead: blinks across
+// flashDur, lit for the first half of each, the same hard arcade square wave
+// as the row strobes.
 const (
-	casKickDur    = 240 * time.Millisecond
-	casKickCycles = 3
+	casSnapDur    = 80 * time.Millisecond
+	casKickDur    = 480 * time.Millisecond
+	casKickCycles = 6
+	casRecoilDur  = casSnapDur + casKickDur // the longest a recoil runs: the snap-back, then the buzz
 	casWantBlink  = 150 * time.Millisecond
 )
 
-// casKickOffset is the recoil's paint offset (px) at `since` past the kick
-// epoch: a shudder back and forth along one diagonal — a sixth of a cell
-// across, half that up and down — decaying linearly to rest across
-// casKickCycles swings, and starting and ending exactly at rest. Three swings
-// in 240 ms is a buzz a 60 Hz frame can still resolve; faster would only
-// alias into a jitter. Zero outside the window, including the idle zero-epoch
-// state, whose `since` is enormous.
+// casSnapStale bounds how long before the kick the drawn piece may have
+// jumped for that jump to be the rejection's own snap-back (trackRecoil): the
+// pipeline breaks and the flash is pumped a frame or two apart at most. A
+// piece that jumped longer ago, or never, came from nowhere and only buzzes.
+const casSnapStale = 100 * time.Millisecond
+
+// casRecoilOffset is the recoil's paint offset (px) at `since` past the kick
+// epoch. from is where the board drew the piece before the kick relative to
+// where it draws it now, in cells (columns across, rows down): for casSnapDur
+// the piece is painted on its way back from there, then it vibrates along
+// the line it arrived on. A zero from — the piece never visibly left, as on
+// the pessimistic display or for a lost gravity step — skips the snap and
+// starts the buzz at once, along casKickOffset's diagonal. Zero outside the
+// window, including the idle zero-epoch state, whose `since` is enormous.
+func casRecoilOffset(cellPx int, from [2]float64, since time.Duration) image.Point {
+	if since < 0 {
+		return image.Point{}
+	}
+	if from == ([2]float64{}) {
+		return casKickOffset(cellPx, since)
+	}
+	if since < casSnapDur {
+		t := float64(since) / float64(casSnapDur)
+		k := 1 - t*t // speeding up all the way: it hits the fallback at full tilt
+		return image.Pt(int(math.Round(from[0]*float64(cellPx)*k)), int(math.Round(from[1]*float64(cellPx)*k)))
+	}
+	n := math.Hypot(from[0], from[1])
+	return casVibration(cellPx, from[0]/n, from[1]/n, since-casSnapDur)
+}
+
+// casKickOffset is the buzz alone, from a standstill: a shudder back and
+// forth along one diagonal — a sixth of a cell across, half that up and down
+// (casVibration).
 func casKickOffset(cellPx int, since time.Duration) image.Point {
+	return casVibration(cellPx, 1, 0.5, since)
+}
+
+// casVibration is the buzz along the direction (dx, dy) at `since` past its
+// start: a shudder of a sixth of a cell back and forth, decaying linearly to
+// rest across casKickCycles swings, and starting and ending exactly at rest.
+// Zero outside the window.
+func casVibration(cellPx int, dx, dy float64, since time.Duration) image.Point {
 	if since < 0 || since >= casKickDur {
 		return image.Point{}
 	}
 	t := float64(since) / float64(casKickDur)
 	swing := float64(cellPx) / 6 * (1 - t) * math.Sin(2*math.Pi*casKickCycles*t)
-	return image.Pt(int(math.Round(swing)), int(math.Round(swing/2)))
+	return image.Pt(int(math.Round(swing*dx)), int(math.Round(swing*dy)))
+}
+
+// recoilState is the recoil the layout is running (App.recoil), fixed on the
+// piece as the board drew it at the kick: the frame that finds the drawn
+// piece anywhere else ends it (done). from is the snap-back's start — where
+// the board had drawn the piece before it jumped, relative to where it
+// stands now, in cells — zero when it never visibly left.
+type recoilState struct {
+	at    time.Time
+	cells map[[2]int]bool
+	from  [2]float64
+	done  bool
+}
+
+// trackRecoil runs on the UI goroutine each frame the own board draws. It
+// follows the local piece as the board draws it (drawnPiece, drawnPrev,
+// drawnMovedAt) and runs the rejected write's recoil against it: a fresh
+// kick epoch (casKickAt, from the pump) starts a recoil fixed on the piece
+// where the rejection put it, snapping back from where the last frames drew
+// it — the optimistic position it was pulled off — and vibrating there; the
+// frame that finds the piece drawn elsewhere ends it early. Returns the cells
+// to paint at the recoil's offset and the snap-back's start, nil once it is
+// over, and keeps the frames coming while it runs.
+func (a *App) trackRecoil(gtx C, snap engine.BoardSnapshot, localIdx int, kickAt time.Time) (cells map[[2]int]bool, from [2]float64) {
+	cur := activePieceCells(snap, localIdx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !sameCells(cur, a.drawnPiece) {
+		a.drawnPrev, a.drawnPiece, a.drawnMovedAt = a.drawnPiece, cur, gtx.Now
+	}
+	if kickAt.IsZero() {
+		return nil, from
+	}
+	if a.recoil.at != kickAt {
+		// A fresh kick. The snap-back starts where the piece was drawn
+		// before its latest jump — when that jump is this rejection's, i.e.
+		// within the last frame or two; a piece that has stood still (the
+		// pessimistic display) came from nowhere and only buzzes.
+		st := recoilState{at: kickAt, cells: cur}
+		if cur != nil && a.drawnPrev != nil && gtx.Now.Sub(a.drawnMovedAt) <= casSnapStale {
+			st.from = cellsDisplacement(a.drawnPrev, cur)
+		}
+		a.recoil = st
+	}
+	if a.recoil.done || cur == nil || !sameCells(cur, a.recoil.cells) || gtx.Now.Sub(kickAt) >= casRecoilDur {
+		a.recoil.done = true
+		return nil, from
+	}
+	animate(gtx)
+	return a.recoil.cells, a.recoil.from
+}
+
+// sameCells reports whether two cell sets hold the same squares.
+func sameCells(a, b map[[2]int]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for rc := range a {
+		if !b[rc] {
+			return false
+		}
+	}
+	return true
+}
+
+// cellsDisplacement is where the squares of `from` sit relative to those of
+// `to`, centroid to centroid, in cells: columns across, rows down. A shifted
+// piece gives a whole step; a rotated one whatever its center moved.
+func cellsDisplacement(from, to map[[2]int]bool) [2]float64 {
+	centroid := func(cells map[[2]int]bool) (x, y float64) {
+		for rc := range cells {
+			x += float64(rc[1])
+			y += float64(rc[0])
+		}
+		n := float64(len(cells))
+		return x / n, y / n
+	}
+	fx, fy := centroid(from)
+	tx, ty := centroid(to)
+	return [2]float64{fx - tx, fy - ty}
 }
 
 // activePieceCells is the local player's falling piece exactly as the drawn

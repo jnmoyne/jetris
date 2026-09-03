@@ -1,10 +1,12 @@
 package nativeui
 
 // A rejected write is told in two halves (bridge.go, effects.go, drawBoard):
-// the piece VIBRATES where the CAS failure put it back, and the outline BLINKS
-// where the lost step wanted it — the move that was taken away, drawn where it
-// would have gone. A rejection with nothing headed anywhere (a lost spawn,
-// lock or gravity step) keeps the plain rainbow border on the piece's cells.
+// the piece SNAPS BACK from where the optimistic board drew it and VIBRATES
+// where the CAS failure put it, and the outline BLINKS where the lost step
+// wanted it — the move that was taken away, drawn where it would have gone. A
+// rejection with nothing headed anywhere (a lost spawn, lock or gravity step)
+// keeps the plain rainbow border on the piece's cells. The recoil ends early
+// the moment the board draws the piece somewhere else.
 
 import (
 	"context"
@@ -217,5 +219,123 @@ func TestGameScreenLaysOutDuringRecoil(t *testing.T) {
 		a.casKickAt = time.Now()
 		a.casWant = map[[2]int]time.Time{{2, 2}: a.casKickAt}
 		renderOnce(t, a)
+	}
+}
+
+// The full recoil: for casSnapDur the piece is painted on its way back from
+// `from` — starting exactly there, speeding up, arriving at rest — and then
+// buzzes along the line it came in on, dying down to nothing by casRecoilDur.
+// With nowhere to come from it is the plain buzz from the first frame.
+func TestCASRecoilOffset(t *testing.T) {
+	const cell = 32
+	from := [2]float64{-1, 0} // drawn a column to the LEFT of where it stands now
+	if got := casRecoilOffset(cell, from, 0); got != image.Pt(-cell, 0) {
+		t.Fatalf("snap-back starts at %v, want a whole cell to the left", got)
+	}
+	prev := -cell
+	for i := 1; i <= 4; i++ {
+		since := time.Duration(i) * casSnapDur / 4
+		got := casRecoilOffset(cell, from, since-time.Nanosecond)
+		if got.Y != 0 {
+			t.Fatalf("a horizontal snap-back drifted vertically: %v at %v", got, since)
+		}
+		if got.X < prev {
+			t.Fatalf("snap-back went backwards: %d px after %d px", got.X, prev)
+		}
+		if step := got.X - prev; i > 1 && step <= 0 {
+			t.Fatalf("snap-back must keep moving: step %d px at %v", step, since)
+		}
+		prev = got.X
+	}
+	if got := casRecoilOffset(cell, from, casSnapDur); got.X < -cell/6-1 || got.X > cell/6+1 {
+		t.Fatalf("at the end of the snap the piece must be home (buzz amplitude at most): %v", got)
+	}
+	buzzed := false
+	for i := 0; i < 60; i++ {
+		since := casSnapDur + time.Duration(i)*casKickDur/60
+		got := casRecoilOffset(cell, from, since)
+		if got.Y != 0 {
+			t.Fatalf("the buzz must run along the snap-back's line: %v at %v", got, since)
+		}
+		if got.X != 0 {
+			buzzed = true
+		}
+	}
+	if !buzzed {
+		t.Fatal("the piece never buzzed after snapping back")
+	}
+	if got := casRecoilOffset(cell, from, casRecoilDur); got != (image.Point{}) {
+		t.Fatalf("offset at the end of the recoil = %v, want none", got)
+	}
+	if got := casRecoilOffset(cell, from, -time.Millisecond); got != (image.Point{}) {
+		t.Fatalf("offset before the kick = %v, want none", got)
+	}
+	// Nowhere to come from: the buzz, from the first frame.
+	for i := 0; i < 30; i++ {
+		since := time.Duration(i) * casKickDur / 30
+		if got, want := casRecoilOffset(cell, [2]float64{}, since), casKickOffset(cell, since); got != want {
+			t.Fatalf("with no snap-back the recoil = %v at %v, want the plain buzz %v", got, since, want)
+		}
+	}
+}
+
+// The layout runs the recoil against the piece as the board draws it: a kick
+// fixes it on the piece where the rejection put it, snapping back from where
+// the frame before drew it, and the first frame that draws the piece anywhere
+// else ends it — for good, even back on the cells it buzzed on.
+func TestRecoilFollowsTheDrawnPieceAndStopsWhenItMoves(t *testing.T) {
+	boardWith := func(p game.Piece) engine.BoardSnapshot {
+		snap := engine.BoardSnapshot{Width: 10, Height: 16, Rows: make([]game.Row, 16)}
+		for r := range snap.Rows {
+			snap.Rows[r] = game.Row{Cells: make([]game.Cell, 10)}
+		}
+		for _, rc := range p.Cells() {
+			snap.Rows[rc[0]].Cells[rc[1]] = game.Cell{Active: true, PieceType: p.Type, PlayerIdx: 0}
+		}
+		return snap
+	}
+	a := newTestApp()
+	frame := func(at time.Time) C {
+		var ops op.Ops
+		return C{Ops: &ops, Now: at, Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1}, Constraints: layout.Exact(image.Pt(600, 800))}
+	}
+	base := time.Now()
+	steered := game.Piece{Type: game.PieceT, Row: 3, Col: 2}  // the optimistic position the frames drew
+	fallback := game.Piece{Type: game.PieceT, Row: 3, Col: 3} // where the rejection puts it
+	moved := game.Piece{Type: game.PieceT, Row: 4, Col: 3}    // the player moving on
+
+	if cells, _ := a.trackRecoil(frame(base), boardWith(steered), 0, time.Time{}); cells != nil {
+		t.Fatalf("no kick, yet the recoil is on: %v", cells)
+	}
+	kick := base.Add(10 * time.Millisecond)
+	at := kick.Add(5 * time.Millisecond)
+	cells, from := a.trackRecoil(frame(at), boardWith(fallback), 0, kick)
+	if !sameCells(cells, activePieceCells(boardWith(fallback), 0)) {
+		t.Fatalf("recoil cells = %v, want the piece where the rejection put it", cells)
+	}
+	if from != ([2]float64{-1, 0}) {
+		t.Fatalf("snap-back from %v, want a column to the left, where the frame before drew it", from)
+	}
+	at = at.Add(16 * time.Millisecond)
+	if cells, from = a.trackRecoil(frame(at), boardWith(fallback), 0, kick); cells == nil || from != ([2]float64{-1, 0}) {
+		t.Fatalf("the recoil must hold while the piece stands: cells %v from %v", cells, from)
+	}
+	at = at.Add(16 * time.Millisecond)
+	if cells, _ = a.trackRecoil(frame(at), boardWith(moved), 0, kick); cells != nil {
+		t.Fatalf("the piece moved on, yet the recoil is still on: %v", cells)
+	}
+	at = at.Add(16 * time.Millisecond)
+	if cells, _ = a.trackRecoil(frame(at), boardWith(fallback), 0, kick); cells != nil {
+		t.Fatalf("a recoil cut short must stay off, got %v", cells)
+	}
+	// A fresh kick starts a fresh recoil; a piece that has stood still for a
+	// while came from nowhere.
+	kick2 := at.Add(300 * time.Millisecond)
+	if cells, from = a.trackRecoil(frame(kick2.Add(time.Millisecond)), boardWith(fallback), 0, kick2); cells == nil || from != ([2]float64{}) {
+		t.Fatalf("a fresh kick on a piece that never left: cells %v from %v, want the buzz from nowhere", cells, from)
+	}
+	// And a recoil outlives nothing: past casRecoilDur it is over, moved or not.
+	if cells, _ = a.trackRecoil(frame(kick2.Add(casRecoilDur)), boardWith(fallback), 0, kick2); cells != nil {
+		t.Fatalf("the recoil ran past its window: %v", cells)
 	}
 }

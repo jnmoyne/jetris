@@ -44,17 +44,17 @@ func TestCASRecoilSnapshots(t *testing.T) {
 	for _, rc := range (game.Piece{Type: game.PieceT, Row: 3, Col: 2}).Cells() {
 		want[[2]int{rc[0], rc[1]}] = base
 	}
-	fx := func() *boardFX {
-		return &boardFX{kick: activePieceCells(snap, 0), kickAt: base, want: want, frame: colFocus}
+	fx := func(from [2]float64) *boardFX {
+		return &boardFX{kick: activePieceCells(snap, 0), kickAt: base, kickFrom: from, want: want, frame: colFocus}
 	}
 	const cell = 24
-	strip := func(gtx C, offsets []time.Duration) D {
+	strip := func(gtx C, from [2]float64, offsets []time.Duration) D {
 		children := make([]layout.FlexChild, 0, len(offsets))
 		for _, off := range offsets {
 			at := base.Add(off)
 			children = append(children, layout.Rigid(func(gtx C) D {
 				return layout.UniformInset(6).Layout(gtx, func(gtx C) D {
-					return drawBoard(gtx, snap, 0, cell, true, fx(), at)
+					return drawBoard(gtx, snap, 0, cell, true, fx(from), at)
 				})
 			}))
 		}
@@ -62,10 +62,12 @@ func TestCASRecoilSnapshots(t *testing.T) {
 	}
 
 	// Top row: the recoil's first turns, 20 ms apart — about a frame each at
-	// 60 Hz, so this is what the buzz actually looks like running. Bottom
-	// row: the piece settled, the outline still blinking through the rainbow.
+	// 60 Hz, so this is what the buzz actually looks like running (this
+	// piece never left, so there is no snap-back: the buzz starts at once).
+	// Bottom row: the buzz dying down and the piece settled, the outline
+	// still blinking through the rainbow.
 	early := []time.Duration{0, 20, 40, 60, 80}
-	late := []time.Duration{120, 180, 260, 380, 520}
+	late := []time.Duration{240, 360, 480, 600, 800}
 	ms := func(in []time.Duration) []time.Duration {
 		out := make([]time.Duration, len(in))
 		for i, v := range in {
@@ -76,8 +78,22 @@ func TestCASRecoilSnapshots(t *testing.T) {
 	snapshotPNGSized(t, w, dir, "cas_recoil_strip", size, func(gtx C) {
 		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
 		layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx C) D { return strip(gtx, ms(early)) }),
-			layout.Rigid(func(gtx C) D { return strip(gtx, ms(late)) }),
+			layout.Rigid(func(gtx C) D { return strip(gtx, [2]float64{}, ms(early)) }),
+			layout.Rigid(func(gtx C) D { return strip(gtx, [2]float64{}, ms(late)) }),
+		)
+	})
+
+	// The same rejection on the optimistic display, where the board had
+	// already drawn the piece a column LEFT — on the blinking outline. Top
+	// row: the snap-back, frame by frame, from the outline home to where the
+	// rejection puts it. Bottom row: the buzz it stops into, running along
+	// the line it came in on.
+	snapshotPNGSized(t, w, dir, "cas_recoil_snapback", size, func(gtx C) {
+		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
+		from := [2]float64{-1, 0}
+		layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx C) D { return strip(gtx, from, ms([]time.Duration{0, 20, 40, 60, 80})) }),
+			layout.Rigid(func(gtx C) D { return strip(gtx, from, ms([]time.Duration{100, 120, 140, 160, 300})) }),
 		)
 	})
 

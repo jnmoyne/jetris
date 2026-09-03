@@ -14,6 +14,7 @@ import (
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -165,49 +166,38 @@ func (a *App) layoutLogin(gtx C) D {
 	layers := []layout.StackChild{
 		layout.Expanded(a.loginBackdrop),
 		layout.Stacked(func(gtx C) D {
-			// The card is loginCardW wide, or the window's width where that
-			// is narrower — a phone's is. Pinned to 560 dp regardless, the
-			// name field and the server browser hang off both edges of the
-			// screen and the game cannot be reached at all.
-			cardW := min(gtx.Dp(loginCardW), gtx.Constraints.Max.X-gtx.Dp(12))
-			gtx.Constraints.Max.X = cardW
-			gtx.Constraints.Min.X = cardW
-			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					// The title flanked by NATS "N" logos, arcade-marquee style,
-					// centered over the card. On a compact screen it centres in
-					// the room the version plate leaves it (versionBadge, the
-					// frame's top-right corner) rather than running its second
-					// logo under the plate.
-					inset := layout.Inset{}
-					if a.form.compact {
-						inset.Right = unit.Dp(96)
-					}
-					return inset.Layout(gtx, func(gtx C) D {
-						return layout.Center.Layout(gtx, func(gtx C) D {
-							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-								layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
-								layout.Rigid(hSpacer(14)),
-								layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
-								layout.Rigid(hSpacer(14)),
-								layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
-							)
-						})
-					})
-				}),
-				layout.Rigid(spacer(14)),
-				layout.Rigid(func(gtx C) D {
-					return a.loginCard(gtx, func(gtx C) D {
-						if collision {
-							return a.loginCollisionContent(gtx)
-						}
-						return a.loginNormalContent(gtx, loggingIn, loginErr)
-					})
-				}),
-				layout.Rigid(spacer(14)),
-				layout.Rigid(a.loginTagline),
-				layout.Rigid(a.updateNotice),
-			)
+			// The column — title, card, tagline — scrolls in the window: a
+			// phone with its keyboard up has a third of its height left,
+			// and a Flex clamped to that drew the card's frame at the
+			// window's foot with the server browser running on out of it,
+			// under the keyboard. In a list every row keeps its height and
+			// the rest is a swipe away, the name field at the top still.
+			// While the window has room for the whole column it is centred
+			// in it, as before: a list's row has no bottom to centre
+			// against, so the column is placed by its height of the frame
+			// before (loginColH), a frame behind on a resize.
+			gtx.Constraints.Min = gtx.Constraints.Max
+			winH := gtx.Constraints.Max.Y
+			return material.List(a.th, &a.loginList).Layout(gtx, 1, func(gtx C, _ int) D {
+				if a.loginColH == 0 {
+					// The first frame measures the column before placing it,
+					// into a recording that is thrown away, rather than draw
+					// it once at the wrong height: no input has arrived yet
+					// for the two layouts to share.
+					measure := op.Record(gtx.Ops)
+					a.loginColH = a.loginColumn(gtx, collision, loggingIn, loginErr).Size.Y
+					measure.Stop()
+				}
+				top := max(0, (winH-a.loginColH)/2)
+				defer op.Offset(image.Pt(0, top)).Push(gtx.Ops).Pop()
+				d := a.loginColumn(gtx, collision, loggingIn, loginErr)
+				if d.Size.Y != a.loginColH {
+					a.loginColH = d.Size.Y
+					gtx.Execute(op.InvalidateCmd{}) // placed by this height next frame
+				}
+				d.Size.Y += top
+				return d
+			})
 		}),
 	}
 	if a.connResetOpen {
@@ -220,6 +210,54 @@ func (a *App) layoutLogin(gtx C) D {
 		)
 	}
 	return layout.Stack{Alignment: layout.Center}.Layout(gtx, layers...)
+}
+
+// loginColumn is the login screen's column: the marquee title, the card, the
+// tagline and the update notice, centred on each other.
+func (a *App) loginColumn(gtx C, collision, loggingIn bool, loginErr string) D {
+	// The card is loginCardW wide, or the window's width where that
+	// is narrower — a phone's is. Pinned to 560 dp regardless, the
+	// name field and the server browser hang off both edges of the
+	// screen and the game cannot be reached at all.
+	cardW := min(gtx.Dp(loginCardW), gtx.Constraints.Max.X-gtx.Dp(12))
+	gtx.Constraints.Max.X = cardW
+	gtx.Constraints.Min.X = cardW
+	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			// The title flanked by NATS "N" logos, arcade-marquee style,
+			// centered over the card. On a compact screen it centres in
+			// the room the version plate leaves it (versionBadge, the
+			// frame's top-right corner) rather than running its second
+			// logo under the plate.
+			inset := layout.Inset{}
+			if a.form.compact {
+				inset.Right = unit.Dp(96)
+			}
+			return inset.Layout(gtx, func(gtx C) D {
+				return layout.Center.Layout(gtx, func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+						layout.Rigid(hSpacer(14)),
+						layout.Rigid(a.pixel(unit.Sp(28), "JETRIS", colAccent).Layout),
+						layout.Rigid(hSpacer(14)),
+						layout.Rigid(func(gtx C) D { return natsLogo(gtx, 36) }),
+					)
+				})
+			})
+		}),
+		layout.Rigid(spacer(14)),
+		layout.Rigid(func(gtx C) D {
+			return a.loginCard(gtx, func(gtx C) D {
+				if collision {
+					return a.loginCollisionContent(gtx)
+				}
+				return a.loginNormalContent(gtx, loggingIn, loginErr)
+			})
+		}),
+		layout.Rigid(spacer(14)),
+		layout.Rigid(a.loginTagline),
+		layout.Rigid(a.updateNotice),
+	)
 }
 
 // modalScrim dims the screen under a modal and takes every press aimed at

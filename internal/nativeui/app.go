@@ -16,6 +16,7 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/gesture"
+	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/paint"
@@ -626,6 +627,14 @@ type App struct {
 	// window, whatever the screen.
 	hudList       widget.List
 	lobbyMenuList widget.List
+	// loginList scrolls the login screen's column (layoutLogin), and
+	// loginColH is the column's height of the frame before, which places it
+	// in the window: a phone with its keyboard up has a third of its height.
+	loginList widget.List
+	loginColH int
+	// bv is the browser page's side of the window (view_js.go): the hidden
+	// text element the on-screen keyboard is up for. Empty on the desktop.
+	bv browserView
 
 	// archive (history) viewer
 	archiveSel      *config.ArchiveRecord // the finished game whose boards are being shown
@@ -689,20 +698,29 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.SetVoice(prefs.DefaultVoice())
 	a.voiceDevice = voice.NewDevice
 	a.voiceChanEnum.Value = voiceChanTeam
+	// The name is one word: a plain keyboard on a phone, no corrections or
+	// predictions over it (hintPlain). The numeric fields get a number pad,
+	// and the URL field the address keyboard; a chat line keeps the phone's
+	// prose keyboard, corrections and all.
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
+	a.loginEd.InputHint = hintPlain
 	a.chatEd.SingleLine = true
 	a.chatEd.Submit = true
 	a.countEd.SingleLine = true
+	a.countEd.InputHint = key.HintNumeric
 	a.countEd.SetText("2")
 	a.maxAgentsEd.SingleLine = true
 	a.maxAgentsEd.Filter = "0123456789"
+	a.maxAgentsEd.InputHint = key.HintNumeric
 	a.maxAgentsEd.SetText("1")
 	a.nextCountEd.SingleLine = true
 	a.nextCountEd.Filter = "0123456789"
+	a.nextCountEd.InputHint = key.HintNumeric
 	a.nextCountEd.SetText("6")
 	a.holesEd.SingleLine = true
 	a.holesEd.Filter = "0123456789"
+	a.holesEd.InputHint = key.HintNumeric
 	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
 	a.rulesEnum.Value = "guideline" // the Guideline preset until the creator asks for custom rules
@@ -735,6 +753,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.gameChatList.ScrollToEnd = true
 	a.hudList.Axis = layout.Vertical
 	a.lobbyMenuList.Axis = layout.Vertical
+	a.loginList.Axis = layout.Vertical
 	a.specBoardsList.Axis = layout.Horizontal
 	a.specTeamBoardsList.Axis = layout.Horizontal
 	a.archiveBoardsList.Axis = layout.Horizontal
@@ -786,8 +805,10 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.connBrowserLst.Axis = layout.Vertical
 	a.connAddLabelEd.SingleLine = true
 	a.connAddLabelEd.Submit = true
+	a.connAddLabelEd.InputHint = hintPlain
 	a.connAddURLEd.SingleLine = true
 	a.connAddURLEd.Submit = true
+	a.connAddURLEd.InputHint = key.HintURL
 	for _, p := range []struct {
 		ed  *widget.Editor
 		def int
@@ -795,14 +816,17 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 		p.ed.SingleLine = true
 		p.ed.Submit = true
 		p.ed.Filter = "0123456789"
+		p.ed.InputHint = key.HintNumeric
 		p.ed.SetText(strconv.Itoa(p.def))
 	}
 	a.lanIP = natspkg.LanIP()
 	a.connNameEd.SingleLine = true
 	a.connNameEd.Submit = true
+	a.connNameEd.InputHint = hintPlain
 	a.connNameEd.SetText(config.DefaultEmbeddedName)
 	a.connHostEd.SingleLine = true
 	a.connHostEd.Submit = true
+	a.connHostEd.InputHint = hintPlain
 	// Pre-filled with the auto-detected address so the player sees what will
 	// be shared and can correct it (multi-homed hosts, VPNs, containers where
 	// the detected interface is not the one friends can reach).
@@ -923,7 +947,7 @@ func (a *App) Run(ctx context.Context) error {
 			gtx := app.NewContext(&ops, e)
 			a.layout(gtx)
 			e.Frame(gtx.Ops)
-			a.frameEnd()
+			a.frameEnd(gtx)
 		}
 	}
 }

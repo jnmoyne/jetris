@@ -6,6 +6,7 @@ import (
 	"syscall/js"
 
 	"gioui.org/app"
+	"gioui.org/layout"
 )
 
 // Browser keyboard focus.
@@ -49,6 +50,7 @@ func (a *App) attachView(e app.ViewEvent) {
 	// touches not reaching the page, not reaching the game, or reaching it
 	// and doing nothing.
 	a.touchDebug = js.Global().Get("jetrisTouchDebug").Truthy()
+	a.bv.keyInput = je.Element.Call("querySelector", "textarea, input")
 	keepKeyboardFocus(je.Element)
 }
 
@@ -61,7 +63,36 @@ func (a *App) attachView(e app.ViewEvent) {
 // discards it. The page's touch shim holds such events until frameEnd
 // (web/index.html), so no touch made right after a drop is lost.
 func (a *App) frameBegin() { js.Global().Set("jetrisInFrame", true) }
-func (a *App) frameEnd()   { js.Global().Set("jetrisInFrame", false) }
+func (a *App) frameEnd(gtx layout.Context) {
+	js.Global().Set("jetrisInFrame", false)
+	a.syncEnterKey(gtx)
+}
+
+// syncEnterKey labels the phone keyboard's return key for the editor the
+// frame just handed the focus to (enterKeyHint): Go on the login screen,
+// Send on a chat line. It runs right after the window has focused the hidden
+// text element and set its keyboard attributes for the editor's input hint
+// (app/os_js.go ShowTextInput, then SetInputHint), in the same task, so the
+// keyboard coming up reads the label along with the rest. Gio sets no
+// enterkeyhint of its own, and a textarea's return key otherwise says
+// "return" — for a field whose Enter is the Play button.
+func (a *App) syncEnterKey(gtx layout.Context) {
+	if !a.bv.keyInput.Truthy() {
+		return
+	}
+	if hint := a.enterKeyHint(gtx); hint != a.bv.enterKey {
+		a.bv.enterKey = hint
+		a.bv.keyInput.Call("setAttribute", "enterkeyhint", hint)
+	}
+}
+
+// browserView is the page's side of the window: the backend's hidden text
+// element (the one the on-screen keyboard is up for, attachView) and the
+// return-key label last set on it (syncEnterKey).
+type browserView struct {
+	keyInput js.Value
+	enterKey string
+}
 
 // touchDebugFrame reports the game's side of the touch diagnostic to the
 // page, once per frame while it is on: window.jetrisTouch = {presses,

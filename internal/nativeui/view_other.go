@@ -2,7 +2,10 @@
 
 package nativeui
 
-import "gioui.org/app"
+import (
+	"gioui.org/app"
+	"gioui.org/layout"
+)
 
 // attachView is the hook for the window's platform handles (app.ViewEvent).
 // The desktop backends deliver keys to the window for as long as it is the
@@ -14,6 +17,10 @@ func (a *App) attachView(app.ViewEvent) {}
 // desktop builds have no page to report to. frameBegin/frameEnd likewise
 // bracket the frame for the browser page's input shim: on the desktop the
 // window's own event loop delivers input between frames.
-func (a *App) touchDebugFrame() {}
-func (a *App) frameBegin()      {}
-func (a *App) frameEnd()        {}
+func (a *App) touchDebugFrame()        {}
+func (a *App) frameBegin()             {}
+func (a *App) frameEnd(layout.Context) {}
+
+// browserView is the page's side of the browser build's window (view_js.go);
+// a desktop window has none.
+type browserView struct{}

@@ -206,6 +206,27 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_lobby_lan_nobuild", func(gtx C) { a.layout(gtx) })
 	})
 
+	// The login screen on a phone, upright: the card at the screen's width —
+	// and with the keyboard up, when a third of the height is left: the
+	// column scrolls in it, the name field at the top, the card's frame
+	// whole around its rows instead of clamped to the window's foot.
+	t.Run("login_phone", func(t *testing.T) {
+		for _, c := range []struct {
+			name string
+			size image.Point
+		}{{"screen_login_phone", image.Pt(390, 844)}, {"screen_login_phone_keyboard", image.Pt(390, 330)}} {
+			ph, err := headless.NewWindow(c.size.X, c.size.Y)
+			if err != nil {
+				t.Fatalf("headless window: %v", err)
+			}
+			a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo"}, "beta", prefs.DefaultFavorites())
+			a.th = newTestApp().th
+			a.deviceHint, a.deviceHinted, a.touchUI = devicePhone, true, true
+			snapshotPNGSized(t, ph, dir, c.name, c.size, func(gtx C) { a.layout(gtx) })
+			ph.Release()
+		}
+	})
+
 	// The login screen's LAN party tab: the IP, the three ports, the two URLs.
 	t.Run("login_lan", func(t *testing.T) {
 		a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo"}, "beta", prefs.DefaultFavorites())

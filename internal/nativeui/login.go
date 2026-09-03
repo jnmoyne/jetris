@@ -111,7 +111,7 @@ func (a *App) layoutLogin(gtx C) D {
 			submitted = true
 		}
 	}
-	for _, ed := range []*widget.Editor{&a.connHostEd, &a.connPortEd} {
+	for _, ed := range []*widget.Editor{&a.connNameEd, &a.connHostEd, &a.connPortEd, &a.connWSPortEd, &a.connHTTPPortEd} {
 		for {
 			ev, ok := ed.Update(gtx)
 			if !ok {
@@ -352,7 +352,7 @@ func (a *App) submitLogin() {
 }
 
 // pickerConfig resolves the connection page into a config: on the LAN tab the
-// embedded-server mark plus the entered IP and port; on the browser tab the
+// embedded-server mark plus the entered name, IP and ports; on the browser tab the
 // selected row — a URL entry dials its URL, a context entry connects through
 // that NATS CLI context (errors when nothing is selected). The base is
 // connCfg, so --user/--password flags carry through to URL connects. Runs on
@@ -360,19 +360,23 @@ func (a *App) submitLogin() {
 func (a *App) pickerConfig() (config.Config, error) {
 	cfg := a.connCfg
 	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
-	cfg.EmbeddedHost, cfg.EmbeddedPort = "", 0
+	cfg.EmbeddedHost, cfg.EmbeddedPort, cfg.EmbeddedWSPort, cfg.EmbeddedHTTPPort, cfg.EmbeddedName = "", 0, 0, 0, ""
 	if a.connTab == connTabLAN {
 		cfg.RunEmbedded = true
+		name, err := a.pickerName()
+		if err != nil {
+			return cfg, err
+		}
+		cfg.EmbeddedName = name
 		host, err := a.pickerHost()
 		if err != nil {
 			return cfg, err
 		}
 		cfg.EmbeddedHost = host
-		port, err := a.pickerPort()
+		cfg.EmbeddedPort, cfg.EmbeddedWSPort, cfg.EmbeddedHTTPPort, err = a.pickerPorts()
 		if err != nil {
 			return cfg, err
 		}
-		cfg.EmbeddedPort = port
 		return cfg, nil
 	}
 	return a.entryConfig(a.connSel)
@@ -384,7 +388,7 @@ func (a *App) pickerConfig() (config.Config, error) {
 func (a *App) entryConfig(key string) (config.Config, error) {
 	cfg := a.connCfg
 	cfg.NATSURL, cfg.NATSContext, cfg.RunEmbedded = "", "", false
-	cfg.EmbeddedHost, cfg.EmbeddedPort = "", 0
+	cfg.EmbeddedHost, cfg.EmbeddedPort, cfg.EmbeddedWSPort, cfg.EmbeddedHTTPPort, cfg.EmbeddedName = "", 0, 0, 0, ""
 	e, ok := a.connEntry(key)
 	if !ok {
 		// Nothing selected. When a URL was handed to this build that it
@@ -407,6 +411,24 @@ func (a *App) entryConfig(key string) (config.Config, error) {
 	return cfg, nil
 }
 
+// lanNameMax bounds the LAN party's server name: it heads every guest's lobby
+// bar and rides in the join link's QR code, and neither wants a paragraph.
+const lanNameMax = 64
+
+// pickerName reads the LAN-mode Name field — what the server is called, in
+// the host's lobby header ("<you> @ <name>"), on the join page and in every
+// guest's header: empty means the default. Runs on the UI goroutine.
+func (a *App) pickerName() (string, error) {
+	name := strings.TrimSpace(a.connNameEd.Text())
+	if name == "" {
+		return "", nil
+	}
+	if len(name) > lanNameMax {
+		return "", fmt.Errorf("keep the server name under %d characters", lanNameMax)
+	}
+	return name, nil
+}
+
 // pickerHost parses the LAN-mode IP field: empty means "detect the LAN
 // address again at connect time", anything else is the address Jetris
 // advertises and dials (the server itself still listens on every interface, so
@@ -425,34 +447,92 @@ func (a *App) pickerHost() (string, error) {
 	return host, nil
 }
 
-// pickerPort parses the LAN-mode port field: empty means the default, anything
-// else must be a valid TCP port. Runs on the UI goroutine (reads the widget).
+// pickerPort parses the LAN-mode NATS port field: empty means the default,
+// anything else must be a valid TCP port. Runs on the UI goroutine (reads the
+// widget).
 func (a *App) pickerPort() (int, error) {
-	text := strings.TrimSpace(a.connPortEd.Text())
+	return portField(&a.connPortEd, config.DefaultEmbeddedPort, "NATS")
+}
+
+// pickerWSPort is pickerPort for the WebSocket listener's port.
+func (a *App) pickerWSPort() (int, error) {
+	return portField(&a.connWSPortEd, config.DefaultEmbeddedWSPort, "WebSocket")
+}
+
+// pickerHTTPPort is pickerPort for the browser build's HTTP port.
+func (a *App) pickerHTTPPort() (int, error) {
+	return portField(&a.connHTTPPortEd, config.DefaultEmbeddedHTTPPort, "HTTP")
+}
+
+// portField parses one port editor: empty means def, anything else must be a
+// valid TCP port; what names the port in the error.
+func portField(ed *widget.Editor, def int, what string) (int, error) {
+	text := strings.TrimSpace(ed.Text())
 	if text == "" {
-		return config.DefaultEmbeddedPort, nil
+		return def, nil
 	}
 	port, err := strconv.Atoi(text)
 	if err != nil || port < 1 || port > 65535 {
-		return 0, errors.New("enter a valid port number (1-65535)")
+		return 0, fmt.Errorf("enter a valid %s port number (1-65535)", what)
 	}
 	return port, nil
 }
 
-// pickerAddr is the "<ip>:<port>" the LAN-mode rows advertise: the entered
-// address and port, each falling back to its auto-detected/default value while
-// its field is empty or not (yet) valid — the line keeps showing a usable
-// address while the player is mid-edit. Runs on the UI goroutine.
-func (a *App) pickerAddr() string {
-	host, err := a.pickerHost()
-	if err != nil || host == "" {
-		host = a.lanIP
+// pickerPorts is the LAN party's three ports — NATS, WebSocket, HTTP — each
+// parsed from its field, and checked against each other: three listeners
+// cannot share a port. Runs on the UI goroutine.
+func (a *App) pickerPorts() (nats, ws, http int, err error) {
+	if nats, err = a.pickerPort(); err != nil {
+		return
 	}
+	if ws, err = a.pickerWSPort(); err != nil {
+		return
+	}
+	if http, err = a.pickerHTTPPort(); err != nil {
+		return
+	}
+	err = distinctPorts(nats, ws, http)
+	return
+}
+
+// distinctPorts is the error for two of the LAN party's ports being the same,
+// nil when all three differ.
+func distinctPorts(nats, ws, http int) error {
+	if nats == ws || nats == http || ws == http {
+		return errors.New("the NATS, WebSocket and HTTP ports must all differ")
+	}
+	return nil
+}
+
+// pickerAddr is the "<ip>:<port>" the LAN-mode rows advertise for NATS: the
+// entered address and port, each falling back to its auto-detected/default
+// value while its field is empty or not (yet) valid — the line keeps showing
+// a usable address while the player is mid-edit. Runs on the UI goroutine.
+func (a *App) pickerAddr() string {
 	port, err := a.pickerPort()
 	if err != nil {
 		port = config.DefaultEmbeddedPort
 	}
-	return net.JoinHostPort(host, strconv.Itoa(port))
+	return net.JoinHostPort(a.pickerHostOrDetected(), strconv.Itoa(port))
+}
+
+// pickerHTTPAddr is pickerAddr for the browser build's page.
+func (a *App) pickerHTTPAddr() string {
+	port, err := a.pickerHTTPPort()
+	if err != nil {
+		port = config.DefaultEmbeddedHTTPPort
+	}
+	return net.JoinHostPort(a.pickerHostOrDetected(), strconv.Itoa(port))
+}
+
+// pickerHostOrDetected is the IP field, or the detected LAN address while the
+// field is empty or not (yet) valid.
+func (a *App) pickerHostOrDetected() string {
+	host, err := a.pickerHost()
+	if err != nil || host == "" {
+		host = a.lanIP
+	}
+	return host
 }
 
 // setLoginErr sets (or clears) the login screen's error line.
@@ -1414,45 +1494,84 @@ func playersText(players, agents int, lobby bool) string {
 	return headCount(players, agents) + " online"
 }
 
-// lanTab is LAN mode: what it does, the IP + port editors, the shareable URL,
-// and the Check embedded server row.
+// lanTab is LAN mode: what it does, the IP editor and the three port editors,
+// the shareable URLs, and the Check embedded server row.
 func (a *App) lanTab(gtx C) D {
+	portBox := func(ed *widget.Editor, def int) layout.Widget {
+		return func(gtx C) D {
+			gtx.Constraints.Max.X = gtx.Dp(64)
+			gtx.Constraints.Min.X = gtx.Constraints.Max.X
+			return a.editorBox(gtx, ed, strconv.Itoa(def))
+		}
+	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.body("Host a game on your own network: Jetris runs a JetStream-enabled NATS server inside this window and plays on it.", colMuted)),
-		layout.Rigid(spacer(10)),
+		layout.Rigid(a.body("Host a game on your own network: Jetris runs a JetStream-enabled NATS server inside this window, serves the browser version to the phones on it, and plays on it.", colMuted)),
+		layout.Rigid(spacer(8)),
 		layout.Rigid(func(gtx C) D {
-			// Both are editable: the IP is only auto-DETECTED, and on a
-			// multi-homed or VPN'd machine the detected one may not be the
-			// address friends can reach.
+			// What the server is called: the lobby bar's "<you> @ <name>", and
+			// the name the join page — and so every guest's lobby bar —
+			// gives it.
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.body("Name:", colFg)),
+				layout.Rigid(hSpacer(6)),
+				layout.Flexed(1, func(gtx C) D {
+					return a.editorBox(gtx, &a.connNameEd, config.DefaultEmbeddedName)
+				}),
+			)
+		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D {
+			// Editable: the IP is only auto-DETECTED, and on a multi-homed or
+			// VPN'd machine the detected one may not be the address friends
+			// can reach.
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(a.body("IP:", colFg)),
 				layout.Rigid(hSpacer(6)),
 				layout.Flexed(1, func(gtx C) D {
 					return a.editorBox(gtx, &a.connHostEd, a.lanIP)
 				}),
-				layout.Rigid(hSpacer(10)),
-				layout.Rigid(a.body("Port:", colFg)),
-				layout.Rigid(hSpacer(6)),
-				layout.Rigid(func(gtx C) D {
-					gtx.Constraints.Max.X = gtx.Dp(70)
-					gtx.Constraints.Min.X = gtx.Constraints.Max.X
-					return a.editorBox(gtx, &a.connPortEd, strconv.Itoa(config.DefaultEmbeddedPort))
-				}),
 			)
 		}),
-		layout.Rigid(spacer(8)),
+		layout.Rigid(spacer(6)),
 		layout.Rigid(func(gtx C) D {
-			// The URL other players dial — built from the fields above — so
-			// the host can share it before even hitting Play, plus where the
-			// server keeps its data.
+			// The three listeners' ports: plain NATS for desktop builds and
+			// agents, WebSocket for the browser build, HTTP for the page the
+			// browser build is served from. Check tries all three.
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.body("Ports — NATS:", colFg)),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(portBox(&a.connPortEd, config.DefaultEmbeddedPort)),
+				layout.Rigid(hSpacer(10)),
+				layout.Rigid(a.body("WebSocket:", colFg)),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(portBox(&a.connWSPortEd, config.DefaultEmbeddedWSPort)),
+				layout.Rigid(hSpacer(10)),
+				layout.Rigid(a.body("HTTP:", colFg)),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(portBox(&a.connHTTPPortEd, config.DefaultEmbeddedHTTPPort)),
+			)
+		}),
+		layout.Rigid(spacer(6)),
+		layout.Rigid(func(gtx C) D {
+			// The URLs other players use — built from the fields above — so
+			// the host can share them before even hitting Play: the page for
+			// the phones (the lobby shows it as a QR code as well), the NATS
+			// address for desktop builds and agents; plus where the server
+			// keeps its data.
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
 					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-						layout.Rigid(a.body("Your server's URL is ", colMuted)),
+						layout.Rigid(a.body("Browsers open ", colMuted)),
+						layout.Rigid(a.body("https://"+a.pickerHTTPAddr(), colNATSGreen)),
+					)
+				}),
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+						layout.Rigid(a.body("Desktop builds and agents dial ", colMuted)),
 						layout.Rigid(a.body("nats://"+a.pickerAddr(), colNATSGreen)),
 					)
 				}),
-				layout.Rigid(a.body("Friends add it to their server browser's favorites · data in ./"+config.EmbeddedStoreDir, colMuted)),
+				layout.Rigid(a.body("The lobby shows the page as a QR code to scan · data in ./"+config.EmbeddedStoreDir, colMuted)),
 			)
 		}),
 		layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
@@ -1495,7 +1614,7 @@ func (a *App) connStatusLine(gtx C, key string) D {
 			col = colGo
 		}
 	case key == probeKeyLAN:
-		msg = "Starts the server and pings it over the address above."
+		msg = "Starts the servers on the three ports and pings them over the address above."
 	default:
 		msg = "Click a server (or Refresh all servers) to measure the core NATS ping and count who's in its lobby."
 	}

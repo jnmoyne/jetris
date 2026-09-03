@@ -184,15 +184,36 @@ func TestScreenSnapshots(t *testing.T) {
 	})
 
 	// The lobby while hosting the embedded server (LAN mode): the header
-	// names the server and the shareable-address line sits under it.
+	// names the server, the menu column carries the page's URL over the NATS
+	// one and the Show QR code button — and, pressed, the QR modal over the
+	// lobby with the join link under the code.
 	t.Run("lobby_lan", func(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
 		a.usingEmbedded = true
-		a.embAddr = "192.168.1.23:4222"
+		a.embAddr, a.embWSAddr, a.embHTTPAddr, a.embHTTPScheme = "192.168.1.23:4222", "192.168.1.23:4223", "192.168.1.23:8080", "https"
 		a.connName, a.connURL = connectionParts(config.Config{RunEmbedded: true, NATSURL: "nats://" + a.embAddr}, "nats://"+a.embAddr, "")
+		ready := browserBuildReady
+		browserBuildReady = func() bool { return true }
+		defer func() { browserBuildReady = ready }()
 		snapshotPNG(t, w, dir, "screen_lobby_lan", func(gtx C) { a.layout(gtx) })
+		a.qrOpen = true
+		snapshotPNG(t, w, dir, "screen_lobby_lan_qr", func(gtx C) { a.layout(gtx) })
+		// A binary without the browser build: the NATS address alone, and why.
+		a.qrOpen = false
+		browserBuildReady = func() bool { return false }
+		snapshotPNG(t, w, dir, "screen_lobby_lan_nobuild", func(gtx C) { a.layout(gtx) })
+	})
+
+	// The login screen's LAN party tab: the IP, the three ports, the two URLs.
+	t.Run("login_lan", func(t *testing.T) {
+		a := NewWithPicker(config.Config{}, []string{"alpha", "beta", "demo"}, "beta", prefs.DefaultFavorites())
+		a.th = newTestApp().th
+		a.connTab = connTabLAN
+		a.lanIP = "192.168.1.23"
+		a.connHostEd.SetText(a.lanIP)
+		snapshotPNG(t, w, dir, "screen_login_lan", func(gtx C) { a.layout(gtx) })
 	})
 
 	t.Run("game", func(t *testing.T) {

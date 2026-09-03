@@ -18,6 +18,7 @@ import (
 
 	"jetris/internal/config"
 	"jetris/internal/lobby"
+	"jetris/internal/voice"
 )
 
 // The lobby screen — the game screen's shape, with a list of games where the
@@ -62,21 +63,22 @@ func (a *App) layoutLobby(gtx C) D {
 		go a.quit()
 	}
 	// Modal overlays: the create-game wizard, the invitee picker (after
-	// creating an invite-only game), and the incoming-invitation pop-up.
-	// Their buttons are dispatched here so a click can't fall through to the
-	// lobby underneath.
+	// creating an invite-only game), the incoming-invitation pop-up, and the
+	// LAN party's QR code (lanqr.go). Their buttons are dispatched here so a
+	// click can't fall through to the lobby underneath.
 	wizOpen := a.handleCreateWizard(gtx)
 	pickerOpen := a.handleInvitePicker(gtx)
 	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
+	qrOpen := a.handleQRModal(gtx, wizOpen || pickerOpen || inviteOpen)
 	// The bar's switches and the panel's tabs, drained before anything is
 	// laid out so a column shown or hidden this frame is already in the
 	// layout that measures it — and answered only while no modal is up, since
 	// the scrim dims the bar without taking its presses.
-	a.handleLobbyBarClicks(gtx, wizOpen || pickerOpen || inviteOpen)
+	a.handleLobbyBarClicks(gtx, wizOpen || pickerOpen || inviteOpen || qrOpen)
 	// The Create button just opens the wizard; the wizard's last step does
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
-	if a.createBtn.Clicked(gtx) && !wizOpen && !pickerOpen && !inviteOpen {
+	if a.createBtn.Clicked(gtx) && !wizOpen && !pickerOpen && !inviteOpen && !qrOpen {
 		a.createWizStep = wizStepMode
 		a.mu.Lock()
 		a.lobbyErr = "" // a fresh attempt clears the previous failure strip
@@ -88,6 +90,10 @@ func (a *App) layoutLobby(gtx C) D {
 	games := sortedGames(lb.Games())
 	players := sortedPlayers(lb.Players())
 	abandoned := lb.AbandonedGames()
+	// The lobby's voice session (voice.go): the mic button, the menu's
+	// VOICE section, who is heard beside the names.
+	vs := a.voiceFrame(voice.ChannelAll)
+	voiceRepaints(gtx, vs, a.lobbyMenuVisible())
 
 	// The lobby screen shows only lobby-scoped messages; per-game messages
 	// (GameID != "") appear on that game's screen instead.
@@ -164,24 +170,42 @@ func (a *App) layoutLobby(gtx C) D {
 							return a.lobbyPanel(gtx, games, abandoned, archives)
 						})
 					}
+					var d D
 					if !playersBeside {
-						return panel(gtx)
+						d = panel(gtx)
+					} else {
+						pw := a.lobbyPlayersColW(gtx, gtx.Constraints.Max.X)
+						d = layout.Flex{}.Layout(gtx,
+							layout.Flexed(1, panel),
+							layout.Rigid(func(gtx C) D {
+								gtx.Constraints.Min.X, gtx.Constraints.Max.X = pw, pw
+								gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+								return a.lobbyPlayersColumn(gtx, players, vs)
+							}),
+						)
 					}
-					pw := a.lobbyPlayersColW(gtx, gtx.Constraints.Max.X)
-					return layout.Flex{}.Layout(gtx,
-						layout.Flexed(1, panel),
-						layout.Rigid(func(gtx C) D {
-							gtx.Constraints.Min.X, gtx.Constraints.Max.X = pw, pw
-							gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
-							return a.lobbyPlayersColumn(gtx, players)
-						}),
-					)
+					if !a.lobbyPlayersVisible() {
+						// The players put away, whoever is heard is named in
+						// a strip over the panel's bottom-left corner
+						// (voiceStrip), painted after it, as on the game
+						// screen.
+						macro := op.Record(gtx.Ops)
+						sgtx := gtx
+						sgtx.Constraints = layout.Constraints{Max: d.Size}
+						sd := a.voiceStrip(sgtx, vs, lobbySpeakerName(players))
+						call := macro.Stop()
+						if sd.Size != (image.Point{}) {
+							defer op.Offset(image.Pt(0, d.Size.Y-sd.Size.Y)).Push(gtx.Ops).Pop()
+							call.Add(gtx.Ops)
+						}
+					}
+					return d
 				}
 				menuW := a.lobbyMenuW(gtx)
 				menu := func(gtx C) D {
 					gtx.Constraints.Min.X, gtx.Constraints.Max.X = menuW, menuW
 					gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
-					return a.lobbyMenuColumn(gtx, lb.PlayerName(), connName, connURL)
+					return a.lobbyMenuColumn(gtx, lb.PlayerName(), connName, connURL, vs)
 				}
 				switch {
 				case !a.lobbyMenuVisible():
@@ -222,7 +246,7 @@ func (a *App) layoutLobby(gtx C) D {
 		// their own across the full width, just above the chat.
 		if a.lobbyPlayersVisible() && !playersBeside {
 			children = append(children, layout.Rigid(func(gtx C) D {
-				return a.lobbyPlayersStrip(gtx, players)
+				return a.lobbyPlayersStrip(gtx, players, vs)
 			}))
 		}
 		// The chat is a strip along the bottom, the full width of the screen
@@ -238,7 +262,7 @@ func (a *App) layoutLobby(gtx C) D {
 	base := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.lobbyBanner),
 		layout.Rigid(func(gtx C) D {
-			return a.lobbyBar(gtx, lb.PlayerName(), connName, len(chat) > a.lobbyChatSeen)
+			return a.lobbyBar(gtx, lb.PlayerName(), connName, len(chat) > a.lobbyChatSeen, vs)
 		}),
 		layout.Rigid(func(gtx C) D {
 			if msg == "" {
@@ -250,7 +274,7 @@ func (a *App) layoutLobby(gtx C) D {
 		}),
 		layout.Flexed(1, body),
 	)
-	if !pickerOpen && !inviteOpen && !wizOpen {
+	if !pickerOpen && !inviteOpen && !wizOpen && !qrOpen {
 		return base
 	}
 	return layout.Stack{}.Layout(gtx,
@@ -267,6 +291,8 @@ func (a *App) layoutLobby(gtx C) D {
 				return a.incomingInviteOverlay(gtx, pendingInvite)
 			case pickerOpen:
 				return a.invitePickerOverlay(gtx)
+			case qrOpen:
+				return a.qrOverlay(gtx)
 			default:
 				return a.createWizardOverlay(gtx)
 			}
@@ -347,6 +373,18 @@ func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 	if flipped {
 		a.persistPanels()
 	}
+	// The mic button (voice.go): the session's switch, never written out.
+	// In the click's own frame, as on the game screen — the browser opens
+	// the microphone only on the player's gesture.
+	mic := 0
+	for a.barMicBtn.Clicked(gtx) {
+		mic++
+	}
+	if mic > 0 && !modal {
+		if v := a.getVoice(); v != nil {
+			v.SetMuted(!v.Muted())
+		}
+	}
 	for _, t := range []struct {
 		btn *widget.Clickable
 		tab string
@@ -367,11 +405,17 @@ func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 // switch, who we are and which server this session is on, and at the far end
 // the switches for the two things that cost the panel room: the players
 // column and the chat strip.
-func (a *App) lobbyBar(gtx C, playerName, connName string, unread bool) D {
+func (a *App) lobbyBar(gtx C, playerName, connName string, unread bool, vs voice.Snapshot) D {
 	barH := gtx.Dp(gameBarH)
 	kids := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D {
 			return a.barButton(gtx, &a.barLobbyMenuBtn, glyphMenu, a.lobbyMenuVisible())
+		}),
+		// The voice switch, beside the menu button as on the game screen.
+		layout.Rigid(func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return a.micButton(gtx, vs)
+			})
 		}),
 		layout.Flexed(1, func(gtx C) D {
 			return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
@@ -463,10 +507,10 @@ func (a *App) lobbyPlayersBeside(gtx C, w int) bool {
 // nothing else — no scrim behind it, no close button in it. What it holds is
 // everything about this SESSION rather than about any game: who we are, the
 // server we are on and the one we are hosting, and the way out.
-func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string) D {
+func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string, vs voice.Snapshot) D {
 	return background(gtx, colPanel, func(gtx C) D {
 		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
-			return a.lobbyMenu(gtx, playerName, connName, connURL)
+			return a.lobbyMenu(gtx, playerName, connName, connURL, vs)
 		})
 		fillRect(gtx.Ops, image.Rect(d.Size.X-gtx.Dp(2), 0, d.Size.X, d.Size.Y), colBorder)
 		return d
@@ -480,13 +524,16 @@ func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string) D {
 // Everything in it stacks rather than running along a line: the column is a
 // third of a phone's width at its narrowest, and a server URL beside its
 // label there would be two ellipses.
-func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string) D {
-	// The address other players should dial while this session is hosting the
-	// embedded server: the one thing on this screen the host has to be able
-	// to read out loud, so it gets lines of its own in the NATS green. It is
-	// also the URL we are connected to, so it is said once, here, and the
-	// plain connection line above drops to just the server's name.
-	addr := a.embeddedAddr()
+func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Snapshot) D {
+	// The addresses other players use while this session is hosting the LAN
+	// party: the page the phones open and the NATS address the desktop builds
+	// and agents dial — the two things on this screen the host has to be able
+	// to read out loud, so they get lines of their own in the NATS green,
+	// and under them the button that puts the page on the screen as a QR
+	// code (lanqr.go). The NATS one is also the URL we are connected to, so
+	// it is said once, here, and the plain connection line above drops to
+	// just the server's name.
+	addr, _, _ := a.lanAddrs()
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, unit.Sp(11), playerName, colAccent) }),
 	}
@@ -504,7 +551,28 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string) D {
 			}))
 		}
 	}
-	if addr != "" {
+	if addr != "" && browserBuildReady() {
+		children = append(children,
+			layout.Rigid(spacer(14)),
+			layout.Rigid(a.header("YOUR SERVER'S URLS ARE")),
+			layout.Rigid(func(gtx C) D {
+				return a.pixelLabelFit(gtx, unit.Sp(10), strings.TrimSuffix(a.lanPageURL(), "/"), colNATSGreen)
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+					return a.pixelLabelFit(gtx, unit.Sp(10), "nats://"+addr, colNATSGreen)
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(4)}.Layout(gtx,
+					a.body("Browsers open the first; desktop builds and agents dial the second.", colMuted))
+			}),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.qrShowBtn, "Show QR code") }),
+		)
+	} else if addr != "" {
+		// A binary built without the browser build: no page to open, so no
+		// QR code — the NATS address alone, and why.
 		children = append(children,
 			layout.Rigid(spacer(14)),
 			layout.Rigid(a.header("YOUR SERVER'S URL IS")),
@@ -513,10 +581,15 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string) D {
 			}),
 			layout.Rigid(func(gtx C) D {
 				return layout.Inset{Top: unit.Dp(4)}.Layout(gtx,
-					a.body("Share this address so others can join you.", colMuted))
+					a.body("Share this address so others can join you. No browser build in this binary: run scripts/build-wasm.sh before building to serve one.", colMuted))
 			}),
 		)
 	}
+	// The voice chat (voice.go): the lobby's room is everyone in it.
+	children = append(children,
+		layout.Rigid(spacer(14)),
+		layout.Rigid(func(gtx C) D { return a.voiceSection(gtx, vs, "LOBBY") }),
+	)
 	children = append(children,
 		layout.Rigid(spacer(18)),
 		layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.quitBtn, "Disconnect") }),
@@ -550,7 +623,7 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string) D {
 // and off by the bar the same way. Each row is the name over what that player
 // is doing — stacked, not side by side, because the column is narrow and a
 // name and a state sharing a line would both be cut.
-func (a *App) lobbyPlayersColumn(gtx C, players []lobby.PlayerPresence) D {
+func (a *App) lobbyPlayersColumn(gtx C, players []lobby.PlayerPresence, vs voice.Snapshot) D {
 	return background(gtx, colPanel, func(gtx C) D {
 		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -563,7 +636,7 @@ func (a *App) lobbyPlayersColumn(gtx C, players []lobby.PlayerPresence) D {
 						p := players[i]
 						return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-								layout.Rigid(a.body(agentName(p.Name, p.Agent), colFg)),
+								layout.Rigid(a.lobbyPlayerName(p, vs)),
 								layout.Rigid(a.caption(statusText(p.Status), colMuted)),
 							)
 						})
@@ -583,7 +656,7 @@ func (a *App) lobbyPlayersColumn(gtx C, players []lobby.PlayerPresence) D {
 // takes as little of that as it can, packing the players along each line and
 // starting a new one only when the next will not fit (lobbyPlayersFlow),
 // scrolling only once there are more lines than lobbyPlayersStripRows.
-func (a *App) lobbyPlayersStrip(gtx C, players []lobby.PlayerPresence) D {
+func (a *App) lobbyPlayersStrip(gtx C, players []lobby.PlayerPresence, vs voice.Snapshot) D {
 	return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(a.header(fmt.Sprintf("PLAYERS (%d)", len(players)))),
@@ -592,7 +665,7 @@ func (a *App) lobbyPlayersStrip(gtx C, players []lobby.PlayerPresence) D {
 					return a.body("Nobody else is here.", colMuted)(gtx)
 				}
 				return bordered(gtx, func(gtx C) D {
-					rows := a.lobbyPlayersFlow(gtx, players)
+					rows := a.lobbyPlayersFlow(gtx, players, vs)
 					// Three lines of them at most; past that the strip keeps
 					// its height and scrolls, so a lobby with thirty agents in
 					// it cannot push the games off the screen.
@@ -619,14 +692,14 @@ func (a *App) lobbyPlayersStrip(gtx C, players []lobby.PlayerPresence) D {
 // entries are measured at their own sizes into a discarded macro and the
 // lines assembled by hand — cheap, since a lobby holds a handful of players
 // and every entry is two labels.
-func (a *App) lobbyPlayersFlow(gtx C, players []lobby.PlayerPresence) []layout.Widget {
+func (a *App) lobbyPlayersFlow(gtx C, players []lobby.PlayerPresence, vs voice.Snapshot) []layout.Widget {
 	entry := func(p lobby.PlayerPresence) layout.Widget {
 		return func(gtx C) D {
 			gtx.Constraints.Min.X = 0
 			gtx.Constraints.Max.X = min(gtx.Constraints.Max.X, gtx.Dp(lobbyPlayersMaxW))
 			return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(a.body(agentName(p.Name, p.Agent), colFg)),
+					layout.Rigid(a.lobbyPlayerName(p, vs)),
 					layout.Rigid(a.caption(statusText(p.Status), colMuted)),
 				)
 			})
@@ -657,6 +730,17 @@ func (a *App) lobbyPlayersFlow(gtx C, players []lobby.PlayerPresence) []layout.W
 		rows = append(rows, flowLine(line, gap))
 	}
 	return rows
+}
+
+// lobbyPlayerName is a presence's name line: the name, and the speaker mark
+// beside it while that player is heard in the lobby room (voice.go).
+func (a *App) lobbyPlayerName(p lobby.PlayerPresence, vs voice.Snapshot) layout.Widget {
+	return func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.body(agentName(p.Name, p.Agent), colFg)),
+			layout.Rigid(a.speakerMark(vs, p.PlayerID, unit.Dp(10))),
+		)
+	}
 }
 
 // flowLine is one packed line: its entries side by side, gap px apart, each

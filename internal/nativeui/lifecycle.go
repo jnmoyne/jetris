@@ -2,14 +2,18 @@ package nativeui
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"jetris/internal/archive"
 	"jetris/internal/cleanup"
@@ -17,6 +21,8 @@ import (
 	"jetris/internal/engine"
 	"jetris/internal/lobby"
 	natspkg "jetris/internal/nats"
+	"jetris/internal/prefs"
+	"jetris/internal/webdist"
 )
 
 // doConnectAndLogin dials NATS per the player's connection-picker choice (cfg
@@ -34,12 +40,12 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config, favorite string)
 
 	if cfg.RunEmbedded {
 		// "LAN party mode (embedded NATS server)": bring up (or reuse) the
-		// in-process server, then connect to it via the same LAN address other
-		// players dial. (Not loopback: another NATS server holding a
-		// 127.0.0.1:4222-specific bind would intercept a loopback dial even
-		// though our 0.0.0.0 bind succeeded — a real setup on NATS developer
-		// machines.)
-		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedHost, cfg.EmbeddedPort)
+		// in-process server and the page server beside it, then connect to
+		// the former via the same LAN address other players dial. (Not
+		// loopback: another NATS server holding a 127.0.0.1:4222-specific
+		// bind would intercept a loopback dial even though our 0.0.0.0 bind
+		// succeeded — a real setup on NATS developer machines.)
+		addr, err := a.ensureLANServers(cfg)
 		if err != nil {
 			a.mu.Lock()
 			a.loginErr = err.Error()
@@ -95,46 +101,177 @@ func (a *App) doConnectAndLogin(name string, cfg config.Config, favorite string)
 
 // embeddedPortOrDefault maps the picker's port choice (0 = unset) to the port
 // the embedded server actually listens on.
-func embeddedPortOrDefault(port int) int {
+func embeddedPortOrDefault(port int) int { return portOrDefault(port, config.DefaultEmbeddedPort) }
+
+// embeddedNameOrDefault maps the picker's Name field ("" = unset) to what the
+// LAN party's server is called.
+func embeddedNameOrDefault(name string) string {
+	if name == "" {
+		return config.DefaultEmbeddedName
+	}
+	return name
+}
+
+// portOrDefault maps a picker port (0 = unset) to def.
+func portOrDefault(port, def int) int {
 	if port <= 0 {
-		return config.DefaultEmbeddedPort
+		return def
 	}
 	return port
 }
 
+// lanPorts are the three ports a LAN party config asks for — NATS, WebSocket,
+// HTTP — with the defaults filled in.
+func lanPorts(cfg config.Config) (nats, ws, http int) {
+	return portOrDefault(cfg.EmbeddedPort, config.DefaultEmbeddedPort),
+		portOrDefault(cfg.EmbeddedWSPort, config.DefaultEmbeddedWSPort),
+		portOrDefault(cfg.EmbeddedHTTPPort, config.DefaultEmbeddedHTTPPort)
+}
+
+// ensureLANServers brings the LAN party up per cfg — the embedded
+// nats-server with its WebSocket listener, and the browser build's HTTP
+// server beside it — or finds them already running there, and returns the
+// NATS address to dial. Both run until the window closes, so friends stay
+// connected across the host's lobby exits; a server whose port the player
+// changed on a fresh login is restarted on the new one, and only that one.
+//
+// Before starting anything it checks that the three ports differ and that
+// each port not already held by one of our own servers is free to listen
+// on: a port another program holds is named at once — "port 4222 (NATS) is
+// already in use" — rather than found five seconds later by a server that
+// could not bind and does not say which listener failed.
+func (a *App) ensureLANServers(cfg config.Config) (string, error) {
+	natsPort, wsPort, httpPort := lanPorts(cfg)
+	if err := distinctPorts(natsPort, wsPort, httpPort); err != nil {
+		return "", err
+	}
+	a.stopLANServersNotOn(natsPort, wsPort, httpPort)
+	held := a.heldPorts()
+	for _, p := range []struct {
+		port int
+		what string
+	}{{natsPort, "NATS"}, {wsPort, "WebSocket"}, {httpPort, "HTTP"}} {
+		if held[p.port] {
+			continue
+		}
+		if err := portFree(p.port); err != nil {
+			return "", fmt.Errorf("port %d (%s) is already in use — pick another, or stop what is using it", p.port, p.what)
+		}
+	}
+	addr, err := a.ensureEmbeddedServer(cfg.EmbeddedHost, natsPort, wsPort)
+	if err != nil {
+		return "", err
+	}
+	if err := a.ensureWebServer(cfg.EmbeddedHost, httpPort); err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	a.embName = embeddedNameOrDefault(cfg.EmbeddedName)
+	a.mu.Unlock()
+	return addr, nil
+}
+
+// portFree reports whether TCP port can be listened on, on every interface,
+// right now — by listening on it and letting go.
+func portFree(port int) error {
+	l, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(port)))
+	if err != nil {
+		return err
+	}
+	return l.Close()
+}
+
+// heldPorts is the set of ports our own LAN party servers listen on right
+// now — the ones a free-port check must skip, since we are what holds them.
+func (a *App) heldPorts() map[int]bool {
+	a.mu.Lock()
+	srv, web := a.embSrv, a.webSrv
+	a.mu.Unlock()
+	held := map[int]bool{}
+	if srv != nil {
+		held[serverPort(srv)] = true
+		held[serverWSPort(srv)] = true
+	}
+	if web != nil {
+		held[web.Port()] = true
+	}
+	delete(held, 0)
+	return held
+}
+
+// serverPort is the port the embedded server's NATS listener has (0 when it
+// cannot be told).
+func serverPort(srv natspkg.EmbeddedServer) int {
+	if tcp, ok := srv.Addr().(*net.TCPAddr); ok {
+		return tcp.Port
+	}
+	return 0
+}
+
+// serverWSPort is the port of the embedded server's WebSocket listener (0
+// when it has none).
+func serverWSPort(srv natspkg.EmbeddedServer) int {
+	u, err := url.Parse(srv.WebsocketURL())
+	if err != nil {
+		return 0
+	}
+	port, _ := strconv.Atoi(u.Port())
+	return port
+}
+
+// stopLANServersNotOn shuts down whichever of our LAN party servers is not
+// on the ports wanted — the embedded server if either of its two moved, the
+// page server if its one did — so ensureLANServers starts it afresh there.
+// A server whose ports are the wanted ones is left running, its friends
+// still connected.
+func (a *App) stopLANServersNotOn(natsPort, wsPort, httpPort int) {
+	a.mu.Lock()
+	srv, web := a.embSrv, a.webSrv
+	a.mu.Unlock()
+	natsMoved := false
+	if srv != nil && (serverPort(srv) != natsPort || serverWSPort(srv) != wsPort) {
+		log.Printf("embedded nats-server moving from ports %d/%d to %d/%d", serverPort(srv), serverWSPort(srv), natsPort, wsPort)
+		srv.Shutdown()
+		a.mu.Lock()
+		if a.embSrv == srv {
+			a.embSrv = nil
+		}
+		a.mu.Unlock()
+		natsMoved = true
+	}
+	// The page proxies the browser build's WebSocket to the nats-server's
+	// listener, so a server on new ports wants a new page too.
+	if web != nil && (web.Port() != httpPort || natsMoved) {
+		log.Printf("browser build server moving from port %d to %d", web.Port(), httpPort)
+		web.Close()
+		a.mu.Lock()
+		if a.webSrv == web {
+			a.webSrv = nil
+		}
+		a.mu.Unlock()
+	}
+}
+
 // ensureEmbeddedServer starts the in-process JetStream-enabled nats-server on
-// the given port (0 = config.DefaultEmbeddedPort) on all interfaces, storage
-// in ./config.EmbeddedStoreDir, and records its shareable "<ip>:<port>"
-// address. Reused by later login attempts; it runs until the window closes so
-// friends stay connected across the host's lobby exits — unless the player
-// picked a DIFFERENT port on a fresh login, which restarts it there. Returns
-// that address — which is also the one the app connects through (see
-// doConnectAndLogin on why not loopback).
+// the given NATS and WebSocket ports on all interfaces, storage in
+// ./config.EmbeddedStoreDir, and records its shareable "<ip>:<port>"
+// addresses — unless it is already running (ensureLANServers stops one on
+// the wrong ports first). Returns the NATS address — which is also the one
+// the app connects through (see doConnectAndLogin on why not loopback).
 //
 // wantHost is the picker's IP field: it changes only the address advertised
 // and dialed, never the bind (which stays every interface), so overriding a
 // mis-detected LAN IP costs nothing and needs no restart. Empty re-detects.
-func (a *App) ensureEmbeddedServer(wantHost string, wantPort int) (string, error) {
-	wantPort = embeddedPortOrDefault(wantPort)
+func (a *App) ensureEmbeddedServer(wantHost string, natsPort, wsPort int) (string, error) {
 	if wantHost == "" {
 		wantHost = natspkg.LanIP()
 	}
 	a.mu.Lock()
 	srv := a.embSrv
 	a.mu.Unlock()
-	if srv != nil {
-		if tcp, ok := srv.Addr().(*net.TCPAddr); ok && tcp.Port != wantPort {
-			log.Printf("embedded nats-server moving from port %d to %d", tcp.Port, wantPort)
-			srv.Shutdown()
-			srv = nil
-			a.mu.Lock()
-			a.embSrv = nil
-			a.mu.Unlock()
-		}
-	}
 	if srv == nil {
 		var err error
-		srv, err = natspkg.StartEmbeddedServer(config.EmbeddedStoreDir, wantPort)
+		srv, err = natspkg.StartEmbeddedServer(config.EmbeddedStoreDir, natsPort, wsPort)
 		if err != nil {
 			return "", err
 		}
@@ -142,16 +279,73 @@ func (a *App) ensureEmbeddedServer(wantHost string, wantPort int) (string, error
 		a.embSrv = srv
 		a.mu.Unlock()
 	}
-	port := wantPort
-	if tcp, ok := srv.Addr().(*net.TCPAddr); ok {
-		port = tcp.Port
+	if p := serverPort(srv); p != 0 {
+		natsPort = p
 	}
-	addr := net.JoinHostPort(wantHost, strconv.Itoa(port))
+	if p := serverWSPort(srv); p != 0 {
+		wsPort = p
+	}
+	addr := net.JoinHostPort(wantHost, strconv.Itoa(natsPort))
+	wsAddr := net.JoinHostPort(wantHost, strconv.Itoa(wsPort))
 	a.mu.Lock()
-	a.embAddr = addr
+	a.embAddr, a.embWSAddr = addr, wsAddr
 	a.mu.Unlock()
-	log.Printf("embedded nats-server serving on %s (JetStream data in ./%s)", addr, config.EmbeddedStoreDir)
+	log.Printf("embedded nats-server serving on %s, websocket on %s (JetStream data in ./%s)", addr, wsAddr, config.EmbeddedStoreDir)
 	return addr, nil
+}
+
+// ensureWebServer starts the browser build's HTTP server (webdist) on the
+// given port on all interfaces, unless it is already running, and records
+// the "<ip>:<port>" the phones open. Its bare "/" redirects to the party's
+// join link (lanJoinLink), asked per request so it follows the host's name.
+func (a *App) ensureWebServer(wantHost string, wantPort int) error {
+	if wantHost == "" {
+		wantHost = natspkg.LanIP()
+	}
+	a.mu.Lock()
+	web := a.webSrv
+	a.mu.Unlock()
+	if web == nil {
+		// The page is https, with a certificate of Jetris's own kept with
+		// the preferences (webdist.LoadOrCreateCert): a browser gives a page
+		// its microphone — the voice chat — only over https or localhost,
+		// and a phone on the LAN is neither. Its WebSocket is proxied to the
+		// embedded server's, so the guest's one accepted certificate covers
+		// the socket too. No config directory means plain http: the party
+		// still plays, its browser players listen only.
+		opts := webdist.Options{Hosts: []string{wantHost, natspkg.LanIP()}}
+		a.mu.Lock()
+		srv := a.embSrv
+		a.mu.Unlock()
+		if srv != nil {
+			if p := serverWSPort(srv); p > 0 {
+				opts.WSBackend = net.JoinHostPort("127.0.0.1", strconv.Itoa(p))
+			}
+		}
+		if dir, err := prefs.ConfigDir(); err == nil {
+			opts.CertDir = dir
+		} else {
+			log.Printf("LAN party page: no config directory for its certificate (%v): serving plain http, where browsers give no microphone", err)
+		}
+		var err error
+		web, err = webdist.Serve(wantPort, a.lanJoinLink, opts)
+		if err != nil {
+			return err
+		}
+		a.mu.Lock()
+		a.webSrv = web
+		a.mu.Unlock()
+	}
+	addr := net.JoinHostPort(wantHost, strconv.Itoa(web.Port()))
+	a.mu.Lock()
+	a.embHTTPAddr, a.embHTTPScheme = addr, web.Scheme()
+	a.mu.Unlock()
+	if webdist.Ready() {
+		log.Printf("browser build served on %s://%s/", web.Scheme(), addr)
+	} else {
+		log.Printf("no browser build in this binary: %s://%s/ says so (run scripts/build-wasm.sh before building)", web.Scheme(), addr)
+	}
+	return nil
 }
 
 // doCheckConn probes a connection-page choice without committing to it and
@@ -178,14 +372,17 @@ func (a *App) doCheckConn(key string, cfg config.Config) {
 // mode alike — really dials NATS, really measures a core NATS ping, and
 // counts the players in that server's lobby, so the check exercises the same
 // path Play will take; the probe connection is closed again and provisions
-// nothing. LAN mode additionally starts the embedded server first (that IS
-// what it is checking), then dials it over its LAN address exactly as
+// nothing. LAN mode additionally starts the servers first (that IS what it
+// is checking — the three ports are checked free before anything binds
+// them), then dials the embedded server over its LAN address exactly as
 // doConnectAndLogin does, including the "is this actually OUR server on that
-// port?" identity check. The result's msg is the ✓/✗ line to show.
+// port?" identity check, and then the other two listeners the same way: a
+// NATS connection over the WebSocket one, an HTTP GET of the page. The
+// result's msg is the ✓/✗ line to show.
 func (a *App) checkConn(cfg config.Config) probeResult {
 	embedded := cfg.RunEmbedded
 	if embedded {
-		addr, err := a.ensureEmbeddedServer(cfg.EmbeddedHost, cfg.EmbeddedPort)
+		addr, err := a.ensureLANServers(cfg)
 		if err != nil {
 			return probeResult{msg: "✗ " + err.Error()}
 		}
@@ -205,7 +402,16 @@ func (a *App) checkConn(cfg config.Config) probeResult {
 	}
 	server := res.ServerURL
 	if embedded {
-		server = "serving on " + server
+		a.mu.Lock()
+		wsAddr, httpAddr, httpScheme := a.embWSAddr, a.embHTTPAddr, a.embHTTPScheme
+		a.mu.Unlock()
+		if err := checkLANListeners(wsAddr, httpAddr, httpScheme, res.ServerID); err != nil {
+			return probeResult{msg: "✗ " + err.Error()}
+		}
+		server = fmt.Sprintf("serving on %s · ws://%s · %s://%s", server, wsAddr, httpScheme, httpAddr)
+		if !webdist.Ready() {
+			server += " (no browser build in this binary: scripts/build-wasm.sh)"
+		}
 	}
 	return probeResult{
 		ok:      true,
@@ -215,6 +421,37 @@ func (a *App) checkConn(cfg config.Config) probeResult {
 		agents:  res.Agents,
 		lobby:   res.Lobby,
 	}
+}
+
+// checkLANListeners really dials the LAN party's other two listeners: a NATS
+// connection over the WebSocket one (nats.go speaks ws:// natively), which
+// must reach the server with serverID — the same stranger-on-our-port check
+// the NATS listener gets — and an HTTP GET of the page, which must answer
+// 200 (its bare "/" redirects to the join page; the client follows).
+func checkLANListeners(wsAddr, httpAddr, httpScheme, serverID string) error {
+	const timeout = 5 * time.Second
+	nc, err := nats.Connect("ws://"+wsAddr, nats.Timeout(timeout))
+	if err != nil {
+		return fmt.Errorf("WebSocket listener ws://%s: %w", wsAddr, err)
+	}
+	id := nc.ConnectedServerId()
+	nc.Close()
+	if serverID != "" && id != serverID {
+		return fmt.Errorf("another NATS server answers on ws://%s — pick another WebSocket port, or stop it", wsAddr)
+	}
+	// Our own self-signed page: a liveness check, with nothing to verify
+	// the certificate against.
+	client := &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	page := httpScheme + "://" + httpAddr + "/"
+	resp, err := client.Get(page)
+	if err != nil {
+		return fmt.Errorf("page %s: %w", page, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("page %s answered %s", page, resp.Status)
+	}
+	return nil
 }
 
 // disconnect drops the app-owned NATS connection and clears the handles.
@@ -237,7 +474,7 @@ func (a *App) disconnect() {
 // connectionParts describes a connection for the screens that say where this
 // session is, after the player's name and the @: the server's NAME as the
 // player knows it — the favorite's label, "context <name>" for a NATS CLI
-// context, "your embedded server" in LAN mode — and separately the URL
+// context, the name the LAN party's host gave its server — and separately the URL
 // actually reached, which for a context or a clustered URL can differ from
 // what was configured. connectedURL is nc.ConnectedUrl(); when it is empty
 // the configured URL stands in. A plain URL with no name to go by is its own
@@ -256,7 +493,7 @@ func connectionParts(cfg config.Config, connectedURL, favorite string) (name, ur
 	}
 	switch {
 	case cfg.RunEmbedded:
-		return "your embedded server", u
+		return embeddedNameOrDefault(cfg.EmbeddedName), u
 	case cfg.NATSContext != "":
 		return "context " + cfg.NATSContext, u
 	case favorite != "":
@@ -585,7 +822,12 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.msgLog = nil
 	a.resetMsgGroups()
 	a.screen = screenGame
+	nc := a.nc
 	a.mu.Unlock()
+	// The screen's voice session (voice.go): muted, on the seat's team room
+	// if it has one, torn down with the screen. After the lock — it opens
+	// the speakers.
+	a.startVoice(e, engCtx, nc)
 }
 
 // resetBoardFX clears every client-local board overlay (CAS flashes and the
@@ -720,8 +962,10 @@ func (a *App) returnToLobby() {
 	a.mu.Lock()
 	eng := a.eng
 	cancel := a.engCancel
+	v := a.voice
 	a.eng = nil
 	a.engCancel = nil
+	a.voice = nil
 	a.gameOver = false
 	a.won = false
 	a.fireworks = nil
@@ -749,6 +993,9 @@ func (a *App) returnToLobby() {
 	if eng != nil {
 		eng.Stop()
 	}
+	if v != nil {
+		v.Stop()
+	}
 	a.invalidate()
 }
 
@@ -760,11 +1007,17 @@ func (a *App) quit() {
 	a.mu.Lock()
 	lb := a.lobby
 	lobbyCancel := a.lobbyCancel
+	v := a.voice
 	a.lobby = nil
 	a.lobbyCancel = nil
+	a.voice = nil
+	a.voiceRoom = ""
 	a.screen = screenLogin
 	a.connRefreshed = false // the connection page opens afresh: refresh the favorites again
 	a.mu.Unlock()
+	if v != nil {
+		v.Stop() // the lobby's voice, before the connection it publishes on is drained
+	}
 
 	if lb != nil {
 		// Delete our presence NOW (connection still up) so other clients get an
@@ -823,10 +1076,14 @@ func (a *App) teardown() {
 	lobbyCancel := a.lobbyCancel
 	nc := a.nc
 	srv := a.embSrv
+	web := a.webSrv
+	v := a.voice
 	a.eng = nil
 	a.lobby = nil
 	a.nc = nil
 	a.embSrv = nil
+	a.webSrv = nil
+	a.voice = nil
 	a.mu.Unlock()
 
 	if engCancel != nil {
@@ -834,6 +1091,9 @@ func (a *App) teardown() {
 	}
 	if eng != nil {
 		eng.Stop()
+	}
+	if v != nil {
+		v.Stop()
 	}
 	if lb != nil {
 		// Remove our presence before draining so watchers see us leave at once.
@@ -850,5 +1110,8 @@ func (a *App) teardown() {
 	}
 	if srv != nil {
 		srv.Shutdown()
+	}
+	if web != nil {
+		web.Close()
 	}
 }

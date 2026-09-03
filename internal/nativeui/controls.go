@@ -183,6 +183,41 @@ var (
 		"XXX.XXX.",
 		"........",
 	}
+	// glyphMic is the bar's voice switch (voice.go): a microphone's capsule
+	// on its stand. glyphMicOff is the same capsule with a slash through it
+	// — muted, the state every game starts in. glyphSpeaker marks who is
+	// heard: beside a name in the legend, on an opponent's board label, in
+	// the strip over the board when the menu is away.
+	glyphMic = []string{
+		"...XX...",
+		"..XXXX..",
+		"..XXXX..",
+		"..XXXX..",
+		"X.XXXX.X",
+		".X.XX.X.",
+		"..XXXX..",
+		"...XX...",
+	}
+	glyphMicOff = []string{
+		"...XX..X",
+		"..XXXXX.",
+		"..XXXX..",
+		"..XXXX..",
+		"X.XXXX.X",
+		".XXXX.X.",
+		".X.XX...",
+		"X..XX...",
+	}
+	glyphSpeaker = []string{
+		"...X....",
+		"..XX..X.",
+		"XXXX.X.X",
+		"XXXX.X.X",
+		"XXXX.X.X",
+		"XXXX.X.X",
+		"..XX..X.",
+		"...X....",
+	}
 )
 
 // mirrored flips a glyph bitmap horizontally (derives the CCW rotate arrow

@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget"
 
@@ -107,7 +108,7 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 							}),
 							layout.Rigid(func(gtx C) D {
 								gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
-								return a.opponentBoards(gtx, eng)
+								return a.opponentBoards(gtx, eng, view)
 							}),
 						)
 					})
@@ -120,7 +121,21 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 				}
 				switch {
 				case !a.hudVisible():
-					return board(gtx)
+					// The menu away, whoever is heard is named in a strip
+					// over the board area's bottom-left corner (voiceStrip):
+					// recorded after the board and painted over it, so the
+					// board's own layout is exactly what it was.
+					d := board(gtx)
+					macro := op.Record(gtx.Ops)
+					sgtx := gtx
+					sgtx.Constraints = layout.Constraints{Max: d.Size}
+					sd := a.voiceStrip(sgtx, view.voice, gameSpeakerName(view))
+					call := macro.Stop()
+					if sd.Size != (image.Point{}) {
+						defer op.Offset(image.Pt(0, d.Size.Y-sd.Size.Y)).Push(gtx.Ops).Pop()
+						call.Add(gtx.Ops)
+					}
+					return d
 				case a.hudBeside(gtx):
 					// Room for both: the menu stands against the screen's edge
 					// and the board takes what is left, the way the opponents'
@@ -187,6 +202,9 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 		// rather than from what was read there. The switches are the
 		// player's own and do carry over.
 		a.screenEng, a.chatSeen = eng, 0
+		// The voice switch too (voice.go): a teams game starts in the team's
+		// room, whatever the last game's switch was left on.
+		a.voiceChanEnum.Value = voiceChanTeam
 	}
 	// Each switch is just that: the button that shows a panel is the button
 	// that hides it, and nothing else does — no scrim to tap through, no ✕ in
@@ -207,6 +225,15 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 	flip(&a.barPadBtn, &a.padShown)
 	if flipped {
 		a.persistPanels()
+	}
+	// The mic button is a switch of another kind (voice.go): the session's,
+	// not a panel's, and never written out — every game starts muted. The
+	// unmute runs here, in the click's own frame, because the browser opens
+	// the microphone only on the player's gesture.
+	for a.barMicBtn.Clicked(gtx) {
+		if v := a.getVoice(); v != nil {
+			v.SetMuted(!v.Muted())
+		}
 	}
 }
 
@@ -266,6 +293,12 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	kids := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D { return a.barButton(gtx, &a.barHudBtn, glyphMenu, a.hudVisible()) }),
+		// The voice switch, beside the menu button (voice.go).
+		layout.Rigid(func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return a.micButton(gtx, view.voice)
+			})
+		}),
 	}
 	kids = append(kids, layout.Flexed(1, func(gtx C) D {
 		return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
@@ -316,11 +349,17 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 // as the control pad's, at a thumb-friendly size. on lights it up: the panel
 // it opens is open, or the pad it switches is showing.
 func (a *App) barButton(gtx C, btn *widget.Clickable, bm []string, on bool) D {
-	sz := gtx.Dp(gameBarH - 14)
 	bg, fg := colPanel, colAccent
 	if on {
 		bg, fg = colAccent, colBg
 	}
+	return a.barButtonColors(gtx, btn, bm, bg, fg)
+}
+
+// barButtonColors is barButton in any colours: the mic button's third look
+// (voice.go) is neither off nor on.
+func (a *App) barButtonColors(gtx C, btn *widget.Clickable, bm []string, bg, fg colorN) D {
+	sz := gtx.Dp(gameBarH - 14)
 	gtx.Constraints = layout.Exact(image.Pt(sz, sz))
 	return widget.Border{Color: colAccent, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 		return btn.Layout(gtx, func(gtx C) D {
@@ -358,7 +397,7 @@ func (a *App) hasOpponents(eng *engine.Engine, mode engine.Mode, gmode config.Ga
 //
 // It is centred on the same axis the board area centres on, so the two read
 // as one row rather than as a board with something bolted to its corner.
-func (a *App) opponentBoards(gtx C, eng *engine.Engine) D {
+func (a *App) opponentBoards(gtx C, eng *engine.Engine, view gameView) D {
 	opps := eng.OpponentSnapshots()
 	if len(opps) == 0 {
 		return D{}
@@ -376,8 +415,19 @@ func (a *App) opponentBoards(gtx C, eng *engine.Engine) D {
 		var kids []layout.FlexChild
 		for i, id := range ids {
 			snap, label := opps[id], id
+			// The speaker mark beside the label while that opponent is
+			// heard (voice.go) — in a teams game, while any of them is: the
+			// column is theirs together.
+			speaking, mark := view.voice.Speaking(id)
 			if teams {
 				label = "OPPONENTS"
+				for _, sp := range view.voice.Speakers {
+					for _, p := range view.players {
+						if p.PlayerID == sp.ID && p.Team != eng.TeamIdx() {
+							speaking, mark = sp, true
+						}
+					}
+				}
 			}
 			if i > 0 {
 				kids = append(kids, layout.Rigid(spacer(8)))
@@ -385,7 +435,17 @@ func (a *App) opponentBoards(gtx C, eng *engine.Engine) D {
 			kids = append(kids,
 				layout.Rigid(func(gtx C) D {
 					gtx.Constraints.Max.X = first.Width*cell + gtx.Dp(4)
-					return a.pixelLabelFit(gtx, unit.Sp(7), label, colMuted)
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							return a.pixelLabelFit(gtx, unit.Sp(7), label, colMuted)
+						}),
+						layout.Rigid(func(gtx C) D {
+							if !mark {
+								return D{}
+							}
+							return layout.Inset{Left: unit.Dp(4)}.Layout(gtx, glyphWidget(glyphSpeaker, unit.Dp(8), speakerColor(speaking)))
+						}),
+					)
 				}),
 				layout.Rigid(spacer(3)),
 				layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now)),

@@ -43,7 +43,7 @@ func TestConnectionLabel(t *testing.T) {
 			name:      "LAN mode names the embedded server, its address in parentheses",
 			cfg:       config.Config{RunEmbedded: true, NATSURL: "nats://192.168.1.23:4222"},
 			connected: "nats://192.168.1.23:4222",
-			want:      "your embedded server (nats://192.168.1.23:4222)",
+			want:      config.DefaultEmbeddedName + " (nats://192.168.1.23:4222)",
 		},
 		{
 			name:      "credentials in the URL are dropped",
@@ -79,7 +79,7 @@ func TestConnectionLabel(t *testing.T) {
 			cfg:       config.Config{RunEmbedded: true, NATSURL: "nats://192.168.1.23:4222"},
 			connected: "nats://192.168.1.23:4222",
 			favorite:  "demo",
-			want:      "your embedded server (nats://192.168.1.23:4222)",
+			want:      config.DefaultEmbeddedName + " (nats://192.168.1.23:4222)",
 		},
 	}
 	for _, tc := range cases {
@@ -125,11 +125,13 @@ func TestConnectAndLoginSetsLabel(t *testing.T) {
 		t.Fatalf("after quit = name %q url %q, want both cleared", a.connName, a.connURL)
 	}
 
-	a.doConnectAndLogin("tester", config.Config{RunEmbedded: true, EmbeddedHost: "127.0.0.1", EmbeddedPort: freePort(t)}, "")
+	// Free ports for all three listeners: a Jetris running on this machine
+	// holds the defaults.
+	a.doConnectAndLogin("tester", config.Config{RunEmbedded: true, EmbeddedHost: "127.0.0.1", EmbeddedPort: freePort(t), EmbeddedWSPort: freePort(t), EmbeddedHTTPPort: freePort(t)}, "")
 	if a.loginErr != "" || a.screen != screenLobby {
 		t.Fatalf("LAN login: err %q, screen %v, want the lobby", a.loginErr, a.screen)
 	}
-	if a.connName != "your embedded server" || !strings.HasPrefix(a.connURL, "nats://127.0.0.1:") || !a.usingEmbedded {
+	if a.connName != config.DefaultEmbeddedName || !strings.HasPrefix(a.connURL, "nats://127.0.0.1:") || !a.usingEmbedded {
 		t.Fatalf("LAN login = name %q url %q (embedded %v), want the LAN-mode parts", a.connName, a.connURL, a.usingEmbedded)
 	}
 }
@@ -166,7 +168,7 @@ func TestConnectionParts(t *testing.T) {
 			name:      "LAN mode names the embedded server",
 			cfg:       config.Config{RunEmbedded: true},
 			connected: "nats://192.168.1.23:4222",
-			wantName:  "your embedded server",
+			wantName:  config.DefaultEmbeddedName,
 			wantURL:   "nats://192.168.1.23:4222",
 		},
 		{

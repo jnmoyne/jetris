@@ -55,9 +55,14 @@ func main() {
 	if err != nil {
 		log.Printf("warning: loading panel switches: %v", err)
 	}
+	voicePrefs, err := prefs.LoadVoice()
+	if err != nil {
+		log.Printf("warning: loading voice settings: %v", err)
+	}
 	a := nativeui.NewWithPicker(cfg, names, selected, favorites)
 	a.SetHandling(handling.DASMs, handling.ARRMs, handling.SDF, handling.DropGuardMs)
 	a.SetPanels(panels)
+	a.SetVoice(voicePrefs)
 	if !noUpdateCheck {
 		go checkForUpdate(ctx, a)
 	}

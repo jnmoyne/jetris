@@ -32,6 +32,9 @@ import (
 	"jetris/internal/lobby"
 	natspkg "jetris/internal/nats"
 	"jetris/internal/prefs"
+	"jetris/internal/qr"
+	"jetris/internal/voice"
+	"jetris/internal/webdist"
 )
 
 // Layout type aliases used throughout the package.
@@ -120,6 +123,7 @@ type App struct {
 	favSave      func([]prefs.Favorite) error
 	handlingSave func(prefs.Handling) error
 	panelsSave   func(prefs.Panels) error
+	voiceSave    func(prefs.Voice) error
 	// autoLogin: the player's name came with the connection (--name, or the
 	// join page's ?player=), so the login screen submits itself on its first
 	// frame. One-shot — read and cleared on the UI goroutine, so it needs no
@@ -146,15 +150,23 @@ type App struct {
 	// mu). The server starts on the first embedded login and runs until the
 	// window closes — quitting to the login screen leaves it up for connected
 	// friends; picking a different port on a later login restarts it there.
+	// Beside it runs the browser build's HTTP server (webdist), on its own
+	// port, with the same lifetime: the phones on the network open it, and
+	// the game they load dials the embedded server's WebSocket listener.
 	// usingEmbedded marks the CURRENT connection as being to it, which is
-	// what gates the lobby's shareable-address line.
+	// what gates the lobby's shareable-address lines.
 	embSrv        natspkg.EmbeddedServer
-	embAddr       string // shareable "<lan-ip>:<port>"
+	embAddr       string // shareable "<lan-ip>:<port>" — desktop builds and agents dial it
+	embWSAddr     string // its WebSocket listener, "<lan-ip>:<wsport>" — what the browser build dials
+	webSrv        *webdist.Server
+	embHTTPAddr   string // the browser build's "<lan-ip>:<httpport>" — what the phones open
+	embHTTPScheme string // "https" (the page has its certificate: the browser's microphone works) or "http"
+	embName       string // what the party's server is called (the tab's Name field): the join link's label
 	usingEmbedded bool
 
 	// connName and connURL name the server the CURRENT connection reached,
 	// for the lobby header and the game HUD: the name as the player knows it
-	// ("Jetris EU central", "context ngs", "your embedded server") and the
+	// ("Jetris EU central", "context ngs", the LAN party's own name) and the
 	// URL actually dialed. They are kept apart, not pre-joined, because the
 	// two are shown differently — the game HUD has room for the name alone,
 	// and where both fit it is the URL that gives way first, never the name
@@ -295,8 +307,11 @@ type App struct {
 	connAddURLEd   widget.Editor                // add form: the URL
 	connAddBtn     widget.Clickable             // add form: Add
 	connAddCancel  widget.Clickable             // add form: Cancel
+	connNameEd     widget.Editor                // LAN mode: the server's name (pre-set to config.DefaultEmbeddedName; empty = that again)
 	connHostEd     widget.Editor                // LAN mode: IP entry (pre-set to the detected lanIP; empty = auto-detect again)
-	connPortEd     widget.Editor                // LAN mode: port entry (pre-set to config.DefaultEmbeddedPort)
+	connPortEd     widget.Editor                // LAN mode: NATS port entry (pre-set to config.DefaultEmbeddedPort)
+	connWSPortEd   widget.Editor                // LAN mode: WebSocket port entry (pre-set to config.DefaultEmbeddedWSPort)
+	connHTTPPortEd widget.Editor                // LAN mode: HTTP port entry (pre-set to config.DefaultEmbeddedHTTPPort)
 	lanIP          string                       // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
 	connRefreshAll widget.Clickable             // browser: the list's "↻ Refresh all servers" row
 	connCheckBtn   widget.Clickable             // LAN mode: Check embedded server
@@ -308,6 +323,15 @@ type App struct {
 	connResetYes    widget.Clickable
 	connResetNo     widget.Clickable
 	scrimTag        int // address used as the modal scrim's pointer-area tag (login screen)
+
+	// The lobby's Show QR code (LAN mode, lanqr.go): the modal that puts the
+	// party's join link on the screen as a QR code, up while qrOpen; qrCode
+	// is the encoding of qrLink, kept from frame to frame.
+	qrShowBtn widget.Clickable
+	qrOKBtn   widget.Clickable
+	qrOpen    bool
+	qrLink    string
+	qrCode    *qr.Code
 
 	// connPicked: the player clicked a browser row since the page-opening
 	// refresh started, so its result must not move the selection. favOrder
@@ -486,8 +510,27 @@ type App struct {
 	// Its chrome: the bar's menu / pad / boards / chat switches. Every one of
 	// them is a switch and nothing more — no scrim, no close button.
 	barHudBtn, barPadBtn, barChatBtn, barOppBtn widget.Clickable
-	hudTag                                      int // pointer-area tag of a menu column drawn OVER the board: its presses are its own, not the gesture surface's
-	chatSeen                                    int // messages the chat panel last showed: the bar's unread dot
+	// The voice chat (voice.go): the game screen's session, guarded by mu
+	// (startVoice sets it, stopVoice clears it); voiceDevice builds the
+	// platform's audio for each (voice.NewDevice; the tests hand in a
+	// voice.FakeDevice); voicePrefs is the saved gate and "Play voice" as
+	// a new session starts from them, guarded by mu since the join runs
+	// off the UI goroutine. The rest is the menu's VOICE section and the
+	// bar's mic button: UI goroutine only.
+	voice          *voice.Session
+	voiceRoom      string // the room a.voice is in: a game ID, config.LobbyVoiceRoom, or "" (guarded by mu)
+	voiceStarting  bool   // a lobby session is on its way (reconcileVoice; guarded by mu)
+	voiceDevice    func() voice.Device
+	voicePrefs     prefs.Voice
+	barMicBtn      widget.Clickable
+	voiceGateDb    int
+	voiceGateFloat widget.Float
+	voiceDirty     bool
+	voiceListenCb  widget.Bool
+	voiceListenWas bool
+	voiceChanEnum  widget.Enum
+	hudTag         int // pointer-area tag of a menu column drawn OVER the board: its presses are its own, not the gesture surface's
+	chatSeen       int // messages the chat panel last showed: the bar's unread dot
 	// screenEng is the engine the screen state above belongs to; a new one
 	// (every game entry makes one) shuts the menu and forgets what was read.
 	screenEng *engine.Engine
@@ -636,6 +679,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.labEnum.Value = labAsync // Optimistic async, the default
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF, defaultDropGuardMs)
 	a.setDefaultPanels() // every panel on until a saved set says otherwise
+	a.SetVoice(prefs.DefaultVoice())
+	a.voiceDevice = voice.NewDevice
+	a.voiceChanEnum.Value = voiceChanTeam
 	a.loginEd.SingleLine = true
 	a.loginEd.Submit = true
 	a.chatEd.SingleLine = true
@@ -719,6 +765,7 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.favSave = prefs.SaveFavorites
 	a.handlingSave = prefs.SaveHandling
 	a.panelsSave = prefs.SavePanels
+	a.voiceSave = prefs.SaveVoice
 	a.connProbes = map[string]probeResult{}
 	a.connProbing = map[string]bool{}
 	a.connRound = map[string]bool{}
@@ -732,11 +779,19 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.connAddLabelEd.Submit = true
 	a.connAddURLEd.SingleLine = true
 	a.connAddURLEd.Submit = true
-	a.connPortEd.SingleLine = true
-	a.connPortEd.Submit = true
-	a.connPortEd.Filter = "0123456789"
-	a.connPortEd.SetText(strconv.Itoa(config.DefaultEmbeddedPort))
+	for _, p := range []struct {
+		ed  *widget.Editor
+		def int
+	}{{&a.connPortEd, config.DefaultEmbeddedPort}, {&a.connWSPortEd, config.DefaultEmbeddedWSPort}, {&a.connHTTPPortEd, config.DefaultEmbeddedHTTPPort}} {
+		p.ed.SingleLine = true
+		p.ed.Submit = true
+		p.ed.Filter = "0123456789"
+		p.ed.SetText(strconv.Itoa(p.def))
+	}
 	a.lanIP = natspkg.LanIP()
+	a.connNameEd.SingleLine = true
+	a.connNameEd.Submit = true
+	a.connNameEd.SetText(config.DefaultEmbeddedName)
 	a.connHostEd.SingleLine = true
 	a.connHostEd.Submit = true
 	// Pre-filled with the auto-detected address so the player sees what will
@@ -873,6 +928,10 @@ func (a *App) layout(gtx C) D {
 	// game screen to choose its shape, the others to trim what a phone has
 	// no width for.
 	a.form = a.formOf(gtx)
+	// The voice chat's session for this screen (voice.go): the lobby's
+	// while the lobby is up, none on the login, archive and replay screens
+	// — a game's is the game screen's own affair.
+	a.reconcileVoice()
 	paint.Fill(gtx.Ops, colBg)
 	a.frames++
 	a.touchDebugFrame()
@@ -926,14 +985,24 @@ func (a *App) getEngine() *engine.Engine {
 }
 
 // embeddedAddr returns the shareable address of the embedded server while the
-// current connection is to it, "" otherwise (gates the lobby's YOUR SERVER line).
+// current connection is to it, "" otherwise (gates the lobby's YOUR SERVER
+// lines).
 func (a *App) embeddedAddr() string {
+	nats, _, _ := a.lanAddrs()
+	return nats
+}
+
+// lanAddrs is every address the LAN party hands out while the current
+// connection is to the embedded server — the NATS one for desktop builds and
+// agents, its WebSocket listener for the browser build, and the page the
+// browser build is served from — all "<host>:<port>", all "" otherwise.
+func (a *App) lanAddrs() (nats, ws, http string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.usingEmbedded {
-		return ""
+		return "", "", ""
 	}
-	return a.embAddr
+	return a.embAddr, a.embWSAddr, a.embHTTPAddr
 }
 
 func (a *App) snapshotGamePlayers() []lobby.PlayerSummary {

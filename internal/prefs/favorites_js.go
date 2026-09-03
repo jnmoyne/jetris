@@ -14,6 +14,12 @@ const favoritesKey = "jetris.favorites"
 
 // localStorage returns window.localStorage, or an error when the browser
 // refuses access (private mode, blocked site data — the accessor throws).
+// ConfigDir has no directory to name in the browser: the stores live in
+// localStorage, and nothing else wants a home here.
+func ConfigDir() (string, error) {
+	return "", errors.New("no config directory in the browser")
+}
+
 func localStorage() (store js.Value, err error) {
 	defer func() {
 		if r := recover(); r != nil {

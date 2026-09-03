@@ -6,3 +6,6 @@ jetstream-data/
 /headless-player
 agents/golang-mk1/golang-mk1
 dist/
+# the browser build scripts/build-wasm.sh copies into the desktop binary (internal/webdist)
+internal/webdist/dist/*
+!internal/webdist/dist/.gitkeep

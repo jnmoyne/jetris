@@ -8,6 +8,10 @@ import "net"
 // compile without linking nats-server at all.
 type EmbeddedServer interface {
 	Addr() net.Addr
+	// WebsocketURL is the WebSocket listener's "ws://host:port" — the port
+	// is what matters, the host being the bind address (port 0 when the
+	// server was started without a listener).
+	WebsocketURL() string
 	ID() string
 	Shutdown()
 }

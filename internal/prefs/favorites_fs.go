@@ -27,6 +27,18 @@ func configParent() (string, error) {
 	return filepath.Join(home, ".config"), nil
 }
 
+// ConfigDir is the directory every desktop store lives in — ~/.config/jetris,
+// or $XDG_CONFIG_HOME/jetris — for whatever else wants a home there: the LAN
+// party page's certificate (webdist). Not created here; a store creates it
+// on its first write.
+func ConfigDir() (string, error) {
+	parent, err := configParent()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, "jetris"), nil
+}
+
 // FavoritesPath is the absolute path of the favorites file.
 func FavoritesPath() (string, error) {
 	parent, err := configParent()

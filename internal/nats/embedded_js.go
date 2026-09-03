@@ -10,7 +10,7 @@ import "errors"
 var ErrNoEmbeddedServer = errors.New("the embedded NATS server is not available in the browser")
 
 // StartEmbeddedServer always fails in the browser.
-func StartEmbeddedServer(storeDir string, port int) (EmbeddedServer, error) {
+func StartEmbeddedServer(storeDir string, port, wsPort int) (EmbeddedServer, error) {
 	return nil, ErrNoEmbeddedServer
 }
 

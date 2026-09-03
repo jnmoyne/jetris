@@ -22,19 +22,27 @@ type Config struct {
 	// ServerLabel names NATSURL for the player (the browser page's ?name=):
 	// the server browser's row shows it instead of "--server", and the lobby
 	// header reads "<label> (<url>)" the way a favorite's does.
-	ServerLabel  string
-	RunEmbedded  bool   // run an in-process JetStream-enabled nats-server and connect to it
-	EmbeddedHost string // address the embedded server is advertised and dialed on ("" = auto-detected LAN IP); it always LISTENS on every interface, so this only overrides a wrong auto-detection
-	EmbeddedPort int    // port for the embedded server (0 = DefaultEmbeddedPort)
+	ServerLabel      string
+	RunEmbedded      bool   // run an in-process JetStream-enabled nats-server and connect to it
+	EmbeddedHost     string // address the embedded server is advertised and dialed on ("" = auto-detected LAN IP); it always LISTENS on every interface, so this only overrides a wrong auto-detection
+	EmbeddedPort     int    // port for the embedded server (0 = DefaultEmbeddedPort)
+	EmbeddedWSPort   int    // port of its WebSocket listener, what the browser build dials (0 = DefaultEmbeddedWSPort)
+	EmbeddedHTTPPort int    // port the browser build is served on, for the phones to open (0 = DefaultEmbeddedHTTPPort)
+	EmbeddedName     string // what the LAN party's server is called: the lobby header's "<you> @ <name>", and the join link's label ("" = DefaultEmbeddedName)
 }
 
 // Embedded-server settings for the login screen's "LAN party mode (embedded NATS
-// server)" option: the default port the in-process server listens on (all
-// interfaces; the player can override it in the picker) and the local
-// directory holding its JetStream storage.
+// server)" option: the default ports the in-process server listens on — plain
+// NATS for the desktop builds and agents, WebSocket for the browser build —
+// and the one the browser build itself is served on, all on every interface
+// (the player can override each in the picker); and the local directory
+// holding the server's JetStream storage.
 const (
-	DefaultEmbeddedPort = 4222
-	EmbeddedStoreDir    = "jetstream-data"
+	DefaultEmbeddedPort     = 4222
+	DefaultEmbeddedWSPort   = 4223
+	DefaultEmbeddedHTTPPort = 8080
+	DefaultEmbeddedName     = "Jetris LAN Party nats server"
+	EmbeddedStoreDir        = "jetstream-data"
 )
 
 // ValidatePlayerName checks that a player name is valid for use as a
@@ -640,7 +648,8 @@ const (
 
 	LobbyKVBucket     = "JETRIS_LOBBY"
 	ChatStream        = "JETRIS_CHAT"
-	LobbyChatGameID   = "lobby" // reserved chat "game ID" for the lobby chat (real game IDs are UUIDs, so no collision)
+	LobbyChatGameID   = "lobby"         // reserved chat "game ID" for the lobby chat (real game IDs are UUIDs, so no collision)
+	LobbyVoiceRoom    = LobbyChatGameID // the lobby's voice room, by the same token: jetris.voice.lobby.all.<player>
 	LobbyChatSubject  = chatSubjectPrefix + LobbyChatGameID
 	ArchiveStream     = "JETRIS_ARCHIVE"
 	ArchiveSubject    = "jetris.archive"
@@ -938,6 +947,64 @@ func FlashSubject(gameID, playerID string) string {
 // FlashSubjectFilter matches every player's flash subject for a game.
 func FlashSubjectFilter(gameID string) string {
 	return "jetris.flash." + gameID + ".*"
+}
+
+// VoiceSubject, VoiceTeamSubject and their filters are CORE NATS subjects
+// (deliberately OUTSIDE the "jetris.game.<id>.>" filter the game stream
+// captures) carrying a player's voice frames to everyone on that game's
+// screen. Voice is the most ephemeral thing in the game — fifty packets a
+// second that mean nothing a moment later — so it must NOT be persisted or
+// replayed on join; it travels as fire-and-forget core pub/sub, as the CAS
+// flash does. Two rooms: "all" is everyone on the game's screen, spectators
+// included; "team.<t>" is one team's own room in a teams game. The sender's
+// ID is the last token, so a receiver drops its own frames by subject rather
+// than with NoEcho, which would be connection-wide.
+func VoiceSubject(gameID, playerID string) string {
+	return "jetris.voice." + gameID + ".all." + playerID
+}
+
+// VoiceTeamSubject is a player's voice subject in their team's room.
+func VoiceTeamSubject(gameID string, team int, playerID string) string {
+	return "jetris.voice." + gameID + ".team." + strconv.Itoa(team) + "." + playerID
+}
+
+// VoiceSubjectFilter matches every player's frames in a game's "all" room.
+func VoiceSubjectFilter(gameID string) string {
+	return "jetris.voice." + gameID + ".all.*"
+}
+
+// VoiceTeamSubjectFilter matches every player's frames in one team's room.
+func VoiceTeamSubjectFilter(gameID string, team int) string {
+	return "jetris.voice." + gameID + ".team." + strconv.Itoa(team) + ".*"
+}
+
+// VoiceAnySubjectFilter matches every voice frame of a game, every room —
+// a spectator's subscription, who hears every team.
+func VoiceAnySubjectFilter(gameID string) string {
+	return "jetris.voice." + gameID + ".>"
+}
+
+// ParseVoiceSubject reads the sender and the room out of a voice subject:
+// team is -1 for the "all" room and the team index for a team room. ok is
+// false for anything that is not a well-formed voice subject. Player IDs are
+// single subject tokens (ValidatePlayerName) and game IDs are UUIDs, so the
+// tokens parse unambiguously.
+func ParseVoiceSubject(subject string) (playerID string, team int, ok bool) {
+	tokens := strings.Split(subject, ".")
+	if len(tokens) < 5 || tokens[0] != "jetris" || tokens[1] != "voice" {
+		return "", 0, false
+	}
+	switch {
+	case len(tokens) == 5 && tokens[3] == "all" && tokens[4] != "":
+		return tokens[4], -1, true
+	case len(tokens) == 6 && tokens[3] == "team" && tokens[5] != "":
+		t, err := strconv.Atoi(tokens[4])
+		if err != nil || t < 0 {
+			return "", 0, false
+		}
+		return tokens[5], t, true
+	}
+	return "", 0, false
 }
 
 // Lobby chat and per-game chat share the SAME stream (ChatStream) and are

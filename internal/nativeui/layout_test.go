@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"context"
 	"image"
 	"slices"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"jetris/internal/engine"
 	"jetris/internal/lobby"
 	"jetris/internal/prefs"
+	"jetris/internal/voice"
 )
 
 // newTestApp builds an App wired for headless layout: nil NATS handles (only
@@ -22,6 +24,8 @@ import (
 func newTestApp() *App {
 	a := New(nil, nil)
 	a.th = newUITheme()
+	// No test opens the machine's speakers: the voice chat runs on a fake.
+	a.voiceDevice = func() voice.Device { return &voice.FakeDevice{} }
 	return a
 }
 
@@ -691,6 +695,77 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		}
 		renderOnce(t, a)
 	})
+
+	t.Run("game-voice", func(t *testing.T) {
+		// The voice chat (voice.go): the mic button in each of its looks,
+		// the menu's VOICE section with the meter up, a player marked as
+		// heard in the legend and the ready list, and — the menu put away —
+		// the strip over the board.
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0, 0, 0)
+		a.gamePlayers = players
+		a.readyPlayers = players
+		a.screen = screenGame
+		dev := &voice.FakeDevice{}
+		a.voiceDevice = func() voice.Device { return dev }
+		a.startVoice(a.eng, context.Background(), nil)
+		t.Cleanup(a.stopVoice)
+		renderOnce(t, a) // muted
+		s := a.getVoice()
+		a.voiceGateDb = 0 // an open microphone: the first frame opens the gate
+		s.SetGateDb(0)
+		s.SetMuted(false)
+		dev.Feed(voice.SineFrames(440, -20, 1)[0])
+		waitFor(t, "the gate to open", func() bool { return s.Snapshot().Talking })
+		s.Receive(config.VoiceSubject("g1", "bob"), voicePacket(0, voice.FlagStart), time.Now())
+		if _, ok := s.Snapshot().Speaking("bob"); !ok {
+			t.Fatal("bob's packet did not mark him as speaking")
+		}
+		renderOnce(t, a) // the mic lit, the meter up, bob marked in the legend and the ready list
+		a.hudShown = false
+		renderOnce(t, a) // the strip over the board
+		a.gameStatus = string(config.GameStatusInProgress)
+		renderOnce(t, a)
+	})
+
+	t.Run("game-voice-teams-spectator-unavailable", func(t *testing.T) {
+		// A seat in a teams game has the TEAM / ALL switch; a spectator has
+		// none and hears every room; a build with no audio says so.
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeTeams, engine.ModePlayer, 0, 0, 0)
+		a.gamePlayers = players
+		a.readyPlayers = players
+		a.screen = screenGame
+		a.voiceDevice = func() voice.Device { return &voice.FakeDevice{} }
+		a.startVoice(a.eng, context.Background(), nil)
+		t.Cleanup(a.stopVoice)
+		if snap := a.getVoice().Snapshot(); !snap.HasTeam || snap.Channel != voice.ChannelTeam {
+			t.Fatalf("a teams seat's session = %+v, want the team room", snap)
+		}
+		a.getVoice().Receive(config.VoiceTeamSubject("g1", 0, "bob"), voicePacket(0, voice.FlagStart), time.Now())
+		renderOnce(t, a)
+
+		spec := newTestApp()
+		spec.eng = engine.New(nil, "g1", "spec", "", config.ModeTeams, engine.ModeSpectator, 0, 0, 0)
+		spec.gamePlayers = players
+		spec.screen = screenGame
+		spec.voiceDevice = func() voice.Device { return &voice.FakeDevice{OpenErr: voice.ErrUnavailable} }
+		spec.startVoice(spec.eng, context.Background(), nil)
+		t.Cleanup(spec.stopVoice)
+		if snap := spec.getVoice().Snapshot(); snap.HasTeam || snap.Err != voice.ErrUnavailable.Error() {
+			t.Fatalf("a spectator's session without audio = %+v", snap)
+		}
+		renderOnce(t, spec)
+	})
+}
+
+// voicePacket is one encoded frame of a tone, for a session to receive.
+func voicePacket(seq uint16, flags uint8) []byte {
+	var p voice.Packet
+	p.Header = voice.Header{VerCodec: voice.VerCodec, Flags: flags, Seq: seq}
+	var st voice.CodecState
+	voice.EncodeFrame(&st, voice.SineFrames(440, -12, 1)[0], p.Data[:])
+	return p.Marshal(nil)
 }
 
 // TestFireworksOverlay pins the victory-fireworks building blocks: the logo

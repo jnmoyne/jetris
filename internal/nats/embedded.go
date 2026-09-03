@@ -11,17 +11,23 @@ import (
 )
 
 // StartEmbeddedServer runs a JetStream-enabled nats-server inside this
-// process, listening on every interface at the given port and storing stream
-// data under storeDir. The returned server is ready for connections; stop it
-// with Shutdown(). Backs the login screen's "LAN party mode (embedded NATS server)"
-// option (port from the picker, default config.DefaultEmbeddedPort; storage
-// config.EmbeddedStoreDir).
-func StartEmbeddedServer(storeDir string, port int) (*natsserver.Server, error) {
+// process, listening on every interface at the given port — and, when wsPort
+// is not 0, for WebSocket clients (the browser build) at wsPort, plain
+// (no TLS: a LAN party has no certificates) — and storing stream data under
+// storeDir. The returned server is ready for connections; stop it with
+// Shutdown(). Backs the login screen's "LAN party mode (embedded NATS server)"
+// option (ports from the picker, defaults config.DefaultEmbeddedPort and
+// config.DefaultEmbeddedWSPort; storage config.EmbeddedStoreDir). A port of -1
+// asks for a free one (the tests).
+func StartEmbeddedServer(storeDir string, port, wsPort int) (*natsserver.Server, error) {
 	opts := &natsserver.Options{
 		Host:      "0.0.0.0",
 		Port:      port,
 		JetStream: true,
 		StoreDir:  storeDir,
+	}
+	if wsPort != 0 {
+		opts.Websocket = natsserver.WebsocketOpts{Host: "0.0.0.0", Port: wsPort, NoTLS: true}
 	}
 	s, err := natsserver.NewServer(opts)
 	if err != nil {
@@ -30,6 +36,9 @@ func StartEmbeddedServer(storeDir string, port int) (*natsserver.Server, error) 
 	s.Start()
 	if !s.ReadyForConnections(5 * time.Second) {
 		s.Shutdown()
+		if wsPort != 0 {
+			return nil, fmt.Errorf("embedded nats-server not ready (are ports %d and %d already in use?)", port, wsPort)
+		}
 		return nil, fmt.Errorf("embedded nats-server not ready (is port %d already in use?)", port)
 	}
 	return s, nil

@@ -5,6 +5,7 @@ package nats
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 // can create a stream. Port -1 picks a free port so the test never collides
 // with a real server on 4222.
 func TestStartEmbeddedServer(t *testing.T) {
-	srv, err := StartEmbeddedServer(t.TempDir(), -1)
+	srv, err := StartEmbeddedServer(t.TempDir(), -1, -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +29,29 @@ func TestStartEmbeddedServer(t *testing.T) {
 		t.Fatalf("connect to embedded server: %v", err)
 	}
 	defer nc.Close()
+	// The WebSocket listener — what the browser build dials — is up too, on
+	// its own port, and speaks plain ws:// (nats.go dials it natively).
+	wsURL := srv.WebsocketURL()
+	if !strings.HasPrefix(wsURL, "ws://") {
+		t.Fatalf("WebsocketURL() = %q, want a ws:// listener", wsURL)
+	}
+	wsc, err := nats.Connect(wsURL)
+	if err != nil {
+		t.Fatalf("connect to embedded server over websocket %s: %v", wsURL, err)
+	}
+	defer wsc.Close()
+	if wsc.ConnectedServerId() != srv.ID() {
+		t.Fatal("the websocket listener is not this server's")
+	}
+	// Without a WebSocket port there is no listener (the URL names port 0).
+	plain, err := StartEmbeddedServer(t.TempDir(), -1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Shutdown()
+	if u := plain.WebsocketURL(); !strings.HasSuffix(u, ":0") {
+		t.Fatalf("WebsocketURL() without a websocket port = %q, want none (port 0)", u)
+	}
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatal(err)

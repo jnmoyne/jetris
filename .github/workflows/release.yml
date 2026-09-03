@@ -8,7 +8,13 @@
 #     Linux runner with the dev packages installed (no cross-compiling).
 #   - macOS: cgo against Apple frameworks, so it must build on a macOS runner.
 #     Both arm64 and amd64 build there (the SDK is multi-arch).
-#   - Windows: pure Go (win32 syscalls), CGO_ENABLED=0.
+#   - Windows amd64: cgo, for the voice chat's audio (miniaudio, through
+#     gen2brain/malgo) — Gio's own Windows backend is pure Go, so miniaudio is
+#     the only C in the binary and the runner's MinGW-w64 gcc builds it.
+#   - Windows arm64: pure Go (win32 syscalls), CGO_ENABLED=0 — the x64 runner
+#     has no aarch64 MinGW to cross-compile miniaudio with, so that build
+#     carries the voice package's no-audio stub (internal/voice/device_none.go)
+#     and reports voice as unavailable.
 #   - Browser: GOOS=js GOARCH=wasm, no cgo, any runner (scripts/build-wasm.sh).
 # linux/arm64 builds on ubuntu-24.04-arm, which requires the repo to be public
 # (GitHub's free arm64 runners are public-repo only).
@@ -82,7 +88,7 @@ jobs:
           - { os: ubuntu-24.04-arm, goos: linux, goarch: arm64, cgo: 1 }
           - { os: macos-latest,   goos: darwin,  goarch: arm64, cgo: 1 }
           - { os: macos-latest,   goos: darwin,  goarch: amd64, cgo: 1 }
-          - { os: windows-latest, goos: windows, goarch: amd64, cgo: 0 }
+          - { os: windows-latest, goos: windows, goarch: amd64, cgo: 1 }
           - { os: windows-latest, goos: windows, goarch: arm64, cgo: 0 }
     steps:
       - uses: actions/checkout@v7
@@ -110,6 +116,12 @@ jobs:
           sudo apt-get install -y gcc pkg-config libwayland-dev libx11-dev \
             libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev \
             libegl1-mesa-dev libffi-dev libxcursor-dev libvulkan-dev
+      - name: Build browser version (embedded in the binary)
+        shell: bash
+        # The desktop binary carries the browser build (internal/webdist) and
+        # serves it in LAN party mode, so it is built first, here, on every
+        # platform — the same script and version the web job publishes.
+        run: VERSION="${GITHUB_REF_NAME}" ./scripts/build-wasm.sh
       - name: Build
         shell: bash
         env:

@@ -18,6 +18,7 @@ import (
 
 	"jetris/internal/config"
 	"jetris/internal/lobby"
+	"jetris/internal/voice"
 )
 
 // lobbyRig drives a whole lobby screen through a real Gio router, so the
@@ -428,8 +429,8 @@ func presence(n int) []lobby.PlayerPresence {
 // lobby would push the games off a phone the moment a few agents logged in.
 func TestPlayersStripWrapsAndCaps(t *testing.T) {
 	a := newTestApp()
-	wide := len(a.lobbyPlayersFlow(looseCtx(820, 300), presence(6)))
-	narrow := len(a.lobbyPlayersFlow(looseCtx(340, 300), presence(6)))
+	wide := len(a.lobbyPlayersFlow(looseCtx(820, 300), presence(6), voice.Snapshot{Muted: true}))
+	narrow := len(a.lobbyPlayersFlow(looseCtx(340, 300), presence(6), voice.Snapshot{Muted: true}))
 	if wide >= 6 {
 		t.Errorf("six players took %d lines in 820 dp: they are not being packed", wide)
 	}
@@ -441,12 +442,12 @@ func TestPlayersStripWrapsAndCaps(t *testing.T) {
 	}
 	// Capped: two lobbies well past the cap are the same height, and that
 	// height is three lines of it and not thirty.
-	h12 := a.lobbyPlayersStrip(looseCtx(390, 600), presence(12)).Size.Y
-	h30 := a.lobbyPlayersStrip(looseCtx(390, 600), presence(30)).Size.Y
+	h12 := a.lobbyPlayersStrip(looseCtx(390, 600), presence(12), voice.Snapshot{Muted: true}).Size.Y
+	h30 := a.lobbyPlayersStrip(looseCtx(390, 600), presence(30), voice.Snapshot{Muted: true}).Size.Y
 	if h12 != h30 {
 		t.Errorf("the strip is %d dp tall with 12 players and %d with 30: it grows with the lobby", h12, h30)
 	}
-	one := a.lobbyPlayersStrip(looseCtx(390, 600), presence(1)).Size.Y
+	one := a.lobbyPlayersStrip(looseCtx(390, 600), presence(1), voice.Snapshot{Muted: true}).Size.Y
 	if h30 > lobbyPlayersStripRows*one {
 		t.Errorf("the strip is %d dp tall with 30 players, past the %d dp of its %d lines",
 			h30, lobbyPlayersStripRows*one, lobbyPlayersStripRows)

@@ -18,6 +18,7 @@ import (
 	"jetris/internal/game"
 	"jetris/internal/lobby"
 	"jetris/internal/render"
+	"jetris/internal/voice"
 )
 
 // gameView is the per-frame snapshot of game scalars, taken under a.mu so the
@@ -47,6 +48,9 @@ type gameView struct {
 	// Keyboard owner while the keys drive the piece (handleGameFocus): the
 	// white focus outline goes on whichever of the two holds them.
 	boardFocused, chatFocused bool
+	// The voice chat as this frame finds it (voice.go): the mic button's
+	// state, the meter, and who is heard.
+	voice voice.Snapshot
 }
 
 // teamScore and teamLevel read one team's live total out of the view. The
@@ -172,6 +176,9 @@ func (a *App) layoutGame(gtx C) D {
 	// the boards, the legend and the spectator's result box all draw from
 	// (spectator_reveal.go).
 	view.outcome = a.resolveOutcome(eng, view, gmode, gtx.Now)
+	// The voice session's frame (voice.go): the menu's knobs go in as
+	// atomics, the snapshot comes out under the session's own lock.
+	view.voice = a.voiceFrame(a.voiceChannel())
 	started := view.status == string(config.GameStatusInProgress)
 	// playing: the keyboard drives the piece (a seated player, game in
 	// progress, not eliminated). Only then do the board and the chat compete
@@ -258,6 +265,7 @@ func (a *App) layoutGame(gtx C) D {
 	if view.outcome.decided {
 		animate(gtx) // keep the winner show animating while the screen is up
 	}
+	voiceRepaints(gtx, view.voice, a.hudVisible())
 
 	// Mirror the checkbox into the locked flag that gates the consumer-side
 	// message tap (recordStreamMsg runs on the engine's consumer goroutines).
@@ -622,6 +630,9 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			cb.IconColor = colAccent
 			return cb.Layout(gtx)
 		}),
+		// The voice chat (voice.go): a player's and a spectator's alike.
+		layout.Rigid(spacer(12)),
+		layout.Rigid(func(gtx C) D { return a.voiceSection(gtx, view.voice, a.voiceRoomName(eng, view.voice)) }),
 	)
 	if mode == engine.ModePlayer {
 		// The lab toggles (lab.go): how the moves are published, what the
@@ -814,6 +825,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 							layout.Rigid(func(gtx C) D { return swatch(gtx, render.PlayerColorRGBA(i), 12) }),
 							layout.Rigid(hSpacer(6)),
 							layout.Rigid(a.boardLabel(name, textCol, won)),
+							layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(12))),
 						)
 					}),
 					layout.Rigid(func(gtx C) D {
@@ -901,6 +913,7 @@ func (a *App) readyArea(gtx C, view gameView) D {
 					return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 							layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
+							layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(10))),
 							layout.Rigid(hSpacer(8)),
 							layout.Rigid(a.readyBadge(p.Ready)),
 						)
@@ -1372,7 +1385,12 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 		items = append(items, func(gtx C) D {
 			return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.boardLabel(p.Name, render.PlayerColorRGBA(i), oc.wins(p.PlayerID))),
+					layout.Rigid(func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(a.boardLabel(p.Name, render.PlayerColorRGBA(i), oc.wins(p.PlayerID))),
+							layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(10))),
+						)
+					}),
 					layout.Rigid(spacer(4)),
 					layout.Rigid(func(gtx C) D {
 						if !ok {

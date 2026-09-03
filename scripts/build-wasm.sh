@@ -11,7 +11,9 @@
 #   screenshot.png  the landing page's screenshot (Jetris-screenshot-1.png)
 # The release workflow (.github/workflows/release.yml) runs this on every tag,
 # attaches the directory to the release as jetris-<tag>-web.tar.gz and
-# publishes it to GitHub Pages: https://jnmoyne.github.io/jetris/
+# publishes it to GitHub Pages: https://jnmoyne.github.io/jetris/ — and runs
+# it before building each desktop binary, which embeds a copy of the
+# directory (internal/webdist) to serve in LAN party mode.
 #
 # To try it locally, serve the directory over HTTP (wasm cannot be loaded from
 # file://), e.g.
@@ -44,5 +46,13 @@ chmod 0644 "$OUT/index.html"
 # icons' cache-bust and the line at its foot.
 sed -e "s|__JETRIS_VERSION__|$VERSION|g" web/join.html > "$OUT/join.html"
 chmod 0644 "$OUT/join.html"
+
+# The desktop binary carries this same build (internal/webdist embeds
+# internal/webdist/dist): the LAN party mode serves it to the phones on the
+# network. Build it here, then build the binary, and it is in there.
+EMBED=internal/webdist/dist
+mkdir -p "$EMBED"
+find "$EMBED" -mindepth 1 -not -name .gitkeep -delete
+cp "$OUT"/* "$EMBED/"
 
 ls -lh "$OUT"

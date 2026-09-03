@@ -24,6 +24,7 @@ import (
 	"jetris/internal/lobby"
 	natspkg "jetris/internal/nats"
 	"jetris/internal/testutil"
+	"jetris/internal/voice"
 )
 
 // liveEngine starts an embedded NATS server, publishes a game and starts a
@@ -154,6 +155,7 @@ func barCenterY() float32    { return gameBarH / 2 }
 func barMenuX() float32      { return 6 + (gameBarH-14)/2 }
 func barChatX(w int) float32 { return float32(w) - barMenuX() }
 func barPadX(w int) float32  { return float32(w) - barMenuX() - (gameBarH - 14) - 6 }
+func barMicX() float32       { return barMenuX() + (gameBarH - 14) + 6 }
 
 // TestCompactWellsAndPadBuyTheBoardRoom pins what the compact screen trades
 // away and what the playfield gets for it: with the HOLD/NEXT wells moved
@@ -460,6 +462,47 @@ func TestLabSwitchFlipsWithoutTakingTheKeys(t *testing.T) {
 	g.press(key.NameLeftArrow)
 	if got := eng.BufferedMoves(); len(got) == before || got[len(got)-1] != engine.MoveLeft {
 		t.Fatalf("after flipping a lab switch the arrow key queued %v, want a left move — the menu kept the keys", got[before:])
+	}
+}
+
+// TestMicButtonFlipsWithoutTakingTheKeys is the voice chat's version of the
+// lab switch's scenario: mid-game, the player taps the mic button beside the
+// menu button and plays straight on. The button is a Clickable and takes
+// the keys for the frame of its press; the board must have them back on the
+// next. And a new game screen starts muted, whatever the last one did.
+func TestMicButtonFlipsWithoutTakingTheKeys(t *testing.T) {
+	eng := engine.New(nil, "mic-switch", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
+	dev := &voice.FakeDevice{}
+	g.a.voiceDevice = func() voice.Device { return dev }
+	g.a.startVoice(eng, context.Background(), nil)
+	t.Cleanup(g.a.stopVoice)
+	if !g.a.getVoice().Muted() {
+		t.Fatal("a new game screen's voice is not muted")
+	}
+	g.frame()
+	g.tap(barMicX(), barCenterY())
+	if g.a.getVoice().Muted() || !dev.Capturing() {
+		t.Fatal("tapping the mic button did not open the microphone")
+	}
+	before := len(eng.BufferedMoves())
+	g.press(key.NameLeftArrow)
+	if got := eng.BufferedMoves(); len(got) == before || got[len(got)-1] != engine.MoveLeft {
+		t.Fatalf("after the mic button the arrow key queued %v, want a left move — the button kept the keys", got[before:])
+	}
+	g.tap(barMicX(), barCenterY())
+	if !g.a.getVoice().Muted() || dev.Capturing() {
+		t.Fatal("tapping the mic button again did not mute")
+	}
+	// Unmuted again, then a new game screen: muted, the old session gone.
+	g.tap(barMicX(), barCenterY())
+	if g.a.getVoice().Muted() {
+		t.Fatal("the third tap did not unmute")
+	}
+	next := engine.New(nil, "mic-switch-2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g.a.startVoice(next, context.Background(), nil)
+	if !g.a.getVoice().Muted() || dev.Capturing() {
+		t.Fatal("a new game screen inherited the last one's open microphone")
 	}
 }
 

@@ -247,6 +247,7 @@ discipline.
 | `JETRIS_ARCHIVE` | stream | finished-game records (`jetris.archive`) |
 | `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, full game history retained (no per-subject cap), atomic publish + direct get enabled |
 | `jetris.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
+| `jetris.voice.<gameID>.>` | core NATS subjects | the players' voice chat: 168-byte IMA ADPCM frames on `…all.<player>` and `…team.<t>.<player>` (the lobby's room is `jetris.voice.lobby.all.<player>`) — no stream, never replayed; nothing an agent needs to subscribe to or publish |
 
 The last property is the heart of the design: the stream keeps only the latest
 message per subject, so **the last message on each cell subject IS that cell's

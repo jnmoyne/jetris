@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	gioui.org v0.10.2
+	github.com/gen2brain/malgo v0.11.26
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats-server/v2 v2.14.6
 	github.com/nats-io/nats.go v1.53.1

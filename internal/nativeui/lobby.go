@@ -507,10 +507,18 @@ func (a *App) lobbyPlayersBeside(gtx C, w int) bool {
 // nothing else — no scrim behind it, no close button in it. What it holds is
 // everything about this SESSION rather than about any game: who we are, the
 // server we are on and the one we are hosting, and the way out.
+//
+// The column is the slot's exact height and its content scrolls in it, as
+// the game screen's does (hudColumn): the menu with the legend under it is
+// taller than a short window, and a Flex handed less room than its rows want
+// gives the last of them none. A list gives every row its own height and a
+// scrollbar down the edge for the rest.
 func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string, vs voice.Snapshot) D {
 	return background(gtx, colPanel, func(gtx C) D {
-		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
-			return a.lobbyMenu(gtx, playerName, connName, connURL, vs)
+		d := material.List(a.th, &a.lobbyMenuList).Layout(gtx, 1, func(gtx C, _ int) D {
+			return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
+				return a.lobbyMenu(gtx, playerName, connName, connURL, vs)
+			})
 		})
 		fillRect(gtx.Ops, image.Rect(d.Size.X-gtx.Dp(2), 0, d.Size.X, d.Size.Y), colBorder)
 		return d
@@ -610,12 +618,10 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 			}),
 		)
 	}
-	// The column fills its slot (an exact height): lay its parts out at their
-	// own heights — the button still spans the width — and return the slot.
-	slot := gtx.Constraints.Max
+	// The parts at their own heights — the button still spans the width —
+	// and the whole at its own: the column scrolls it (lobbyMenuColumn).
 	gtx.Constraints.Min.Y = 0
-	layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
-	return D{Size: slot}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 // lobbyPlayersColumn is everyone in the lobby, in a column beside the panel:

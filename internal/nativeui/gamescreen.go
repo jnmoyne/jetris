@@ -34,6 +34,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 	"gioui.org/widget"
+	"gioui.org/widget/material"
 
 	"sort"
 
@@ -139,10 +140,15 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 				case a.hudBeside(gtx):
 					// Room for both: the menu stands against the screen's edge
 					// and the board takes what is left, the way the opponents'
-					// column has always worked.
+					// column has always worked. The board is capped at the row's
+					// height the way the whole area is (clampH above): a short
+					// window's board overflows its slot, and a row that took the
+					// board's word for its height would centre the menu on it —
+					// half the overflow down, its foot under the chat's header
+					// and its head off the bar.
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(menu),
-						layout.Flexed(1, board),
+						layout.Flexed(1, func(gtx C) D { return clampH(gtx, board) }),
 					)
 				default:
 					// No room to stand beside it (a phone held portrait): the
@@ -272,10 +278,21 @@ func (a *App) hudColW(gtx C) int {
 // its presses are its own and the board's area (the whole screen, game.go)
 // still hands the keys back to the piece the frame after one: a lab switch is
 // flipped and the game plays on, which is the reason the menu is a switch.
+//
+// The column is the slot's exact height and its content scrolls in it: the
+// menu is taller than a short window — a tablet's, a browser's with its
+// toolbars, a phone's — and a Flex handed less room than its rows want gives
+// the last of them none, drawing the knobs over one another and the button
+// under them nowhere. A list gives every row its own height and a scrollbar
+// down the edge for the rest.
 func (a *App) hudColumn(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	return background(gtx, colPanel, func(gtx C) D {
-		d := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx C) D {
-			return a.gameHUD(gtx, eng, view, mode, gmode)
+		const pad = 10
+		slotY := gtx.Constraints.Max.Y - 2*gtx.Dp(pad)
+		d := material.List(a.th, &a.hudList).Layout(gtx, 1, func(gtx C, _ int) D {
+			return layout.UniformInset(unit.Dp(pad)).Layout(gtx, func(gtx C) D {
+				return a.gameHUD(gtx, eng, view, mode, gmode, slotY)
+			})
 		})
 		fillRect(gtx.Ops, image.Rect(d.Size.X-gtx.Dp(2), 0, d.Size.X, d.Size.Y), colBorder)
 		return d

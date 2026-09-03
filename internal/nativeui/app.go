@@ -619,6 +619,11 @@ type App struct {
 	gameChatEd   widget.Editor
 	gameChatBtn  widget.Clickable
 	gameChatList widget.List
+	// hudList and lobbyMenuList scroll the game screen's menu column
+	// (hudColumn) and the lobby's (lobbyMenuColumn): each taller than a short
+	// window, whatever the screen.
+	hudList       widget.List
+	lobbyMenuList widget.List
 
 	// archive (history) viewer
 	archiveSel      *config.ArchiveRecord // the finished game whose boards are being shown
@@ -726,6 +731,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.gameChatEd.Submit = true
 	a.gameChatList.Axis = layout.Vertical
 	a.gameChatList.ScrollToEnd = true
+	a.hudList.Axis = layout.Vertical
+	a.lobbyMenuList.Axis = layout.Vertical
 	a.specBoardsList.Axis = layout.Horizontal
 	a.specTeamBoardsList.Axis = layout.Horizontal
 	a.archiveBoardsList.Axis = layout.Horizontal

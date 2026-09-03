@@ -551,7 +551,13 @@ func (a *App) sessionLine(gtx C) D {
 	})
 }
 
-func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
+// gameHUD is the menu column's content, top to bottom: the game's name and
+// the session, the players, the stats, the ready list before the start, the
+// switches and the knobs, Back to Lobby, the controls legend, and the NATS tag
+// last. It is laid out at its own height — the column it is in scrolls it
+// (hudColumn) — and slotY is the height that column shows at once, which is
+// where the tag is pinned while the rest leaves it the room.
+func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, slotY int) D {
 	started := view.status == string(config.GameStatusInProgress)
 	modeLabel := "Cooperative"
 	switch gmode {
@@ -616,9 +622,12 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 
 	if mode == engine.ModePlayer && !started && !view.gameOver {
+		// Who is ready and who is not. The ready-up action itself is the
+		// readyBar's, on the screen over the board (gamescreen.go) — not a
+		// second button for it in here.
 		children = append(children,
 			layout.Rigid(spacer(14)),
-			layout.Rigid(func(gtx C) D { return a.readyArea(gtx, view) }),
+			layout.Rigid(func(gtx C) D { return a.readyList(gtx, view) }),
 		)
 	}
 
@@ -652,15 +661,34 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
 		}),
 	)
+	if mode == engine.ModePlayer {
+		// Under it all, for a player, the controls legend: the keys and the
+		// touch gestures, this screen's own scheme first, each section a
+		// header over rows of a key (or gesture) beside the move it makes
+		// (controlsSections). The whole of it, every time — the column
+		// scrolls (hudColumn), so a short screen scrolls to it rather than
+		// losing it.
+		for _, s := range a.controlsSections(eng.HoldEnabled()) {
+			children = append(children,
+				layout.Rigid(spacer(16)),
+				layout.Rigid(func(gtx C) D {
+					// The legend's parts at their own sizes, not the column's:
+					// a key label handed the column's width as its minimum
+					// reports it, and controlsHint lines the moves up past
+					// the widest key.
+					gtx.Constraints.Min = image.Point{}
+					return a.controlsHint(gtx, s.header, s.rows)
+				}),
+			)
+		}
+	}
 
-	// The column's fixed part first; under it, for a player, the controls
-	// legend — as much of it as the column has room for (controlsLegend) —
-	// and the NATS tag at the column's foot, on the move-buffer strip's
-	// line just over the chat.
-	// The column fills its slot (an exact height): lay its parts out at
-	// their own heights (the button and the checkbox still span the
-	// width) and return the slot's size.
-	slot := gtx.Constraints.Max
+	// The column's parts at their own heights (the button and the checkbox
+	// still span the width), and the NATS tag under them: at the column's
+	// foot, on the move-buffer strip's line just over the chat, while the
+	// parts leave it room there — slotY is the height the column shows at
+	// once (hudColumn) — and under the last of them once they run past it,
+	// where the scroll finds it.
 	gtx.Constraints.Min.Y = 0
 	macro := op.Record(gtx.Ops)
 	topD := layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
@@ -683,41 +711,13 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		}),
 	)
 	tagCall := macro.Stop()
-	tagY := max(topD.Size.Y+gtx.Dp(20), slot.Y-tagD.Size.Y)
-	bottom := topD.Size.Y
-	if mode == engine.ModePlayer {
-		bottom = a.controlsLegend(gtx, topD.Size.Y+gtx.Dp(18), tagY-gtx.Dp(16), eng.HoldEnabled())
-	}
+	tagY := max(topD.Size.Y+gtx.Dp(20), slotY-tagD.Size.Y)
 	topCall.Add(gtx.Ops)
 	func() {
 		defer op.Offset(image.Pt(0, tagY)).Push(gtx.Ops).Pop()
 		tagCall.Add(gtx.Ops)
 	}()
-	return D{Size: image.Pt(slot.X, max(bottom, tagY+tagD.Size.Y))}
-}
-
-// controlsLegend draws the HUD's controls legend from y down: the keys and
-// the touch gestures, this screen's own scheme first, each section a header
-// over rows of a key (or gesture) beside the move it makes. A section is
-// drawn only if it ends above limit, so a short column loses the legend
-// rather than running it over the NATS tag and the chat under it. Returns
-// the y under the last section drawn.
-func (a *App) controlsLegend(gtx C, y, limit int, hold bool) int {
-	gtx.Constraints.Min = image.Point{} // the legend's parts at their own sizes, not the column's
-	for _, s := range a.controlsSections(hold) {
-		macro := op.Record(gtx.Ops)
-		d := a.controlsHint(gtx, s.header, s.rows)
-		call := macro.Stop()
-		if y+d.Size.Y > limit {
-			continue
-		}
-		func() {
-			defer op.Offset(image.Pt(0, y)).Push(gtx.Ops).Pop()
-			call.Add(gtx.Ops)
-		}()
-		y += d.Size.Y + gtx.Dp(12)
-	}
-	return y
+	return D{Size: image.Pt(gtx.Constraints.Max.X, tagY+tagD.Size.Y)}
 }
 
 // controlsSection is one block of the legend: a heading and the mappings
@@ -728,7 +728,7 @@ type controlsSection struct {
 }
 
 // controlsSections is what the legend says, wherever it is drawn — the game's
-// menu column (controlsLegend) and the lobby's (lobbyMenu). This screen's own
+// menu column (gameHUD) and the lobby's (lobbyMenu). This screen's own
 // scheme comes first: a touch player wants the gestures at the top and reads
 // the keys as the footnote, and a player with a keyboard the other way round.
 // hold adds the hold key and its gesture, and only a game whose rules carry
@@ -890,39 +890,25 @@ func (a *App) rationRow(gtx C, set []game.PieceType) D {
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 }
 
-func (a *App) readyArea(gtx C, view gameView) D {
-	label := "CLICK WHEN READY TO PLAY"
-	if view.myReady {
-		label = "CLICK IF NOT READY ANYMORE"
+// readyList is the pre-start roll call in the menu column: a row per seat,
+// the name beside a READY or NOT READY badge. The action itself — readying
+// up, standing down — is the readyBar's, over the board.
+func (a *App) readyList(gtx C, view gameView) D {
+	var rows []layout.FlexChild
+	for _, p := range view.readyPlayer {
+		p := p
+		rows = append(rows, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
+					layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(10))),
+					layout.Rigid(hSpacer(8)),
+					layout.Rigid(a.readyBadge(p.Ready)),
+				)
+			})
+		}))
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D {
-			if view.myReady {
-				// Standing down is not the action we're fishing for — no
-				// attract chrome once the player has readied up.
-				return a.primaryButton(gtx, &a.readyBtn, label)
-			}
-			return a.attractButton(gtx, &a.readyBtn, label)
-		}),
-		layout.Rigid(spacer(8)),
-		layout.Rigid(func(gtx C) D {
-			var rows []layout.FlexChild
-			for _, p := range view.readyPlayer {
-				p := p
-				rows = append(rows, layout.Rigid(func(gtx C) D {
-					return layout.Inset{Top: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Flexed(1, a.body(agentName(p.Name, p.Agent), colFg)),
-							layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(10))),
-							layout.Rigid(hSpacer(8)),
-							layout.Rigid(a.readyBadge(p.Ready)),
-						)
-					})
-				}))
-			}
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
-		}),
-	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
 }
 
 // readyBadge renders a filled square-cornered tag reading READY (green) or NOT

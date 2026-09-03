@@ -10,8 +10,13 @@ import (
 
 // The desktop store: a JSON file under the config directory.
 
-// favoritesFile is the on-disk favorites list, relative to the config parent.
-const favoritesFile = "jetris/favorites.json"
+// favoritesFile is the on-disk favorites list, relative to the config parent;
+// seededFile beside it lists the default URLs the favorites list has been
+// offered (LoadFavorites' seeded marker).
+const (
+	favoritesFile = "jetris/favorites.json"
+	seededFile    = "jetris/favorites-seeded.json"
+)
 
 // configParent resolves the directory preferences live under: $XDG_CONFIG_HOME,
 // else ~/.config — the same resolution the NATS CLI (and nats.ListContexts)
@@ -50,11 +55,33 @@ func FavoritesPath() (string, error) {
 
 // loadFavoritesData reads the file; found is false when it does not exist.
 func loadFavoritesData() (data []byte, found bool, err error) {
-	path, err := FavoritesPath()
+	return readConfigFile(favoritesFile)
+}
+
+// saveFavoritesData writes the file, creating the jetris/ directory on first
+// use.
+func saveFavoritesData(data []byte) error {
+	return writeConfigFile(favoritesFile, data)
+}
+
+// loadSeededData and saveSeededData are the seeded marker's file, beside the
+// favorites.
+func loadSeededData() (data []byte, found bool, err error) {
+	return readConfigFile(seededFile)
+}
+
+func saveSeededData(data []byte) error {
+	return writeConfigFile(seededFile, data)
+}
+
+// readConfigFile reads a file under the config parent; found is false when it
+// does not exist.
+func readConfigFile(rel string) (data []byte, found bool, err error) {
+	parent, err := configParent()
 	if err != nil {
 		return nil, false, err
 	}
-	data, err = os.ReadFile(path)
+	data, err = os.ReadFile(filepath.Join(parent, rel))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -64,13 +91,14 @@ func loadFavoritesData() (data []byte, found bool, err error) {
 	return data, true, nil
 }
 
-// saveFavoritesData writes the file, creating the jetris/ directory on first
-// use.
-func saveFavoritesData(data []byte) error {
-	path, err := FavoritesPath()
+// writeConfigFile writes a file under the config parent, creating its
+// directory on first use.
+func writeConfigFile(rel string, data []byte) error {
+	parent, err := configParent()
 	if err != nil {
 		return err
 	}
+	path := filepath.Join(parent, rel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

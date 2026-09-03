@@ -298,8 +298,10 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 
 	// Arrivals and departures are told in the lobby chat as system lines —
 	// but only the ones that happen while we watch: the backlog replayed at
-	// start is who was already here, not a stream of joins, and our own key
-	// is not news to us. A heartbeat re-put of a known key is neither.
+	// start is who was already here, not a stream of joins. Our own key is
+	// the one exception: its first appearance, backlog or not, is the moment
+	// we are connected, and the chat says so. A heartbeat re-put of a known
+	// key is not an arrival, and our own departure is never seen by us.
 	loaded := false
 	select {
 	case <-l.initialLoadDone:
@@ -319,8 +321,13 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 		if err := json.Unmarshal(entry.Value(), &p); err != nil {
 			return
 		}
-		if _, known := l.players[playerID]; !known && loaded && playerID != l.playerID {
-			notice = p.Name + " joined the lobby"
+		if _, known := l.players[playerID]; !known {
+			switch {
+			case playerID == l.playerID:
+				notice = "You joined the lobby as " + p.Name
+			case loaded:
+				notice = p.Name + " joined the lobby"
+			}
 		}
 		l.players[playerID] = p
 	}

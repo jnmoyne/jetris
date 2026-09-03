@@ -31,15 +31,22 @@ func waitSystemLines(t *testing.T, lb *Lobby, n int) []string {
 	return nil
 }
 
-// TestPresenceChatNotices: another player arriving or departing is told in
-// the lobby chat as a system line; the backlog at start (Alice's own key)
-// and Alice's own heartbeats are not.
+// TestPresenceChatNotices: our own connection is told in the lobby chat as
+// a system line, as is another player arriving or departing; heartbeats are
+// not, and neither is the backlog of who was already here.
 func TestPresenceChatNotices(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	if got := systemLines(lb); len(got) != 0 {
-		t.Fatalf("system lines before anyone else arrived: %v", got)
+	got := waitSystemLines(t, lb, 1)
+	if got[0] != "You joined the lobby as Alice" {
+		t.Fatalf("own connection notice = %q", got[0])
+	}
+	// Alice's own heartbeat is not another connection.
+	lb.publishPresence(ctx)
+	time.Sleep(200 * time.Millisecond)
+	if got := systemLines(lb); len(got) != 1 {
+		t.Fatalf("own heartbeat produced a notice: %v", got)
 	}
 
 	kv, err := js.KeyValue(ctx, lb.kv.Bucket())
@@ -52,24 +59,25 @@ func TestPresenceChatNotices(t *testing.T) {
 	}
 	t.Cleanup(bob.Stop)
 
-	got := waitSystemLines(t, lb, 1)
-	if got[0] != "Bob joined the lobby" {
-		t.Fatalf("first notice = %q", got[0])
+	got = waitSystemLines(t, lb, 2)
+	if got[1] != "Bob joined the lobby" {
+		t.Fatalf("arrival notice = %q", got[1])
 	}
 	// A heartbeat re-put of a known key is not another arrival.
 	bob.publishPresence(ctx)
 	time.Sleep(200 * time.Millisecond)
-	if got := systemLines(lb); len(got) != 1 {
+	if got := systemLines(lb); len(got) != 2 {
 		t.Fatalf("heartbeat produced a notice: %v", got)
 	}
 
 	bob.Leave(ctx)
-	got = waitSystemLines(t, lb, 2)
-	if got[1] != "Bob left the lobby" {
-		t.Fatalf("second notice = %q", got[1])
+	got = waitSystemLines(t, lb, 3)
+	if got[2] != "Bob left the lobby" {
+		t.Fatalf("departure notice = %q", got[2])
 	}
-	// Bob never hears of his own coming and going, only of Alice's staying.
-	if got := systemLines(bob); len(got) != 0 {
-		t.Fatalf("Bob's log has notices about himself: %v", got)
+	// Bob hears of his own connection but not of Alice, who was already
+	// here when he arrived, nor of his own leaving.
+	if got := systemLines(bob); len(got) != 1 || got[0] != "You joined the lobby as Bob" {
+		t.Fatalf("Bob's notices = %v", got)
 	}
 }

@@ -71,8 +71,10 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		PlayerID:   eng.PlayerID(),
 		Score:      eng.Score(),
 		Level:      eng.AchievedLevel(),
+		Lines:      eng.OwnLines(),
 		PieceCount: eng.PieceIdx(),
 	}
+
 	playerTeams[eng.PlayerID()] = eng.TeamIdx()
 	// Read EventGameOver events from others
 	evtCh, evtCancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
@@ -107,8 +109,10 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 							PlayerID:   ev.PlayerID,
 							Score:      ev.Score,
 							Level:      ev.Level,
+							Lines:      ev.TotalLines,
 							PieceCount: ev.PieceCount,
 						}
+
 					}
 				}
 				if md, err := msg.Metadata(); err == nil && md.NumPending == 0 {

@@ -36,9 +36,9 @@ type Game struct {
 	team      int // teams: 0 = A, 1 = B, …
 	teamCount int // teams: how many teams the game is played between (meta team_count; 2 unless the creator asked for more)
 	teamSlot  int // teams: section index on the team board
-	w        int // board width (competitive 10; a shared board 10 + extra_columns per seat beyond the first — sharedWidth)
-	spawnC   int // our spawn column (section-centered on shared boards)
-	runCtx   context.Context
+	w         int // board width (competitive 10; a shared board 10 + extra_columns per seat beyond the first — sharedWidth)
+	spawnC    int // our spawn column (section-centered on shared boards)
+	runCtx    context.Context
 
 	mu          sync.Mutex
 	locked      map[cell]wireCell // settled cells (stack + garbage)
@@ -49,6 +49,12 @@ type Game struct {
 	pieceIdx    int
 	score       int // OWN cumulative score (line_clear events carry it)
 	lines       int // OWN cumulative cleared lines
+	// The Guideline scoring's account of our play (scoring.go, scoreLock):
+	// comboRun counts the consecutive locks that cleared lines (0: none
+	// running; the combo count is one less), b2bChain says the last clear
+	// was a difficult one (a Tetris), so the next one is Back-to-Back.
+	comboRun int
+	b2bChain bool
 
 	sharedScore  int               // coop: the one shared score (all senders folded)
 	totalLines   int               // coop: all cleared lines (level source)
@@ -672,6 +678,12 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 // bumps the piece index.
 func (g *Game) lockPiece(ctx context.Context, dest active) {
 	old := g.activeCells()
+	// The hard drop's fall, two points a cell (scoreLock): from where the
+	// piece stood to where it settles — nothing when gravity landed it there.
+	fell := 0
+	if g.piece != nil {
+		fell = dest.row - g.piece.row
+	}
 	destCells := pieceCells(dest.pt, dest.orient, dest.row, dest.col)
 	destSet := cellSet(destCells)
 	lp := g.lockedPayload(dest.pt)
@@ -697,7 +709,9 @@ func (g *Game) lockPiece(ctx context.Context, dest active) {
 		done = g.completedRowsShared()
 	}
 	if len(done) > 0 {
-		g.clearRows(ctx, done)
+		g.clearRows(ctx, done, fell)
+	} else {
+		g.scoreLock(ctx, 0, fell, nil) // no line: the drop's points, and the combo ends
 	}
 	g.pieceIdx++
 	if g.mode == modeCompetitive {
@@ -735,7 +749,7 @@ func (g *Game) completedRows() []int {
 // as a CAS merge-retry batch; then scores the clear, announces it, and routes
 // the attack (competitive: every surviving opponent; teams: the opposing
 // board; coop: nobody).
-func (g *Game) clearRows(ctx context.Context, rows []int) {
+func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 	clearedRows := append([]int(nil), rows...)
 	cleared := 0
 	if g.mode == modeCooperative {
@@ -826,22 +840,9 @@ func (g *Game) clearRows(ctx context.Context, rows []int) {
 	if cleared == 0 {
 		return
 	}
-	scoreDelta := cleared // competitive: one point per line
-	switch g.mode {
-	case modeCooperative:
-		scoreDelta = g.playerCount * cleared
-		g.sharedScore += scoreDelta
-		g.totalLines += cleared
-	case modeTeams:
-		scoreDelta = (g.playerCount / 2) * cleared
-		g.teamScores[g.team] += scoreDelta
-		g.teamLines[g.team] += cleared
-	}
-	g.score += scoreDelta
-	g.lines += cleared
-	g.publishLineClear(ctx, cleared, scoreDelta, clearedRows)
-	log.Printf("cleared %d line(s), score %d", cleared, g.score)
-	if rows := g.attackRows(cleared); rows > 0 {
+	c := g.scoreLock(ctx, cleared, fell, clearedRows)
+	log.Printf("cleared %d line(s): %s, score %d", cleared, c.name(), g.score)
+	if rows := c.attackRows(g.guideline); rows > 0 {
 		switch g.mode {
 		case modeCompetitive:
 			g.bumpVictimLedgers(ctx, rows)
@@ -851,25 +852,64 @@ func (g *Game) clearRows(ctx context.Context, rows []int) {
 	}
 }
 
-// attackRows converts a clear into the garbage it owes: one row per line, or
-// under the game's guideline_garbage rule the Guideline table — a single
-// sends nothing, a double 1 row, a triple 2, a Tetris 4 (gameplays §4).
+// attackRows converts a plain clear of lines rows into the garbage it owes:
+// one row per line, or under the game's guideline_garbage rule the Guideline
+// table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4
+// (gameplays §4). The full rule, with the T-spin rows and the Back-to-Back
+// and perfect-clear bonuses, is clearInfo.attackRows.
 func (g *Game) attackRows(lines int) int {
-	if lines <= 0 {
-		return 0
+	return clearInfo{lines: lines}.attackRows(g.guideline)
+}
+
+// scoreLevel is the Guideline's 1-based level the next clear is scored at
+// (the level BEFORE the clear): the shared progression's on a shared board
+// (level), and in competitive the one this seat's own lines reach — the
+// level the GUI's HUD shows there; competitive gravity stays at level 0
+// regardless (gravityInterval).
+func (g *Game) scoreLevel() int {
+	if g.mode == modeCompetitive {
+		return min(g.lines/10, 19) + 1
 	}
-	if !g.guideline {
-		return lines
+	return g.level() + 1
+}
+
+// scoreLock is the Guideline's account of the lock that just settled
+// (scoring.go; gameplays § Scoring): a clear of lines rows — the run of
+// consecutive clearing locks is the combo, a Tetris extends the Back-to-Back
+// chain and a plain clear breaks it, a board left empty is a perfect clear —
+// or no clear at all, which ends the combo and leaves the chain alone. The
+// points are the clear's at the level before it plus the hard drop's two a
+// cell (fell); they go to our own totals and to the shared or team score.
+// Every lock that scored on a shared board is announced with our cumulative
+// totals, a clear or not, so every peer's shared score converges on every
+// point; in competitive only a clear is (nobody folds our points there).
+// Call with g.mu held.
+func (g *Game) scoreLock(ctx context.Context, lines, fell int, clearedRows []int) clearInfo {
+	level := g.scoreLevel()
+	var c clearInfo
+	if lines > 0 {
+		g.comboRun++
+		c = clearInfo{lines: lines, combo: g.comboRun - 1, perfect: len(g.locked) == 0}
+		c.backToBack = g.b2bChain && c.difficult()
+		g.b2bChain = c.difficult()
+	} else {
+		g.comboRun = 0
 	}
-	switch lines {
-	case 1:
-		return 0
-	case 2:
-		return 1
-	case 3:
-		return 2
+	pts := c.points(level) + dropPoints(0, fell)
+	switch g.mode {
+	case modeCooperative:
+		g.sharedScore += pts
+		g.totalLines += lines
+	case modeTeams:
+		g.teamScores[g.team] += pts
+		g.teamLines[g.team] += lines
 	}
-	return 4
+	g.score += pts
+	g.lines += lines
+	if lines > 0 || (pts > 0 && g.shared()) {
+		g.publishLineClear(ctx, c, pts, clearedRows)
+	}
+	return c
 }
 
 // bumpTeamLedger CAS-adds `lines` to ONE opposing team's garbage register:
@@ -1187,6 +1227,7 @@ func (g *Game) startConsumers(ctx context.Context) error {
 		case "line_clear":
 			g.foldLineClear(ev)
 		case "game_over":
+			g.foldLineClear(ev) // its totals: the ending player's last points, like a line_clear's
 			g.mu.Lock()
 			g.eliminated[ev.PlayerID] = true
 			if ev.PlayerID != g.a.name {
@@ -1667,8 +1708,12 @@ func (g *Game) topOut(ctx context.Context) bool {
 }
 
 func (g *Game) publishGameOver(ctx context.Context) {
+	// Our cumulative totals ride along, like a line_clear's: the points of
+	// our last locks may never have been announced (a drop's are carried by
+	// the next event), and every peer's shared score converges on them.
 	ev := event{Kind: "game_over", PlayerID: g.a.name, PlayerIdx: g.idx, Team: g.team,
-		Score: g.score, Level: min(g.lines/10, 19), PieceCount: g.pieceIdx}
+		Score: g.score, Level: min(g.lines/10, 19), PieceCount: g.pieceIdx,
+		TotalScore: g.score, TotalLines: g.lines}
 	b, _ := json.Marshal(ev)
 	_, _ = g.a.js.Publish(ctx, "jetris.game."+g.id+".events.game_over."+g.a.name, b)
 }
@@ -1798,19 +1843,22 @@ func (g *Game) playerResults() []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(g.roster))
 	for _, p := range g.roster {
-		var score, level, pieces int
+		var score, level, lines, pieces int
 		if p.PlayerID == g.a.name {
-			score, level, pieces = g.score, min(g.lines/10, 19), g.pieceIdx
+			score, level, lines, pieces = g.score, min(g.lines/10, 19), g.lines, g.pieceIdx
 		} else if ev, ok := g.results[p.PlayerID]; ok {
-			score, level, pieces = ev.Score, ev.Level, ev.PieceCount
+			score, level, lines, pieces = ev.Score, ev.Level, ev.TotalLines, ev.PieceCount
 		} else if tot, ok := g.senderTotals[p.PlayerID]; ok {
 			// Never topped out (a coop survivor, an alive teams winner):
 			// their cumulative line-clear totals are the best record we have.
-			score, level = tot[0], min(tot[1]/10, 19)
+			score, level, lines = tot[0], min(tot[1]/10, 19), tot[1]
 		}
 		r := map[string]any{"player_id": p.PlayerID, "score": score, "piece_count": pieces}
 		if level != 0 {
 			r["level"] = level
+		}
+		if lines != 0 {
+			r["lines"] = lines
 		}
 		switch g.mode {
 		case modeCooperative:

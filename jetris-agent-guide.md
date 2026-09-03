@@ -262,7 +262,7 @@ and the real-time push fabric.
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
-| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them), and each player publishes at most one `game_over`, so nothing meaningful is ever lost |
+| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's Guideline names (`t_spin` 0/1/2, `back_to_back`, `combo`, `perfect`; §4.6) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
 | `jetris.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
 | `jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
 | `jetris.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
@@ -357,8 +357,11 @@ board's GARBAGE register and applied by the victim as a GATED transform:
 
 - **Attacking (you cleared N lines).** The rows you owe are N — or, when the
   meta's `guideline_garbage` is true, the Guideline table: 0 for a single, 1
-  for a double, 2 for a triple, 4 for a Tetris (owing 0 means you touch no
-  register at all). For every victim board (competitive:
+  for a double, 2 for a triple, 4 for a Tetris; 0/1 for a Mini T-Spin
+  single/double, 2/4/6 for a T-Spin single/double/triple; +1 when a Mini or a
+  T-Spin single is Back-to-Back, +2 for a T-Spin double or a Tetris, +3 for a
+  T-Spin triple; +10 for a perfect clear (§4.6 defines those; owing 0 means
+  you touch no register at all). For every victim board (competitive:
   each surviving opponent; teams: ONE opposing team's board — see below),
   CAS-add the garbage
   register: read its last message (`{"total": T}` at sequence S, or 0/0 if
@@ -417,6 +420,42 @@ opponent/team `playfield.>` filters, the `events.>` filter, `meta`, and
 deficit before playing: owed garbage survives your downtime. Events arrive on
 one ordered stream — every peer sees the same order, which is how all peers
 agree on eliminations and outcomes without a coordinator.
+
+### 4.6 Scoring: your locks, by the Guideline
+
+Every mode scores by the Tetris Guideline table (gameplays §2 Scoring; the
+GUI's `internal/game/scoring.go`, the reference agent's `scoring.go`). Your
+peers never recompute your score — they fold the cumulative
+`total_score`/`total_lines` YOU announce — so an agent that scores its own
+locks differently skews every shared and team scoreboard it plays on. For
+each lock of yours:
+
+- **Level** — the Guideline's 1-based level BEFORE the clear: the board's
+  shared line total `/ 10 + 1` on a shared board, your own lines' in
+  competitive (capped at 20).
+- **The clear** — Single 100, Double 300, Triple 500, Tetris 800; a T-spin
+  that cleared nothing 400 (Mini 100); Mini T-Spin Single/Double 200/400;
+  T-Spin Single/Double/Triple 800/1200/1600. × 1.5 when it is Back-to-Back
+  (a Tetris or a T-spin clear right after another such clear; only a plain
+  single, double or triple breaks the chain). + 50 × the combo count
+  (consecutive clearing locks: 0 for the first, 1 for the next…; a lock that
+  clears nothing ends the run). + 800/1200/1800/2000 for a perfect clear of
+  1-4 lines (3200 for a Back-to-Back Tetris) — nothing locked left on the
+  board, garbage included. All of that × the level.
+- **Drop points**, unmultiplied — 1 per cell soft-dropped, 2 per cell
+  hard-dropped.
+- **T-spins** — only if your agent rotates a T into place as its LAST move
+  (`golang-mk1` never does: it turns at the spawn, shifts, drops): three of
+  the T's 3×3 box corners filled by locked cells or the walls; full when both
+  corners on the pointing side are, or the rotation used the fifth SRS kick;
+  Mini otherwise.
+- **Announce it** (§4.2) — a `line_clear` with `score` (the lock's points),
+  `lines_cleared`, `cleared_rows`, the names (`t_spin`, `back_to_back`,
+  `combo`, `perfect`) and your cumulative totals: for every clear, and on a
+  shared board for every lock that scored at all (`lines_cleared` 0). Put the
+  totals on your `game_over` too, with `total_lines` for the archive's
+  per-player line count.
+- **Garbage** follows the same clear (§4.4).
 
 ## 5. Lifecycle responsibilities (every seat, agent or human)
 
@@ -511,7 +550,8 @@ agree on eliminations and outcomes without a coordinator.
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
 - [ ] In a teams game with the meta's `split_pieces`, pieces drawn from YOUR seat's ration — the deal computed off `seed` and `team_size` for your `team_slot` (§1.2)
 - [ ] Garbage rows raised with the meta's `garbage_holes` (one column set per raise, or one per row under `random_garbage_holes`), and a holed garbage row cleared like any line once its holes are filled — a solid garbage row never (§4.2, §4.4)
-- [ ] Attacks delivered by CAS-adding victims' garbage registers (never events), sized one row per line — or by the 0/1/2/4 Guideline table when the meta's `guideline_garbage` is true (§4.4)
+- [ ] Attacks delivered by CAS-adding victims' garbage registers (never events), sized one row per line — or by the Guideline table (0/1/2/4 for plain clears, the T-spin rows, the Back-to-Back and perfect-clear bonuses) when the meta's `guideline_garbage` is true (§4.4)
+- [ ] Your own locks scored by the Guideline table and announced with your cumulative totals — every clear, and on a shared board every lock that scored (§4.6)
 - [ ] Clears and garbage applied as txn-gated batches; deficit reconciled on join
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish

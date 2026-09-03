@@ -149,8 +149,10 @@ func (e *Engine) lockPieceIfGrounded(ctx context.Context) {
 		e.mu.Unlock()
 		return
 	}
+	e.armLockAward(*p) // the lock's worth: its T-spin and drop points (award.go)
 	affected := affectedRowsUnion(p, nil)
 	rows := e.playfield.ProjectLock(affected, e.playerIdx)
+
 	cells := diffCells(e.playfield.Rows, rows)
 	flashCells := p.Cells()
 	shared := e.sharedBoard()

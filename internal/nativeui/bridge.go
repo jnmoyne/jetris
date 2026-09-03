@@ -34,6 +34,9 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				a.score = u.Score
 			case engine.UpdateLevel:
 				a.level = u.Level
+			case engine.UpdateAward:
+				a.award = awardBanner{clear: u.Clear, points: u.Score, player: u.PlayerID, own: u.PlayerID == e.PlayerID(), at: time.Now()}
+
 			case engine.UpdateTeamStats:
 				a.teamScores = u.TeamScores
 				a.teamLevels = u.TeamLevels

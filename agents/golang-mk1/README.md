@@ -97,8 +97,9 @@ Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--
 `golang-mk1`), `--difficulty` (`easy`/`medium`/`hard`), `--join`, `--create` (with
 `--mode`, `--players`, `--max-agents`, `--next`, `--holes` — holes per garbage row, 0-4,
 written to the meta as `garbage_holes` — `--random-holes`, each garbage row drawing
-its own columns, `random_garbage_holes` — `--guideline-garbage`, the 0/1/2/4
-Guideline attack table, `guideline_garbage` — `--hold`, the Guideline hold queue,
+its own columns, `random_garbage_holes` — `--guideline-garbage`, the
+Guideline attack table (0/1/2/4 for plain clears, the T-spin rows, the Back-to-Back
+and perfect-clear bonuses), `guideline_garbage` — `--hold`, the Guideline hold queue,
 `hold`, which the agent itself never uses but the humans in its game may —
 `--split-pieces`, the teams-mode piece split, `split_pieces`: the seven types
 dealt out between the teammates, each seat playing only its own ration (a teams
@@ -127,6 +128,9 @@ GUI and create a game with agents allowed — or let one instance host for anoth
 - `types.go` — wire payloads and the CAS-safe lobby/meta read-modify-write helpers.
 - `agent.go` — the lobby: presence, watching, select/join/ready/countdown, CAS publishing.
 - `game.go` — one game: the engine, consumers, garbage, line clears, outcome, archive.
+- `scoring.go` — the Guideline scoring and garbage tables (a port of the GUI's
+  `internal/game/scoring.go`): every lock scored like the GUI scores it, so the
+  totals this agent announces fold into the same scoreboards.
 - `pipeline.go` — the batch pipeline: the `--publish` disciplines (sync/async/optimistic),
   settle barriers, and the lost-batch repair.
 - `shared.go` — shared boards: the coop/teams board consumer, merge-retry clears,

@@ -130,23 +130,26 @@ func TestTeamsGarbageHitsOpposingBoardExactlyOnce(t *testing.T) {
 
 	p0.HardDrop()
 
-	// The clear scores teamSize × lines = 2 for the clearer, and the teammate
-	// folds the same delta off the line-clear event.
-	waitUntil(t, 3*time.Second, func() bool { return p0.Score() == 2 }, "p0's clear to score")
-	waitUntil(t, 3*time.Second, func() bool { return p1.Score() == 2 }, "p1 to fold the team score")
+	// The clear scores the Guideline's points (a single plus the drop) for
+	// the clearer, and the teammate folds the same delta off the line-clear
+	// event.
+
+	waitUntil(t, 3*time.Second, func() bool { return scoredClear(p0, 1) }, "p0's clear to score")
+	waitUntil(t, 3*time.Second, func() bool { return p1.Score() == p0.Score() }, "p1 to fold the team score")
 
 	// EVERY engine — the clearer, their teammate, AND the opposing team's
 	// players — converges on the per-team scoreboard (the opposing team folds
 	// it off the line-clear event even though their own Score() is untouched).
 	waitUntil(t, 3*time.Second, func() bool {
-		want := []int{2, 0}
+		want := []int{p0.Score(), 0}
 		for _, e := range engines {
 			if !slices.Equal(e.TeamScores(), want) {
 				return false
 			}
 		}
 		return true
-	}, "all four engines to converge on team scores A=2 B=0")
+	}, "all four engines to converge on team scores A=p0's clear, B=0")
+
 	if got := p2.Score(); got != 0 {
 		t.Fatalf("p2 (opposing team) own score = %d, want 0", got)
 	}

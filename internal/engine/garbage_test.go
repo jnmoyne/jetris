@@ -103,6 +103,13 @@ func prefillBottomForI(t *testing.T, js jetstream.JetStream, gameID, playerID st
 	}
 }
 
+// scoredClear reports whether e has scored a clear of at least lines rows —
+// the Guideline's points for it (a hard drop alone scores too, two points a
+// cell, so a bare Score() > 0 does not mean a line went).
+func scoredClear(e *Engine, lines int) bool {
+	return e.Score() >= game.Clear{Lines: lines}.Points(1)
+}
+
 func fetchGarbageRegister(t *testing.T, js jetstream.JetStream, gameID, subject string) (GarbageRegister, uint64) {
 	t.Helper()
 	msgs, err := natspkg.FetchPlayfieldState(context.Background(), js, gameID, []string{subject})
@@ -150,7 +157,7 @@ func TestCompetitiveRaiseLedgerFlow(t *testing.T) {
 	}, "pre-fill to apply on a's replica")
 
 	a.HardDrop()
-	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 1 }, "a's clear to score")
+	waitUntil(t, 3*time.Second, func() bool { return scoredClear(a, 1) }, "a's clear to score")
 
 	// B receives exactly one garbage row.
 	waitUntil(t, 3*time.Second, func() bool {
@@ -214,7 +221,7 @@ func TestMultiLineClearSendsAllGarbage(t *testing.T) {
 
 	a.HardDrop()
 	// Competitive score = lines cleared, so a double is worth exactly 2.
-	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 2 }, "a's double clear to score 2")
+	waitUntil(t, 3*time.Second, func() bool { return scoredClear(a, 2) }, "a's double clear to score")
 
 	// Both rows are gone from a's board: the pre-fill vanished and only the
 	// I's two leftover cells (column 5) shifted down into the bottom rows.
@@ -270,7 +277,7 @@ func TestCompetitiveSimultaneousAttacksSum(t *testing.T) {
 	// Both clear as close to simultaneously as the harness allows.
 	a.HardDrop()
 	b.HardDrop()
-	waitUntil(t, 5*time.Second, func() bool { return a.Score() == 1 && b.Score() == 1 }, "both clears to score")
+	waitUntil(t, 5*time.Second, func() bool { return scoredClear(a, 1) && scoredClear(b, 1) }, "both clears to score")
 
 	// The bystander owes 2 — one from each attacker — and applies both.
 	waitUntil(t, 5*time.Second, func() bool {
@@ -483,7 +490,7 @@ func TestGarbageHolesClearLikeAnyLine(t *testing.T) {
 	// The I drops straight into the four holes: the garbage row completes,
 	// scores one line, collapses, and sends one row back to the attacker.
 	victim.HardDrop()
-	waitUntil(t, 5*time.Second, func() bool { return victim.Score() == 1 }, "victim's clear of the garbage row to score")
+	waitUntil(t, 5*time.Second, func() bool { return scoredClear(victim, 1) }, "victim's clear of the garbage row to score")
 	waitUntil(t, 5*time.Second, func() bool {
 		return victim.Playfield().AdversarialRowCount() == 0
 	}, "the cleared garbage row to leave the victim's board")
@@ -528,12 +535,16 @@ func TestGuidelineGarbageSingleSendsNothing(t *testing.T) {
 	}
 
 	prefillBottomForI(t, js, gameID, "p1", bottom)
+	// A spare cell above the row: the single must not empty the board, or
+	// it is a perfect clear and sends ten (TestGuidelineGarbagePerfectClearSendsTen).
+	publishCompetitiveCell(t, js, gameID, "p1", bottom-1, 0,
+		game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: 0})
 	waitUntil(t, 3*time.Second, func() bool {
-		return a.Playfield().Rows[bottom].Cells[0].Occupied
+		return a.Playfield().Rows[bottom].Cells[0].Occupied && a.Playfield().Rows[bottom-1].Cells[0].Occupied
 	}, "pre-fill to apply on a's replica")
 
 	a.HardDrop()
-	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 1 }, "a's single to score")
+	waitUntil(t, 3*time.Second, func() bool { return scoredClear(a, 1) }, "a's single to score")
 
 	// Give a wrongly sent attack time to land, then assert nothing did.
 	time.Sleep(700 * time.Millisecond)
@@ -543,6 +554,42 @@ func TestGuidelineGarbageSingleSendsNothing(t *testing.T) {
 	reg, seq := fetchGarbageRegister(t, js, gameID, config.CompetitiveGarbageSubject(gameID, "p2"))
 	if reg.Total != 0 || seq != 0 {
 		t.Fatalf("b's garbage register = %+v at seq %d, want never written", reg, seq)
+	}
+}
+
+// TestGuidelineGarbagePerfectClearSendsTen: the same single, but the row was
+// all there was on the board — a perfect clear, which the Guideline table
+// rewards with ten rows on top of the clear's own (none for a single), and
+// scores 800 on top of the single's 100.
+func TestGuidelineGarbagePerfectClearSendsTen(t *testing.T) {
+	gameID := "guideline-perfect"
+	js, engines := setupCompetitiveGameWith(t, gameID, 2,
+		func(m *config.GameMeta) { m.GuidelineGarbage = true }, nil)
+	a, b := engines[0], engines[1]
+	bottom := config.TotalRows - 1
+
+	prefillBottomForI(t, js, gameID, "p1", bottom)
+	waitUntil(t, 3*time.Second, func() bool {
+		return a.Playfield().Rows[bottom].Cells[0].Occupied
+	}, "pre-fill to apply on a's replica")
+
+	spawned := *a.Playfield().ActivePieceForPlayer(0)
+	fell := game.HardDropDestination(spawned, a.Playfield()).Row - spawned.Row
+	a.HardDrop()
+	perfect := game.Clear{Lines: 1, Perfect: true}.Points(1) // 900
+	waitUntil(t, 3*time.Second, func() bool { return a.Score() >= perfect }, "a's perfect clear to score")
+	if got, want := a.Score(), perfect+game.DropPoints(0, fell); got < want-2 || got > want {
+		t.Fatalf("score = %d, want %d (single 100 + perfect clear 800 + the drop, less a gravity tick)", got, want)
+	}
+
+	waitUntil(t, 5*time.Second, func() bool { return b.Playfield().AdversarialRowCount() == 10 }, "b's board to gain the perfect clear's ten rows")
+	time.Sleep(300 * time.Millisecond)
+	if got := b.Playfield().AdversarialRowCount(); got != 10 {
+		t.Fatalf("b has %d adversarial rows, want exactly 10", got)
+	}
+	reg, _ := fetchGarbageRegister(t, js, gameID, config.CompetitiveGarbageSubject(gameID, "p2"))
+	if reg.Total != 10 || reg.By != 0 {
+		t.Fatalf("b's garbage register = %+v, want total 10 by 0", reg)
 	}
 }
 
@@ -576,7 +623,7 @@ func TestGuidelineGarbageDoubleSendsOne(t *testing.T) {
 		return p != nil && p.Orientation == 1
 	}, "a's I to rotate vertical")
 	a.HardDrop()
-	waitUntil(t, 3*time.Second, func() bool { return a.Score() == 2 }, "a's double to score 2")
+	waitUntil(t, 3*time.Second, func() bool { return scoredClear(a, 2) }, "a's double to score")
 
 	waitUntil(t, 5*time.Second, func() bool {
 		return b.Playfield().AdversarialRowCount() == 1

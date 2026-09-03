@@ -207,8 +207,10 @@ type App struct {
 	loginCollision bool
 
 	// game render snapshot (written by pumpEngine)
-	score        int
-	level        int
+	score int
+	level int
+	award awardBanner // the last scored clear on the player's board, for the banner (award.go)
+
 	teamScores   []int         // teams: live per-team scores, one entry per team in index order
 	teamLevels   []int         // teams: live per-team levels, one entry per team in index order
 	rtt          time.Duration // latest publish→echo round trip from the engine

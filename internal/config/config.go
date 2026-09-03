@@ -238,10 +238,12 @@ type PlayerResult struct {
 	PlayerID   string `json:"player_id"`
 	Score      int    `json:"score"`
 	Level      int    `json:"level,omitempty"` // level achieved at game end (from the player's line total)
+	Lines      int    `json:"lines,omitempty"` // lines the player's own pieces cleared (absent in records written before the field)
 	PieceCount uint64 `json:"piece_count"`
-	Winner     bool   `json:"winner,omitempty"`
-	Team       int    `json:"team,omitempty"`  // teams mode: 0 = A, 1 = B
-	Agent      bool   `json:"agent,omitempty"` // seat was played by an agent (from the roster at archive time)
+
+	Winner bool `json:"winner,omitempty"`
+	Team   int  `json:"team,omitempty"`  // teams mode: 0 = A, 1 = B
+	Agent  bool `json:"agent,omitempty"` // seat was played by an agent (from the roster at archive time)
 }
 
 // ArchiveRecord is published to the archive stream when a game finishes.

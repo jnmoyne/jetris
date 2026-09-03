@@ -144,11 +144,26 @@ type Engine struct {
 	// Start, read-only after, so the UI may read it unlocked.
 	pieceSets [][]game.PieceType
 
-	score             atomic.Int64
-	totalLines        atomic.Int64
-	level             atomic.Int64
-	ownClearScore     atomic.Int64                      // cumulative score from OWN clears only — the line_clear event's TotalScore
-	ownClearLines     atomic.Int64                      // cumulative lines from OWN clears only — the line_clear event's TotalLines
+	score         atomic.Int64
+	totalLines    atomic.Int64
+	level         atomic.Int64
+	ownScore      atomic.Int64 // cumulative points from this player's OWN locks (clears, drops, T-spins) — the line_clear event's TotalScore
+	ownClearLines atomic.Int64 // cumulative lines from OWN clears only — the line_clear event's TotalLines
+	// The Guideline scoring's account of this player's play (award.go;
+	// guarded by e.mu). spin and softDropCells describe the falling piece:
+	// whether its last successful step was a rotation, and by which SRS
+	// kick — what makes a T-spin — and how many cells the player
+	// soft-dropped it. lockAward is the worth of the lock we published,
+	// consumed by handleLockIn. comboRun counts the consecutive locks that
+	// cleared lines (0: none running; the Guideline's combo count is one
+	// less), and b2bChain says the last clear was a difficult one (a Tetris
+	// or a T-spin clear), so the next difficult clear is Back-to-Back.
+	spin          game.SpinState
+	softDropCells int
+	lockAward     lockAward
+	comboRun      int
+	b2bChain      bool
+
 	teamScores        [config.MaxTeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (every team's players and spectators); only the game's first teamCount entries are ever read
 	teamLines         [config.MaxTeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
 	hadActivePiece    bool                              // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
@@ -723,7 +738,12 @@ func (e *Engine) TeamLevels() []int {
 	return tl
 }
 
+// OwnLines is how many lines this player's own pieces cleared (the archive's
+// per-player line count; on a shared board the crew's total is TotalLines).
+func (e *Engine) OwnLines() int { return int(e.ownClearLines.Load()) }
+
 // AchievedLevel returns the level reached by this engine's line total (own
+
 // clears plus folded shared-board clears). Used for the end-of-game archive
 // record; unlike Level() it is meaningful in every mode.
 func (e *Engine) AchievedLevel() int {
@@ -1121,6 +1141,7 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	// and is a fresh piece for the lock delay.
 	e.holdUsed = false
 	e.spawnGen.Add(1)
+	e.resetPieceScoring()
 
 	// Here we compute the projection, diff it to cells, and publish; the
 	// publish write-through (applyPublishedCells) advances e.playfield on
@@ -1258,6 +1279,8 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 	e.mu.Lock()
 	e.heldPiece, e.hasHeld, e.holdUsed = outgoing, true, true
 	e.spawnGen.Add(1)
+	e.resetPieceScoring()
+
 	e.mu.Unlock()
 	if fromQueue {
 		e.pieceIdx.Add(1)
@@ -1443,8 +1466,13 @@ func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
 
 	// Publish game over event with score, achieved level and piece count. The
 	// per-player subject means a player's one game_over can never be trimmed
-	// by other events — verdict ordering survives any consumer lag.
-	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), Level: e.AchievedLevel(), PieceCount: e.pieceIdx.Load()}
+	// by other events — verdict ordering survives any consumer lag. It
+	// carries our cumulative own totals too, like a line_clear: the points
+	// of our last locks may not have been announced yet (drop points are
+	// only carried by the next event), and a shared score converges on them.
+	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), Level: e.AchievedLevel(), PieceCount: e.pieceIdx.Load(),
+		TotalScore: int(e.ownScore.Load()), TotalLines: int(e.ownClearLines.Load())}
+
 	data, _ := json.Marshal(ev)
 	_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
 	e.transitionToSpectator(false) // we topped out → we lost
@@ -1501,7 +1529,10 @@ func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
 		Score:      int(e.score.Load()),
 		Level:      e.AchievedLevel(),
 		PieceCount: e.pieceIdx.Load(),
+		TotalScore: int(e.ownScore.Load()), // our own totals, like a line_clear's: the last locks' points converge everywhere (see handleTopOut)
+		TotalLines: int(e.ownClearLines.Load()),
 	}
+
 	data, _ := json.Marshal(ev)
 	_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
 	e.transitionToSpectator(false) // out for now; flips to won if our team prevails

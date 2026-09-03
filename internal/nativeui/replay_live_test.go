@@ -94,10 +94,11 @@ func TestLiveReplayLoad(t *testing.T) {
 		t.Errorf("a scrub took %v — half a frame at 60Hz", worst)
 	}
 
-	// The clears the replay found must be the clears the game had. In
-	// competitive a player's score IS their line count (engine.go: scoreDelta
-	// = clearedLines), so the archived scoreboard is the ground truth for the
-	// markers read off the boards.
+	// The clears the replay found must be the clears the game had: the
+	// archive records every player's own cleared-line count (PlayerResult.
+	// Lines, from their game_over totals), the ground truth for the markers
+	// read off the boards.
+
 	if rec.Mode != config.ModeCompetitive {
 		return
 	}
@@ -113,7 +114,8 @@ func TestLiveReplayLoad(t *testing.T) {
 		}
 	}
 	for _, p := range rec.Players {
-		if got, want := lines[p.PlayerID], p.Score; got != want {
+		if got, want := lines[p.PlayerID], p.Lines; got != want {
+
 			t.Errorf("%s: %d lines in the markers, %d on the scoreboard", p.PlayerID, got, want)
 		}
 	}

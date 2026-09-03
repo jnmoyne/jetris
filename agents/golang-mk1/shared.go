@@ -428,20 +428,35 @@ func (g *Game) reindexOthers() {
 
 // ---- events ---------------------------------------------------------------
 
-// publishLineClear announces our clear with our CUMULATIVE totals (receivers
-// fold deltas, so a retention-trimmed intermediate event is subsumed).
-func (g *Game) publishLineClear(ctx context.Context, lines, scoreDelta int, rows []int) {
+// publishLineClear announces a lock that scored — a clear, or on a shared
+// board a drop's points alone (lines_cleared 0) — with our CUMULATIVE totals
+// (receivers fold deltas, so a retention-trimmed intermediate event is
+// subsumed) and the Guideline's names for the clear, as the GUI does.
+func (g *Game) publishLineClear(ctx context.Context, c clearInfo, pts int, rows []int) {
 	ev := map[string]any{
 		"kind": "line_clear", "player_id": g.a.name, "player_idx": g.idx,
-		"lines_cleared": lines, "cleared_rows": rows, "score": scoreDelta,
+		"lines_cleared": c.lines, "cleared_rows": rows, "score": pts,
 		"team": g.team, "total_score": g.score, "total_lines": g.lines,
+	}
+	if c.spin != spinNone {
+		ev["t_spin"] = int(c.spin)
+	}
+	if c.backToBack {
+		ev["back_to_back"] = true
+	}
+	if c.combo > 0 {
+		ev["combo"] = c.combo
+	}
+	if c.perfect {
+		ev["perfect"] = true
 	}
 	b, _ := json.Marshal(ev)
 	_, _ = g.a.js.Publish(ctx, "jetris.game."+g.id+".events.line_clear."+g.a.name, b)
 }
 
-// foldLineClear folds another player's cumulative line-clear totals into the
-// shared/team scoreboards.
+// foldLineClear folds another player's cumulative totals — a line_clear
+// event's, or the ones its game_over carries — into the shared/team
+// scoreboards, as deltas against the last totals seen from that sender.
 func (g *Game) foldLineClear(ev event) {
 	if ev.PlayerID == g.a.name {
 		return // our own echo: already folded at publish time

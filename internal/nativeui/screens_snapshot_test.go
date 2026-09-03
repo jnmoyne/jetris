@@ -228,7 +228,33 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_game", func(gtx C) { a.layout(gtx) })
 	})
 
+	t.Run("game_award", func(t *testing.T) {
+		// A T-spin double, Back-to-Back, third clear of a combo: the award
+		// banner a third of a second in — popped in, not yet fading — over
+		// the crew's board, the shared score already counting it.
+		now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.Local)
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+		a.gamePlayers = []lobby.PlayerSummary{
+			{PlayerID: "alice", Name: "alice", Ready: true},
+			{PlayerID: "bob", Name: "bob", Ready: true},
+		}
+		a.readyPlayers = a.gamePlayers
+		a.screen = screenGame
+		a.gameStatus, a.countdown = string(config.GameStatusInProgress), -1
+		a.score, a.level = 6850, 1
+		a.award = awardBanner{
+			clear:  game.Clear{Lines: 2, Spin: game.TSpinFull, BackToBack: true, Combo: 2},
+			points: 3700, player: "alice", own: true, at: now.Add(-350 * time.Millisecond),
+		}
+		snapshotPNG(t, w, dir, "screen_game_award", func(gtx C) {
+			gtx.Now = now
+			a.layout(gtx)
+		})
+	})
+
 	t.Run("game_focus", func(t *testing.T) {
+
 		// Mid-game keyboard focus, driven through a real input.Router the
 		// way the window loop does it: the playfield's frame lights up white
 		// while the keys drive the piece; after a click into the chat panel

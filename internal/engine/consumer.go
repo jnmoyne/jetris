@@ -146,6 +146,16 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 }
 
 func (e *Engine) handleLockIn(ctx context.Context) {
+	// What the lock is worth beyond its lines — the T-spin it made and the
+	// drop points the piece earned on the way down — was judged by the
+	// publish that locked it (award.go); a lock-in nothing armed (a lock
+	// this engine did not publish) is a plain one. The Guideline scores a
+	// clear at the level BEFORE it: game.Level is 0-based, the table's
+	// multiplier one more.
+	award := e.lockAward
+	e.lockAward = lockAward{}
+	level := game.Level(int(e.totalLines.Load())) + 1
+
 	// Detect completed rows on the live replica. Cooperative publishes the
 	// collapse with merge-retry (no garbage in coop, no gate); competitive
 	// and teams run it as a GATED transform, whose recompute re-detects the
@@ -155,6 +165,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	// transform ACTUALLY cleared, not the pre-race detection.
 	clearedLines := 0
 	var clearedRows []int // the rows the committed transform actually cleared (pre-collapse indices)
+	var after []game.Row  // the board as the committed collapse leaves it — a perfect clear leaves nothing locked on it
 	if completed := game.CompletedRows(e.playfield); len(completed) > 0 {
 		if e.gameMode == config.ModeCooperative {
 			// Compute the cleared/shifted projection without mutating
@@ -173,6 +184,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			e.publishProjectedCellsWithMergeRetry(ctx, changed, nil, true)
 			clearedLines = len(completed)
 			clearedRows = completed
+			after = projected
 		} else {
 			shiftAnchors := e.sharedBoard()
 			var cleared []int
@@ -182,7 +194,8 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 					return nil, TxnRegister{}, false
 				}
 				cleared = rows
-				return pf.ProjectClearRows(rows, shiftAnchors), TxnRegister{Applied: txn.Applied}, true
+				after = pf.ProjectClearRows(rows, shiftAnchors)
+				return after, TxnRegister{Applied: txn.Applied}, true
 			})
 			if committed {
 				clearedLines = len(cleared)
@@ -191,30 +204,24 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		}
 	}
 
+	// The Guideline's account of the lock — the combo, the Back-to-Back
+	// chain, the points (award.go).
+	clear, points := e.accountLock(clearedLines, award, after, level)
+
 	if clearedLines > 0 {
 		e.totalLines.Add(int64(clearedLines))
-
-		var scoreDelta int
-		switch e.gameMode {
-		case config.ModeCooperative:
-			// Cooperative: score = number of players per line cleared
-			scoreDelta = e.playerCount * clearedLines
-		case config.ModeTeams:
-			// Teams: coop scoring within the team — players per line cleared
-			scoreDelta = e.teamSize * clearedLines
-		default:
-			// Competitive: score = number of lines cleared (simple count)
-			scoreDelta = clearedLines
-		}
-		e.score.Add(int64(scoreDelta))
-		e.ownClearScore.Add(int64(scoreDelta))
 		e.ownClearLines.Add(int64(clearedLines))
+	}
+	if points > 0 {
+		e.score.Add(int64(points))
+		e.ownScore.Add(int64(points))
+	}
+	// The level follows the line total in every mode — the crew's on a
+	// shared board, this player's own in competitive: the multiplier the
+	// HUD's LEVEL names. Gravity reads it on shared boards only (runInput).
+	e.refreshLevel()
 
-		// Update level on shared boards (level is driven by the shared line total)
-		if e.sharedBoard() {
-			e.refreshLevel()
-		}
-
+	if clearedLines > 0 {
 		// Re-render the whole board: a clear shifts every row, and the UI
 		// re-renders from e.playfield as the published rows echo back. A single
 		// full-board update is robust against dropped per-row triggers.
@@ -224,49 +231,62 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		// shared board strobe the same rows off the line-clear event below,
 		// which carries them as cleared_rows.
 		e.emitUpdate(EngineUpdate{Kind: UpdateRowsCleared, ChangedRows: clearedRows})
+	}
+	if points > 0 {
 		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
-		if e.gameMode == config.ModeTeams {
-			// Fold our own clear into the per-team scoreboard; everyone else
-			// folds it off the line-clear event below.
-			e.teamScores[e.teamIdx].Add(int64(scoreDelta))
-			e.teamLines[e.teamIdx].Add(int64(clearedLines))
-			e.emitTeamStats()
-		}
+	}
+	if e.gameMode == config.ModeTeams && (clearedLines > 0 || points > 0) {
+		// Fold our own lock into the per-team scoreboard; everyone else
+		// folds it off the line-clear event below.
+		e.teamScores[e.teamIdx].Add(int64(points))
+		e.teamLines[e.teamIdx].Add(int64(clearedLines))
+		e.emitTeamStats()
+	}
+	// The banner names a clear or a T-spin; drop points alone are silent.
+	if clearedLines > 0 || clear.Spin != game.TSpinNone {
+		e.emitUpdate(EngineUpdate{Kind: UpdateAward, PlayerID: e.playerID, Clear: clear, Score: points})
+	}
 
-		// Cooperative: notify other players of the score change. Teams: notify
-		// everyone of the score AND line-count change (lines keep every
-		// teammate's level/gravity in sync). The event goes to the sender's
-		// per-kind subject and carries the sender's cumulative own-clears
-		// totals — receivers fold deltas, so retention trimming an older
-		// event of ours is harmless.
-		if e.gameMode == config.ModeCooperative || e.gameMode == config.ModeTeams {
-			ev := GameEvent{
-				Kind:         EventLineClear,
-				PlayerID:     e.playerID,
-				Team:         e.teamIdx,
-				Score:        scoreDelta,
-				LinesCleared: clearedLines,
-				ClearedRows:  clearedRows,
-				TotalScore:   int(e.ownClearScore.Load()),
-				TotalLines:   int(e.ownClearLines.Load()),
-			}
-			data, _ := json.Marshal(ev)
-			_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventLineClear), e.playerID), data)
+	// Cooperative: notify other players of the score change. Teams: notify
+	// everyone of the score AND line-count change (lines keep every
+	// teammate's level/gravity in sync). Every lock that scored is announced
+	// — one that cleared nothing but earned drop points or a T-spin too,
+	// with lines_cleared 0 — so the shared score converges on every point.
+	// The event goes to the sender's per-kind subject and carries the
+	// sender's cumulative own totals — receivers fold deltas, so retention
+	// trimming an older event of ours is harmless.
+	if (e.gameMode == config.ModeCooperative || e.gameMode == config.ModeTeams) && (clearedLines > 0 || points > 0) {
+		ev := GameEvent{
+			Kind:         EventLineClear,
+			PlayerID:     e.playerID,
+			Team:         e.teamIdx,
+			Score:        points,
+			LinesCleared: clearedLines,
+			ClearedRows:  clearedRows,
+			TSpin:        int(clear.Spin),
+			BackToBack:   clear.BackToBack,
+			Combo:        clear.Combo,
+			Perfect:      clear.Perfect,
+			TotalScore:   int(e.ownScore.Load()),
+			TotalLines:   int(e.ownClearLines.Load()),
 		}
+		data, _ := json.Marshal(ev)
+		_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventLineClear), e.playerID), data)
+	}
 
-		// The attack: advance every victim board's garbage register (teams:
-		// the opposing board; competitive: all surviving opponents). The
-		// durable CAS-add ledger replaces the old fire-and-forget shrink
-		// event — simultaneous attacks sum instead of trimming each other,
-		// and victims reconcile the register whenever they catch up. On a
-		// goroutine: handleLockIn holds e.mu, which the bump needs briefly,
-		// and the bump's publishes must not extend the lock-in critical
-		// section anyway. The attack is one row per line, or the Guideline
-		// table (a single sends nothing) when the game was created with
-		// guideline garbage; a zero attack is no bump at all.
-		if e.gameMode == config.ModeTeams || e.gameMode == config.ModeCompetitive {
-			go e.bumpVictimLedgers(ctx, game.AttackRows(clearedLines, e.guidelineGarbage))
-		}
+	// The attack: advance every victim board's garbage register (teams:
+	// the opposing board; competitive: all surviving opponents). The
+	// durable CAS-add ledger replaces the old fire-and-forget shrink
+	// event — simultaneous attacks sum instead of trimming each other,
+	// and victims reconcile the register whenever they catch up. On a
+	// goroutine: handleLockIn holds e.mu, which the bump needs briefly,
+	// and the bump's publishes must not extend the lock-in critical
+	// section anyway. The attack is one row per line, or the Guideline
+	// table (a single sends nothing, a T-spin more, a Back-to-Back or a
+	// perfect clear a bonus — game.Clear.AttackRows) when the game was
+	// created with guideline garbage; a zero attack is no bump at all.
+	if clearedLines > 0 && (e.gameMode == config.ModeTeams || e.gameMode == config.ModeCompetitive) {
+		go e.bumpVictimLedgers(ctx, clear.AttackRows(e.guidelineGarbage))
 	}
 
 	e.emitUpdate(EngineUpdate{Kind: UpdatePieceLocked})
@@ -417,25 +437,58 @@ func (e *Engine) emitTeammateClear(ev GameEvent) {
 	e.emitUpdate(EngineUpdate{Kind: UpdateRowsCleared, ChangedRows: ev.ClearedRows})
 }
 
+// foldTotals folds another player's cumulative own totals — a line_clear
+// event's, or the ones its game_over carries — into the scoreboards: the
+// DELTA between the sender's totals and the last totals we saw from them.
+// Deltas make the fold replay-proof: an engine replaying the full event
+// history (a mid-game spectator) converges to the same totals, and anything
+// missed is absorbed by the next event's cumulative numbers at once. In
+// cooperative mode the crew's shared score and line total move (and the
+// level with them); in teams EVERY engine — teammates, every other team's
+// players, and spectators — folds the sender's team's scoreboard, and its
+// teammates their own shared score too, so every team's score stays live on
+// every screen. Reports whether the event was news: not a stale replay of
+// an older total, and not our own (folded at lock time).
+func (e *Engine) foldTotals(ev GameEvent) bool {
+	e.mu.Lock()
+	seen := e.eventTotals[ev.PlayerID]
+	deltaScore := ev.TotalScore - seen.score
+	deltaLines := ev.TotalLines - seen.lines
+	if deltaScore < 0 || deltaLines < 0 {
+		e.mu.Unlock()
+		return false // stale replay of an older total: already folded
+	}
+	e.eventTotals[ev.PlayerID] = struct{ score, lines int }{ev.TotalScore, ev.TotalLines}
+	e.mu.Unlock()
+	if ev.PlayerID == e.playerID {
+		return false
+	}
+	own := e.gameMode == config.ModeCooperative
+	if e.gameMode == config.ModeTeams && ev.Team >= 0 && ev.Team < e.TeamCount() {
+		e.teamScores[ev.Team].Add(int64(deltaScore))
+		e.teamLines[ev.Team].Add(int64(deltaLines))
+		if deltaScore > 0 || deltaLines > 0 {
+			e.emitTeamStats()
+		}
+		own = ev.Team == e.teamIdx
+	}
+	if own {
+		e.score.Add(int64(deltaScore))
+		e.totalLines.Add(int64(deltaLines))
+		e.refreshLevel()
+		if deltaScore > 0 {
+			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
+		}
+	}
+	return true
+}
+
 func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 	switch ev.Kind {
 	case EventLineClear:
-		// Fold the DELTA between the sender's cumulative totals and the last
-		// totals we saw from them. Deltas make the fold replay-proof: an
-		// engine replaying the full event history (a mid-game spectator)
-		// converges to the same totals, and anything missed is absorbed by
-		// the next event's cumulative numbers at once.
-		e.mu.Lock()
-		seen := e.eventTotals[ev.PlayerID]
-		deltaScore := ev.TotalScore - seen.score
-		deltaLines := ev.TotalLines - seen.lines
-		if deltaScore < 0 || deltaLines < 0 {
-			e.mu.Unlock()
-			return // stale replay of an older total: already folded
+		if !e.foldTotals(ev) {
+			return
 		}
-		e.eventTotals[ev.PlayerID] = struct{ score, lines int }{ev.TotalScore, ev.TotalLines}
-		e.mu.Unlock()
-
 		// In cooperative mode the board is shared: when ANOTHER player clears
 		// lines, our playfield consumer applies the same cleared rows (the
 		// authoritative state always converges), but the per-row render
@@ -443,38 +496,24 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 		// clear's full-visible-range republish — leaving stale, un-cleared rows
 		// on our board. Force a full-board re-render from the converged
 		// e.playfield (the same thing the clearing player does) so every player
-		// sees the cleared board. Also fold in the shared score delta, and
-		// strobe the cleared rows: the crew's clear is as much ours as theirs.
-		if ev.PlayerID != e.playerID && e.gameMode == config.ModeCooperative {
-			e.score.Add(int64(deltaScore))
-			e.totalLines.Add(int64(deltaLines))
-			e.refreshLevel()
-			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
-			e.emitFullBoardRerender()
-			e.emitTeammateClear(ev)
-		}
-		// Teams: EVERY engine — teammates, every other team's players, and
-		// spectators — folds the clear into the per-team scoreboard (the
-		// clearing player already did in handleLockIn), so every team's score
-		// stays live on every screen.
-		if e.gameMode == config.ModeTeams && ev.PlayerID != e.playerID && ev.Team >= 0 && ev.Team < e.TeamCount() {
-			e.teamScores[ev.Team].Add(int64(deltaScore))
-			e.teamLines[ev.Team].Add(int64(deltaLines))
-			e.emitTeamStats()
-			// Our own team's clear: same shared-board reasoning as cooperative
-			// above. Also fold the line count so every teammate's level/gravity
-			// stays in sync with the team's total. Every other team's board
-			// repaints via its own consumer.
-			if ev.Team == e.teamIdx {
-				e.score.Add(int64(deltaScore))
-				e.totalLines.Add(int64(deltaLines))
-				e.refreshLevel()
-				e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
+		// sees the cleared board, and strobe the cleared rows: the crew's
+		// clear is as much ours as theirs. Same for a teammate's clear on
+		// our team board; every other team's board repaints via its own
+		// consumer. A lock that only scored (lines_cleared 0) moved nothing.
+		if e.gameMode == config.ModeCooperative || (e.gameMode == config.ModeTeams && ev.Team == e.teamIdx) {
+			if ev.LinesCleared > 0 {
 				e.emitFullBoardRerender()
 				e.emitTeammateClear(ev)
 			}
+			if ev.LinesCleared > 0 || ev.TSpin != 0 {
+				e.emitUpdate(EngineUpdate{Kind: UpdateAward, PlayerID: ev.PlayerID, Clear: awardFromEvent(ev), Score: ev.Score})
+			}
 		}
 	case EventGameOver:
+		// The ending player's last points: its game_over carries its own
+		// totals like a line_clear would, so the shared score converges on
+		// them everywhere before anyone archives.
+		e.foldTotals(ev)
 		if e.gameMode == config.ModeTeams {
 			e.handleTeamGameOverEvent(ctx, ev)
 			return

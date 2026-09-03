@@ -198,10 +198,12 @@ func (e *Engine) attemptMoves(ctx context.Context, moves []MoveType) {
 	cur := *p
 	shared := e.sharedBoard()
 	for _, m := range moves {
-		if next, ok, last := stepPiece(cur, m, base, shared, e.playerIdx); ok && !last {
+		if next, kick, ok, last := stepPieceKick(cur, m, base, shared, e.playerIdx); ok && !last {
 			cur = next
+			e.noteStep(m, false, kick) // the scoring's account of the piece: a rotation, a shift, a soft drop
 		}
 	}
+
 	if cur == *p {
 		e.mu.Unlock()
 		return // every step blocked: nothing to publish
@@ -253,6 +255,7 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 
 	var newPiece game.Piece
 	var valid bool
+	var kick int // the SRS kick a rotation used (the scoring's T-spin judgement)
 
 	switch move {
 	case MoveLeft:
@@ -268,9 +271,9 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 		newPiece.Row++
 		valid = game.CanPlace(newPiece, base)
 	case RotateCW:
-		newPiece, valid = game.Rotate(*p, true, base)
+		newPiece, kick, valid = game.RotateKick(*p, true, base)
 	case RotateCCW:
-		newPiece, valid = game.Rotate(*p, false, base)
+		newPiece, kick, valid = game.RotateKick(*p, false, base)
 	}
 
 	if !valid {
@@ -280,8 +283,10 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 		e.mu.Unlock()
 		return nil
 	}
+	e.noteStep(move, internal, kick)
 
 	affected := affectedRowsUnion(p, &newPiece)
+
 	rows := base.ProjectMove(affected, &newPiece, e.playerIdx)
 	cells := diffCells(base.Rows, rows)
 	pre := *p // the piece where it stands: what flashes if the step is dropped by CAS, what a lost pipeline rolls back to
@@ -312,6 +317,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 
 	var newPiece game.Piece
 	var valid bool
+	var kick int // the SRS kick a rotation used (the scoring's T-spin judgement)
 
 	switch move {
 	case MoveLeft:
@@ -327,9 +333,9 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 		newPiece.Row++
 		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
 	case RotateCW:
-		newPiece, valid = game.RotateCoop(*p, true, base, e.playerIdx)
+		newPiece, kick, valid = game.RotateCoopKick(*p, true, base, e.playerIdx)
 	case RotateCCW:
-		newPiece, valid = game.RotateCoop(*p, false, base, e.playerIdx)
+		newPiece, kick, valid = game.RotateCoopKick(*p, false, base, e.playerIdx)
 	}
 
 	if !valid {
@@ -343,8 +349,10 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 		e.mu.Unlock()
 		return nil
 	}
+	e.noteStep(move, internal, kick)
 
 	affected := affectedRowsUnion(p, &newPiece)
+
 	rows := base.ProjectMove(affected, &newPiece, e.playerIdx)
 	cells := diffCells(base.Rows, rows)
 	pre := *p // what flashes if the step is dropped by CAS, what a lost pipeline rolls back to
@@ -380,8 +388,10 @@ func (e *Engine) publishHardDrop(ctx context.Context) error {
 	}
 
 	dest := game.HardDropDestination(*p, e.playfield)
+	e.noteHardDrop(*p, dest, true) // the lock's worth: its T-spin and drop points (award.go)
 	affected := affectedRowsUnion(p, &dest)
 	rows := e.playfield.ProjectHardDrop(affected, dest, e.playerIdx, true)
+
 	cells := diffCells(e.playfield.Rows, rows)
 	e.mu.Unlock()
 
@@ -412,8 +422,10 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 	below := dest
 	below.Row++
 	landedOnActivePiece := game.CanPlace(below, e.playfield)
+	e.noteHardDrop(*p, dest, !landedOnActivePiece) // the lock's worth: its T-spin and drop points (award.go)
 
 	affected := affectedRowsUnion(p, &dest)
+
 	rows := e.playfield.ProjectHardDrop(affected, dest, e.playerIdx, !landedOnActivePiece)
 	cells := diffCells(e.playfield.Rows, rows)
 	flashCells := p.Cells()

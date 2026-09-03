@@ -180,6 +180,12 @@ func TestGatedClearRejectsStaleGateAndRecomputes(t *testing.T) {
 		return e.Playfield().ActivePieceForPlayer(0) != nil
 	}, "first piece to spawn")
 
+	// The clear is scored once: a single at level 1 plus the hard drop's two
+	// points per cell fallen (Guideline scoring).
+	spawned := *e.Playfield().ActivePieceForPlayer(0)
+	fell := game.HardDropDestination(spawned, e.Playfield()).Row - spawned.Row
+	wantScore := game.Clear{Lines: 1}.Points(1) + game.DropPoints(0, fell)
+
 	e.HardDrop()
 	waitUntil(t, 3*time.Second, func() bool {
 		return e.Score() > 0 && len(game.CompletedRows(e.Playfield())) == 0
@@ -188,6 +194,7 @@ func TestGatedClearRejectsStaleGateAndRecomputes(t *testing.T) {
 	if fired.Load() != 1 {
 		t.Fatal("test hook never fired")
 	}
+
 	// Exactly one collapse: the marker moved down exactly one row.
 	if c := fetchCompetitiveCell(t, js, "gated-clear-race", "p1", bottom, 0); !c.Occupied || c.PieceType != game.PieceJ {
 		t.Errorf("marker did not land on the bottom row after one collapse: %+v", c)
@@ -195,7 +202,8 @@ func TestGatedClearRejectsStaleGateAndRecomputes(t *testing.T) {
 	if c := fetchCompetitiveCell(t, js, "gated-clear-race", "p1", bottom-1, 0); c.Occupied {
 		t.Errorf("marker duplicated at its old row (collapse applied from stale state): %+v", c)
 	}
-	if got := e.Score(); got != 1 {
-		t.Errorf("score = %d, want exactly 1 (one line, scored once)", got)
+	if got := e.Score(); got != wantScore {
+		t.Errorf("score = %d, want exactly %d (one single plus the drop, scored once)", got, wantScore)
 	}
+
 }

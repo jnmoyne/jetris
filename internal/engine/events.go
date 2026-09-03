@@ -2,6 +2,8 @@ package engine
 
 import (
 	"time"
+
+	"jetris/internal/game"
 )
 
 // UpdateKind identifies the type of engine update sent to the UI.
@@ -26,6 +28,7 @@ const (
 	UpdateRowsCleared      // a clear completed ChangedRows (pre-collapse indices) on this player's board — own lock, or a teammate's on a shared board — arcade feedback hook
 	UpdateHold             // the hold slot changed (read via Engine.HeldPiece / HoldUsed)
 	UpdateStepAcked        // a step's batch was acknowledged (or a lost pipeline repaired): the acked board (Engine.Snapshot) moved on before the echo
+	UpdateAward            // a lock scored a clear or a T-spin — ours, or a teammate's on our shared board: the Guideline's name for it (Clear), its points (Score) and who made it (PlayerID) — the HUD's banner
 )
 
 // EngineUpdate is the event sent from engine to UI.
@@ -46,6 +49,8 @@ type EngineUpdate struct {
 	RTT                time.Duration // latest publish→echo round trip (UpdateRTT)
 	TeamScores         []int         // teams: every team's score, in team-index order (UpdateTeamStats)
 	TeamLevels         []int         // teams: every team's level, in team-index order (UpdateTeamStats)
+	PlayerID           string        // UpdateAward: who made the clear (our own id for our own)
+	Clear              game.Clear    // UpdateAward: the clear — lines, T-spin, Back-to-Back, combo, perfect (Score carries the lock's points, drop points included)
 }
 
 // EventKind identifies the type of game event published to the events subject.
@@ -79,11 +84,24 @@ type GameEvent struct {
 	PlayerIdx    int       `json:"player_idx,omitempty"`
 	Team         int       `json:"team"` // teams: sender's team (0 = A, 1 = B)
 
-	// line_clear only: the sender's CUMULATIVE totals from its OWN clears.
+	// line_clear: what the lock was, by the Guideline's names — the T-spin
+	// (0 none, 1 Mini, 2 full: game.TSpin), whether it was Back-to-Back, its
+	// combo count and whether it was a perfect clear — for the crew's HUD
+	// banner, and for agents that care. A lock that cleared nothing but
+	// scored (drop points, a T-spin with no lines) is announced too, with
+	// lines_cleared 0; Score is the lock's points, drop points included.
+	TSpin      int  `json:"t_spin,omitempty"`
+	BackToBack bool `json:"back_to_back,omitempty"`
+	Combo      int  `json:"combo,omitempty"`
+	Perfect    bool `json:"perfect,omitempty"`
+
+	// line_clear and game_over: the sender's CUMULATIVE totals from its OWN
+	// locks — every point its pieces scored, every line they cleared.
 	// Receivers fold the DELTA against the last total they saw from that
 	// sender, so any missed intermediate event is subsumed by the next, and
 	// an engine replaying the full event history (a mid-game spectator, the
-	// archiver) converges to the same scoreboard.
+	// archiver) converges to the same scoreboard. A game_over carries them so
+	// the sender's last points (never announced by a later event) count.
 	TotalScore int `json:"total_score,omitempty"`
 	TotalLines int `json:"total_lines,omitempty"`
 }

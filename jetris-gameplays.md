@@ -122,12 +122,22 @@ as unset.
 **Guideline garbage** is a third attribute on the same step (a checkbox, off by
 default): `guideline_garbage` (`GameMeta.GuidelineGarbage`). It sets **how much
 garbage a clear sends**. Unset, every cleared line owes one garbage row (the
-original Jetris rule). Set, the attack follows the Tetris Guideline table
-(`game.AttackRows`): a **single sends nothing**, a **double sends 1** row, a
-**triple 2**, a **Tetris 4** — so only multi-line clears attack, and a Tetris is
-worth twice a triple. Scoring and levels are untouched (they still count the
-lines cleared); only the rows owed change. Independent of the hole attributes.
-The lobby row tags such a game `guideline garbage`.
+original Jetris rule), whatever the clear was. Set, the attack follows the Tetris
+Guideline table (`game.Clear.AttackRows`; tetris.wiki/Garbage, "General Garbage
+System in Guideline Games"):
+
+| Clear | Rows sent | Back-to-Back bonus |
+|---|---|---|
+| Single / Double / Triple / Tetris | 0 / 1 / 2 / 4 | Tetris +2 |
+| Mini T-Spin Single / Double | 0 / 1 | +1 / +1 |
+| T-Spin Single / Double / Triple | 2 / 4 / 6 | +1 / +2 / +3 |
+| Perfect clear | +10 on top of the clear's rows | |
+
+So a plain single attacks nothing, a Tetris is worth twice a triple, and the
+spins and chains the scoring rewards (§2 Scoring) attack hardest. Combos send
+nothing extra (the wiki lists no table for them). Scoring and levels are the
+same under both settings; only the rows owed change. Independent of the hole
+attributes. The lobby row tags such a game `guideline garbage`.
 
 Because the 7-bag sequence is seekable, the preview is a pure read
 (`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
@@ -271,24 +281,32 @@ Because the board is shared, a clear must be reflected on **every** player's scr
 
 ### Scoring
 
-Score = `playerCount` per line cleared.
+Every mode scores by the Tetris Guideline (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — Jetris levels are 0-based (`totalLines / 10`, the gravity curve's index), so the Guideline's multiplier is `level + 1` — plus the piece's drop points, which are never multiplied:
 
-| Lines cleared | Score (2 players) | Score (3 players) |
-|--------------|-------------------|-------------------|
-| 1 | 2 | 3 |
-| 2 | 4 | 6 |
-| 3 | 6 | 9 |
-| 4 | 8 | 12 |
+| Action | Points × (level + 1) | Difficult |
+|---|---|---|
+| Single / Double / Triple / Tetris | 100 / 300 / 500 / 800 | Tetris only |
+| Mini T-Spin, no lines / T-Spin, no lines | 100 / 400 | no |
+| Mini T-Spin Single / Double | 200 / 400 | yes |
+| T-Spin Single / Double / Triple | 800 / 1200 / 1600 | yes |
+| Back-to-Back difficult clear | the action's points × 1.5 | |
+| Combo | + 50 × combo count (0 for the first clear of a run, 1 for the next…) | |
+| Perfect clear (no locked cell left on the board, garbage included) | + 800 / 1200 / 1800 / 2000 for 1 / 2 / 3 / 4 lines, 3200 for a Back-to-Back Tetris | |
+| Soft drop / hard drop | 1 / 2 per cell, not multiplied | |
 
-There is no level-based multiplier in cooperative mode. The score is intentionally simple — it scales with the wider (harder to fill) playfield.
+A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when the rotation used the last SRS kick (the T-spin-triple kick); otherwise a Mini (`game.DetectTSpin`). A hard drop of zero cells is not a move, so a T rotated into its slot and hard-dropped in place is still a T-spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Tetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
+
+Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Tetris is 800 × (level + 1) whether two or six play.
 
 ### Shared Score
 
-There is a single shared score visible to all players. When any player clears lines:
-1. That player adds the score delta (and the cleared-line count) locally
-2. An `EventLineClear` is published to NATS with the `Score` delta and `LinesCleared`
-3. All other players (and spectators) receive the event and add the delta to their local score **and** the line count to their local `totalLines` — so the shared level stays in sync on every engine
-4. All players' UIs update simultaneously
+There is a single shared score visible to all players. When any player's piece locks and scores — a clear, a T-spin that cleared nothing, or just the drop's points:
+1. That player adds the points (and the cleared-line count) locally
+2. An `EventLineClear` is published to NATS with the `Score` (the lock's points), `LinesCleared` (0 for a lock that only earned drop points), the clear's Guideline names (`t_spin` 0/1/2, `back_to_back`, `combo`, `perfect`) and the sender's cumulative own totals (`total_score`, `total_lines`)
+3. All other players (and spectators) receive the event and fold the delta against the last totals seen from that sender into their local score **and** `totalLines` — so the shared level stays in sync on every engine; a lock with no lines moves only the score
+4. All players' UIs update simultaneously, and the crew's HUD names the clear over the board (`alice: T-SPIN DOUBLE · B2B · COMBO 2` / `+2700`)
+
+A player's `game_over` event carries the same cumulative totals, so the ending player's last points — a drop's, which only the next event would have carried — count on every engine before the game is archived.
 
 ### Level Progression
 
@@ -364,11 +382,11 @@ A row is complete when all 10 cells are occupied (locked). Standard guideline-st
 
 ### Scoring
 
-The only score that is kept in competitive mode is the number of line each player clears. As the game ends when all be one of the players tops out, regardless of the score, the score is only kept for leaderboard puposes, the winner is the last player left that didn't top out, all the other players loose.
+Competitive scores by the same Guideline table (§2 Scoring): each player keeps their own score — their clears, T-spins, Back-to-Back, combos and drop points — multiplied by the level their **own** line total reaches (`lines / 10`, shown as the HUD's LEVEL; competitive gravity does not speed up with it). The score decides nothing: the winner is the last player left who has not topped out, and the score is kept for the leaderboard. No line-clear events are published in competitive; the score travels in the player's `game_over` event and the archive record.
 
 ### Shrink Attack
 
-When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the Guideline table: 0, 1, 2 or 4 rows for a single, double, triple or Tetris (a single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
+When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the Guideline table: 0, 1, 2 or 4 rows for a single, double, triple or Tetris, 2/4/6 for a T-Spin single/double/triple, a Back-to-Back bonus and 10 more for a perfect clear (`game.Clear.AttackRows`; a plain single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
 
 - **Applying:** the victim applies its deficit (rows owed − rows applied) as one **txn-gated atomic batch** (§9): the locked stack shifts up, adversarial rows fill the bottom — solid in a 0-hole game, otherwise punched with the game's `garbage_holes` empty cells at one random set of columns shared by every row of the raise, or one draw per row in a `random_garbage_holes` game (§1b) — and the applied total recorded in the board's txn register advances — exactly once, regardless of duplicate signals or replays.
 - **Clearing garbage:** a solid garbage row is permanent. A garbage row raised with holes is an ordinary line once its holes are filled: it is detected by the same completed-row scan at the filler's lock-in, collapses with the same clear transform, scores, and owes garbage to the opponents like any other cleared line.
@@ -418,13 +436,13 @@ Identical to cooperative mode, scoped to the team board: teammates' active piece
 
 ### Line Clears & Scoring
 
-Coop scoring within the team: a clear scores `teamSize × lines` to the **team score**; every teammate folds the clearing player's score **and line count** from the line-clear event, so the team's level (and gravity speed) stays in sync for all members. Other teams' clears do not affect your own team's score.
+Coop scoring within the team: a lock scores the Guideline's points (§2 Scoring, at the team's level) to the **team score**; every teammate folds the clearing player's points **and line count** from the line-clear event — a lock that only earned drop points announces itself the same way, with no lines — so the team's level (and gravity speed) stays in sync for all members. Other teams' clears do not affect your own team's score.
 
 In addition to the own-team score, **every** engine — every team's players, eliminated players, and spectators — folds **every** team's line-clear events into a per-team scoreboard: a `TEAM A` / `TEAM B` / … score total **and** a per-team cleared-line total, from which each team's level is derived. Every team's score (and, for spectators, level) is therefore visible and live on every screen. Line-clear events live on per-sender subjects and carry the sender's **cumulative** totals, and receivers fold deltas against the last total seen from that sender — so a trimmed intermediate event is subsumed by the next one, and a spectator who joins mid-game reconstructs the full scoreboard from each sender's last retained event.
 
 ### Garbage Attack (team shrink)
 
-When a team clears N lines, N adversarial rows — or the Guideline table's 0/1/2/4 in a `guideline_garbage` game (§1b) — are owed to **one opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost.
+When a team clears N lines, N adversarial rows — or the Guideline table's rows in a `guideline_garbage` game (§1b: 0/1/2/4 for a plain clear, more for a T-spin, a Back-to-Back or a perfect clear) — are owed to **one opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost.
 
 **Which opponent, past two teams.** In a duel there is only one answer and the rule never comes up. With three or more teams a raise still weighs exactly what it always did: it goes to **one** opponent, and each attacker **rotates** through the others — attack 1 to the next team up, attack 2 to the one after, wrapping around and skipping its own. (Giving every opponent the full raise would multiply the garbage in play by the number of teams and end a six-way game in a minute; rotating keeps a team both sending and receiving what it would in a duel.) The rotor is per **engine**, so a team's several players spread their own attacks independently, and over a game the raises land evenly across the opponents. Nothing on the wire changes: the victim reads its own garbage register and cannot tell — nor need it — which of its opponents was on rotation. The rows land solid (permanent) or punched with the game's `garbage_holes` (§1b) — one random column set per raise across the whole team-wide row, or one per row with `random_garbage_holes` — and a holed garbage row a teammate fills clears like any other team line. Application uses the same txn-gated transform, with three shared-board specifics:
 
@@ -681,19 +699,19 @@ Published to `JETRIS_ARCHIVE` stream when a game finishes:
   "mode": 0,
   "player_count": 2,
   "players": [
-    {"player_id": "Alice", "score": 42, "level": 2, "piece_count": 30, "winner": false},
-    {"player_id": "Bob", "score": 42, "level": 2, "piece_count": 25, "winner": false}
+    {"player_id": "Alice", "score": 6850, "level": 2, "lines": 14, "piece_count": 30, "winner": false},
+    {"player_id": "Bob", "score": 6850, "level": 2, "lines": 9, "piece_count": 25, "winner": false}
   ],
   "started_at": "2026-03-21T10:00:00Z",
   "finished_at": "2026-03-21T10:05:30Z",
-  "total_score": 42,
+  "total_score": 6850,
   "final_level": 2,
   "boards": [ /* end-of-game playfield snapshot(s) — see below */ ],
   "chat": [ /* the game's chat history, preserved before the purge — see below */ ]
 }
 ```
 
-Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`) and an `agent` flag (from the roster at archive time) marking seats that were played by agents. Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
+Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`), the `lines` the player's own pieces cleared (the same event's `total_lines`; absent in records written before the field) and an `agent` flag (from the roster at archive time) marking seats that were played by agents. Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
 
 **History controls:** the lobby's GAME HISTORY header carries a sort selector — **By score** (headline score, the default) or **By date** (most recently finished first) — and an **"Agent games"** checkbox (checked by default); unchecking it hides every game that had at least one agent seat. Records from before the agent flag existed read as all-human. Each row's MODE column also carries a **crew line** telling the two kinds apart at a glance: **HUMANS** (green) for human-vs-human games, **WITH AGENTS** (orange) when any seat was an agent. When the listed history contains teams games, a **TEAMS OVERALL** standings line sits between the header and the table — each team's total wins (draws credit neither side) and summed points across those games (e.g. `TEAM A 3W · 12400 PTS — TEAM B 1W · 6100 PTS`), with the leading team (by wins, points as the tie-break) in gold; the agent filter applies to the standings too.
 

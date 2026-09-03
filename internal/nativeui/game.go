@@ -24,7 +24,9 @@ import (
 // gameView is the per-frame snapshot of game scalars, taken under a.mu so the
 // layout never reads fields the pump goroutine is writing.
 type gameView struct {
-	score, level         int
+	score, level int
+	award        awardBanner // the last scored clear on this board (award.go), shown while it is fresh
+
 	teamScores           []int // teams: per-team scores in index order — read through teamScore, which answers 0 before the first stats update arrives
 	teamLevels           []int // teams: per-team levels in index order — read through teamLevel
 	rtt                  time.Duration
@@ -137,8 +139,10 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		}
 	}
 	return gameView{
-		score:          a.score,
-		level:          a.level,
+		score: a.score,
+		level: a.level,
+		award: a.award,
+
 		teamScores:     a.teamScores,
 		teamLevels:     a.teamLevels,
 		rtt:            a.rtt,
@@ -259,6 +263,10 @@ func (a *App) layoutGame(gtx C) D {
 	if countdownVisible(view, mode) && gtx.Now.Sub(view.countdownAt) < countdownAnimDur {
 		animate(gtx) // keep animating the countdown pop until it settles
 	}
+	if view.award.visible(gtx.Now) {
+		animate(gtx) // keep the award banner popping, rising and fading until it is gone
+	}
+
 	if view.fireworks != nil && view.fireworks.active(gtx.Now) {
 		animate(gtx) // keep the victory fireworks animating until the show ends
 	}
@@ -1110,10 +1118,11 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					return inner(gtx)
 				}
 			}
-			if !countdownVisible(view, mode) {
+			if !playfieldOverlayVisible(view, mode, gtx.Now) {
 				return bw(gtx)
 			}
-			// The pre-game countdown centers on the playfield itself
+			// The pre-game countdown — and, in play, the award banner
+			// naming a scored clear — centers on the playfield itself
 			// (not the whole board area, which would drift it toward
 			// the NEXT well / surrounding whitespace) — and as an
 			// Expanded child sized to the playfield, so a "GO!" wider
@@ -1125,7 +1134,8 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 					sz := gtx.Constraints.Min
 					gtx.Constraints.Min = image.Point{}
 					m := op.Record(gtx.Ops)
-					d := a.countdownOverlay(gtx, view.countdown, view.countdownAt)
+					d := a.playfieldOverlay(gtx, view, mode)
+
 					call := m.Stop()
 					defer op.Offset(image.Pt((sz.X-d.Size.X)/2, (sz.Y-d.Size.Y)/2)).Push(gtx.Ops).Pop()
 					call.Add(gtx.Ops)

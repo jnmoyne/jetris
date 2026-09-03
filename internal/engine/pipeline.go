@@ -551,7 +551,15 @@ func (e *Engine) resolveStep(s *inflightStep, seq uint64, err error) {
 			e.pipeBroken = true
 			e.pipeRollback = x.pre
 			flashPre, flashTarget = x.pre.Cells(), x.piece.Cells()
+			// The scoring's account of the piece was kept along the
+			// predicted path: the lost step and the ones behind it are
+			// undone (the latter play again through noteStep), so a
+			// rotation the account remembers may never have happened.
+			// Forgetting it forfeits, at worst, a T-spin whose rotation
+			// was the step right before a lost one.
+			e.spin = game.SpinState{}
 		}
+
 		if !errors.Is(x.err, natspkg.ErrCASFailure) {
 			log.Printf("engine %s: step commit: %v", e.playerID, x.err)
 		}
@@ -873,43 +881,50 @@ func (e *Engine) AckedPiece() (game.Piece, bool) {
 // piece after it, whether it moved, and whether it ends the look-ahead (a
 // hard drop lands the piece, a hold swaps it out).
 func stepPiece(p game.Piece, m MoveType, pf *game.Playfield, shared bool, playerIdx int) (next game.Piece, ok, last bool) {
+	next, _, ok, last = stepPieceKick(p, m, pf, shared, playerIdx)
+	return next, ok, last
+}
+
+// stepPieceKick is stepPiece reporting the SRS kick a rotation used (0 for
+// every other move) — what the scoring judges a T-spin by (award.go).
+func stepPieceKick(p game.Piece, m MoveType, pf *game.Playfield, shared bool, playerIdx int) (next game.Piece, kick int, ok, last bool) {
 	canPlace := func(q game.Piece) bool {
 		if shared {
 			return game.CanPlaceCoop(q, pf, playerIdx)
 		}
 		return game.CanPlace(q, pf)
 	}
-	rotate := func(q game.Piece, cw bool) (game.Piece, bool) {
+	rotate := func(q game.Piece, cw bool) (game.Piece, int, bool) {
 		if shared {
-			return game.RotateCoop(q, cw, pf, playerIdx)
+			return game.RotateCoopKick(q, cw, pf, playerIdx)
 		}
-		return game.Rotate(q, cw, pf)
+		return game.RotateKick(q, cw, pf)
 	}
 	switch m {
 	case MoveLeft:
 		next = p
 		next.Col--
-		return next, canPlace(next), false
+		return next, 0, canPlace(next), false
 	case MoveRight:
 		next = p
 		next.Col++
-		return next, canPlace(next), false
+		return next, 0, canPlace(next), false
 	case MoveDown:
 		next = p
 		next.Row++
-		return next, canPlace(next), false
+		return next, 0, canPlace(next), false
 	case RotateCW, RotateCCW:
-		next, ok = rotate(p, m == RotateCW)
-		return next, ok, false
+		next, kick, ok = rotate(p, m == RotateCW)
+		return next, kick, ok, false
 	case MoveHardDrop:
 		// The piece is going to be dropped from HERE: it stays put for the
 		// look-ahead (its ghost marks the landing) and nothing behind the
 		// drop moves it — those moves are the next piece's.
-		return p, false, true
+		return p, 0, false, true
 	case MoveHold:
-		return p, false, true
+		return p, 0, false, true
 	}
-	return p, false, false
+	return p, 0, false, false
 }
 
 // SeedActivePiece puts p on the board as this player's falling piece, on the

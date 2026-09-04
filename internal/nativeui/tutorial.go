@@ -1073,7 +1073,7 @@ func tutorialSteps() []tutStep {
 	}
 	steps := []tutStep{
 		lobbyStep("WELCOME TO JETRIS",
-			"This tour walks through the lobby, creating a game, and the game screen. Nothing you do in it reaches the server, and in it you are Player 1. "+
+			"This tour walks through the lobby, creating a game, and the game screen. "+
 				"Next and Back move through it (or the ← → keys); Close, or Esc, leaves it at any point."),
 		lobbyStep("THE MENU BUTTON",
 			"The ☰ button shows and hides the menu column: your name and the server you are on, the voice chat, Disconnect, and the controls legend. "+

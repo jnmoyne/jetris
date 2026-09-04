@@ -18,17 +18,18 @@ type Favorite struct {
 	URL   string `json:"url"`
 }
 
-// The bookmarks every fresh install starts with: the Jetris servers in EU
-// central, US west and AP south and the public nats.io demo server (US
-// central), each over WebSocket and over plain NATS.
+// The official servers — the bookmarks every fresh install starts with, and
+// the entries of a saved list this source owns (their labels included): the
+// Jetris servers in EU central, US west and AP south and the public nats.io
+// demo server (US central), each over WebSocket and over plain NATS.
 var (
-	JetrisEUWS     = Favorite{Label: "Jetris EU central", URL: "wss://eu-central.jetris.johnnyxmas.com:4223"}
-	JetrisUSWestWS = Favorite{Label: "Jetris US west", URL: "wss://us-west.jetris.johnnyxmas.com:4223"}
-	JetrisAPWS     = Favorite{Label: "Jetris AP south", URL: "wss://ap-south.jetris.johnnyxmas.com:4223"}
+	JetrisEUWS     = Favorite{Label: "Jetris EU central", URL: "wss://eu-central.jetris.net:4223"}
+	JetrisUSWestWS = Favorite{Label: "Jetris US west", URL: "wss://us-west.jetris.net:4223"}
+	JetrisAPWS     = Favorite{Label: "Jetris AP south", URL: "wss://ap-south.jetris.net:4223"}
 	JetrisUSWS     = Favorite{Label: "Demo.nats.io (US central)", URL: "wss://demo.nats.io:8443"}
-	JetrisEU       = Favorite{Label: "Jetris EU central", URL: "nats://eu-central.jetris.johnnyxmas.com:4222"}
-	JetrisUSWest   = Favorite{Label: "Jetris US west", URL: "nats://us-west.jetris.johnnyxmas.com:4222"}
-	JetrisAP       = Favorite{Label: "Jetris AP south", URL: "nats://ap-south.jetris.johnnyxmas.com:4222"}
+	JetrisEU       = Favorite{Label: "Jetris EU central", URL: "nats://eu-central.jetris.net:4222"}
+	JetrisUSWest   = Favorite{Label: "Jetris US west", URL: "nats://us-west.jetris.net:4222"}
+	JetrisAP       = Favorite{Label: "Jetris AP south", URL: "nats://ap-south.jetris.net:4222"}
 	JetrisUS       = Favorite{Label: "Demo.nats.io (US central)", URL: "nats://demo.nats.io:4222"}
 )
 
@@ -43,12 +44,73 @@ func DefaultFavorites() []Favorite {
 	return []Favorite{JetrisEUWS, JetrisUSWestWS, JetrisAPWS, JetrisUSWS, JetrisEU, JetrisUSWest, JetrisAP, JetrisUS}
 }
 
-// originalDefaults are the defaults of the first release, before any server
-// was added to the list: what a saved favorites list that predates the
-// seeded-defaults marker (loadSeededData finds nothing) is taken to have
-// been offered already. Their absence from such a list means the player
-// deleted them, and they must stay deleted.
-var originalDefaults = []Favorite{JetrisEUWS, JetrisAPWS, JetrisUSWS, JetrisEU, JetrisAP, JetrisUS}
+// The official servers of the releases before the jetris.net names, under
+// the jetris.johnnyxmas.com ones: retired (retiredDefaults), and what the
+// releases before the seeded-defaults marker offered (originalDefaults).
+var (
+	oldJetrisEUWS     = Favorite{Label: "Jetris EU central", URL: "wss://eu-central.jetris.johnnyxmas.com:4223"}
+	oldJetrisUSWestWS = Favorite{Label: "Jetris US west", URL: "wss://us-west.jetris.johnnyxmas.com:4223"}
+	oldJetrisAPWS     = Favorite{Label: "Jetris AP south", URL: "wss://ap-south.jetris.johnnyxmas.com:4223"}
+	oldJetrisEU       = Favorite{Label: "Jetris EU central", URL: "nats://eu-central.jetris.johnnyxmas.com:4222"}
+	oldJetrisUSWest   = Favorite{Label: "Jetris US west", URL: "nats://us-west.jetris.johnnyxmas.com:4222"}
+	oldJetrisAP       = Favorite{Label: "Jetris AP south", URL: "nats://ap-south.jetris.johnnyxmas.com:4222"}
+)
+
+// originalDefaults are the defaults of the releases before the seeded-defaults
+// marker existed (the jetris.johnnyxmas.com names, before US west joined):
+// what a saved favorites list without a marker (loadSeededData finds
+// nothing) is taken to have been offered already. Their absence from such a
+// list means the player deleted them, and they must stay deleted. Only the
+// demo server is still a default; the rest are retired, so listing them
+// here just keeps the record straight.
+var originalDefaults = []Favorite{oldJetrisEUWS, oldJetrisAPWS, JetrisUSWS, oldJetrisEU, oldJetrisAP, JetrisUS}
+
+// retiredDefaults are the official servers of earlier releases that have
+// since left DefaultFavorites — the Jetris servers under their
+// jetris.johnnyxmas.com names, and by their bare IPs before they had names —
+// as they were shipped. A favorites list saved by one of those releases (a
+// binary's file, a browser's localStorage) may still carry them, and nothing
+// else tells them from the player's own bookmarks: they are what Outdated
+// flags, so the login screen can tag them and offer to remove them
+// (RemoveOutdated). Never dropped on load — the player decides.
+//
+// Maintenance: when an official server changes URL or leaves the defaults,
+// move its old entry here (the new URL, if any, reaches existing lists
+// through seedNewDefaults). A URL both here and in DefaultFavorites counts
+// as current.
+var retiredDefaults = []Favorite{
+	oldJetrisEUWS, oldJetrisUSWestWS, oldJetrisAPWS, oldJetrisEU, oldJetrisUSWest, oldJetrisAP,
+	{Label: "Jetris (EU central)", URL: "nats://172.105.76.148:4222"},
+	{Label: "Jetris EU central", URL: "nats://172.239.19.14:4222"},
+	{Label: "Jetris EU central", URL: "ws://172.239.19.14:4223"},
+	{Label: "Jetris (AP south)", URL: "nats://172.104.52.4:4222"},
+	{Label: "Jetris AP south", URL: "nats://172.104.188.44:4222"},
+	{Label: "Jetris AP south", URL: "ws://172.104.188.44:4223"},
+}
+
+// Official reports whether url is one of the current official servers
+// (DefaultFavorites).
+func Official(url string) bool {
+	return slices.ContainsFunc(DefaultFavorites(), func(f Favorite) bool { return f.URL == url })
+}
+
+// Outdated reports whether url was an official server of an earlier release
+// and is one no longer (retiredDefaults): a saved favorite worth cleaning up.
+func Outdated(url string) bool {
+	return !Official(url) && slices.ContainsFunc(retiredDefaults, func(f Favorite) bool { return f.URL == url })
+}
+
+// RemoveOutdated returns favs without its outdated entries (Outdated), the
+// rest in their order, and how many it dropped. The result is never nil.
+func RemoveOutdated(favs []Favorite) ([]Favorite, int) {
+	out := make([]Favorite, 0, len(favs))
+	for _, f := range favs {
+		if !Outdated(f.URL) {
+			out = append(out, f)
+		}
+	}
+	return out, len(favs) - len(out)
+}
 
 // LoadFavorites reads the saved favorites — from ~/.config/jetris on the
 // desktop, from the browser's localStorage in the wasm build. A missing store
@@ -58,12 +120,17 @@ var originalDefaults = []Favorite{JetrisEUWS, JetrisAPWS, JetrisUSWS, JetrisEU, 
 // not come back. Entries without a URL are dropped; a missing label falls
 // back to the URL.
 //
-// A default server added in a later release reaches existing installs too:
-// the store remembers which default URLs it has offered (the seeded marker,
-// written with every save), and a saved list is loaded with every default
-// it was never offered inserted in its default position, once — the list is
-// saved back with the newcomer and the marker brought up to date, so a
-// player who then deletes it is not handed it again.
+// The official list is the source's, and a saved list follows it: a default
+// server added in a later release reaches existing installs too — the store
+// remembers which default URLs it has offered (the seeded marker, written
+// with every save), and a saved list is loaded with every default it was
+// never offered inserted in its default position, once — so a player who
+// then deletes it is not handed it again; and an official server the player
+// still has is listed by its current label, whatever the release that saved
+// it called it (refreshOfficialLabels). Either change is saved back. What
+// is never done for the player is removing a server: one that left the
+// official list stays in the saved list, flagged Outdated, until they clean
+// it up.
 func LoadFavorites() ([]Favorite, error) {
 	data, found, err := loadFavoritesData()
 	if err != nil {
@@ -77,12 +144,32 @@ func LoadFavorites() ([]Favorite, error) {
 		return favs, err
 	}
 	merged, added := seedNewDefaults(favs, loadSeeded())
-	if added {
+	relabeled := refreshOfficialLabels(merged)
+	if added || relabeled {
 		if err := SaveFavorites(merged); err != nil {
 			return merged, err
 		}
 	}
 	return merged, nil
+}
+
+// refreshOfficialLabels gives every favorite that is a current official
+// server (Official) the label the source ships it with, and reports whether
+// it changed any: a server renamed in a later release reads by its new name
+// in a list saved under the old one. An official server's label is not the
+// player's to keep — there is no renaming in the login screen, only the
+// source names these.
+func refreshOfficialLabels(favs []Favorite) bool {
+	changed := false
+	for i := range favs {
+		for _, d := range DefaultFavorites() {
+			if favs[i].URL == d.URL && favs[i].Label != d.Label {
+				favs[i].Label = d.Label
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // seedNewDefaults inserts into favs every default whose URL is neither in

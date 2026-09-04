@@ -331,6 +331,73 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		renderOnce(t, a)
 	})
 
+	t.Run("login-picker-outdated", func(t *testing.T) {
+		// Favorites an earlier release shipped and has since retired (the
+		// Jetris servers by their old IPs) are tagged, never the automatic
+		// pick — not at startup, not as a refresh round's fastest — sorted
+		// under the reachable and failed rows, and removed together by the
+		// cleanup row; the player's own bookmark and the current official
+		// server stay.
+		oldEU := prefs.Favorite{Label: "Jetris EU central", URL: "ws://172.239.19.14:4223"}
+		oldAP := prefs.Favorite{Label: "Jetris AP south", URL: "nats://172.104.188.44:4222"}
+		home := prefs.Favorite{Label: "home", URL: "nats://10.0.0.7:4222"}
+		a := NewWithPicker(config.Config{}, []string{"alpha"}, "alpha", []prefs.Favorite{oldEU, prefs.JetrisEUWS, home, oldAP})
+		a.th = newTestApp().th
+		var saved [][]prefs.Favorite
+		a.favSave = func(f []prefs.Favorite) error { saved = append(saved, f); return nil }
+		if a.connSel != urlKey(prefs.JetrisEUWS.URL) {
+			t.Fatalf("default selection = %q, want the first current favorite (the outdated first row passed over)", a.connSel)
+		}
+		if e := a.connSections()[0].entries; len(e) != 4 || !e[0].outdated || e[1].outdated || e[2].outdated || !e[3].outdated {
+			t.Fatalf("favorites outdated flags = %+v, want the two old IPs flagged", e)
+		}
+		if n := a.outdatedCount(); n != 2 {
+			t.Fatalf("outdatedCount = %d, want 2", n)
+		}
+
+		// A refresh round in which both old IPs still answer, the AP one
+		// fastest of all: they sort under the reachable and the failed
+		// rows, and the fastest current server is selected instead.
+		probes := map[string]probeResult{
+			urlKey(oldEU.URL):            {ok: true, rtt: 5 * time.Millisecond},
+			urlKey(prefs.JetrisEUWS.URL): {ok: true, rtt: 30 * time.Millisecond},
+			urlKey(home.URL):             {ok: false, msg: "dial tcp: connection refused"},
+			urlKey(oldAP.URL):            {ok: true, rtt: time.Millisecond},
+		}
+		if got := favoriteOrder(a.favorites, probes); !slices.Equal(got, []int{1, 2, 0, 3}) {
+			t.Fatalf("favoriteOrder = %v, want the current server, then home (failed), then the outdated ones in list order", got)
+		}
+		a.connSel = urlKey(home.URL)
+		a.mu.Lock()
+		a.connProbes = probes
+		a.connRoundDone = true
+		a.mu.Unlock()
+		a.applyRefreshRound()
+		if a.connSel != urlKey(prefs.JetrisEUWS.URL) {
+			t.Fatalf("after the round: sel=%q, want the fastest current server, not the faster outdated one", a.connSel)
+		}
+		renderOnce(t, a) // the OUTDATED readouts and the cleanup row render
+
+		// The player had clicked an outdated row before cleaning up: the
+		// selection moves on with the rest.
+		a.connSel = urlKey(oldEU.URL)
+		a.removeOutdatedFavorites()
+		if !slices.Equal(a.favorites, []prefs.Favorite{prefs.JetrisEUWS, home}) {
+			t.Fatalf("after the cleanup: favorites=%+v, want the current server and home, in order", a.favorites)
+		}
+		if a.connSel != urlKey(prefs.JetrisEUWS.URL) || a.outdatedCount() != 0 {
+			t.Fatalf("after the cleanup: sel=%q outdated=%d; want the first current favorite selected and nothing left to clean", a.connSel, a.outdatedCount())
+		}
+		if len(saved) != 1 || !slices.Equal(saved[0], a.favorites) {
+			t.Fatalf("saved = %+v, want one save of the cleaned list", saved)
+		}
+		a.removeOutdatedFavorites() // nothing left: no save
+		if len(saved) != 1 {
+			t.Fatalf("a cleanup with nothing to remove saved the list (%d saves)", len(saved))
+		}
+		renderOnce(t, a) // without the cleanup row
+	})
+
 	t.Run("login-picker-undialable", func(t *testing.T) {
 		// Playing the browser build, which can only dial ws/wss: other URL
 		// rows are listed greyed out and never selected — not at startup

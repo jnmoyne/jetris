@@ -75,6 +75,25 @@ func TestPickerSnapshots(t *testing.T) {
 				a.connProbing[urlKey(f.URL)] = true
 			}
 		}},
+		{"browser_outdated", func() {
+			// A list saved by an earlier release: two Jetris servers by
+			// their old IPs, one still answering (faster than anything),
+			// one gone. Both read OUTDATED, sort under the failed row, and
+			// the cleanup row appears under the favorites; the fastest
+			// current server is the selection.
+			a.connRound = map[string]bool{}
+			a.connProbing = map[string]bool{}
+			a.connSecClosed[secContexts] = true
+			oldEU := prefs.Favorite{Label: "Jetris EU central", URL: "ws://172.239.19.14:4223"}
+			oldAP := prefs.Favorite{Label: "Jetris AP south", URL: "nats://172.104.188.44:4222"}
+			a.favorites = append(a.favorites, oldEU, oldAP)
+			a.connProbes[urlKey(oldEU.URL)] = probeResult{ok: true, msg: "✓ · Core NATS ping 9 ms · nobody online", rtt: 9 * time.Millisecond, lobby: true}
+			a.connProbes[urlKey(oldAP.URL)] = probeResult{msg: "✗ dial tcp 172.104.188.44:4222: i/o timeout"}
+			a.connPicked = false
+			a.connRoundDone = true
+			a.applyRefreshRound()
+			a.connBrowserLst.ScrollTo(len(a.favorites) + 1) // the tail of FAVORITES: the outdated rows and the cleanup row
+		}},
 	} {
 		st.setup()
 		var ops op.Ops

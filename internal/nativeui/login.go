@@ -40,6 +40,11 @@ const (
 	secCLI       = "COMMAND LINE"
 )
 
+// outdatedHint is the readout of a favorite that was an official server of
+// an earlier release (prefs.Outdated), in place of its ping: the same in
+// both builds, unlike undialableHint.
+const outdatedHint = "OUTDATED"
+
 // loginCardW is the width of the login card. connPanelH is the fixed height
 // of the connection page's panel — the same on both tabs, so switching never
 // moves the Play button.
@@ -76,6 +81,11 @@ type connEntry struct {
 	// dialable is false for a URL this build cannot dial (a nats:// one in
 	// the browser): the row is listed greyed out and cannot be selected.
 	dialable bool
+	// outdated marks a favorite that was an official server of an earlier
+	// release and is one no longer (prefs.Outdated): its readout says so,
+	// the automatic selection passes it over, and the FAVORITES section's
+	// cleanup row removes it.
+	outdated bool
 }
 
 // connSection is one collapsible group of the browser tree.
@@ -83,7 +93,7 @@ type connSection struct {
 	title   string
 	entries []connEntry
 	hint    string // shown in place of entries when there are none
-	addRow  bool   // FAVORITES: ends with the "+ Add a NATS URL…" and "Reset favorites…" rows
+	addRow  bool   // FAVORITES: ends with the "+ Add a NATS URL…" and "Reset favorites…" rows (and, when there is anything to clean up, "Remove outdated servers")
 }
 
 func urlKey(url string) string  { return "url:" + url }
@@ -664,7 +674,7 @@ func (a *App) connSections() []connSection {
 		if detail == f.Label {
 			detail = ""
 		}
-		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i, named: true, dialable: dialable(f.URL)})
+		favs.entries = append(favs.entries, connEntry{key: urlKey(f.URL), label: f.Label, detail: detail, url: f.URL, fav: i, named: true, dialable: dialable(f.URL), outdated: prefs.Outdated(f.URL)})
 	}
 	ctxs := connSection{title: secContexts, hint: "no NATS CLI contexts on this machine (nats context add …)"}
 	for _, name := range a.connContexts {
@@ -778,6 +788,9 @@ func (a *App) handleConnPage(gtx C) {
 	}
 	if a.connAddCancel.Clicked(gtx) {
 		a.closeAddForm()
+	}
+	if a.connCleanupBtn.Clicked(gtx) {
+		a.removeOutdatedFavorites()
 	}
 	if a.connResetRowBtn.Clicked(gtx) {
 		a.connResetOpen = true
@@ -894,11 +907,13 @@ func (a *App) roundRunning() bool {
 
 // applyRefreshRound acts on a finished refresh round (doCheckConn flags it):
 // the favorites are sorted by ping — the reachable ones fastest first, then
-// the ones that failed, then the ones this build cannot dial, the list's own
-// order breaking ties — and the fastest becomes the selection, unless the
-// player picked a row meanwhile or Play is set on a context or the --server
-// flag (their explicit choice stands). Called every frame by handleConnPage,
-// on the UI goroutine.
+// the ones that failed, then the outdated ones, then the ones this build
+// cannot dial, the list's own order breaking ties — and the fastest becomes
+// the selection, unless the player picked a row meanwhile or Play is set on
+// a context or the --server flag (their explicit choice stands). An
+// outdated server is never the automatic pick, reachable or not: right
+// after a move it may still answer, at the same ping as its successor.
+// Called every frame by handleConnPage, on the UI goroutine.
 func (a *App) applyRefreshRound() {
 	a.mu.Lock()
 	done := a.connRoundDone
@@ -920,7 +935,7 @@ func (a *App) applyRefreshRound() {
 	}
 	for _, i := range a.favOrder {
 		key := urlKey(a.favorites[i].URL)
-		if p := probes[key]; p.ok {
+		if p := probes[key]; p.ok && !prefs.Outdated(a.favorites[i].URL) {
 			a.connSel = key
 			return
 		}
@@ -929,12 +944,17 @@ func (a *App) applyRefreshRound() {
 
 // favoriteOrder is the favorites' display order after a refresh round:
 // indices into favs, the reachable ones by ping ascending, then the ones
-// whose probe failed, then the ones this build cannot dial — the list's own
+// whose probe failed, then the outdated ones (prefs.Outdated — grouped at
+// the bottom, above the cleanup row that removes them, whether or not they
+// still answer), then the ones this build cannot dial — the list's own
 // order breaking ties, so the sort is stable and predictable.
 func favoriteOrder(favs []prefs.Favorite, probes map[string]probeResult) []int {
 	rank := func(i int) (int, time.Duration) {
 		f := favs[i]
 		if !dialable(f.URL) {
+			return 3, 0
+		}
+		if prefs.Outdated(f.URL) {
 			return 2, 0
 		}
 		if p, ok := probes[urlKey(f.URL)]; ok && p.ok {
@@ -1018,16 +1038,48 @@ func (a *App) deleteFavorite(i int) {
 }
 
 // firstDialableEntry is the key of the first browser row this build can
-// dial, section by section, "" when there is none.
+// dial, section by section, "" when there is none. An outdated favorite is
+// passed over, as by every automatic selection: it is listed for the player
+// to click or clean up, not chosen for them.
 func (a *App) firstDialableEntry() string {
 	for _, sec := range a.connSections() {
 		for _, e := range sec.entries {
-			if e.dialable {
+			if e.dialable && !e.outdated {
 				return e.key
 			}
 		}
 	}
 	return ""
+}
+
+// outdatedCount is how many favorites are outdated (prefs.Outdated): the
+// count the cleanup row shows, and whether it shows at all.
+func (a *App) outdatedCount() int {
+	n := 0
+	for _, f := range a.favorites {
+		if prefs.Outdated(f.URL) {
+			n++
+		}
+	}
+	return n
+}
+
+// removeOutdatedFavorites is the FAVORITES section's "Remove outdated
+// servers" row: it drops every outdated favorite (prefs.RemoveOutdated) —
+// the player's own bookmarks and the current official servers stay, in
+// their order — moving the selection to the next best row if it was one of
+// them, and persists the list. The add form, if open, is left alone: it is
+// not about the rows that went.
+func (a *App) removeOutdatedFavorites() {
+	var n int
+	a.favorites, n = prefs.RemoveOutdated(a.favorites)
+	if n == 0 {
+		return
+	}
+	if _, ok := a.connEntry(a.connSel); !ok {
+		a.connSel = a.firstDialableEntry()
+	}
+	a.persistFavorites()
 }
 
 // resetFavorites replaces the bookmarks with the fresh-install defaults
@@ -1196,6 +1248,9 @@ func (a *App) browserTab(gtx C) D {
 			rows = append(rows, a.entryRow(e, probes, probing))
 		}
 		if sec.addRow {
+			if n := a.outdatedCount(); n > 0 {
+				rows = append(rows, a.cleanupRow(n))
+			}
 			if a.connAddOpen {
 				if a.connAddScroll {
 					// Just opened: bring the form into view (it may sit
@@ -1358,6 +1413,13 @@ func (a *App) entryRow(e connEntry, probes map[string]probeResult, probing map[s
 							if !e.dialable {
 								txt, col = undialableHint, withAlpha(colMuted, 0.8)
 							}
+							if e.outdated {
+								// Why it is (probably) OFFLINE, and what the
+								// cleanup row below the list is about — worth
+								// more than its ping, even when it still has
+								// one.
+								txt, col = outdatedHint, colWarn
+							}
 							if txt == "" {
 								return nameCol(gtx)
 							}
@@ -1449,6 +1511,25 @@ func (a *App) addRow(gtx C) D {
 		return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx,
 			a.body("+ Add a NATS URL…", colNATSGreen))
 	})
+}
+
+// cleanupRow is the FAVORITES section's "Remove <n> outdated server(s)" row,
+// listed right under the favorites — and only while some are outdated
+// (prefs.Outdated, their readout the same warning color). One click removes
+// them (removeOutdatedFavorites): no dialog, since the rows it takes are the
+// tagged ones and nothing of the player's own.
+func (a *App) cleanupRow(n int) layout.Widget {
+	txt := fmt.Sprintf("Remove %d outdated servers", n)
+	if n == 1 {
+		txt = "Remove 1 outdated server"
+	}
+	return func(gtx C) D {
+		return material.Clickable(gtx, &a.connCleanupBtn, func(gtx C) D {
+			gtx.Constraints.Min.X = gtx.Constraints.Max.X
+			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(28), Right: unit.Dp(8)}.Layout(gtx,
+				a.body(txt, colWarn))
+		})
+	}
 }
 
 // resetRow is the FAVORITES section's last row, "Reset favorites…": it only

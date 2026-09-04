@@ -109,7 +109,7 @@ func TestFormSnapshots(t *testing.T) {
 		a.readyPlayers = a.gamePlayers
 		a.screen = screenGame
 		a.gameStatus = string(config.GameStatusInProgress)
-		a.connName, a.connURL = "Jetris EU central", "wss://eu-central.jetris.johnnyxmas.com:4223"
+		a.connName, a.connURL = "Jetris EU central", "wss://eu-central.jetris.net:4223"
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.chatLog = []lobby.ChatMessage{
 			{GameID: gameID, Name: "bob", Text: "gl hf"},

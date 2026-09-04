@@ -322,9 +322,12 @@ type App struct {
 	lanIP          string                       // this machine's auto-detected LAN address, resolved once (seeds the IP field and backs the shareable-URL lines)
 	connRefreshAll widget.Clickable             // browser: the list's "↻ Refresh all servers" row
 	connCheckBtn   widget.Clickable             // LAN mode: Check embedded server
-	// FAVORITES' trailing "Reset favorites…" row and its confirmation modal
-	// (connResetOpen while it is up): Yes puts prefs.DefaultFavorites back in
-	// place of whatever the list holds.
+	// FAVORITES' "Remove <n> outdated servers" row (cleanupRow, listed only
+	// while some favorite is prefs.Outdated) and its trailing "Reset
+	// favorites…" row with its confirmation modal (connResetOpen while it is
+	// up): Yes puts prefs.DefaultFavorites back in place of whatever the
+	// list holds.
+	connCleanupBtn  widget.Clickable
 	connResetRowBtn widget.Clickable
 	connResetOpen   bool
 	connResetYes    widget.Clickable
@@ -882,10 +885,12 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 var dialable = natspkg.Dialable
 
 // firstDialableFavorite is the selection key of the first favorite this
-// build can dial, "" when there is none.
+// build can dial, "" when there is none. An outdated one (prefs.Outdated: an
+// official server of an earlier release, kept in the list until the player
+// cleans it up) is passed over, as by every automatic selection.
 func (a *App) firstDialableFavorite() string {
 	for _, f := range a.favorites {
-		if dialable(f.URL) {
+		if dialable(f.URL) && !prefs.Outdated(f.URL) {
 			return urlKey(f.URL)
 		}
 	}

@@ -67,10 +67,14 @@ func sameCells(a, b [][2]int) bool {
 	return true
 }
 
-// startedEngine is setupEngine + Start, with the first piece on the board.
+// startedEngine is a started engine with the first piece on the board, on a
+// TWO-seat cooperative game whose second player never shows up: a shared
+// board, so the engine runs the CAS pipeline these tests exercise — the
+// tests' competing writes stand in for the other seat. (A one-seat game has
+// no other writer and journals without CAS: solo.go, solo_test.go.)
 func startedEngine(t *testing.T) (*Engine, jetstream.JetStream, string) {
 	t.Helper()
-	e, js, gameID := setupEngine(t)
+	e, js, gameID := setupEngineSeats(t, 2)
 	if err := e.Start(); err != nil {
 		t.Fatal(err)
 	}

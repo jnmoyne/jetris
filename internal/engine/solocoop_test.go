@@ -29,7 +29,9 @@ func TestSoloCoopTopOutFinishesGame(t *testing.T) {
 
 	// Walk the first piece out of the spawn rows, wall those rows off (the
 	// first column left open, so the rows never complete and clear), then
-	// hard-drop: the next spawn lands on locked cells — a top-out.
+	// hard-drop: the next spawn lands on locked cells — a top-out. A solo
+	// game is played on the local board, which nothing on the stream changes
+	// under the player (solo.go), so the wall is planted there directly.
 	waitUntil(t, 5*time.Second, func() bool {
 		p := e.Playfield().ActivePieceForPlayer(0)
 		if p == nil {
@@ -41,16 +43,13 @@ func TestSoloCoopTopOutFinishesGame(t *testing.T) {
 		e.MoveDown()
 		return false
 	}, "piece to descend below the spawn area")
+	e.mu.Lock()
 	for _, row := range []int{2, 3} {
-		cells := make([]game.Cell, config.StandardWidth)
 		for c := 1; c < config.StandardWidth; c++ {
-			cells[c] = game.Cell{Occupied: true, PieceType: game.PieceL}
+			e.playfield.Apply(row, c, game.Cell{Occupied: true, PieceType: game.PieceL}, 0)
 		}
-		publishCoopRowCells(t, js, gameID, row, cells)
 	}
-	waitUntil(t, 3*time.Second, func() bool {
-		return e.Playfield().Rows[3].Cells[3].Occupied
-	}, "spawn wall to apply")
+	e.mu.Unlock()
 
 	e.HardDrop()
 	waitUntil(t, 5*time.Second, func() bool { return e.Mode() == ModeGameOver }, "the solo player to top out")

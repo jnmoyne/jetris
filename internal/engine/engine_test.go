@@ -14,7 +14,18 @@ import (
 	"jetris/internal/testutil"
 )
 
+// setupEngine builds a ONE-seat cooperative game and its player's engine: a
+// crew of one, the only writer to its stream — the solo journal (solo.go),
+// once started. A test that needs the shared board's CAS pipeline (a second
+// writer racing the engine) takes setupEngineSeats with two seats instead.
 func setupEngine(t *testing.T) (*Engine, jetstream.JetStream, string) {
+	t.Helper()
+	return setupEngineSeats(t, 1)
+}
+
+// setupEngineSeats is setupEngine for a cooperative game of the given seat
+// count; only the first seat's engine is built, the rest never show up.
+func setupEngineSeats(t *testing.T, seats int) (*Engine, jetstream.JetStream, string) {
 	t.Helper()
 	url, _ := testutil.StartServer(t)
 	nc, err := nats.Connect(url)
@@ -40,7 +51,7 @@ func setupEngine(t *testing.T) (*Engine, jetstream.JetStream, string) {
 	meta := config.GameMeta{
 		GameID:      gameID,
 		Mode:        config.ModeCooperative,
-		PlayerCount: 1,
+		PlayerCount: seats,
 		Seed:        42,
 		Status:      config.GameStatusInProgress,
 		CreatorID:   "player-1",

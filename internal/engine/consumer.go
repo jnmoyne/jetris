@@ -87,6 +87,17 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 					ChangedRows: []int{rowIdx},
 					OpponentID:  opponentID,
 				})
+			} else if e.solo() {
+				// A solo game's stream is a journal of the game played on
+				// the local board (solo.go): its echo keeps the acked and
+				// echo replicas, applied above, and drives nothing — the
+				// lock-in fired as the lock was journaled. The echo display
+				// still repaints on it.
+				e.mu.Unlock()
+				e.emitUpdate(EngineUpdate{
+					Kind:        UpdatePlayfield,
+					ChangedRows: []int{rowIdx},
+				})
 			} else {
 				// Lock-in detection: had active → no active. handleLockIn spawns the
 				// next piece, and the publish write-through makes it active in pf
@@ -271,7 +282,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			TotalLines:   int(e.ownClearLines.Load()),
 		}
 		data, _ := json.Marshal(ev)
-		_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventLineClear), e.playerID), data)
+		e.publishEvent(ctx, config.EventKindSubject(e.gameID, string(EventLineClear), e.playerID), data)
 	}
 
 	// The attack: advance every victim board's garbage register (teams:

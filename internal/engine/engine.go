@@ -129,6 +129,17 @@ type Engine struct {
 
 	mu        sync.Mutex
 	playfield *game.Playfield
+	// ackedField is the ACKED replica of the own board: what the stream has
+	// committed — written through at every ack, kept by the consumer's echo.
+	// On a shared board it is e.playfield itself (the same pointer): the
+	// replica is the board the game is played on. A solo engine (solo.go)
+	// plays on the local board e.playfield instead and keeps this one apart,
+	// a round trip behind it, for the acked display and the resync after a
+	// lost batch. soloLost notes a solo batch that did not commit — the
+	// link's failure, never a race — until the local board is journaled
+	// again (resyncLocal). Both guarded by e.mu.
+	ackedField *game.Playfield
+	soloLost   bool
 
 	opponentPlayfields map[string]*game.Playfield // keyed by playerID (competitive)
 	opponentPlayerID   string                     // single opponent (for 2-player join)
@@ -332,6 +343,7 @@ func New(
 		pipeChanged:        make(chan struct{}, 1),
 		pipeRepair:         make(chan struct{}, 1),
 	}
+	e.ackedField = e.playfield
 	e.setMode(mode)
 	e.inflightLimit.Store(DefaultInflightLimit)
 	return e
@@ -408,6 +420,13 @@ func (e *Engine) Start() error {
 	// The echo-only replica mirrors the own board's dimensions; the snapshot
 	// below seeds it (stream truth), the consumer keeps it (consumer.go).
 	e.echoField = game.NewPlayfieldWithHeight(e.playfield.Width, e.playfield.Height)
+	// The acked replica is the board itself, unless this engine is the only
+	// writer to its game: then the game is played on the local board and the
+	// acked replica trails it (solo.go).
+	e.ackedField = e.playfield
+	if e.solo() {
+		e.ackedField = game.NewPlayfieldWithHeight(e.playfield.Width, e.playfield.Height)
+	}
 
 	// 2+3. Board state and its consumer. A PLAYER fetches a last-per-subject
 	// snapshot and tails the stream from just past it — the snapshot seeds the
@@ -440,6 +459,9 @@ func (e *Engine) Start() error {
 			data, _ := game.UnmarshalCell(c.Payload)
 			e.playfield.Apply(c.Row, c.Col, data, c.Seq)
 			e.echoField.Apply(c.Row, c.Col, data, c.Seq)
+			if e.ackedField != e.playfield {
+				e.ackedField.Apply(c.Row, c.Col, data, c.Seq)
+			}
 		}
 
 		// Check if there's already an active piece for this player
@@ -447,7 +469,9 @@ func (e *Engine) Start() error {
 		startSeq = maxSeq + 1
 	}
 
-	go e.runConsumer(ctx, e.playfield, e.cellFilterSubject(), "", startSeq, false)
+	// The own-board consumer keeps the acked replica — the board itself on a
+	// shared board, the trailing replica of a solo game.
+	go e.runConsumer(ctx, e.ackedField, e.cellFilterSubject(), "", startSeq, false)
 
 	// 4. Competitive: set up known opponent and discover others via roster
 	if e.gameMode == config.ModeCompetitive {
@@ -851,7 +875,9 @@ func (e *Engine) BufferedMoves() []MoveType {
 // sharedBoard reports whether this engine's own playfield is shared with other
 // players (cooperative's single board, or a team's board in teams mode). Shared
 // boards use Cell.PlayerIdx ownership, coop collision (CanPlaceCoop), and
-// merge-retry for engine-driven writes.
+// merge-retry for engine-driven writes — a crew of one included, whose
+// merge-retry is the journal (solo.go): the rules are the shared board's,
+// the writer is alone.
 func (e *Engine) sharedBoard() bool {
 	return e.gameMode == config.ModeCooperative || e.gameMode == config.ModeTeams
 }
@@ -1613,6 +1639,11 @@ func (e *Engine) publishProjectedCellsFlash(ctx context.Context, cells map[game.
 	if len(cells) == 0 {
 		return true
 	}
+	if e.solo() {
+		// The only writer: nothing to guard, nothing to lose (solo.go).
+		e.publishLocal(ctx, cells, locked)
+		return true
+	}
 	keys := orderedCellKeys(cells)
 	updates, err := e.buildBatchUpdates(keys, cells, locked)
 	if err != nil {
@@ -1692,6 +1723,10 @@ func (e *Engine) applyPublishedCells(orderedKeys []game.CellPos, get func(game.C
 // visible intermediate board between chunks.
 func (e *Engine) publishProjectedCellsNoCAS(ctx context.Context, cells map[game.CellPos]game.Cell, locked bool) {
 	if len(cells) == 0 {
+		return
+	}
+	if e.solo() {
+		e.publishLocal(ctx, cells, locked) // the journal (solo.go)
 		return
 	}
 	keys := orderedCellKeys(cells)
@@ -1777,6 +1812,11 @@ func (e *Engine) buildBatchUpdates(keys []game.CellPos, cells map[game.CellPos]g
 // clear-vs-move races.
 func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool) {
 	if len(cells) == 0 {
+		return
+	}
+	if e.solo() {
+		// A crew of one shares its board with nobody: the journal (solo.go).
+		e.publishLocal(ctx, cells, locked)
 		return
 	}
 

@@ -38,9 +38,10 @@ func publishCoopRowCells(t *testing.T, js jetstream.JetStream, gameID string, ro
 // CompletedRows check) would fire before the landing cells were applied and the
 // completion missed until the next lock-in. The orderedCellKeys publish order
 // (locked cells before vacates) guarantees the landing cells are in place when
-// lock-in fires.
+// lock-in fires. A two-seat crew: the consumer's echo drives the lock-in on a
+// shared board (a crew of one locks on its local board, solo.go).
 func TestCoopHardDropClearsCompletingLineImmediately(t *testing.T) {
-	e, js, gameID := setupEngine(t) // coop, seed 42 -> piece 0 = T, width 10
+	e, js, gameID := setupEngineSeats(t, 2) // coop, seed 42 -> piece 0 = T
 	defer e.Stop()
 	if err := e.Start(); err != nil {
 		t.Fatal(err)

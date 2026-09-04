@@ -108,6 +108,16 @@ import (
 // they are barriers and stay batches of their own. BufferedBatches shows the
 // queue split the way it will go out, for the MOVE BUFFER strip to draw the
 // grouped moves as one.
+//
+// All of the above is the SHARED board's pipeline: the guards, the
+// predictions, the barriers and the repair exist because another writer
+// can get to a cell first. A one-seat game has no other writer, and its
+// engine keeps none of it: every write — steps and barriers alike — is
+// applied to the local board at once and journaled to the stream as a batch
+// with no expectation, pipelined without limit (or, in sync mode, one at a
+// time); the consumer's echo drives nothing, and a batch that does not
+// commit is re-journaled, never rolled back. See solo.go. The functions
+// below branch to it where the two part ways.
 
 // PublishMode is how the engine commits a step's batch: PublishSync waits for
 // the ack before the next move, PublishAsync pipelines the batches with no
@@ -179,6 +189,20 @@ func (e *Engine) pipelined() bool {
 // batches in flight — the queued moves wait (runInput) — and records the
 // hold: the moves that pile up behind it go out together.
 func (e *Engine) pipelineFull() bool {
+	if e.solo() {
+		// The journal has no limit; its sync mode lets one batch out at a
+		// time, the moves made meanwhile held to go out together behind it.
+		if e.PublishMode() != PublishSync {
+			return false
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if len(e.inflight) > 0 {
+			e.pipeHeld = true
+			return true
+		}
+		return false
+	}
 	if !e.pipelined() {
 		return false
 	}
@@ -198,6 +222,11 @@ func (e *Engine) pipelineFull() bool {
 // batch is blocking on, and whatever queued during it goes out together the
 // moment it returns, one batch instead of one per move.
 func (e *Engine) coalescing() bool {
+	if e.solo() {
+		// Sync: the moves held behind the batch in flight go out as one.
+		// Optimistic: nothing is ever held, every move is its own batch.
+		return e.PublishMode() == PublishSync
+	}
 	if !e.pipelined() {
 		return true
 	}
@@ -364,9 +393,11 @@ func (e *Engine) PipelineBroken() bool {
 // projectionBase is the board a step is projected from: the acked replica
 // with every in-flight step applied on top, in order — the OPTIMISTIC board.
 // With nothing in flight it is e.playfield itself, so callers must not
-// mutate the result. Call with e.mu held.
+// mutate the result; so is it for a solo engine, whose in-flight batches
+// were applied to the local board as they went out (solo.go). Call with
+// e.mu held.
 func (e *Engine) projectionBase() *game.Playfield {
-	if len(e.inflight) == 0 {
+	if len(e.inflight) == 0 || e.solo() {
 		return e.playfield
 	}
 	pf := e.playfield.Clone()
@@ -388,6 +419,10 @@ func (e *Engine) projectionBase() *game.Playfield {
 // (publishStepAsync). Runs on runInput.
 func (e *Engine) publishStep(ctx context.Context, cells map[game.CellPos]game.Cell, pre, target game.Piece, moves []MoveType) {
 	if len(cells) == 0 {
+		return
+	}
+	if e.solo() {
+		e.publishLocal(ctx, cells, false) // the journal: no guard, no wait, no rollback (solo.go)
 		return
 	}
 	internal := moves == nil
@@ -522,11 +557,30 @@ func (e *Engine) awaitStep(ctx context.Context, s *inflightStep) {
 func (e *Engine) resolveStep(s *inflightStep, seq uint64, err error) {
 	var flashPre, flashTarget [][2]int
 	var landed []*inflightStep
+	solo := e.solo()
 	e.mu.Lock()
 	s.done, s.seq, s.err = true, seq, err
 	for len(e.inflight) > 0 && e.inflight[0].done {
 		x := e.inflight[0]
 		e.inflight = e.inflight[1:]
+		if solo {
+			// A journaled batch: committed, it is written through into the
+			// acked replica trailing the local board; lost — the link's
+			// failure, there being no race to lose — it is noted, and the
+			// local board is journaled again once the pipeline drains
+			// (resyncLocal). Nothing is rolled back, nothing replayed.
+			if x.err != nil {
+				e.soloLost = true
+				log.Printf("engine %s: journal batch lost: %v", e.playerID, x.err)
+				continue
+			}
+			n := len(x.keys)
+			for i, k := range x.keys {
+				e.ackedField.Apply(k.Row, k.Col, x.cells[k], x.seq-uint64(n-1-i))
+			}
+			landed = append(landed, x)
+			continue
+		}
 		// Behind a lost step: whatever this one did is undone by the repair,
 		// and its moves play again from where the repair leaves the piece.
 		poisoned := e.pipeBroken
@@ -564,7 +618,9 @@ func (e *Engine) resolveStep(s *inflightStep, seq uint64, err error) {
 			log.Printf("engine %s: step commit: %v", e.playerID, x.err)
 		}
 	}
-	idle, broken := len(e.inflight) == 0, e.pipeBroken
+	// A solo engine's "broken" is a batch lost to the link: the same wake-up
+	// asks runInput to journal the local board again (settleLocal).
+	idle, broken := len(e.inflight) == 0, e.pipeBroken || e.soloLost
 	if idle {
 		// Nothing in flight: the next step predicts from the stream's end as
 		// delivered, not from a guess that is now history (or never was).
@@ -639,6 +695,12 @@ func (e *Engine) signalPipe() {
 // queue, and a write that belongs AFTER them (the lock, a barrier) must
 // yield to them. Runs on runInput only.
 func (e *Engine) settlePipeline(ctx context.Context) (repaired bool) {
+	if e.solo() {
+		// No barrier in a journal: the sync mode's one-at-a-time wait, and
+		// the resync after a lost batch, are all there is (solo.go).
+		e.settleLocal(ctx)
+		return false
+	}
 	for {
 		e.mu.Lock()
 		idle, broken := len(e.inflight) == 0, e.pipeBroken
@@ -730,6 +792,10 @@ func (e *Engine) PendingDrop() (game.Piece, bool) {
 // queued behind the loss wait for the repair, then resume from the restored
 // piece. Runs on runInput.
 func (e *Engine) settleIfBroken(ctx context.Context) {
+	if e.solo() {
+		e.settleLocal(ctx) // sync: the batch in flight first; either mode: the resync, if one is due
+		return
+	}
 	e.mu.Lock()
 	broken := e.pipeBroken
 	e.mu.Unlock()
@@ -864,14 +930,16 @@ func (e *Engine) IntentPiece() (game.Piece, bool) {
 // acked replica — or, while a lost step is being repaired, the rollback
 // point the repair puts it back at (the replica may hold a poisoned step's
 // strays meanwhile). False with no piece on the board. The UI's "acks
-// outlined" display marks it and moves it only as commits ack.
+// outlined" display marks it and moves it only as commits ack. In a solo
+// game the replica trails the local board the game is played on (solo.go):
+// between the lock's ack and the spawn's there is no piece on it.
 func (e *Engine) AckedPiece() (game.Piece, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.pipeBroken {
 		return e.pipeRollback, true
 	}
-	if p := e.playfield.ActivePieceForPlayer(e.playerIdx); p != nil {
+	if p := e.ackedField.ActivePieceForPlayer(e.playerIdx); p != nil {
 		return *p, true
 	}
 	return game.Piece{}, false

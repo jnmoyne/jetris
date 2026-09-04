@@ -35,6 +35,13 @@ import (
 // (SetInflightLimit), the plain async mode, the outline-only display
 // (displayOutline) — and the display positions below are the model the
 // board is drawn from; the switch just fixes each setting's combination.
+//
+// In a SOLO game (a one-seat co-op crew) the switch keeps its meaning but
+// loses its guard: the engine is the only writer, so it plays on its local
+// board at once and journals every write with no expectation — sync lets one
+// batch out at a time, async every batch as it is made, without the limit
+// (engine/solo.go). Position 3 then paints the local board, its grey
+// outline where the acks have the piece, a round trip behind.
 type displayMode int
 
 const (

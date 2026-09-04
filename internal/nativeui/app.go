@@ -456,6 +456,11 @@ type App struct {
 	inviteAcceptBtn  widget.Clickable
 	inviteDeclineBtn widget.Clickable
 
+	// The How to play tour (tutorial.go): the lobby's button that opens it,
+	// and the tour itself. UI goroutine only.
+	tutBtn widget.Clickable
+	tut    tutorial
+
 	readyBtn widget.Clickable
 	backBtn  widget.Clickable
 	showMsgs widget.Bool // "Show NATS messages" checkbox
@@ -950,6 +955,9 @@ func (a *App) Run(ctx context.Context) error {
 			a.frameBegin()
 			gtx := app.NewContext(&ops, e)
 			a.layout(gtx)
+			// The tour reads where its parts landed off the frame just laid
+			// out (tutorial.go), before the window takes it.
+			a.tutorialObserve(gtx.Ops)
 			e.Frame(gtx.Ops)
 			a.frameEnd(gtx)
 		}
@@ -969,15 +977,26 @@ func (a *App) layout(gtx C) D {
 	// while the lobby is up, none on the login, archive and replay screens
 	// — a game's is the game screen's own affair.
 	a.reconcileVoice()
+	// The How to play tour's input and scene (tutorial.go), ahead of the
+	// screen it stands over, so the frame draws the step as it is after a
+	// click on Next and not before.
+	a.tutorialUpdate(gtx)
 	paint.Fill(gtx.Ops, colBg)
 	a.frames++
 	a.touchDebugFrame()
 	var d D
+	tourGame := a.tutorialScene() == tutSceneGame
 	switch a.getScreen() {
 	case screenLogin:
 		d = a.layoutLogin(gtx)
 	case screenLobby:
-		d = a.layoutLobby(gtx)
+		if tourGame {
+			// The tour's last scene: the game screen over its own engine,
+			// the lobby still the screen underneath.
+			d = a.layoutGameEngine(gtx, a.tut.gameEngine())
+		} else {
+			d = a.layoutLobby(gtx)
+		}
 	case screenGame:
 		d = a.layoutGame(gtx)
 	case screenArchive:
@@ -988,9 +1007,11 @@ func (a *App) layout(gtx C) D {
 	// Build version, top-right corner of every screen — except the game
 	// screen, whose top-right corner is the bar's chat button: there the
 	// plate rides in the HUD panel, beside the NATS tag (gameHUD).
-	if a.getScreen() != screenGame {
+	if a.getScreen() != screenGame && !tourGame {
 		a.versionBadge(gtx)
 	}
+	// The tour's layer over the screen: the scrim, the lit part, the callout.
+	a.tutorialOverlay(gtx)
 	// CRT overlay over the whole frame, screens and chrome alike. Deferred —
 	// op.Defer runs after everything else, first in first out — so it also
 	// covers what a screen paints late: the crown a winning player's board

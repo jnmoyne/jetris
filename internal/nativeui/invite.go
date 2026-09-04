@@ -495,28 +495,50 @@ func (a *App) closeInvitePicker() {
 	a.invalidate()
 }
 
+// pickerView is the picker as drawInvitePicker draws it: the game being
+// invited to, its roster and the invitations out, and the rows to choose
+// from. invitePickerOverlay reads it off the open picker; the How to play
+// tour hands in its own (tutorial.go).
+type pickerView struct {
+	gameID     string
+	picker     map[string]*inviteChoice
+	mode       config.GameMode
+	pc, ts, tc int
+	err        string
+	g          lobby.GameListing
+	invites    []lobby.Invitation
+	selfName   string
+}
+
 // invitePickerOverlay renders the modal invitee picker. All actions are
 // dispatched by handleInvitePicker; this only draws.
 func (a *App) invitePickerOverlay(gtx C) D {
 	a.mu.Lock()
-	gameID := a.invitePickerGameID
-	picker := a.invitePicker
-	mode, pc, ts, tc := a.invitePickerMode, a.invitePickerPC, a.invitePickerTS, a.invitePickerTC
-	pickErr := a.invitePickerErr
+	pv := pickerView{
+		gameID: a.invitePickerGameID,
+		picker: a.invitePicker,
+		mode:   a.invitePickerMode, pc: a.invitePickerPC, ts: a.invitePickerTS, tc: a.invitePickerTC,
+		err: a.invitePickerErr,
+	}
 	a.mu.Unlock()
-	if gameID == "" {
+	if pv.gameID == "" {
 		return D{}
 	}
-	teams := mode == config.ModeTeams
-
-	var g lobby.GameListing
-	var invites []lobby.Invitation
-	selfName := ""
 	if lb := a.getLobby(); lb != nil {
-		g = lb.Games()[gameID]
-		invites = lb.SentInvites(gameID)
-		selfName = lb.PlayerName()
+		pv.g = lb.Games()[pv.gameID]
+		pv.invites = lb.SentInvites(pv.gameID)
+		pv.selfName = lb.PlayerName()
 	}
+	return a.drawInvitePicker(gtx, pv)
+}
+
+// drawInvitePicker is the picker's dialog over pv.
+func (a *App) drawInvitePicker(gtx C, pv pickerView) D {
+	picker := pv.picker
+	mode, pc, ts, tc := pv.mode, pv.pc, pv.ts, pv.tc
+	pickErr := pv.err
+	teams := mode == config.ModeTeams
+	g, invites, selfName := pv.g, pv.invites, pv.selfName
 
 	ids := make([]string, 0, len(picker))
 	for id := range picker {
@@ -554,64 +576,72 @@ func (a *App) invitePickerOverlay(gtx C) D {
 
 	return layout.Center.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Max.X = modalW(gtx, 500)
-		return hardShadow(gtx, func(gtx C) D {
-			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
-				return background(gtx, colBg, func(gtx C) D {
-					return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(a.pixel(unit.Sp(13), title, colFg).Layout),
-							layout.Rigid(spacer(4)),
-							layout.Rigid(a.body("Selecting a player invites them on the spot; deselecting retracts. You're hosting as a spectator — select yourself to take a seat and play too.", colMuted)),
-							layout.Rigid(spacer(6)),
-							layout.Rigid(func(gtx C) D {
-								// The seat tally, rendered larger and bold so it's
-								// the header's most obvious line.
-								var kids []layout.FlexChild
-								for i, ln := range capLines {
-									ln := ln
-									if i > 0 {
-										kids = append(kids, layout.Rigid(spacer(3)))
-									}
-									kids = append(kids, layout.Rigid(func(gtx C) D {
-										l := material.Label(a.th, unit.Sp(16), ln)
-										l.Color = colAccent
-										l.Font.Weight = font.Bold
-										return l.Layout(gtx)
-									}))
+		return a.tutMark(gtx, tutPicker, func(gtx C) D {
+			return a.invitePickerBox(gtx, title, capLines, pickErr, g, selfName, ids, picker, invites, teams, tc)
+		})
+	})
+}
+
+// invitePickerBox is the picker's dialog: the title and the seat tally, the
+// pinned self row, the candidates, and the footer.
+func (a *App) invitePickerBox(gtx C, title string, capLines []string, pickErr string, g lobby.GameListing, selfName string, ids []string, picker map[string]*inviteChoice, invites []lobby.Invitation, teams bool, tc int) D {
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+			return background(gtx, colBg, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(a.pixel(unit.Sp(13), title, colFg).Layout),
+						layout.Rigid(spacer(4)),
+						layout.Rigid(a.body("Selecting a player invites them on the spot; deselecting retracts. You're hosting as a spectator — select yourself to take a seat and play too.", colMuted)),
+						layout.Rigid(spacer(6)),
+						layout.Rigid(func(gtx C) D {
+							// The seat tally, rendered larger and bold so it's
+							// the header's most obvious line.
+							var kids []layout.FlexChild
+							for i, ln := range capLines {
+								ln := ln
+								if i > 0 {
+									kids = append(kids, layout.Rigid(spacer(3)))
 								}
-								return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
-							}),
-							layout.Rigid(spacer(2)),
-							layout.Rigid(func(gtx C) D {
-								if pickErr == "" {
-									return D{}
-								}
-								return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, a.body(pickErr, colErr))
-							}),
-							layout.Rigid(spacer(10)),
-							layout.Rigid(func(gtx C) D { return a.inviteSelfRow(gtx, g, selfName, teamSlots(teams, tc)) }),
-							layout.Rigid(spacer(4)),
-							layout.Rigid(func(gtx C) D {
-								if len(ids) == 0 {
-									return a.body("No other players are in the lobby right now.", colMuted)(gtx)
-								}
-								gtx.Constraints.Max.Y = gtx.Dp(240)
-								// Overlay the scrollbar instead of reserving a lane for
-								// it (Occupy): list rows then span the full width, so
-								// their Invite checkboxes sit in the same column as the
-								// pinned self row's Play checkbox above (see
-								// inviteCheckBoxColumn).
-								l := material.List(a.th, &a.inviteList)
-								l.AnchorStrategy = material.Overlay
-								return l.Layout(gtx, len(ids), func(gtx C, i int) D {
-									c := picker[ids[i]]
-									return a.inviteRow(gtx, c, pickerRowStatus(g, invites, c.playerID), teamSlots(teams, tc))
-								})
-							}),
-							layout.Rigid(spacer(14)),
-							layout.Rigid(func(gtx C) D { return a.invitePickerFooter(gtx) }),
-						)
-					})
+								kids = append(kids, layout.Rigid(func(gtx C) D {
+									l := material.Label(a.th, unit.Sp(16), ln)
+									l.Color = colAccent
+									l.Font.Weight = font.Bold
+									return l.Layout(gtx)
+								}))
+							}
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+						}),
+						layout.Rigid(spacer(2)),
+						layout.Rigid(func(gtx C) D {
+							if pickErr == "" {
+								return D{}
+							}
+							return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, a.body(pickErr, colErr))
+						}),
+						layout.Rigid(spacer(10)),
+						layout.Rigid(a.tutMarked(tutPickerSelf, func(gtx C) D { return a.inviteSelfRow(gtx, g, selfName, teamSlots(teams, tc)) })),
+						layout.Rigid(spacer(4)),
+						layout.Rigid(a.tutMarked(tutPickerOthers, func(gtx C) D {
+							if len(ids) == 0 {
+								return a.body("No other players are in the lobby right now.", colMuted)(gtx)
+							}
+							gtx.Constraints.Max.Y = gtx.Dp(240)
+							// Overlay the scrollbar instead of reserving a lane for
+							// it (Occupy): list rows then span the full width, so
+							// their Invite checkboxes sit in the same column as the
+							// pinned self row's Play checkbox above (see
+							// inviteCheckBoxColumn).
+							l := material.List(a.th, &a.inviteList)
+							l.AnchorStrategy = material.Overlay
+							return l.Layout(gtx, len(ids), func(gtx C, i int) D {
+								c := picker[ids[i]]
+								return a.inviteRow(gtx, c, pickerRowStatus(g, invites, c.playerID), teamSlots(teams, tc))
+							})
+						})),
+						layout.Rigid(spacer(14)),
+						layout.Rigid(func(gtx C) D { return a.invitePickerFooter(gtx) }),
+					)
 				})
 			})
 		})

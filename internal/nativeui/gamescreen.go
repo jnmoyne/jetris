@@ -73,7 +73,7 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 	if mode == engine.ModePlayer && !started && !view.gameOver {
 		// Pre-start there is nothing to play and everything to decide: the
 		// ready-up action belongs on the screen, not behind the menu.
-		children = append(children, layout.Rigid(func(gtx C) D { return a.readyBar(gtx, view) }))
+		children = append(children, layout.Rigid(a.tutMarked(tutGameReady, func(gtx C) D { return a.readyBar(gtx, view) })))
 	}
 	children = append(children, layout.Flexed(1, func(gtx C) D {
 		return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
@@ -289,9 +289,13 @@ func (a *App) hudColumn(gtx C, eng *engine.Engine, view gameView, mode engine.Mo
 	return background(gtx, colPanel, func(gtx C) D {
 		const pad = 10
 		slotY := gtx.Constraints.Max.Y - 2*gtx.Dp(pad)
-		d := material.List(a.th, &a.hudList).Layout(gtx, 1, func(gtx C, _ int) D {
-			return layout.UniformInset(unit.Dp(pad)).Layout(gtx, func(gtx C) D {
-				return a.gameHUD(gtx, eng, view, mode, gmode, slotY)
+		// The list is the viewport the tour scrolls the column's parts into
+		// (tutHUDColumn).
+		d := a.tutMark(gtx, tutHUDColumn, func(gtx C) D {
+			return material.List(a.th, &a.hudList).Layout(gtx, 1, func(gtx C, _ int) D {
+				return layout.UniformInset(unit.Dp(pad)).Layout(gtx, func(gtx C) D {
+					return a.gameHUD(gtx, eng, view, mode, gmode, slotY)
+				})
 			})
 		})
 		fillRect(gtx.Ops, image.Rect(d.Size.X-gtx.Dp(2), 0, d.Size.X, d.Size.Y), colBorder)
@@ -309,12 +313,12 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	player := mode == engine.ModePlayer
 
 	kids := []layout.FlexChild{
-		layout.Rigid(func(gtx C) D { return a.barButton(gtx, &a.barHudBtn, glyphMenu, a.hudVisible()) }),
+		layout.Rigid(a.tutMarked(tutGameBarMenu, func(gtx C) D { return a.barButton(gtx, &a.barHudBtn, glyphMenu, a.hudVisible()) })),
 		// The voice switch, beside the menu button (voice.go).
 		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, a.tutMarked(tutGameBarMic, func(gtx C) D {
 				return a.micButton(gtx, view.voice)
-			})
+			}))
 		}),
 	}
 	kids = append(kids, layout.Flexed(1, func(gtx C) D {
@@ -331,13 +335,13 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 	if player && !view.gameOver {
 		kids = append(kids, layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, a.tutMarked(tutGameBarPad, func(gtx C) D {
 				return a.barButton(gtx, &a.barPadBtn, glyphPad, a.padVisible())
-			})
+			}))
 		}))
 	}
 	kids = append(kids, layout.Rigid(func(gtx C) D {
-		return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+		return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, a.tutMarked(tutGameBarChat, func(gtx C) D {
 			d := a.barButton(gtx, &a.barChatBtn, glyphChat, a.chatVisible())
 			// Unread mark: messages have arrived since the panel last showed
 			// them (gameChatPanel records what it showed in chatSeen).
@@ -346,7 +350,7 @@ func (a *App) gameBar(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 				fillRect(gtx.Ops, image.Rect(d.Size.X-dot, 0, d.Size.X, dot), colGold)
 			}
 			return d
-		})
+		}))
 	}))
 
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X

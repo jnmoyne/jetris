@@ -865,6 +865,11 @@ func (a *App) controlPad(gtx C, p padSizer, enabled, hold bool) D {
 // whole arm, hub edge to tip); the hub is none. The top arm carries the
 // clockwise-rotate glyph: it is the ↑ key.
 func (a *App) dpad(gtx C, p padSizer, enabled bool) D {
+	return a.tutMark(gtx, tutGamePad, func(gtx C) D { return a.dpadPlate(gtx, p, enabled) })
+}
+
+// dpadPlate is the D-pad itself (dpad, less the tour's mark).
+func (a *App) dpadPlate(gtx C, p padSizer, enabled bool) D {
 	cell := p.px(gtx, p.m.btn)
 	size := 3 * cell
 	border, glyphCol := colAccent, colAccent
@@ -949,7 +954,11 @@ func (a *App) faceButtons(gtx C, p padSizer, enabled, hold bool) D {
 			layout.Rigid(bar(&a.padHold, colPanel, glyphCol, glyphHold, "HOLD")),
 		)
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
+	// The other half of the pad to the tour (tutGamePadFace, beside the
+	// D-pad's tutGamePad).
+	return a.tutMark(gtx, tutGamePadFace, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
+	})
 }
 
 // padButton renders one arcade pad button: hard shadow, chunky border, solid

@@ -174,8 +174,20 @@ func (a *App) layoutGame(gtx C) D {
 	if eng == nil {
 		return D{}
 	}
+	return a.layoutGameEngine(gtx, eng)
+}
+
+// layoutGameEngine is the game screen over eng: the live game's (layoutGame)
+// or the How to play tour's transport-less one (tutorial.go), which the
+// tour stands over — its input handlers held off while the tour is up,
+// since every press is the tour's and the keys are too.
+func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
+	if eng == nil {
+		return D{}
+	}
 	mode := eng.Mode()
 	gmode := eng.GameMode()
+	live := !a.tutorialUp()
 
 	view := a.snapshotGame(gtx.Now)
 	// The decided game — a spectator's, or a winning player's own: the reveal
@@ -191,7 +203,7 @@ func (a *App) layoutGame(gtx C) D {
 	// for the keys — the player chats by clicking into the chat panel and
 	// plays again by clicking anywhere else (handleGameFocus); before the
 	// start, and for spectators, the chat editor is the only key consumer.
-	playing := mode == engine.ModePlayer && started && !view.gameOver
+	playing := mode == engine.ModePlayer && started && !view.gameOver && live
 	a.handleGameFocus(gtx, eng, playing) // first thing in the frame — see its doc
 	// Focus outline: the chat's while its editor (or its Send button, for the
 	// one frame a press leaves it there) has the keys, the board's otherwise
@@ -201,10 +213,10 @@ func (a *App) layoutGame(gtx C) D {
 	// The accidental-drop guard watches the pieces go by (dropguard.go):
 	// first, so every hard drop the handlers below dispatch is judged against
 	// the board as this frame finds it.
-	a.observeDropGuard(gtx, eng, mode == engine.ModePlayer && started)
+	a.observeDropGuard(gtx, eng, mode == engine.ModePlayer && started && live)
 	// Dispatch moves (the board's key filters are registered here every
 	// frame; its key-input target, event.Op, is the root pointerArea below).
-	if mode == engine.ModePlayer && started {
+	if mode == engine.ModePlayer && started && live {
 		a.handleKeys(gtx, eng)
 	}
 	// The screen's own chrome first (gamescreen.go — the bar's switches), so
@@ -226,15 +238,15 @@ func (a *App) layoutGame(gtx C) D {
 	// handlePadShift above — the keyboard's gate, so a held key under the
 	// leave modal repeats exactly as the OS repeat did, and any other state
 	// resets the machine.
-	a.handleAutoShift(gtx, eng, mode == engine.ModePlayer && started)
+	a.handleAutoShift(gtx, eng, mode == engine.ModePlayer && started && live)
 	// So are the touch gestures on the playfield (gesture.go) — after the
 	// pad's Clickables have drained.
 	a.handleGestures(gtx, eng, reachable)
 
-	if a.readyBtn.Clicked(gtx) {
+	if a.readyBtn.Clicked(gtx) && live {
 		go a.toggleReady()
 	}
-	if a.backBtn.Clicked(gtx) {
+	if a.backBtn.Clicked(gtx) && live {
 		// Walking out of a running game deserves an "are you sure?" — the seat
 		// is kept and the lobby offers Rejoin, but the board plays on without
 		// you. Any other state (pre-start, game over, spectating) leaves
@@ -245,14 +257,16 @@ func (a *App) layoutGame(gtx C) D {
 			go a.leaveCurrentGame()
 		}
 	}
-	if a.leaveYesBtn.Clicked(gtx) {
+	if a.leaveYesBtn.Clicked(gtx) && live {
 		a.confirmLeave = false
 		go a.leaveCurrentGame()
 	}
 	if a.leaveNoBtn.Clicked(gtx) {
 		a.confirmLeave = false
 	}
-	a.handleGameChatSubmit(gtx, eng)
+	if live {
+		a.handleGameChatSubmit(gtx, eng)
+	}
 	if view.flashActive {
 		animate(gtx) // keep animating the flash until it expires
 	}
@@ -425,20 +439,22 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 		return a.chatComposer(gtx, &a.gameChatEd, &a.gameChatBtn, hint)
 	}
 
-	return pointerArea(gtx, &a.chatTag, func(gtx C) D {
-		return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(a.header("CHAT")),
-				layout.Rigid(func(gtx C) D {
-					return focusRing(gtx, ring, func(gtx C) D {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(log),
-							layout.Rigid(spacer(6)),
-							layout.Rigid(composer),
-						)
-					})
-				}),
-			)
+	return a.tutMark(gtx, tutGameChat, func(gtx C) D {
+		return pointerArea(gtx, &a.chatTag, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(a.header("CHAT")),
+					layout.Rigid(func(gtx C) D {
+						return focusRing(gtx, ring, func(gtx C) D {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(log),
+								layout.Rigid(spacer(6)),
+								layout.Rigid(composer),
+							)
+						})
+					}),
+				)
+			})
 		})
 	})
 }
@@ -595,7 +611,9 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		}),
 		layout.Rigid(func(gtx C) D { return a.sessionLine(gtx) }),
 		layout.Rigid(spacer(10)),
-		layout.Rigid(func(gtx C) D { return a.legend(gtx, eng, view, gmode) }),
+		// The roster and the stats under it are one part to the tour
+		// (tutHUDStats: every one of them marked, the union lit).
+		layout.Rigid(a.tutMarked(tutHUDStats, func(gtx C) D { return a.legend(gtx, eng, view, gmode) })),
 		layout.Rigid(spacer(14)),
 	}
 
@@ -614,17 +632,17 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 				val = fmt.Sprintf("%d · lvl %d", view.teamScore(t), view.teamLevel(t))
 			}
 			children = append(children,
-				layout.Rigid(a.hudStatColored("TEAM "+teamName(t), val, valCol)))
+				layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatColored("TEAM "+teamName(t), val, valCol))))
 		}
 	} else {
-		children = append(children, layout.Rigid(a.hudStat("SCORE", view.score)))
+		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("SCORE", view.score))))
 	}
 	if !(gmode == config.ModeTeams && mode == engine.ModeSpectator) {
-		children = append(children, layout.Rigid(a.hudStat("LEVEL", view.level)))
+		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("LEVEL", view.level))))
 	}
 
 	if mode == engine.ModePlayer {
-		children = append(children, layout.Rigid(a.hudStatColored("Batch RTT", formatRTT(view.rtt), rttColor(view.rtt))))
+		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatColored("Batch RTT", formatRTT(view.rtt), rttColor(view.rtt)))))
 	}
 	if view.linkDown > 0 {
 		// The NATS link is down (link.go): every move is waiting on it. Name
@@ -647,12 +665,12 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 
 	children = append(children,
 		layout.Rigid(spacer(14)),
-		layout.Rigid(func(gtx C) D {
+		layout.Rigid(a.tutMarked(tutHUDMsgs, func(gtx C) D {
 			cb := material.CheckBox(a.th, &a.showMsgs, "Show NATS messages")
 			cb.Color = colFg
 			cb.IconColor = colAccent
 			return cb.Layout(gtx)
-		}),
+		})),
 		// The voice chat (voice.go): a player's and a spectator's alike.
 		layout.Rigid(spacer(12)),
 		layout.Rigid(func(gtx C) D { return a.voiceSection(gtx, view.voice, a.voiceRoomName(eng, view.voice)) }),
@@ -662,7 +680,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		// board paints while they round-trip. A player's, while playing.
 		children = append(children,
 			layout.Rigid(spacer(12)),
-			layout.Rigid(a.labToggles),
+			layout.Rigid(a.tutMarked(tutHUDLab, a.labToggles)),
 			// The handling knobs (autoshift.go): how a held ← → repeats,
 			// and how fast a held ↓ falls.
 			layout.Rigid(spacer(12)),
@@ -671,9 +689,9 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 	children = append(children,
 		layout.Rigid(spacer(18)),
-		layout.Rigid(func(gtx C) D {
+		layout.Rigid(a.tutMarked(tutHUDBack, func(gtx C) D {
 			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
-		}),
+		})),
 	)
 	if mode == engine.ModePlayer {
 		// Under it all, for a player, the controls legend: the keys and the
@@ -685,14 +703,14 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		for _, s := range a.controlsSections(eng.HoldEnabled()) {
 			children = append(children,
 				layout.Rigid(spacer(16)),
-				layout.Rigid(func(gtx C) D {
+				layout.Rigid(a.tutMarked(tutControls, func(gtx C) D {
 					// The legend's parts at their own sizes, not the column's:
 					// a key label handed the column's width as its minimum
 					// reports it, and controlsHint lines the moves up past
 					// the widest key.
 					gtx.Constraints.Min = image.Point{}
 					return a.controlsHint(gtx, s.header, s.rows)
-				}),
+				})),
 			)
 		}
 	}
@@ -1153,17 +1171,17 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// The side wells, in their own sub-divisions hanging from the
 		// playfield's top edge: the HOLD box off its left, the NEXT well off
 		// its right, classic arcade style.
-		holdBox := func(gtx C) D {
+		holdBox := a.tutMarked(tutGameHold, func(gtx C) D {
 			held, has := eng.HeldPiece()
 			return a.holdWell(gtx, held, has, eng.HoldUsed(), a.wellCell(cell))
-		}
-		nextBox := func(gtx C) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) }
-		strip := func(gtx C) D {
+		})
+		nextBox := a.tutMarked(tutGameNext, func(gtx C) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) })
+		strip := a.tutMarked(tutGameStrip, func(gtx C) D {
 			// Inputs queued behind the in-flight batch publish (very visible
 			// on a high-RTT server); the strip drains as each buffered
 			// move's own publish starts.
 			return a.bufferedMovesStrip(gtx, eng.BufferedBatches(), eng.BatchesTaken())
-		}
+		})
 		// What layout.Center will stretch the column to (a Flexed slot's Min
 		// is its Max on the main axis): the room left over on either side of
 		// the centered content, which the gesture surface claims below.
@@ -1192,7 +1210,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				return d, m.Stop()
 			}
 			flank := showPad && plan.beside
-			boardD, boardCall := rec(true, boardOnly)
+			boardD, boardCall := rec(true, a.tutMarked(tutGameBoard, boardOnly))
 			holdD, holdCall := rec(showHold, holdBox)
 			nextD, nextCall := rec(showNext, nextBox)
 			dpadD, dpadCall := rec(flank, func(gtx C) D { return a.dpad(gtx, plan.padSizer, padEnabled) })

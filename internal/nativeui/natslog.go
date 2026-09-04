@@ -131,10 +131,12 @@ func (a *App) resetMsgGroups() {
 // natsMsgSection is the bottom message strip plus the divider that resizes it.
 func (a *App) natsMsgSection(gtx C) D {
 	h := a.msgPanelHeightPx(gtx)
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.msgPanelDivider),
-		layout.Rigid(func(gtx C) D { return a.natsMsgPanel(gtx, h) }),
-	)
+	return a.tutMark(gtx, tutNatsPanel, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(a.msgPanelDivider),
+			layout.Rigid(func(gtx C) D { return a.natsMsgPanel(gtx, h) }),
+		)
+	})
 }
 
 // msgPanelHeightPx resolves this frame's strip height and folds in any drag on

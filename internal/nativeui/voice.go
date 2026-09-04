@@ -384,7 +384,10 @@ func (a *App) voiceSection(gtx C, v voice.Snapshot, room string) D {
 			layout.Rigid(row(voiceChanAll, "Everyone")),
 		)
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	// The whole section is one part to the tour (tutorial.go).
+	return a.tutMark(gtx, tutVoice, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	})
 }
 
 // voiceMeter is the level bar: the frame's level on a -80..0 dBFS scale

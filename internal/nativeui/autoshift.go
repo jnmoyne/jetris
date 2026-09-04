@@ -557,14 +557,16 @@ func (a *App) handlingKnobs(gtx C) D {
 		}
 		return ms(v)
 	}
+	// Each row is a part of its own to the tour (tutorial.go), the header
+	// going with the first.
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.header("HANDLING")),
-		layout.Rigid(row("DAS", &a.dasFloat, &a.dasMs, msRange, ms)),
+		layout.Rigid(a.tutMarked(tutHUDDAS, a.header("HANDLING"))),
+		layout.Rigid(a.tutMarked(tutHUDDAS, row("DAS", &a.dasFloat, &a.dasMs, msRange, ms))),
 		layout.Rigid(spacer(4)),
-		layout.Rigid(row("ARR", &a.arrFloat, &a.arrMs, msRange, ms)),
+		layout.Rigid(a.tutMarked(tutHUDARR, row("ARR", &a.arrFloat, &a.arrMs, msRange, ms))),
 		layout.Rigid(spacer(4)),
-		layout.Rigid(row("SDF", &a.sdfFloat, &a.sdf, sdfRange, factor)),
+		layout.Rigid(a.tutMarked(tutHUDSDF, row("SDF", &a.sdfFloat, &a.sdf, sdfRange, factor))),
 		layout.Rigid(spacer(4)),
-		layout.Rigid(row("GUARD", &a.dropGuardFloat, &a.dropGuardMs, msRange, guard)),
+		layout.Rigid(a.tutMarked(tutHUDGuard, row("GUARD", &a.dropGuardFloat, &a.dropGuardMs, msRange, guard))),
 	)
 }

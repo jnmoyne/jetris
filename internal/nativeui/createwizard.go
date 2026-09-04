@@ -232,38 +232,46 @@ func (a *App) createWizardOverlay(gtx C) D {
 	bodyMaxY := max(gtx.Constraints.Max.Y-gtx.Dp(200), gtx.Dp(120))
 	return layout.Center.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Max.X = modalW(gtx, 480)
-		return hardShadow(gtx, func(gtx C) D {
-			return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
-				return background(gtx, colBg, func(gtx C) D {
-					return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(a.pixel(unit.Sp(13), "CREATE A NEW GAME", colFg).Layout),
-							layout.Rigid(spacer(6)),
-							layout.Rigid(a.pixel(unit.Sp(9), fmt.Sprintf("STEP %d OF %d — %s", step, total, stepTitle), colAccent).Layout),
-							layout.Rigid(spacer(14)),
-							layout.Rigid(func(gtx C) D {
-								gtx.Constraints.Min.Y = 0
-								gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, bodyMaxY)
-								return material.List(a.th, &a.wizList).Layout(gtx, 1, func(gtx C, _ int) D { return body(gtx) })
-							}),
-							layout.Rigid(spacer(18)),
-							layout.Rigid(func(gtx C) D {
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.wizCancelBtn, "Cancel") }),
-									layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
-									layout.Rigid(func(gtx C) D {
-										if step == wizStepMode {
-											return D{}
-										}
-										return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
-											return a.secondaryButton(gtx, &a.wizBackBtn, "Back")
-										})
-									}),
-									layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.wizNextBtn, nextLabel) }),
-								)
-							}),
-						)
-					})
+		return a.tutMark(gtx, tutWizard, func(gtx C) D {
+			return a.createWizardBox(gtx, step, total, stepTitle, nextLabel, bodyMaxY, body)
+		})
+	})
+}
+
+// createWizardBox is the wizard's dialog: the title, the step line, the
+// step's body in its scrolling slot, and the buttons under it.
+func (a *App) createWizardBox(gtx C, step, total int, stepTitle, nextLabel string, bodyMaxY int, body layout.Widget) D {
+	return hardShadow(gtx, func(gtx C) D {
+		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
+			return background(gtx, colBg, func(gtx C) D {
+				return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(a.pixel(unit.Sp(13), "CREATE A NEW GAME", colFg).Layout),
+						layout.Rigid(spacer(6)),
+						layout.Rigid(a.pixel(unit.Sp(9), fmt.Sprintf("STEP %d OF %d — %s", step, total, stepTitle), colAccent).Layout),
+						layout.Rigid(spacer(14)),
+						layout.Rigid(func(gtx C) D {
+							gtx.Constraints.Min.Y = 0
+							gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, bodyMaxY)
+							return material.List(a.th, &a.wizList).Layout(gtx, 1, func(gtx C, _ int) D { return body(gtx) })
+						}),
+						layout.Rigid(spacer(18)),
+						layout.Rigid(func(gtx C) D {
+							return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx C) D { return a.dangerButton(gtx, &a.wizCancelBtn, "Cancel") }),
+								layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
+								layout.Rigid(func(gtx C) D {
+									if step == wizStepMode {
+										return D{}
+									}
+									return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
+										return a.secondaryButton(gtx, &a.wizBackBtn, "Back")
+									})
+								}),
+								layout.Rigid(func(gtx C) D { return a.primaryButton(gtx, &a.wizNextBtn, nextLabel) }),
+							)
+						}),
+					)
 				})
 			})
 		})

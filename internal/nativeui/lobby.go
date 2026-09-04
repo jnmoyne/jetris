@@ -70,26 +70,41 @@ func (a *App) layoutLobby(gtx C) D {
 	pickerOpen := a.handleInvitePicker(gtx)
 	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
 	qrOpen := a.handleQRModal(gtx, wizOpen || pickerOpen || inviteOpen)
+	// The How to play tour (tutorial.go) is a modal of its own over the
+	// whole screen: while it is up nothing under it takes a press.
+	tour := a.tutorialUp()
+	modal := wizOpen || pickerOpen || inviteOpen || qrOpen || tour
 	// The bar's switches and the panel's tabs, drained before anything is
 	// laid out so a column shown or hidden this frame is already in the
 	// layout that measures it — and answered only while no modal is up, since
 	// the scrim dims the bar without taking its presses.
-	a.handleLobbyBarClicks(gtx, wizOpen || pickerOpen || inviteOpen || qrOpen)
+	a.handleLobbyBarClicks(gtx, modal)
 	// The Create button just opens the wizard; the wizard's last step does
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
-	if a.createBtn.Clicked(gtx) && !wizOpen && !pickerOpen && !inviteOpen && !qrOpen {
+	if a.createBtn.Clicked(gtx) && !modal {
 		a.createWizStep = wizStepMode
 		a.mu.Lock()
 		a.lobbyErr = "" // a fresh attempt clears the previous failure strip
 		a.mu.Unlock()
 		wizOpen = true
 	}
+	// How to play opens the tour, from a lobby with nothing else up.
+	if a.tutBtn.Clicked(gtx) && !modal {
+		a.startTutorial()
+	}
 	a.handleChatSubmit(gtx)
 
-	games := sortedGames(lb.Games())
-	players := sortedPlayers(lb.Players())
+	gamesByID, presence, archiveRecs, logEntries := lb.Games(), lb.Players(), lb.Archives(), lb.LogEntries()
 	abandoned := lb.AbandonedGames()
+	if tour {
+		// The tour's own lobby in place of the server's: every row it
+		// points at is there whatever the server holds.
+		gamesByID, presence, archiveRecs, logEntries = a.tutorialLobby()
+		abandoned = nil
+	}
+	games := sortedGames(gamesByID)
+	players := sortedPlayers(presence)
 	// The lobby's voice session (voice.go): the mic button, the menu's
 	// VOICE section, who is heard beside the names.
 	vs := a.voiceFrame(voice.ChannelAll)
@@ -145,8 +160,7 @@ func (a *App) layoutLobby(gtx C) D {
 	}
 
 	// --- render ---
-	archives := a.archivesForDisplay(lb.Archives())
-	logEntries := lb.LogEntries()
+	archives := a.archivesForDisplay(archiveRecs)
 	// Under the bar: whichever columns are switched on, the panel with
 	// everything they leave, and the chat strip along the bottom.
 	body := func(gtx C) D {
@@ -178,11 +192,11 @@ func (a *App) layoutLobby(gtx C) D {
 						pw := a.lobbyPlayersColW(gtx, gtx.Constraints.Max.X)
 						d = layout.Flex{}.Layout(gtx,
 							layout.Flexed(1, panel),
-							layout.Rigid(func(gtx C) D {
+							layout.Rigid(a.tutMarked(tutLobbyPlayers, func(gtx C) D {
 								gtx.Constraints.Min.X, gtx.Constraints.Max.X = pw, pw
 								gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
 								return a.lobbyPlayersColumn(gtx, players, vs)
-							}),
+							})),
 						)
 					}
 					if !a.lobbyPlayersVisible() {
@@ -203,11 +217,11 @@ func (a *App) layoutLobby(gtx C) D {
 					return d
 				}
 				menuW := a.lobbyMenuW(gtx)
-				menu := func(gtx C) D {
+				menu := a.tutMarked(tutLobbyMenu, func(gtx C) D {
 					gtx.Constraints.Min.X, gtx.Constraints.Max.X = menuW, menuW
 					gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
 					return a.lobbyMenuColumn(gtx, lb.PlayerName(), connName, connURL, vs)
-				}
+				})
 				switch {
 				case !a.lobbyMenuVisible():
 					return content(gtx)
@@ -246,17 +260,17 @@ func (a *App) layoutLobby(gtx C) D {
 		// The players, where they could not stand beside the panel: a strip of
 		// their own across the full width, just above the chat.
 		if a.lobbyPlayersVisible() && !playersBeside {
-			children = append(children, layout.Rigid(func(gtx C) D {
+			children = append(children, layout.Rigid(a.tutMarked(tutLobbyPlayers, func(gtx C) D {
 				return a.lobbyPlayersStrip(gtx, players, vs)
-			}))
+			})))
 		}
 		// The chat is a strip along the bottom, the full width of the screen
 		// and in the flow, exactly as it is in a game: while it is up the
 		// panel simply has that many fewer rows.
 		if a.lobbyChatVisible() {
-			children = append(children, layout.Rigid(func(gtx C) D {
+			children = append(children, layout.Rigid(a.tutMarked(tutLobbyChat, func(gtx C) D {
 				return a.lobbyChatStrip(gtx, chat)
-			}))
+			})))
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	}
@@ -411,14 +425,14 @@ func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 func (a *App) lobbyBar(gtx C, playerName, connName string, unread bool, vs voice.Snapshot) D {
 	barH := gtx.Dp(gameBarH)
 	kids := []layout.FlexChild{
-		layout.Rigid(func(gtx C) D {
+		layout.Rigid(a.tutMarked(tutLobbyMenuBtn, func(gtx C) D {
 			return a.barButton(gtx, &a.barLobbyMenuBtn, glyphMenu, a.lobbyMenuVisible())
-		}),
+		})),
 		// The voice switch, beside the menu button as on the game screen.
 		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, a.tutMarked(tutLobbyMic, func(gtx C) D {
 				return a.micButton(gtx, vs)
-			})
+			}))
 		}),
 		layout.Flexed(1, func(gtx C) D {
 			return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
@@ -426,12 +440,12 @@ func (a *App) lobbyBar(gtx C, playerName, connName string, unread bool, vs voice
 			})
 		}),
 		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, a.tutMarked(tutLobbyPlayersBtn, func(gtx C) D {
 				return a.barButton(gtx, &a.barLobbyPlayersBtn, glyphPlayers, a.lobbyPlayersVisible())
-			})
+			}))
 		}),
 		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, a.tutMarked(tutLobbyChatBtn, func(gtx C) D {
 				d := a.barButton(gtx, &a.barLobbyChatBtn, glyphChat, a.lobbyChatVisible())
 				// Unread mark: messages have arrived since the strip last
 				// showed them (lobbyChatStrip records what it showed).
@@ -440,7 +454,7 @@ func (a *App) lobbyBar(gtx C, playerName, connName string, unread bool, vs voice
 					fillRect(gtx.Ops, image.Rect(d.Size.X-dot, 0, d.Size.X, dot), colGold)
 				}
 				return d
-			})
+			}))
 		}),
 	}
 	gtx.Constraints.Min.X = gtx.Constraints.Max.X
@@ -612,13 +626,13 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 	for _, sec := range a.controlsSections(false) {
 		children = append(children,
 			layout.Rigid(spacer(16)),
-			layout.Rigid(func(gtx C) D {
+			layout.Rigid(a.tutMarked(tutControls, func(gtx C) D {
 				// The legend's parts at their own sizes, not the column's: a
 				// key label handed the column's width as its minimum reports
 				// it, and controlsHint lines the moves up past the widest key.
 				gtx.Constraints.Min = image.Point{}
 				return a.controlsHint(gtx, sec.header, sec.rows)
-			}),
+			})),
 		)
 	}
 	// The parts at their own heights — the button still spans the width —
@@ -809,17 +823,17 @@ func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]
 			// (the connection page's, connPage), each carrying its own count
 			// so the one that is not showing still says how much is in it.
 			return layout.Flex{Alignment: layout.End}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
+				layout.Rigid(a.tutMarked(tutLobbyTabGames, func(gtx C) D {
 					return a.tabChip(gtx, &a.lobbyTabBtns[0], fmt.Sprintf("GAMES (%d)", len(games)), !history && !serverLog)
-				}),
+				})),
 				layout.Rigid(hSpacer(4)),
-				layout.Rigid(func(gtx C) D {
+				layout.Rigid(a.tutMarked(tutLobbyTabHistory, func(gtx C) D {
 					return a.tabChip(gtx, &a.lobbyTabBtns[1], fmt.Sprintf("GAME HISTORY (%d)", len(archives)), history)
-				}),
+				})),
 				layout.Rigid(hSpacer(4)),
-				layout.Rigid(func(gtx C) D {
+				layout.Rigid(a.tutMarked(tutLobbyTabLog, func(gtx C) D {
 					return a.tabChip(gtx, &a.lobbyTabBtns[2], fmt.Sprintf("SERVER LOG (%d)", len(logEntries)), serverLog)
-				}),
+				})),
 			)
 		}),
 		layout.Flexed(1, func(gtx C) D {
@@ -888,16 +902,16 @@ func (a *App) lobbyHistoryTab(gtx C, archives []config.ArchiveRecord) D {
 							a.replayBtns = append(a.replayBtns, widget.Clickable{})
 						}
 						btn := &a.archiveBtns[i]
-						if btn.Clicked(gtx) {
+						if btn.Clicked(gtx) && !a.tutorialUp() {
 							a.openArchive(archives[i])
 						}
 						// Games whose stream was archived to a replay
 						// stream grow a Replay button; clicking it opens the
 						// replay itself — there is nothing to ask first.
 						var replayBtn *widget.Clickable
-						if lb != nil && lb.HasReplay(archives[i].GameID) {
+						if a.hasReplay(lb, archives[i].GameID) {
 							replayBtn = &a.replayBtns[i]
-							if replayBtn.Clicked(gtx) {
+							if replayBtn.Clicked(gtx) && !a.tutorialUp() {
 								a.startReplay(archives[i])
 							}
 						}
@@ -905,13 +919,30 @@ func (a *App) lobbyHistoryTab(gtx C, archives []config.ArchiveRecord) D {
 						// (the ranking counts every record, not just the rows
 						// the filter shows — and only once the bucket has
 						// more than ten games).
-						top := lb != nil && lb.IsTopRanked(archives[i].GameID)
+						top := a.isTopRanked(lb, archives[i].GameID)
 						return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top)
 					})
 				}),
 			)
 		}),
 	)
+}
+
+// hasReplay and isTopRanked are the lobby's HasReplay and IsTopRanked over
+// the history on screen — the server's, or the How to play tour's while it
+// is up (tutorial.go), whose top game has both.
+func (a *App) hasReplay(lb *lobby.Lobby, gameID string) bool {
+	if a.tutorialUp() {
+		return tutorialHasReplay(gameID)
+	}
+	return lb != nil && lb.HasReplay(gameID)
+}
+
+func (a *App) isTopRanked(lb *lobby.Lobby, gameID string) bool {
+	if a.tutorialUp() {
+		return tutorialTopRanked(gameID)
+	}
+	return lb != nil && lb.IsTopRanked(gameID)
 }
 
 // lobbyLogTab is the server log: the journal every client appends to as it
@@ -1318,8 +1349,9 @@ func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn 
 }
 
 // archiveHistoryActions is the row's action cluster: View board, and Replay
-// for a game whose stream was archived to one.
-func (a *App) archiveHistoryActions(btn, replayBtn *widget.Clickable) []layout.FlexChild {
+// for a game whose stream was archived to one. mark is the id the cluster
+// carries for the How to play tour (tutorialHistoryMark), "" for none.
+func (a *App) archiveHistoryActions(mark string, btn, replayBtn *widget.Clickable) []layout.FlexChild {
 	kids := []layout.FlexChild{
 		layout.Rigid(func(gtx C) D { return a.viewBoardButton(gtx, btn) }),
 	}
@@ -1331,7 +1363,12 @@ func (a *App) archiveHistoryActions(btn, replayBtn *widget.Clickable) []layout.F
 			}),
 		)
 	}
-	return kids
+	if mark == "" {
+		return kids
+	}
+	return []layout.FlexChild{layout.Rigid(a.tutMarked(mark, func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
+	}))}
 }
 
 // archiveHistoryStackedCells is the row folded onto two lines, for a panel
@@ -1362,7 +1399,7 @@ func (a *App) archiveHistoryStackedCells(gtx C, rec config.ArchiveRecord, btn, r
 					append([]layout.FlexChild{
 						layout.Flexed(1, a.archivePlayersCell(rec)),
 						layout.Rigid(hSpacer(8)),
-					}, a.archiveHistoryActions(btn, replayBtn)...)...)
+					}, a.archiveHistoryActions(tutorialHistoryMark(rec), btn, replayBtn)...)...)
 			}),
 		)
 	})
@@ -1386,7 +1423,7 @@ func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBt
 			layout.Flexed(1, a.archivePlayersCell(rec)),
 			layout.Rigid(hSpacer(8)),
 		}
-		children = append(children, a.archiveHistoryActions(btn, replayBtn)...)
+		children = append(children, a.archiveHistoryActions(tutorialHistoryMark(rec), btn, replayBtn)...)
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
 	})
 }
@@ -1660,9 +1697,18 @@ func archiveModeLine(r config.ArchiveRecord) string {
 
 // createRow is the single entry point to game creation: one button that opens
 // the create-game wizard (the game's attributes are chosen there, step by
-// step, instead of on an inline option row).
+// step, instead of on an inline option row) — and beside it, for a player
+// who has never seen one, the How to play tour (tutorial.go).
 func (a *App) createRow(gtx C) D {
-	return a.attractButton(gtx, &a.createBtn, "Create a new game")
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(a.tutMarked(tutCreateBtn, func(gtx C) D {
+			return a.attractButton(gtx, &a.createBtn, "Create a new game")
+		})),
+		layout.Rigid(hSpacer(12)),
+		layout.Rigid(a.tutMarked(tutHowToPlayBtn, func(gtx C) D {
+			return a.secondaryButton(gtx, &a.tutBtn, "How to play")
+		})),
+	)
 }
 
 // invitedTo reports whether this player holds a pending invitation to gameID.

@@ -728,7 +728,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
 	a.rulesEnum.Value = "guideline" // the Guideline preset until the creator asks for custom rules
-	a.createJoinEnum.Value = "open"
+	a.createJoinEnum.Value = "invite" // invite-only by default; open games are the opt-in
 	a.histSortEnum.Value = "score"
 	// Every crew composition is listed by default; each box hides its class.
 	a.histHumansCb.Value = true

@@ -622,8 +622,8 @@ func (a *App) wizardJoinStep(gtx C) D {
 		hint = "Next you'll pick the players to invite; the game starts once every seat is filled and ready."
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.wizardRadio(&a.createJoinEnum, "open", "Open game — anyone in the lobby can join")),
 		layout.Rigid(a.wizardRadio(&a.createJoinEnum, "invite", "Invite only — you choose who gets invited")),
+		layout.Rigid(a.wizardRadio(&a.createJoinEnum, "open", "Open game — anyone in the lobby can join")),
 		layout.Rigid(spacer(8)),
 		layout.Rigid(a.body(hint, colMuted)),
 	)

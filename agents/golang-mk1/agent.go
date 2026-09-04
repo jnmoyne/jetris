@@ -251,6 +251,9 @@ func (a *Agent) connect(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := a.ensureLogStream(ctx); err != nil {
+		return err
+	}
 	if err := a.ensureReplayStream(ctx); err != nil {
 		return err
 	}
@@ -1049,7 +1052,13 @@ func (a *Agent) runCountdown(ctx context.Context, gameID string) {
 	b, _ := json.Marshal(map[string]int{"seconds": 0})
 	_, _ = a.js.Publish(ctx, subject, b)
 	time.Sleep(700 * time.Millisecond)
-	a.transitionMeta(ctx, gameID, "in_progress")
+	if a.transitionMeta(ctx, gameID, "in_progress") {
+		// The countdown ran out and the game is on: journal it, with the
+		// game's shape from its meta.
+		if meta, _, err := a.fetchMeta(ctx, gameID); err == nil {
+			a.journal(ctx, logGameStarted, gameID, meta.int("mode"), meta.int("player_count"))
+		}
+	}
 }
 
 // randID returns n random hex chars (batch ids).

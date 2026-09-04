@@ -381,13 +381,13 @@ func TestScreenSnapshots(t *testing.T) {
 	t.Run("lobby_panel", func(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
-		for _, tab := range []string{lobbyTabGames, lobbyTabHistory} {
+		for _, tab := range []string{lobbyTabGames, lobbyTabHistory, lobbyTabLog} {
 			a.lobbyTab = tab
 			snapshotPNG(t, w, dir, "screen_lobby_panel_"+tab, func(gtx C) {
 				fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
 				layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
 					return a.lobbyPanel(gtx, sampleLobbyGames(), map[string]bool{"gone-game-9999": true},
-						a.archivesForDisplay(sampleLobbyArchives()))
+						a.archivesForDisplay(sampleLobbyArchives()), sampleServerLog())
 				})
 				scanlines(gtx)
 			})
@@ -735,5 +735,25 @@ func sampleReplayRecord() config.ArchiveRecord {
 			{PlayerID: "alice", Score: 4200, Level: 4, Winner: true},
 			{PlayerID: "bob", Score: 3100, Level: 3},
 		},
+	}
+}
+
+// sampleServerLog is a server log tail: players coming and going, a game
+// created and started, and one whose countdown an agent ran.
+func sampleServerLog() []config.LogEntry {
+	t0 := time.Date(2026, 9, 4, 13, 2, 11, 0, time.Local)
+	mk := func(i int, kind, name string, agent bool, mode config.GameMode, players int) config.LogEntry {
+		return config.LogEntry{Kind: kind, PlayerID: name, Name: name, Agent: agent, Mode: mode, PlayerCount: players,
+			Time: t0.Add(time.Duration(i) * 47 * time.Second), Seq: uint64(i + 1)}
+	}
+	return []config.LogEntry{
+		mk(0, config.LogKindConnected, "Alice", false, 0, 0),
+		mk(1, config.LogKindGameCreated, "Alice", false, config.ModeCompetitive, 2),
+		mk(2, config.LogKindConnected, "Bob", false, 0, 0),
+		mk(3, config.LogKindGameStarted, "Alice", false, config.ModeCompetitive, 2),
+		mk(4, config.LogKindDisconnected, "Bob", false, 0, 0),
+		mk(5, config.LogKindReconnected, "Alice", false, 0, 0),
+		mk(6, config.LogKindGameCreated, "Alice", false, config.ModeCooperative, 3),
+		mk(7, config.LogKindGameStarted, "golang-mk1-7f19-medium", true, config.ModeCooperative, 3),
 	}
 }

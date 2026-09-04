@@ -552,10 +552,12 @@ type App struct {
 	barLobbyMenuBtn, barLobbyPlayersBtn, barLobbyChatBtn widget.Clickable
 	lobbyMenuTag                                         int // pointer-area tag of a lobby menu column drawn OVER the panel
 	lobbyChatSeen                                        int // lobby messages the strip last showed: the bar's unread dot
-	// The panel's two tabs (lobbyTabGames / lobbyTabHistory) and their chips:
-	// the games on offer now, and the games already played.
+	// The panel's three tabs (lobbyTabGames / lobbyTabHistory / lobbyTabLog)
+	// and their chips: the games on offer now, the games already played,
+	// and the server log.
 	lobbyTab     string
-	lobbyTabBtns [2]widget.Clickable
+	lobbyTabBtns [3]widget.Clickable
+	logLst       widget.List // scrolls the server log tab
 	// playerStripLst scrolls the players strip where the column has moved
 	// under the panel and there are more players than its lines hold
 	// (lobbyPlayersStrip).
@@ -727,7 +729,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.holesEd.InputHint = key.HintNumeric
 	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
-	a.rulesEnum.Value = "guideline" // the Guideline preset until the creator asks for custom rules
+	a.rulesEnum.Value = "guideline"   // the Guideline preset until the creator asks for custom rules
 	a.createJoinEnum.Value = "invite" // invite-only by default; open games are the opt-in
 	a.histSortEnum.Value = "score"
 	// Every crew composition is listed by default; each box hides its class.
@@ -748,6 +750,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	// without the reader scrolling for it.
 	a.chatList.ScrollToEnd = true
 	a.lobbyTab = lobbyTabGames
+	a.logLst.Axis = layout.Vertical
 	a.playerStripLst.Axis = layout.Vertical
 	a.msgList.Axis = layout.Vertical
 	a.msgList.ScrollToEnd = true
@@ -884,15 +887,12 @@ func (a *App) firstDialableFavorite() string {
 	return ""
 }
 
-// DrainConn drains the app-owned NATS connection, if any. Safe to call at any
-// point in the lifecycle (a.nc is nil until the player connects).
-func (a *App) DrainConn() {
-	a.mu.Lock()
-	nc := a.nc
-	a.mu.Unlock()
-	if nc != nil {
-		nc.Drain()
-	}
+// Shutdown is the process's exit from outside the window: it tears the app
+// down as a closed window would (teardown — presence deleted, departure
+// journaled, the connection drained), so a Ctrl-C in the terminal leaves the
+// lobby as cleanly as a Quit. Safe to call at any time, and more than once.
+func (a *App) Shutdown() {
+	a.teardown()
 }
 
 // pickerActive reports whether the login screen includes the connection

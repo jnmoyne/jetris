@@ -20,7 +20,7 @@ func watchSignals(ctx context.Context, a *nativeui.App) {
 	select {
 	case <-sig:
 		fmt.Println("\nShutting down...")
-		a.DrainConn()
+		a.Shutdown()
 		os.Exit(0)
 	case <-ctx.Done():
 	}

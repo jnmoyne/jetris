@@ -50,6 +50,7 @@ func (l *Lobby) runHeartbeat(ctx context.Context) {
 			// delete and resurrecting the entry as a TTL-long ghost.
 			delCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			l.presenceMu.Lock()
+			l.journalDepartureLocked(delCtx)
 			_ = l.kv.Delete(delCtx, config.LobbyPlayerKey(l.playerID))
 			l.presenceMu.Unlock()
 			cancel()
@@ -71,6 +72,7 @@ func (l *Lobby) Leave(ctx context.Context) {
 	// presenceMu: see runHeartbeat's delete — same publish-after-delete race.
 	l.presenceMu.Lock()
 	defer l.presenceMu.Unlock()
+	l.journalDepartureLocked(ctx)
 	if err := l.kv.Delete(ctx, config.LobbyPlayerKey(l.playerID)); err != nil {
 		log.Printf("delete presence on leave: %v", err)
 	}

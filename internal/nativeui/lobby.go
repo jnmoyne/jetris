@@ -146,6 +146,7 @@ func (a *App) layoutLobby(gtx C) D {
 
 	// --- render ---
 	archives := a.archivesForDisplay(lb.Archives())
+	logEntries := lb.LogEntries()
 	// Under the bar: whichever columns are switched on, the panel with
 	// everything they leave, and the chat strip along the bottom.
 	body := func(gtx C) D {
@@ -167,7 +168,7 @@ func (a *App) layoutLobby(gtx C) D {
 				content := func(gtx C) D {
 					panel := func(gtx C) D {
 						return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-							return a.lobbyPanel(gtx, games, abandoned, archives)
+							return a.lobbyPanel(gtx, games, abandoned, archives, logEntries)
 						})
 					}
 					var d D
@@ -303,10 +304,12 @@ func (a *App) layoutLobby(gtx C) D {
 // logInvite logs an invitation-send failure without stopping the batch.
 func logInvite(err error) { log.Printf("send invite: %v", err) }
 
-// The lobby's two tabs: the games on offer, and the games already played.
+// The lobby's three tabs: the games on offer, the games already played, and
+// the server log.
 const (
 	lobbyTabGames   = "games"
 	lobbyTabHistory = "history"
+	lobbyTabLog     = "log"
 )
 
 const (
@@ -388,7 +391,7 @@ func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 	for _, t := range []struct {
 		btn *widget.Clickable
 		tab string
-	}{{&a.lobbyTabBtns[0], lobbyTabGames}, {&a.lobbyTabBtns[1], lobbyTabHistory}} {
+	}{{&a.lobbyTabBtns[0], lobbyTabGames}, {&a.lobbyTabBtns[1], lobbyTabHistory}, {&a.lobbyTabBtns[2], lobbyTabLog}} {
 		n := 0
 		for t.btn.Clicked(gtx) {
 			n++
@@ -795,8 +798,9 @@ func (a *App) lobbyChatStrip(gtx C, chat []lobby.ChatMessage) D {
 // over the two that are. Create a new game stands above the tabs rather than
 // inside either of them, because it belongs to neither and because a button
 // on a scrolling list is a button that can be scrolled away from.
-func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord) D {
+func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, logEntries []config.LogEntry) D {
 	history := a.lobbyTab == lobbyTabHistory
+	serverLog := a.lobbyTab == lobbyTabLog
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.createRow),
 		layout.Rigid(spacer(12)),
@@ -806,11 +810,15 @@ func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]
 			// so the one that is not showing still says how much is in it.
 			return layout.Flex{Alignment: layout.End}.Layout(gtx,
 				layout.Rigid(func(gtx C) D {
-					return a.tabChip(gtx, &a.lobbyTabBtns[0], fmt.Sprintf("GAMES (%d)", len(games)), !history)
+					return a.tabChip(gtx, &a.lobbyTabBtns[0], fmt.Sprintf("GAMES (%d)", len(games)), !history && !serverLog)
 				}),
 				layout.Rigid(hSpacer(4)),
 				layout.Rigid(func(gtx C) D {
 					return a.tabChip(gtx, &a.lobbyTabBtns[1], fmt.Sprintf("GAME HISTORY (%d)", len(archives)), history)
+				}),
+				layout.Rigid(hSpacer(4)),
+				layout.Rigid(func(gtx C) D {
+					return a.tabChip(gtx, &a.lobbyTabBtns[2], fmt.Sprintf("SERVER LOG (%d)", len(logEntries)), serverLog)
 				}),
 			)
 		}),
@@ -821,6 +829,9 @@ func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]
 					return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
 						if history {
 							return a.lobbyHistoryTab(gtx, archives)
+						}
+						if serverLog {
+							return a.lobbyLogTab(gtx, logEntries)
 						}
 						return a.lobbyGamesTab(gtx, games, abandoned)
 					})
@@ -901,6 +912,29 @@ func (a *App) lobbyHistoryTab(gtx C, archives []config.ArchiveRecord) D {
 			)
 		}),
 	)
+}
+
+// lobbyLogTab is the server log: the journal every client appends to as it
+// connects, disconnects, or comes back, and as games are created and
+// started (config.LogEntry) — one dated line each, newest first so the
+// latest is always in view, game lines in the foreground color and
+// connection lines muted so a game stands out from the coming and going
+// around it.
+func (a *App) lobbyLogTab(gtx C, entries []config.LogEntry) D {
+	if len(entries) == 0 {
+		return layout.Inset{Top: unit.Dp(6), Left: unit.Dp(6)}.Layout(gtx,
+			a.body("Nothing in the server log yet.", colMuted))
+	}
+	return material.List(a.th, &a.logLst).Layout(gtx, len(entries), func(gtx C, i int) D {
+		e := entries[len(entries)-1-i]
+		col := colMuted
+		switch e.Kind {
+		case config.LogKindGameCreated, config.LogKindGameStarted:
+			col = colFg
+		}
+		line := e.Time.Local().Format("Jan _2 15:04:05") + "  " + e.Text()
+		return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, a.body(line, col))
+	})
 }
 
 // historyControls is the history tab's own toolbar: how the table is ordered,

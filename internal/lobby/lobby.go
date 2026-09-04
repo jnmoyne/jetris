@@ -31,10 +31,12 @@ type Lobby struct {
 	games           map[string]GameListing
 	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
-	topRanked       map[string]bool // archived game IDs the history marks TOP 10 (see config.ReplayTopRankedCut)
-	replays         map[string]bool // archived game IDs that have a replay (see runReplayMarkerConsumer)
-	replayKick      chan struct{}   // pings the refresher to re-list the replay markers
-	chatLog         []ChatMessage   // lobby + game chat, in stream order, capped at chatLogCap
+	topRanked       map[string]bool   // archived game IDs the history marks TOP 10 (see config.ReplayTopRankedCut)
+	replays         map[string]bool   // archived game IDs that have a replay (see runReplayMarkerConsumer)
+	replayKick      chan struct{}     // pings the refresher to re-list the replay markers
+	chatLog         []ChatMessage     // lobby + game chat, in stream order, capped at chatLogCap
+	logEntries      []config.LogEntry // the server log's tail, oldest first, capped at logCap (see serverlog.go)
+	departed        bool              // this player's disconnection is journaled (guarded by presenceMu)
 	status          PresenceStatus
 	currentGameID   string
 	presenceMu      sync.Mutex            // serializes presence KV writes with their state read (see publishPresence)
@@ -142,8 +144,22 @@ func (l *Lobby) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	l.cancelFn = cancel
 
+	// A presence key already under our name is a ghost: a previous session
+	// of ours that never got to delete it (a crash, a closed browser tab)
+	// and has not expired yet. Clear it before the watcher starts, so other
+	// lobbies see that session leave and this one arrive, rather than a
+	// heartbeat of a player who was always here.
+	if _, err := l.kv.Get(ctx, config.LobbyPlayerKey(l.playerID)); err == nil {
+		_ = l.kv.Delete(ctx, config.LobbyPlayerKey(l.playerID))
+	}
+
 	// Start KV watcher
 	go l.runKVWatcher(ctx)
+
+	// The server log: read its tail, follow it, and journal our arrival.
+	go l.runLogConsumer(ctx)
+	go l.runConnWatch(ctx)
+	l.journal(ctx, l.selfEntry(config.LogKindConnected), "")
 
 	// Start lobby chat consumer
 	go l.runChatConsumer(ctx)
@@ -302,6 +318,7 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 	// the one exception: its first appearance, backlog or not, is the moment
 	// we are connected, and the chat says so. A heartbeat re-put of a known
 	// key is not an arrival, and our own departure is never seen by us.
+	// Agents come and go unannounced, in the chat and in the server log.
 	loaded := false
 	select {
 	case <-l.initialLoadDone:
@@ -312,8 +329,17 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 
 	switch entry.Operation() {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
-		if prev, ok := l.players[playerID]; ok && loaded && playerID != l.playerID {
+		if prev, ok := l.players[playerID]; ok && loaded && playerID != l.playerID && !prev.Agent {
 			notice = prev.Name + " left the lobby"
+			// A PURGE is the server's expiry marker (a DELETE is a client's
+			// own Leave): that client is gone without journaling its
+			// departure, so every lobby that sees the key expire journals
+			// it under one message ID, and the stream keeps the first.
+			if entry.Operation() == jetstream.KeyValuePurge {
+				e := config.LogEntry{Kind: config.LogKindDisconnected, PlayerID: prev.PlayerID, Name: prev.Name, Agent: prev.Agent}
+				msgID := fmt.Sprintf("expired-%s-%d", playerID, entry.Revision())
+				go l.journal(context.Background(), e, msgID)
+			}
 		}
 		delete(l.players, playerID)
 	default:
@@ -325,7 +351,7 @@ func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {
 			switch {
 			case playerID == l.playerID:
 				notice = "You joined the lobby as " + p.Name
-			case loaded:
+			case loaded && !p.Agent:
 				notice = p.Name + " joined the lobby"
 			}
 		}
@@ -804,6 +830,9 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	_, _ = l.kv.Put(ctx, config.LobbyGameKey(gameID), listingData)
 
 	l.publishEvent(EventGameCreated, gameID, "", 0)
+	e := l.selfEntry(config.LogKindGameCreated)
+	e.GameID, e.Mode, e.PlayerCount = gameID, mode, playerCount
+	l.journal(ctx, e, "")
 	return gameID, nil
 }
 
@@ -1189,6 +1218,13 @@ func (l *Lobby) transitionGameStatus(ctx context.Context, gameID string, status 
 		}
 		data, _ := json.Marshal(meta)
 		if err := natspkg.PublishMeta(ctx, l.js, gameID, data, metaSeq); err == nil {
+			if status == config.GameStatusInProgress {
+				// The countdown ran out and the game is on: the one peer
+				// whose transition landed journals it.
+				e := l.selfEntry(config.LogKindGameStarted)
+				e.GameID, e.Mode, e.PlayerCount = gameID, meta.Mode, meta.PlayerCount
+				l.journal(ctx, e, "")
+			}
 			return
 		}
 	}

@@ -212,7 +212,7 @@ func TestLobbyPanelShapes(t *testing.T) {
 					gs, ar = nil, nil
 				}
 				gtx := testCtx(sz.X, sz.Y)
-				d := a.lobbyPanel(gtx, gs, abandoned, ar)
+				d := a.lobbyPanel(gtx, gs, abandoned, ar, nil)
 				if d.Size.X == 0 || d.Size.Y == 0 {
 					t.Fatalf("panel %v tab %q empty=%v drew nothing", sz, tab, empty)
 				}

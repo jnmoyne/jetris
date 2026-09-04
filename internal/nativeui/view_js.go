@@ -52,6 +52,18 @@ func (a *App) attachView(e app.ViewEvent) {
 	a.touchDebug = js.Global().Get("jetrisTouchDebug").Truthy()
 	a.bv.keyInput = je.Element.Call("querySelector", "textarea, input")
 	keepKeyboardFocus(je.Element)
+	// Closing the tab is the only way out of the browser build, and it
+	// gives no DestroyEvent: leave the lobby on pagehide instead — the
+	// presence delete and the departure journal go out on a goroutine while
+	// the page is still unloading, best effort. Should they not make it,
+	// the presence TTL reports the departure a few minutes on.
+	if !a.bv.unloadHooked {
+		a.bv.unloadHooked = true
+		js.Global().Get("window").Call("addEventListener", "pagehide", js.FuncOf(func(js.Value, []js.Value) any {
+			go a.teardown()
+			return nil
+		}))
+	}
 }
 
 // frameBegin and frameEnd tell the page (window.jetrisInFrame) when a frame
@@ -90,8 +102,9 @@ func (a *App) syncEnterKey(gtx layout.Context) {
 // element (the one the on-screen keyboard is up for, attachView) and the
 // return-key label last set on it (syncEnterKey).
 type browserView struct {
-	keyInput js.Value
-	enterKey string
+	keyInput     js.Value
+	enterKey     string
+	unloadHooked bool // the pagehide leave (attachView) is registered
 }
 
 // touchDebugFrame reports the game's side of the touch diagnostic to the

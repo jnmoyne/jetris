@@ -91,14 +91,14 @@ func checkForUpdate(ctx context.Context, a *nativeui.App) {
 // runNative opens the native (Gio) window. Gio's app.Main() owns the OS main
 // thread and blocks forever, so all application logic runs on a goroutine; when
 // the window closes (or on Ctrl-C) the process exits. The App owns the NATS
-// connection it dials from the login screen; DrainConn is nil-safe.
+// connection it dials from the login screen; Shutdown is nil-safe.
 func runNative(ctx context.Context, cancel context.CancelFunc, a *nativeui.App) {
 	go func() {
 		defer cancel()
 		if err := a.Run(ctx); err != nil {
 			log.Printf("native UI error: %v", err)
 		}
-		a.DrainConn()
+		a.Shutdown()
 		os.Exit(0)
 	}()
 

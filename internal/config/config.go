@@ -1100,3 +1100,82 @@ func LobbyEventSubject(kind string) string {
 
 // LobbyEventsFilter matches every lobby event subject (core NATS subscription).
 const LobbyEventsFilter = "jetris.lobby.event.>"
+
+// The server log: a JetStream stream (LogStream, one replica, file storage)
+// every client appends to as things happen in the lobby — a player
+// connecting, disconnecting, or coming back after a dropped connection, a
+// game created, a game started once its countdown has run — and every lobby
+// reads back into its SERVER LOG tab. It is a journal, not state: nothing is
+// decided from it. Entries are kept LogMaxAge, then age out. Agents are not
+// journaled: they come and go by the dozen and create no games; the one
+// entry an agent writes is a game's start, when it happened to run the
+// countdown.
+const (
+	LogStream        = "JETRIS_LOG"
+	LogSubjectPrefix = "jetris.log."
+	LogSubjectFilter = "jetris.log.>"
+	LogMaxAge        = 100 * 24 * time.Hour
+	// LogDuplicateWindow is how long the stream remembers a message ID: a
+	// departure that only the presence TTL reported (the client crashed) is
+	// journaled by whichever lobbies saw the key expire, all under the same
+	// ID, and the stream keeps one.
+	LogDuplicateWindow = 2 * time.Minute
+
+	LogKindConnected    = "connected"
+	LogKindDisconnected = "disconnected"
+	LogKindReconnected  = "reconnected" // the NATS connection dropped and came back; the player never left the lobby
+	LogKindGameCreated  = "game.created"
+	LogKindGameStarted  = "game.started"
+)
+
+// LogSubject is the subject one kind of server log entry is published to,
+// e.g. "jetris.log.game.created".
+func LogSubject(kind string) string {
+	return LogSubjectPrefix + kind
+}
+
+// LogEntry is the payload of every server log message.
+type LogEntry struct {
+	Kind        string    `json:"kind"`
+	PlayerID    string    `json:"player_id"`
+	Name        string    `json:"name"`
+	Agent       bool      `json:"agent,omitempty"`        // the player is an agent (e.g. golang-mk1)
+	GameID      string    `json:"game_id,omitempty"`      // game entries
+	Mode        GameMode  `json:"mode,omitempty"`         // game entries
+	PlayerCount int       `json:"player_count,omitempty"` // game entries: the seats
+	Time        time.Time `json:"time"`
+	Seq         uint64    `json:"-"` // the entry's stream sequence, stamped by the reader
+}
+
+// Text is the entry as a line of the server log, without its time.
+func (e LogEntry) Text() string {
+	who := e.Name
+	if e.Agent {
+		who += " (agent)"
+	}
+	switch e.Kind {
+	case LogKindConnected:
+		return who + " connected to the lobby"
+	case LogKindDisconnected:
+		return who + " disconnected from the lobby"
+	case LogKindReconnected:
+		return who + " reconnected to the lobby"
+	case LogKindGameCreated:
+		return who + " created a " + e.gameDesc()
+	case LogKindGameStarted:
+		return who + " started a " + e.gameDesc()
+	default:
+		return who + " " + e.Kind
+	}
+}
+
+// gameDesc is "2-player competitive game", "teams game for 4", etc.
+func (e LogEntry) gameDesc() string {
+	if e.PlayerCount == 1 {
+		return "solo game"
+	}
+	if e.PlayerCount > 1 {
+		return fmt.Sprintf("%d-player %s game", e.PlayerCount, e.Mode)
+	}
+	return e.Mode.String() + " game"
+}

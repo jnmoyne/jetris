@@ -313,3 +313,19 @@ func ListReplayGameIDs(ctx context.Context, js jetstream.JetStream) ([]string, e
 	}
 	return ids, nil
 }
+
+// EnsureLogStream creates the server log stream (config.LogStream): one
+// replica on file storage, entries kept config.LogMaxAge, and a duplicate
+// window so a departure several lobbies journal at once under one message ID
+// (a presence key expiring — see lobby.handlePlayerUpdate) is stored once.
+func EnsureLogStream(ctx context.Context, js jetstream.JetStream) error {
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:       config.LogStream,
+		Subjects:   []string{config.LogSubjectFilter},
+		Storage:    jetstream.FileStorage,
+		Replicas:   1,
+		MaxAge:     config.LogMaxAge,
+		Duplicates: config.LogDuplicateWindow,
+	})
+	return err
+}

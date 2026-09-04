@@ -11,6 +11,7 @@ const (
 	LobbyUpdateChat
 	LobbyUpdateArchive
 	LobbyUpdateInvite // an invitation (to this player, or sent by anyone) changed state
+	LobbyUpdateLog    // the server log grew (see Lobby.LogEntries)
 )
 
 // LobbyUpdate is sent from the lobby to the UI.

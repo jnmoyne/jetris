@@ -219,10 +219,16 @@ func (a *App) loginColumn(gtx C, collision, loggingIn bool, loginErr string) D {
 	// is narrower — a phone's is. Pinned to 560 dp regardless, the
 	// name field and the server browser hang off both edges of the
 	// screen and the game cannot be reached at all.
-	cardW := min(gtx.Dp(loginCardW), gtx.Constraints.Max.X-gtx.Dp(12))
+	// The column is centred across the window it scrolls in: a list draws
+	// its row at the left edge (its Alignment centres rows on the widest of
+	// them, and the column is the only row), so the row is the window's
+	// width and the column is offset within it.
+	winW := gtx.Constraints.Max.X
+	cardW := min(gtx.Dp(loginCardW), winW-gtx.Dp(12))
 	gtx.Constraints.Max.X = cardW
 	gtx.Constraints.Min.X = cardW
-	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+	defer op.Offset(image.Pt(max(0, (winW-cardW)/2), 0)).Push(gtx.Ops).Pop()
+	d := layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			// The title flanked by NATS "N" logos, arcade-marquee style,
 			// centered over the card. On a compact screen it centres in
@@ -258,6 +264,8 @@ func (a *App) loginColumn(gtx C, collision, loggingIn bool, loginErr string) D {
 		layout.Rigid(a.loginTagline),
 		layout.Rigid(a.updateNotice),
 	)
+	d.Size.X = winW
+	return d
 }
 
 // modalScrim dims the screen under a modal and takes every press aimed at

@@ -542,8 +542,8 @@ func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string, vs vo
 	})
 }
 
-// lobbyMenu is that column's contents: who we are and where we are connected,
-// the address to hand out while hosting a server, the way out, and — since
+// lobbyMenu is that column's contents: the way out, who we are and where we are connected,
+// the address to hand out while hosting a server, and — since
 // this is the screen a player sits on before they play — how the game is
 // played, the same legend the game's own menu carries (controlsSections).
 // Everything in it stacks rather than running along a line: the column is a
@@ -560,6 +560,8 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 	// just the server's name.
 	addr, _, _ := a.lanAddrs()
 	children := []layout.FlexChild{
+		layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.quitBtn, "Disconnect") }),
+		layout.Rigid(spacer(14)),
 		layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, unit.Sp(11), playerName, colAccent) }),
 	}
 	if connName != "" {
@@ -614,10 +616,6 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 	children = append(children,
 		layout.Rigid(spacer(14)),
 		layout.Rigid(func(gtx C) D { return a.voiceSection(gtx, vs, "LOBBY") }),
-	)
-	children = append(children,
-		layout.Rigid(spacer(18)),
-		layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.quitBtn, "Disconnect") }),
 	)
 	// The controls, on the screen where a player is deciding whether to play
 	// rather than in the middle of playing. Hold is left out of it: whether

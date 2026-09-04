@@ -1076,7 +1076,7 @@ func tutorialSteps() []tutStep {
 			"This tour walks through the lobby, creating a game, and the game screen. "+
 				"Next and Back move through it (or the ← → keys); Close, or Esc, leaves it at any point."),
 		lobbyStep("THE MENU BUTTON",
-			"The ☰ button shows and hides the menu column: your name and the server you are on, the voice chat, Disconnect, and the controls legend. "+
+			"The ☰ button shows and hides the menu column: Disconnect, your name and the server you are on, the voice chat, and the controls legend. "+
 				"It is a switch — the button that shows a column is the only thing that hides it — and it remembers your choice from one session to the next.",
 			tutLobbyMenuBtn, tutLobbyMenu),
 		lobbyStep("VOICE CHAT",

@@ -9,18 +9,19 @@ import "encoding/json"
 // Handling knob bounds and defaults — the single source both this store and
 // the menu's sliders clamp to.
 const (
-	MaxHandlingMs = 150
-	DefaultDASMs  = 75
-	DefaultARRMs  = 20
+	MaxHandlingMs = 200
+	DefaultDASMs  = 160
+	DefaultARRMs  = 30
 	// The soft drop factor's range. Unlike DAS and ARR it is not a duration:
 	// it is a multiple of the level's gravity, the Guideline's way of putting
-	// soft drop ("20 times the normal fall speed" — hence the default), which
-	// keeps ↓ faster than the piece is already falling at every level.
+	// soft drop ("20 times the normal fall speed"), which keeps ↓ faster than
+	// the piece is already falling at every level. The default is gentler
+	// than the Guideline's 20: ↓ is a nudge, not a near hard drop.
 	// MaxSDF means instant: the piece goes to the floor at once and rests
 	// there unlocked, so MaxSDF-1 is the fastest finite factor.
 	MinSDF     = 1
 	MaxSDF     = 40
-	DefaultSDF = 20
+	DefaultSDF = 6
 	// The accidental-drop guard: how long after a piece has locked on its own
 	// the hard drop stays unavailable, in milliseconds on the same 0..
 	// MaxHandlingMs scale as DAS and ARR. 0 is off; the default is two frames'

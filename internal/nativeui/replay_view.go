@@ -9,6 +9,7 @@ import (
 
 	"gioui.org/layout"
 	"gioui.org/unit"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
@@ -65,13 +66,13 @@ func (b *replayBoard) snapshot() engine.BoardSnapshot {
 // one shared board for cooperative, one per player (sorted by ID, matching the
 // archive viewer's coloring) for competitive, one per team for teams (however
 // many teams the game was played between) — with
-// the competitive playerID → board index map beside it.
-func newReplayBoards(rec config.ArchiveRecord) ([]*replayBoard, map[string]int) {
+// the competitive playerID → board index map beside it. height is the total
+// rows (headroom + visible) the game was PLAYED at, not today's: the loader
+// measures it off the replay stream (replayBoardHeight), and a game played on
+// a taller board than today's gets that board back, or its bottom rows would
+// be lost.
+func newReplayBoards(rec config.ArchiveRecord, height int) ([]*replayBoard, map[string]int) {
 	byPlayer := map[string]int{}
-	// The height the game was PLAYED at, not today's: a game archived before
-	// every board became the same height was played on a taller one, and its
-	// replay must rebuild that board or lose its bottom rows.
-	height := rec.BoardHeight()
 	switch rec.Mode {
 	case config.ModeCooperative:
 		return []*replayBoard{newReplayBoard("", -1,
@@ -150,8 +151,12 @@ type replayView struct {
 	trackX0, trackW int
 }
 
+// newReplayView opens a replay session on the record's own word for its
+// boards' height — the placeholder the loading screen stands on. The loader
+// replaces the boards with ones measured off the replay stream before the
+// timeline lands (runReplayLoad).
 func newReplayView(rec config.ArchiveRecord) *replayView {
-	boards, byPlayer := newReplayBoards(rec)
+	boards, byPlayer := newReplayBoards(rec, rec.BoardHeight())
 	return &replayView{rec: rec, boards: boards, byPlayer: byPlayer,
 		rank: 1, of: 1, speed: replayNormalRate, shownN: -1}
 }
@@ -280,8 +285,14 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 		a.setReplayErr(rv, "This game's replay is no longer available.")
 		return
 	}
+	// The boards' height, measured off the recording itself before a single
+	// message of it is decoded: the game's subjects say how tall its boards
+	// were, and every cell the load then reads has a row to land on.
+	height := replayBoardHeight(ctx, js, rv.rec)
+	boards, byPlayer := newReplayBoards(rv.rec, height)
 	a.mu.Lock()
 	rv.total = int(total)
+	rv.boards, rv.byPlayer = boards, byPlayer
 	a.mu.Unlock()
 
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
@@ -294,7 +305,7 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 	}
 	defer cancel()
 
-	b := newReplayBuilder(rv.rec)
+	b := newReplayBuilder(rv.rec, height)
 	idle := time.NewTimer(replayIdleCheck)
 	defer idle.Stop()
 	for {
@@ -343,6 +354,21 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 			}
 		}
 	}
+}
+
+// replayBoardHeight is the height (headroom + visible) the replay rebuilds a
+// game's boards at: what the game's replay subjects say
+// (natspkg.ReplayBoardHeight — the tallest cell row ever written, plus one),
+// never less than today's board, so a recording that ended before its first
+// piece reached the floor still stands a whole board tall. A recording with
+// no cells at all, or a stream that cannot be asked, falls back to the
+// archive record's own word (config.ArchiveRecord.BoardHeight).
+func replayBoardHeight(ctx context.Context, js jetstream.JetStream, rec config.ArchiveRecord) int {
+	h, err := natspkg.ReplayBoardHeight(ctx, js, rec.GameID)
+	if err != nil || h <= 0 {
+		return rec.BoardHeight()
+	}
+	return max(h, config.TotalRows)
 }
 
 // setReplayErr records a load failure for the replay screen's status line.

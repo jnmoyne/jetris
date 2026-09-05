@@ -18,7 +18,7 @@ type replayFeed struct {
 }
 
 func newReplayFeed(rec config.ArchiveRecord, t0 time.Time) *replayFeed {
-	return &replayFeed{b: newReplayBuilder(rec), t0: t0}
+	return &replayFeed{b: newReplayBuilder(rec, rec.BoardHeight()), t0: t0}
 }
 
 func (f *replayFeed) at(off time.Duration, subject string, v any) {

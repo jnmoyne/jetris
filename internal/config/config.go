@@ -324,7 +324,7 @@ type ArchiveRecord struct {
 	TeamCount    int            `json:"team_count,omitempty"`    // teams mode: how many teams played (GameMeta.TeamCount); absent — every record written before the field — reads as DefaultTeamCount (see Teams)
 	TeamSize     int            `json:"team_size,omitempty"`     // teams mode
 	ExtraColumns int            `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns) — what the replay rebuilds the board's width from
-	BoardRows    int            `json:"board_rows,omitempty"`    // the boards' height (headroom + visible) the game was played on — what the replay rebuilds them at; absent reads as the pre-fixed-height board (see BoardHeight)
+	BoardRows    int            `json:"board_rows,omitempty"`    // the boards' height (headroom + visible) the game was played on, as the archiver knew it; the replay reads the height off the replay stream itself and keeps this as its fallback (see BoardHeight)
 	WinningTeam  int            `json:"winning_team"`            // teams mode: the winning team's index; -1 = draw or not a team game
 	TeamScores   []int          `json:"team_scores,omitempty"`   // teams mode: final score per team (indexed by team)
 	TeamLevels   []int          `json:"team_levels,omitempty"`   // teams mode: final level per team (indexed by team)
@@ -347,31 +347,19 @@ func (r ArchiveRecord) Teams() int {
 	return NormalizeTeamCount(r.TeamCount)
 }
 
-// legacyVisibleRows is the visible height a board had before every board
-// became VisibleRows tall: this many rows plus one for each player that could
-// send it garbage. Nothing is played on such a board any more — it survives
-// only to rebuild an archived game at the board it was actually played on.
-const legacyVisibleRows = 24
-
-// BoardHeight is the total rows (headroom + visible) of the boards the
-// archived game was played on, which is what its replay rebuilds them at. A
-// record written since every board became the same height carries it; an
-// older one carries nothing, and means the board of its day — the visible
-// rows of the time plus one per player that could attack it (every opponent
-// in competitive, every seat on every OTHER team in teams, none in
-// cooperative) — so an old game still replays at its own board.
+// BoardHeight is the total rows (headroom + visible) the record SAYS the
+// game's boards were played on: what the archiver wrote, or today's board for
+// a record from before the field. It is a fallback, not the truth: a game's
+// replay stream still holds every cell subject the game ever wrote, and the
+// replay measures its boards off those (nats.ReplayBoardHeight) — the height
+// a game was played on is not a function of how many played it, and nothing
+// here pretends it is. This stands in only while the stream has not answered
+// yet, or for a recording with no cells at all.
 func (r ArchiveRecord) BoardHeight() int {
 	if r.BoardRows > 0 {
 		return r.BoardRows
 	}
-	switch r.Mode {
-	case ModeCompetitive:
-		return HeadroomRows + legacyVisibleRows + r.PlayerCount
-	case ModeTeams:
-		return HeadroomRows + legacyVisibleRows + max(r.Teams()-1, 1)*r.TeamSize
-	default:
-		return HeadroomRows + legacyVisibleRows
-	}
+	return TotalRows
 }
 
 // ChatLine is one chat message preserved in an ArchiveRecord. The game's chat

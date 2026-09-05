@@ -206,3 +206,85 @@ func waitUntil(t *testing.T, d time.Duration, cond func() bool, what string) {
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// A game is replayed on the board it was PLAYED on, and the recording is what
+// says how tall that was — not the roster. Here a two-player game's stream
+// holds cells down to row 32, on a board taller than today's and taller than
+// any rule of thumb from its player count would give; its record carries no
+// height at all. The load measures the boards off the replay stream first, so
+// every one of those rows is there when the cells arrive, and the deepest
+// cell lands where it was written.
+func TestReplayBoardHeightComesFromTheStream(t *testing.T) {
+	const gameID = "g-replay-tall"
+	const bottom = 32 // the last row the game wrote: a 33-row board
+	url, _ := testutil.StartServer(t)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := natspkg.EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+	meta := config.GameMeta{GameID: gameID, Mode: config.ModeCompetitive, PlayerCount: 2,
+		Seed: 5, Status: config.GameStatusInProgress, CreatorID: "p1", CreatedAt: time.Now(), StartedAt: time.Now()}
+	data, _ := json.Marshal(meta)
+	if err := natspkg.PublishMeta(ctx, js, gameID, data, 0); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := game.Cell{Occupied: true, PieceType: game.PieceL, PlayerIdx: 1}.Marshal()
+	for _, rc := range [][2]int{{config.TotalRows - 1, 0}, {bottom, 7}} {
+		if _, err := natspkg.PublishCellsAtomicallyNoCAS(ctx, js, []natspkg.CellUpdate{{
+			Subject: config.CompetitiveCellSubject(gameID, "p2", rc[0], rc[1]), Payload: payload,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := natspkg.CopyGameToReplayStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestApp()
+	a.js = js
+	rec := config.ArchiveRecord{GameID: gameID, Mode: config.ModeCompetitive, PlayerCount: 2,
+		StartedAt: meta.StartedAt, FinishedAt: time.Now(), WinningTeam: -1,
+		Players: []config.PlayerResult{{PlayerID: "p1", Winner: true}, {PlayerID: "p2"}}}
+	rv := newReplayView(rec)
+	loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	rv.cancel = cancel
+	go a.runReplayLoad(loadCtx, rv)
+	waitUntil(t, 20*time.Second, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if rv.err != "" {
+			t.Fatalf("load failed: %s", rv.err)
+		}
+		return rv.tl != nil
+	}, "the replay to load")
+
+	if len(rv.boards) != 2 {
+		t.Fatalf("boards = %d, want one per player", len(rv.boards))
+	}
+	for i, b := range rv.boards {
+		if b.height != bottom+1 {
+			t.Errorf("board %d is %d rows tall, want the %d the stream holds", i, b.height, bottom+1)
+		}
+	}
+	if len(rv.tl.cells) != 2 {
+		t.Fatalf("timeline holds %d cells, want both the game wrote", len(rv.tl.cells))
+	}
+	rv.seek(rv.tl.dur)
+	p2 := rv.boards[rv.byPlayer["p2"]]
+	if !p2.rows[bottom].Cells[7].Occupied || !p2.rows[config.TotalRows-1].Cells[0].Occupied {
+		t.Error("the cells the game wrote are missing from the replayed board")
+	}
+	if got := p2.snapshot().Height; got != bottom+1-config.VisibleRowStart {
+		t.Errorf("visible snapshot is %d rows, want %d", got, bottom+1-config.VisibleRowStart)
+	}
+}

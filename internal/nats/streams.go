@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -288,6 +289,37 @@ func GetReplayMarker(ctx context.Context, js jetstream.JetStream, gameID string)
 	}
 	_ = json.Unmarshal(msg.Data, &m)
 	return msg.Sequence, m.Msgs, nil
+}
+
+// ReplayBoardHeight measures the height (headroom + visible rows) of the
+// boards one archived game was played on, off its replay: a subjects-filtered
+// stream info over the game's replay subspace lists every subject the copy
+// holds with its message count, and the cell subjects among them name their
+// row — the tallest row ever written, plus one, is the board. The height a
+// game was played on was never a function of how many played it, and this
+// reads it from the record the game itself left rather than inferring it from
+// the roster. Returns 0 for a replay holding no cells at all (a game that
+// never got past its countdown) — the caller falls back to the archive
+// record's own word then — and an error when the stream cannot be asked.
+func ReplayBoardHeight(ctx context.Context, js jetstream.JetStream, gameID string) (int, error) {
+	s, err := js.Stream(ctx, config.ReplayStream)
+	if err != nil {
+		return 0, err
+	}
+	info, err := s.Info(ctx, jetstream.WithSubjectFilter(config.ReplayFilter(gameID)))
+	if err != nil {
+		return 0, err
+	}
+	height := 0
+	for subject, n := range info.State.Subjects {
+		if n == 0 || !strings.Contains(subject, ".playfield.cell.") {
+			continue
+		}
+		if row, _ := ParseCellFromSubject(subject); row >= height {
+			height = row + 1
+		}
+	}
+	return height, nil
 }
 
 // ListReplayGameIDs returns the game IDs with a finished replay — the games

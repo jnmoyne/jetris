@@ -388,3 +388,56 @@ func TestListGameStreams(t *testing.T) {
 		t.Errorf("expected 2 game streams, got %d: %v", len(names), names)
 	}
 }
+
+// A replay's boards are as tall as the tallest cell row the game ever wrote:
+// ReplayBoardHeight reads that off a subjects-filtered stream info over the
+// game's replay subspace — whatever the mode, and however many played. The
+// registers under the playfield prefix are not cells, another game's cells are
+// another game's, and a replay with no cells at all measures nothing.
+func TestReplayBoardHeight(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	if err := EnsureReplayStream(ctx, js); err != nil {
+		t.Fatal(err)
+	}
+	cell, _ := game.Cell{Occupied: true, PieceType: game.PieceL}.Marshal()
+	pub := func(gameID, gameSubject string, data []byte) {
+		t.Helper()
+		if _, err := js.Publish(ctx, config.ReplayCopySubject(gameID, gameSubject), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A two-player competitive game played on a 33-row board: rows written on
+	// both boards, the tallest on p2's — plus a garbage register, which is no
+	// cell at all.
+	pub("tall", config.CompetitiveCellSubject("tall", "p1", 30, 4), cell)
+	pub("tall", config.CompetitiveCellSubject("tall", "p1", 5, 0), cell)
+	pub("tall", config.CompetitiveCellSubject("tall", "p2", 32, 9), cell)
+	pub("tall", config.CompetitiveGarbageSubject("tall", "p1"), []byte(`{"rows":2}`))
+	// A cooperative game on today's board, and a teams game beside it.
+	pub("coop", config.CoopCellSubject("coop", config.TotalRows-1, 2), cell)
+	pub("teams", config.TeamCellSubject("teams", 1, 27, 6), cell)
+	// A game whose copy holds nothing but its marker.
+	if _, err := js.Publish(ctx, config.ReplayMarkerSubject("empty"), []byte(`{"msgs":0}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		gameID string
+		want   int
+	}{
+		{"tall", 33},
+		{"coop", config.TotalRows},
+		{"teams", 28},
+		{"empty", 0},
+		{"never-archived", 0},
+	} {
+		got, err := ReplayBoardHeight(ctx, js, tc.gameID)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.gameID, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: ReplayBoardHeight = %d, want %d", tc.gameID, got, tc.want)
+		}
+	}
+}

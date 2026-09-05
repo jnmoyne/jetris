@@ -69,10 +69,10 @@ func TestBoardHeightIsFixed(t *testing.T) {
 	}
 }
 
-// An archived game replays at the board it was PLAYED on: a record written
-// since every board became TotalRows tall says so, and one written before it
-// means the board of its day — 24 visible rows plus one per player that could
-// attack it.
+// BoardHeight is the record's own word on its boards' height, and a fallback
+// only: what the archiver wrote, or today's board when it wrote nothing. It
+// never guesses from the mode or the player count — the replay stream holds
+// the cells, and the replay measures the height off those.
 func TestArchiveBoardHeight(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -80,11 +80,10 @@ func TestArchiveBoardHeight(t *testing.T) {
 		want int
 	}{
 		{"recorded", ArchiveRecord{Mode: ModeCompetitive, PlayerCount: 3, BoardRows: TotalRows}, TotalRows},
-		{"legacy competitive", ArchiveRecord{Mode: ModeCompetitive, PlayerCount: 3}, 4 + 24 + 3},
-		{"legacy cooperative", ArchiveRecord{Mode: ModeCooperative, PlayerCount: 3}, 4 + 24},
-		{"legacy duel", ArchiveRecord{Mode: ModeTeams, TeamCount: 2, TeamSize: 2}, 4 + 24 + 2},
-		{"legacy three-way", ArchiveRecord{Mode: ModeTeams, TeamCount: 3, TeamSize: 2}, 4 + 24 + 4},
-		{"legacy teams, no count", ArchiveRecord{Mode: ModeTeams, TeamSize: 2}, 4 + 24 + 2},
+		{"recorded taller", ArchiveRecord{Mode: ModeCooperative, PlayerCount: 2, BoardRows: 31}, 31},
+		{"unrecorded competitive", ArchiveRecord{Mode: ModeCompetitive, PlayerCount: 3}, TotalRows},
+		{"unrecorded cooperative", ArchiveRecord{Mode: ModeCooperative, PlayerCount: 3}, TotalRows},
+		{"unrecorded teams", ArchiveRecord{Mode: ModeTeams, TeamCount: 3, TeamSize: 2}, TotalRows},
 	} {
 		if got := tc.rec.BoardHeight(); got != tc.want {
 			t.Errorf("%s: BoardHeight() = %d, want %d", tc.name, got, tc.want)

@@ -105,8 +105,12 @@ type replayBuilder struct {
 	n        int       // messages taken in
 }
 
-func newReplayBuilder(rec config.ArchiveRecord) *replayBuilder {
-	boards, byPlayer := newReplayBoards(rec)
+// newReplayBuilder starts a builder for one game's recording; height is the
+// boards' total rows, measured off the replay stream by the loader (the
+// builder's geometry and the view's must agree, or a cell would land on the
+// wrong board or off it).
+func newReplayBuilder(rec config.ArchiveRecord, height int) *replayBuilder {
+	boards, byPlayer := newReplayBoards(rec, height)
 	return &replayBuilder{rec: rec, boards: boards, byPlayer: byPlayer, tl: replayTimeline{startOff: -1}}
 }
 

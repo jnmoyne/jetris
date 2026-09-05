@@ -326,8 +326,13 @@ func (a *App) wizardModeStep(gtx C) D {
 	mode := a.wizardMode()
 	teams := mode == config.ModeTeams
 	countLabel := "Players:"
-	if teams {
+	switch {
+	case teams:
 		countLabel = "Players per team:"
+	case mode == config.ModeCooperative:
+		// A co-op crew has no ceiling: one player runs for the solo high
+		// score, and any number may share the board.
+		countLabel = "Players (1–∞):"
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.wizardRadio(&a.modeEnum, "cooperative", "Co-op — everyone plays one shared board, one shared score")),

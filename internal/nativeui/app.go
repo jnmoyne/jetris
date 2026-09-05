@@ -723,7 +723,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.chatEd.Submit = true
 	a.countEd.SingleLine = true
 	a.countEd.InputHint = key.HintNumeric
-	a.countEd.SetText("1") // the wizard opens on co-op: a solo game unless the creator adds seats
+	a.countEd.SetText("2") // the wizard opens on co-op: a crew of two unless the creator changes it
 	a.maxAgentsEd.SingleLine = true
 	a.maxAgentsEd.Filter = "0123456789"
 	a.maxAgentsEd.InputHint = key.HintNumeric

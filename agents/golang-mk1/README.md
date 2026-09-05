@@ -27,7 +27,8 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
   fatal close (an authorization failure on reconnect, say) ends it, with an error.
 - Carries every peer responsibility itself: presence heartbeat, the join CAS on the lobby
   KV, the roster announcement, the ready toggle and (when its toggle completes the set) the
-  5→0 countdown, its own engine — a bit-exact port of the game's PCG + 7-bag piece RNG,
+  5→0 countdown, its own engine — a bit-exact port of the game's PCG + 7-bag piece RNG
+  (the double bag and no bag a game's `bag` may ask for included),
   spawning, gravity, lock-in, line clears, garbage application, top-out — plus per-player
   game-over events, CAS-failure flashes, and, when it wins, the finish → archive → cleanup
   sequence.
@@ -104,9 +105,13 @@ and perfect-clear bonuses), `guideline_garbage` — `--hold`, the Guideline hold
 `hold`, which the agent itself never uses but the humans in its game may —
 `--split-pieces`, the teams-mode piece split, `split_pieces`: the seven types
 dealt out between the teammates, each seat playing only its own ration (a teams
-game of two or more per team; ignored elsewhere) — and
-`--guideline`, the GUI wizard's Guideline preset in one flag: next 6, hold, 1 hole
-per garbage row, the Guideline attack table, overriding the individual rule flags),
+game of two or more per team; ignored elsewhere) — `--bag`, the piece
+randomizer, `bag`: `double` for the double bag (two of each type per bag of
+fourteen) or `none` for no bag at all (every piece an independent draw), the
+7-bag when unset — and
+`--guideline`, the GUI wizard's Guideline preset in one flag: next 6, hold, the
+7-bag, 1 hole per garbage row, the Guideline attack table, overriding the
+individual rule flags),
 `--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
 `async`), `--auto-join`, `--wait`, `--once`, `--selftest`.
 
@@ -121,8 +126,9 @@ GUI and create a game with agents allowed — or let one instance host for anoth
 ## Reading order
 
 - `pieces.go` — tetromino geometry.
-- `rng.go` — the PCG + 7-bag piece RNG, and the teams-mode piece split it deals
-  when a game's meta says `split_pieces` (both bit-exact with the game).
+- `rng.go` — the PCG + 7-bag piece RNG, the double bag and no-bag kinds a game's
+  meta `bag` may ask for, and the teams-mode piece split it deals when the meta
+  says `split_pieces` (all bit-exact with the game).
 - `engine.go` — the settled-board model (collision, drop, completed rows, collapse).
 - `planner.go` — the Dellacherie evaluator, placement enumeration, lookahead, blunder model.
 - `difficulty.go` — the per-difficulty knobs.

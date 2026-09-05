@@ -74,9 +74,13 @@ type Engine struct {
 	// table (0/1/2/4 rows for 1/2/3/4 lines — game.AttackRows) instead of
 	// one row per line (GameMeta.GuidelineGarbage at Start).
 	guidelineGarbage bool
-	teamIdx          int // teams mode: which team this player is on (0 = A, 1 = B, …)
-	teamSlot         int // teams mode: section index within the team board (spawn column offset)
-	teamSize         int // teams mode: players per team (from meta at Start)
+	// bag is the piece randomizer e.seq deals with (GameMeta.Bag at Start,
+	// normalized): the standard 7-bag, the double bag, or no bag at all —
+	// one rule for every seat, a split-pieces ration included.
+	bag      config.Bag
+	teamIdx  int // teams mode: which team this player is on (0 = A, 1 = B, …)
+	teamSlot int // teams mode: section index within the team board (spawn column offset)
+	teamSize int // teams mode: players per team (from meta at Start)
 	// teamCount is how many teams the game is played between (GameMeta.Teams
 	// at Start — two unless the creator asked for more). Team indices run
 	// 0..teamCount-1; every team but our own is an opponent, so the number
@@ -373,6 +377,7 @@ func (e *Engine) Start() error {
 	e.garbageHoles = min(max(meta.GarbageHoles, 0), config.MaxGarbageHoles)
 	e.randomGarbageHoles = meta.RandomGarbageHoles && e.garbageHoles > 0
 	e.guidelineGarbage = meta.GuidelineGarbage
+	e.bag = meta.Bag.Normalized()
 
 	// The visible region starts below the headroom on every board, in every mode.
 	e.visibleRowStart = config.VisibleRowStart
@@ -383,7 +388,7 @@ func (e *Engine) Start() error {
 	switch e.gameMode {
 	case config.ModeCooperative:
 		// Cooperative mode: shared wide playfield, shared RNG seed
-		e.seq = rng.New(meta.Seed)
+		e.seq = rng.NewBag(meta.Seed, nil, e.bag)
 		e.pieceIdx.Store(0)
 		// Shared wide playfield with the standard height
 		e.playfield = game.NewPlayfieldWithHeight(
@@ -399,11 +404,12 @@ func (e *Engine) Start() error {
 		// both teams' slot N hold the same ration) and this seat draws only
 		// from its own. A spectator has no seat of its own; it keeps the deal
 		// for the HUD and reads slot 0's sequence, which it never spawns from.
+		// Either way the game's bag rule says how the set is dealt.
 		if meta.SplitsPieces() {
 			e.pieceSets = rng.PieceSets(meta.Seed, meta.TeamSize)
-			e.seq = rng.NewSet(meta.Seed, e.PieceSet())
+			e.seq = rng.NewBag(meta.Seed, e.PieceSet(), e.bag)
 		} else {
-			e.seq = rng.New(meta.Seed)
+			e.seq = rng.NewBag(meta.Seed, nil, e.bag)
 		}
 		e.pieceIdx.Store(0)
 		e.playfield = game.NewPlayfieldWithHeight(
@@ -411,7 +417,7 @@ func (e *Engine) Start() error {
 			config.TotalRows,
 		)
 	default:
-		e.seq = rng.New(meta.Seed)
+		e.seq = rng.NewBag(meta.Seed, nil, e.bag)
 		e.pieceIdx.Store(meta.PieceIdx)
 		// Competitive: a private standard board
 		e.playfield = game.NewPlayfieldWithHeight(config.StandardWidth, config.TotalRows)
@@ -1464,6 +1470,10 @@ func (e *Engine) RandomGarbageHoles() bool { return e.randomGarbageHoles }
 // Guideline table — a single sends nothing, a double 1 row, a triple 2, a
 // Tetris 4 (GameMeta.GuidelineGarbage; false = one row per cleared line).
 func (e *Engine) GuidelineGarbage() bool { return e.guidelineGarbage }
+
+// Bag reports the piece randomizer this game's sequences are dealt with
+// (GameMeta.Bag, normalized): the standard 7-bag, the double bag, or no bag.
+func (e *Engine) Bag() config.Bag { return e.bag }
 
 // NextPieces returns the upcoming piece types this game reveals, in play
 // order: element 0 is the piece that will spawn after the current one. The

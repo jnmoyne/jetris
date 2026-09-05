@@ -737,14 +737,14 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // loop. inviteOnly restricts joining to invited players (and the creator) —
 // see Invite/JoinGame; invited agents are exempt from the maxAgents policy,
 // the invitation being explicit permission. rules are the game's play rules
-// (config.GameRules — the piece preview, ghost, hold and garbage settings),
-// clamped to their legal ranges for the mode (GameRules.Normalized: a
-// cooperative game stores no garbage rules) and stored on BOTH records: the
-// meta is the rule book every peer — human UI and agent alike — reads at
-// Start, the listing tags the lobby row (next N, holes N, guideline garbage,
-// hold — or plain "guideline" when the rules are the Guideline preset). The
-// ghost rule is stored inverted as GameMeta.NoGhost so pre-field metas keep
-// the ghost shown.
+// (config.GameRules — the piece preview, ghost, hold, bag and garbage
+// settings), clamped to their legal ranges for the mode
+// (GameRules.Normalized: a cooperative game stores no garbage rules) and
+// stored on BOTH records: the meta is the rule book every peer — human UI and
+// agent alike — reads at Start, the listing tags the lobby row (next N, holes
+// N, guideline garbage, hold, double bag / no bag — or plain "guideline" when
+// the rules are the Guideline preset). The ghost rule is stored inverted as
+// GameMeta.NoGhost so pre-field metas keep the ghost shown.
 func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamCount, teamSize, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) (string, error) {
 	gameID := uuid.New().String()
 	// Only a teams game has teams; elsewhere the count is not recorded at all
@@ -791,6 +791,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		RandomGarbageHoles: rules.RandomGarbageHoles,
 		GuidelineGarbage:   rules.GuidelineGarbage,
 		SplitPieces:        splitPieces,
+		Bag:                rules.Bag,
 		Seed:               uint64(time.Now().UnixNano()),
 		Status:             config.GameStatusCreated,
 		CreatorID:          l.playerID,
@@ -821,6 +822,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 		RandomGarbageHoles: rules.RandomGarbageHoles,
 		GuidelineGarbage:   rules.GuidelineGarbage,
 		SplitPieces:        splitPieces,
+		Bag:                rules.Bag,
 		InviteOnly:         inviteOnly,
 		CreatorID:          l.playerID,
 		Players:            nil,

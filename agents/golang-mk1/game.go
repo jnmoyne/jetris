@@ -79,10 +79,11 @@ type Game struct {
 	metaSeed    uint64
 	playerCount int
 	nextCount   int
-	holes       int   // holes punched in every garbage row this board raises (meta garbage_holes, 0..maxGarbageHoles; 0 = solid, permanent rows)
-	randomHoles bool  // every garbage row draws its own hole columns (meta random_garbage_holes; off = one draw per raise)
-	guideline   bool  // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
-	ration      []int // teams with meta split_pieces: the piece types THIS seat draws from, ascending (rng.go pieceSetFor); nil = the full 7-bag every other game runs
+	holes       int    // holes punched in every garbage row this board raises (meta garbage_holes, 0..maxGarbageHoles; 0 = solid, permanent rows)
+	randomHoles bool   // every garbage row draws its own hole columns (meta random_garbage_holes; off = one draw per raise)
+	guideline   bool   // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
+	ration      []int  // teams with meta split_pieces: the piece types THIS seat draws from, ascending (rng.go pieceSetFor); nil = the full 7-bag every other game runs
+	bag         string // meta bag: how this seat's set — the seven types, or its ration — is dealt (rng.go pieceAtBag): "" the 7-bag, "double" the double bag, "none" no bag
 	dead        bool
 
 	// The batch pipeline (pipeline.go, guide §4.3). inflight counts the move
@@ -609,13 +610,11 @@ func (g *Game) activeCells() []cell {
 }
 
 // pieceAt returns the piece type at the given index of THIS seat's sequence:
-// the game's 7-bag, or — when the game deals its pieces out between teammates
-// (meta split_pieces) — a bag of this seat's ration alone.
+// the seven types, or — when the game deals its pieces out between teammates
+// (meta split_pieces) — this seat's ration alone, dealt the way the game's
+// bag rule says (meta bag: the 7-bag, the double bag, or no bag).
 func (g *Game) pieceAt(index int) int {
-	if len(g.ration) == 0 {
-		return pieceAt(g.metaSeed, index)
-	}
-	return pieceAtIn(g.metaSeed, g.ration, index)
+	return pieceAtBag(g.metaSeed, g.ration, g.bag, index)
 }
 
 // rationNames spells a ration out in piece letters, for the log line that
@@ -1319,6 +1318,10 @@ func (g *Game) run(ctx context.Context) bool {
 	g.holes = min(max(meta.int("garbage_holes"), 0), maxGarbageHoles) // absent (pre-field meta) = 0: solid rows
 	g.randomHoles = meta.boolv("random_garbage_holes") && g.holes > 0
 	g.guideline = meta.boolv("guideline_garbage")
+	g.bag = normalizeBag(meta.str("bag")) // absent (pre-field meta) = the 7-bag
+	if g.bag != bagSingle {
+		log.Printf("bag rule: %s", bagLabel(g.bag))
+	}
 	g.a.mu.Lock()
 	g.roster = g.a.listings[g.id].players()
 	g.a.mu.Unlock()
@@ -1468,7 +1471,7 @@ func (g *Game) plan(p active) (placement, bool) {
 	gr := g.toGrid()
 	pieceIdx := g.pieceIdx
 	g.mu.Unlock()
-	upcoming := revealedPieces(g.metaSeed, g.ration, pieceIdx, g.nextCount, g.a.tn.lookahead)
+	upcoming := revealedPieces(g.metaSeed, g.ration, g.bag, pieceIdx, g.nextCount, g.a.tn.lookahead)
 	ranked := planPlacements(gr, p.pt, p.row, p.col, g.spawnC, upcoming)
 	return choose(ranked, g.a.tn, g.a.rng)
 }

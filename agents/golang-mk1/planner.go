@@ -279,15 +279,12 @@ func choose(ranked []placement, tn tuning, rnd *rand.Rand) (placement, bool) {
 // like everyone else. The seed is consulted for these indices only. `ration`
 // is this seat's piece set in a split-pieces teams game (nil elsewhere): the
 // preview is of the seat's OWN sequence, so it reveals only the types this
-// seat holds.
-func revealedPieces(seed uint64, ration []int, pieceIdx, nextCount, lookahead int) []int {
+// seat holds. `bag` is the game's bag rule (meta bag), the way that sequence
+// is dealt.
+func revealedPieces(seed uint64, ration []int, bag string, pieceIdx, nextCount, lookahead int) []int {
 	var upcoming []int
 	for i := 1; i <= min(nextCount, lookahead); i++ {
-		if len(ration) == 0 {
-			upcoming = append(upcoming, pieceAt(seed, pieceIdx+i))
-		} else {
-			upcoming = append(upcoming, pieceAtIn(seed, ration, pieceIdx+i))
-		}
+		upcoming = append(upcoming, pieceAtBag(seed, ration, bag, pieceIdx+i))
 	}
 	return upcoming
 }

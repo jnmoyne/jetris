@@ -55,17 +55,18 @@ type connChoice struct {
 // hosting is the --create configuration: what kind of game to host, how big,
 // and how agent-friendly. nil on an Agent means "never host".
 type hosting struct {
-	mode      int  // modeCooperative / modeCompetitive / modeTeams
-	players   int  // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
-	teams     int  // teams mode: how many teams play each other (clamped 2..6; the total seat count is teams × players)
-	extraCols int  // shared boards: columns every seat beyond the first adds to the standard 10 (clamped 4..10)
-	maxAgents int  // agent seats, this agent included (<=0 = all seats)
-	next      int  // revealed upcoming pieces (clamped 0..maxNextCount)
-	holes     int  // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
-	random    bool // every garbage row draws its own hole columns (off = one draw per raise)
-	guideline bool // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
-	hold      bool // the Guideline hold queue (this agent never holds; humans in the game may)
-	split     bool // teams: deal the seven piece types out between the teammates, each seat playing only its ration (meta split_pieces)
+	mode      int    // modeCooperative / modeCompetitive / modeTeams
+	players   int    // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
+	teams     int    // teams mode: how many teams play each other (clamped 2..6; the total seat count is teams × players)
+	extraCols int    // shared boards: columns every seat beyond the first adds to the standard 10 (clamped 4..10)
+	maxAgents int    // agent seats, this agent included (<=0 = all seats)
+	next      int    // revealed upcoming pieces (clamped 0..maxNextCount)
+	holes     int    // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
+	random    bool   // every garbage row draws its own hole columns (off = one draw per raise)
+	guideline bool   // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
+	hold      bool   // the Guideline hold queue (this agent never holds; humans in the game may)
+	split     bool   // teams: deal the seven piece types out between the teammates, each seat playing only its ration (meta split_pieces)
+	bag       string // the piece randomizer (meta bag): "" the 7-bag, "double" the double bag, "none" no bag
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
@@ -805,6 +806,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.split && teamSize > 1 {
 		meta.set("split_pieces", true) // only a team with teammates has pieces to split
 	}
+	if bag := normalizeBag(h.bag); bag != bagSingle {
+		meta.set("bag", bag) // omitted for the 7-bag like the GUI's omitempty field
+	}
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
 	meta.set("creator_id", a.name)
@@ -845,6 +849,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.split && teamSize > 1 {
 		listing.set("split_pieces", true)
 	}
+	if bag := normalizeBag(h.bag); bag != bagSingle {
+		listing.set("bag", bag)
+	}
 	listing.set("creator_id", a.name)
 	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included
 	listing.set("created_at", nowRFC())
@@ -863,9 +870,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if teamCount > 0 {
 		shape = fmt.Sprintf(" in %d teams of %d", teamCount, teamSize)
 	}
-	log.Printf("created %s game %s for %d players%s (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v) — waiting for opponents",
+	log.Printf("created %s game %s for %d players%s (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v, %s) — waiting for opponents",
 		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
-		gameID, players, shape, maxAgents, next, holes, random, h.guideline, h.hold)
+		gameID, players, shape, maxAgents, next, holes, random, h.guideline, h.hold, bagLabel(h.bag))
 	return gameID, nil
 }
 

@@ -181,3 +181,75 @@ func sortInts(s []int) {
 		}
 	}
 }
+
+// ---- the bag rule (meta bag, gameplays §1b) ---------------------------------
+//
+// A game's meta may deal its pieces with something other than the standard
+// 7-bag: "double" is the double bag — two of every type shuffled together,
+// fourteen at a time (2k for a ration of k) — and "none" is no bag at all:
+// every piece an independent uniform draw from the set, the first pick off
+// PCG(seed, index). Absent, or anything else, is the 7-bag. The rule shapes a
+// split-pieces ration the same way, and the ration keeps its mixed stream
+// (rationSeed) under every kind. Port of internal/rng's NewBag/Piece, pinned
+// by TestBagParity and --selftest.
+
+const (
+	bagSingle = ""       // the standard 7-bag (the field absent)
+	bagDouble = "double" // two of each type per bag
+	bagNone   = "none"   // every piece an independent draw
+)
+
+// normalizeBag reads a meta's bag kind: the two named kinds as themselves,
+// anything else — absent, a kind this build does not know — as the 7-bag,
+// exactly as the game reads it (config.Bag.Normalized).
+func normalizeBag(kind string) string {
+	switch kind {
+	case bagDouble, bagNone:
+		return kind
+	default:
+		return bagSingle
+	}
+}
+
+// bagLabel names a bag kind for a log line: "7-bag", "double bag", "no bag".
+func bagLabel(kind string) string {
+	switch normalizeBag(kind) {
+	case bagDouble:
+		return "double bag"
+	case bagNone:
+		return "no bag"
+	default:
+		return "7-bag"
+	}
+}
+
+// pieceAtBag returns the piece at index of the sequence over ration — the
+// seven types when it is empty — dealt with the given bag kind: pieceAt /
+// pieceAtIn under the standard bag, a shuffle of the set doubled under the
+// double bag, one uniform pick from the set under no bag.
+func pieceAtBag(seed uint64, ration []int, kind string, index int) int {
+	set, stream := ration, rationSeed(seed, ration)
+	if len(ration) == 0 {
+		set, stream = []int{0, 1, 2, 3, 4, 5, 6}, seed
+	}
+	switch normalizeBag(kind) {
+	case bagNone:
+		p := &pcg{hi: stream, lo: uint64(index)}
+		return set[p.uint64n(uint64(len(set)))]
+	case bagDouble:
+		b := append(append([]int(nil), set...), set...)
+		n := len(b)
+		bag, pos := index/n, index%n
+		p := &pcg{hi: stream, lo: uint64(bag)}
+		for i := n - 1; i > 0; i-- {
+			j := p.uint64n(uint64(i + 1))
+			b[i], b[j] = b[j], b[i]
+		}
+		return b[pos]
+	default:
+		if len(ration) == 0 {
+			return pieceAt(seed, index)
+		}
+		return pieceAtIn(seed, ration, index)
+	}
+}

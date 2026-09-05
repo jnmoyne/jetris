@@ -15,7 +15,8 @@ and it follows the guide's fair-play rules.
 - Carries every peer responsibility itself: presence heartbeat, the join CAS on the
   lobby KV, the roster announcement, the ready toggle and (when its toggle completes
   the set) the 5→0 countdown, its own engine — piece RNG (a bit-exact port of the
-  game's PCG + 7-bag), spawning, gravity, lock-in, line clears, garbage application
+  game's PCG + 7-bag, and of the double bag and no-bag kinds a game's `bag` may
+  ask for), spawning, gravity, lock-in, line clears, garbage application
   (rows punched with the meta's `garbage_holes`; a holed garbage row it fills clears
   like any line; attacks sized by `guideline_garbage` when set), top-out — plus
   shrink/game-over events, CAS-failure flashes, and, when it wins,

@@ -354,7 +354,7 @@ type App struct {
 	// Create-game wizard: the lobby's single "Create a new game" button
 	// (createBtn) opens a modal that walks through the game's attributes one
 	// step at a time — 1: game type + seats, 2: the play rules (the Guideline
-	// preset, or custom: preview, ghost, hold, garbage), 3: open vs
+	// preset, or custom: preview, ghost, hold, bag, garbage), 3: open vs
 	// invite-only, 4: agent policy (open games only; an invite-only game
 	// finishes at step 3 and hands off to the invitee picker). createWizStep
 	// is the current step, 0 while the wizard is closed.
@@ -393,6 +393,7 @@ type App struct {
 	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take
 	rulesEnum     widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
 	holdCb        widget.Bool   // wizard (custom rules): the Guideline hold queue
+	bagEnum       widget.Enum   // wizard (custom rules): the piece randomizer — "single" (the 7-bag), "double" (the double bag) or "none" (no bag; config.Bag)
 	nextCountEd   widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
 	holesEd       widget.Editor // wizard: holes per garbage row in competitive/teams (0..config.MaxGarbageHoles; 0 = solid, unclearable rows)
 	randomHolesCb widget.Bool   // wizard: every garbage row draws its own hole columns (off = the rows of one attack share a draw)
@@ -738,6 +739,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
 	a.rulesEnum.Value = "guideline"   // the Guideline preset until the creator asks for custom rules
+	a.bagEnum.Value = "single"        // custom rules deal the standard 7-bag until the creator picks another
 	a.createJoinEnum.Value = "invite" // invite-only by default; open games are the opt-in
 	a.histSortEnum.Value = "score"
 	// Every crew composition is listed by default; each box hides its class.

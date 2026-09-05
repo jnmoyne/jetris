@@ -3895,6 +3895,48 @@ end-to-end engine tests in a guideline game — a single leaves the victim's
 register unwritten (`TestGuidelineGarbageSingleSendsNothing`), a double owes
 exactly one row (`TestGuidelineGarbageDoubleSendsOne`).
 
+## Phase 20 — The Bag (`bag`)
+
+**Goal:** a create-time play rule (the 7-bag by default) choosing the piece
+randomizer every seat's sequence is dealt with: the standard **7-bag** (one of
+each type shuffled, seven at a time — the Guideline's), the **double bag** (two
+of each shuffled together, fourteen at a time: fair over a longer stretch, two
+of a kind possible, droughts up to twenty-four), or **no bag** (every piece an
+independent uniform draw — the old-school randomizer). One rule for every seat;
+a split-pieces ration is dealt the same way.
+
+**Data:** `config.Bag` (`""` / `"double"` / `"none"`, `Normalized` folds anything
+else into the 7-bag, `Label` names it), `GameMeta.Bag` (`bag`, omitempty — absent
+and pre-field metas read as the 7-bag), `GameRules.Bag` (the preset leaves it at
+the 7-bag, so a preset with any other bag is custom rules), mirrored as
+`GameListing.Bag` for the lobby row's `double bag` / `no bag` tag.
+
+**Randomizer (`internal/rng`):** `NewBag(seed, set, bag)` — the standard bag is
+`New` / `NewSet` bit for bit; the double bag shuffles the set doubled with
+PCG(seed, bag) as ever; no bag seeds PCG(seed, index) and takes one uniform
+pick. **Engine:** captures the kind at `Start` (`e.bag`, accessor `Bag()`) and
+hands it to `rng.NewBag` in every mode, ration included; the offline engine
+does the same off its rules. Spawning, the preview, the hold queue, garbage
+and scoring read the same `Sequence` and are untouched.
+
+**UI:** a "Piece bag" radio (`bagEnum`, `wizardBag`, `bagHint`) in the wizard's
+custom rules beside the preview count, a "Piece bag: the 7-bag" line in the
+preset's read-only list, the tutorial's rules step mentions it; `gameRow` tags
+"· double bag" / "· no bag". **Agents:** `golang-mk1` reads the meta's `bag`
+into `pieceAtBag` (`--bag` hosts such a game; `--guideline` resets it);
+`example-python`'s `piece_at` takes the kind; the agent guide's §1.3, meta
+table and checklist carry the rule.
+
+**Tests:** fixtures for both kinds pinned in `rng` (`TestBagFixtures`), the
+agent (`TestBagParity`, `--selftest`) and the Python selftest — full bag and
+rations; every double bag two of each (`TestDoubleBagDealsEachTypeTwice`); no
+bag inside its set, repeating, seekable (`TestNoBagDrawsFromTheSet`); an unknown
+kind dealt as the 7-bag; `CreateGame` storing and normalizing the rule on both
+records; the engine dealing every seat of a split 2v2 the double bag of its
+ration and an unsplit game no bag (`TestDoubleBagReachesEverySeat`,
+`TestNoBagReachesEverySeat`, `TestOfflineBag`); the wizard radio
+(`TestWizardBag`).
+
 ## Cross-Cutting Implementation Rules
 
 These rules apply throughout all phases:

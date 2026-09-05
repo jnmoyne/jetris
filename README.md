@@ -525,7 +525,7 @@ internal/
   engine/              per-player game loop: publishes moves as CAS batches, consumes
                        everyone's writes, drives gravity, detects lock-in / line clears
   lobby/               lobby over KV: presence (heartbeat), game listings, join/ready (CAS)
-  rng/                 seedable 7-bag piece randomizer (deterministic across peers)
+  rng/                 seedable piece randomizer — the 7-bag, the double bag, or no bag (deterministic across peers)
   archive/             record a finished game, seal/delete its stream
   cleanup/             startup reconciliation of orphaned/abandoned game streams
   nativeui/            native Gio desktop UI (board, lobby, live NATS-message panel)

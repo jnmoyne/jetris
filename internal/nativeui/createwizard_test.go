@@ -176,3 +176,36 @@ func TestWizardModeStepRendersSoloCoop(t *testing.T) {
 		}
 	}
 }
+
+// TestWizardBag pins step 2's piece-bag radio: "single" — the default — is
+// the 7-bag, "double" and "none" the other two kinds, junk the 7-bag; the
+// custom read-out carries it, the Guideline preset's read-only list names
+// the 7-bag, and every kind explains itself in its own words.
+func TestWizardBag(t *testing.T) {
+	a := newTestApp()
+	if got := a.wizardBag(); got != config.BagSingle {
+		t.Fatalf("a fresh wizard deals %q, want the 7-bag", got)
+	}
+	for value, want := range map[string]config.Bag{"double": config.BagDouble, "none": config.BagNone, "single": config.BagSingle, "junk": config.BagSingle} {
+		a.bagEnum.Value = value
+		if got := a.customRules().Bag; got != want {
+			t.Errorf("radio %q: custom rules deal %q, want %q", value, got, want)
+		}
+	}
+	found := false
+	for _, row := range guidelineSummary(config.ModeCooperative) {
+		if row[0] == "Piece bag" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the Guideline preset's list does not name its bag")
+	}
+	hints := map[string]bool{}
+	for _, bag := range []config.Bag{config.BagSingle, config.BagDouble, config.BagNone} {
+		hints[bagHint(bag)] = true
+	}
+	if len(hints) != 3 {
+		t.Errorf("the three bag kinds share a hint: %v", hints)
+	}
+}

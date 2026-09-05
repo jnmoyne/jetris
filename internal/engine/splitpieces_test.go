@@ -26,6 +26,13 @@ import (
 // (the mirror of A's slot 0, which must hold the same ration).
 func startSplitTeamsGame(t *testing.T, split bool) (a0, a1, b0 *Engine) {
 	t.Helper()
+	return startTeamsGame(t, split, config.BagSingle)
+}
+
+// startTeamsGame is startSplitTeamsGame with the game's bag rule chosen too
+// (bag_test.go deals the seats with the double bag and with no bag).
+func startTeamsGame(t *testing.T, split bool, bag config.Bag) (a0, a1, b0 *Engine) {
+	t.Helper()
 	url, _ := testutil.StartServer(t)
 	nc, err := nats.Connect(url)
 	if err != nil {
@@ -43,7 +50,7 @@ func startSplitTeamsGame(t *testing.T, split bool) (a0, a1, b0 *Engine) {
 	}
 	meta := config.GameMeta{
 		GameID: gameID, Mode: config.ModeTeams, PlayerCount: 4, TeamSize: 2,
-		NextCount: config.MaxNextCount, SplitPieces: split,
+		NextCount: config.MaxNextCount, SplitPieces: split, Bag: bag,
 		Seed: 42, Status: config.GameStatusInProgress,
 		CreatorID: "a0", CreatedAt: time.Now(), StartedAt: time.Now(),
 	}

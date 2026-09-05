@@ -17,7 +17,7 @@ func TestLookaheadNeverExceedsGamePreview(t *testing.T) {
 			t.Errorf("%s asks for a %d-piece lookahead; no game reveals more than %d", d, tn.lookahead, maxNextCount)
 		}
 		for nextCount := 0; nextCount <= maxNextCount; nextCount++ {
-			got := revealedPieces(seed, nil, pieceIdx, nextCount, tn.lookahead)
+			got := revealedPieces(seed, nil, bagSingle, pieceIdx, nextCount, tn.lookahead)
 			if want := min(nextCount, tn.lookahead); len(got) != want {
 				t.Errorf("%s in a next_count %d game plans on %d upcoming pieces, want %d", d, nextCount, len(got), want)
 			}
@@ -31,15 +31,15 @@ func TestLookaheadNeverExceedsGamePreview(t *testing.T) {
 	}
 	// No preview means no lookahead at ANY difficulty — and a meta without the
 	// field unmarshals to 0, never the create wizard's default of 1.
-	if got := revealedPieces(seed, nil, pieceIdx, 0, maxNextCount); len(got) != 0 {
+	if got := revealedPieces(seed, nil, bagSingle, pieceIdx, 0, maxNextCount); len(got) != 0 {
 		t.Errorf("next_count 0 (or absent) with the deepest lookahead: planned on %d upcoming pieces, want none", len(got))
 	}
 	// A foreign host writing nonsense can't open the horizon past what the
 	// difficulty is allowed to use, and a negative count reveals nothing.
-	if got := revealedPieces(seed, nil, pieceIdx, 99, maxNextCount); len(got) != maxNextCount {
+	if got := revealedPieces(seed, nil, bagSingle, pieceIdx, 99, maxNextCount); len(got) != maxNextCount {
 		t.Errorf("next_count 99: planned on %d upcoming pieces, want %d", len(got), maxNextCount)
 	}
-	if got := revealedPieces(seed, nil, pieceIdx, -1, maxNextCount); len(got) != 0 {
+	if got := revealedPieces(seed, nil, bagSingle, pieceIdx, -1, maxNextCount); len(got) != 0 {
 		t.Errorf("next_count -1: planned on %d upcoming pieces, want none", len(got))
 	}
 }
@@ -56,7 +56,7 @@ func TestSplitPiecesPreview(t *testing.T) {
 		if len(ration) == 0 {
 			t.Fatalf("slot %d was dealt nothing", slot)
 		}
-		got := revealedPieces(seed, ration, 7, maxNextCount, maxNextCount)
+		got := revealedPieces(seed, ration, bagSingle, 7, maxNextCount, maxNextCount)
 		if len(got) != maxNextCount {
 			t.Fatalf("slot %d: %d upcoming pieces, want %d", slot, len(got), maxNextCount)
 		}

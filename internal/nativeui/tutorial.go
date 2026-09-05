@@ -1113,7 +1113,7 @@ func tutorialSteps() []tutStep {
 				"Players is the seat count — per team, in a teams game. One seat in co-op is a solo run for the high score, which is the game this tour creates; with more seats a slider sets how much wider the shared board grows per player."},
 		{scene: tutSceneWizard, title: "GAME RULES", targets: []string{tutWizard}, prep: wizard(wizStepNext),
 			body: "Guideline sets every rule to its Tetris Guideline setting: six pieces shown in the NEXT well, the ghost that marks where a hard drop lands, and the hold queue. " +
-				"Custom lets you set each one yourself — and, in the modes that raise garbage, how many holes a garbage row has, whether the rows of one attack line them up, and whether attacks follow the Guideline table: a single sends nothing, a double one row, a triple two, a Tetris four."},
+				"Custom lets you set each one yourself — the bag the pieces are dealt from too: the 7-bag, a double bag of fourteen, or no bag at all — and, in the modes that raise garbage, how many holes a garbage row has, whether the rows of one attack line them up, and whether attacks follow the Guideline table: a single sends nothing, a double one row, a triple two, a Tetris four."},
 		{scene: tutSceneWizard, title: "WHO CAN JOIN", targets: []string{tutWizard}, prep: wizard(wizStepJoin),
 			body: "Invite only: you choose the players, and only they can take a seat. Open: anyone in the lobby can join, and one more step decides whether agents may too, and how many. Choose players… creates the game and opens the invitation picker."},
 		{scene: tutScenePicker, title: "INVITE PLAYERS", targets: []string{tutPickerSelf}, prep: picker,

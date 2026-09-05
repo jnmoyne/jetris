@@ -4,6 +4,7 @@ import (
 	"math/rand/v2"
 	"slices"
 
+	"jetris/internal/config"
 	"jetris/internal/game"
 )
 
@@ -11,12 +12,13 @@ import (
 type Sequence struct {
 	seed uint64
 	set  []game.PieceType // the types this sequence draws from: all seven, or one seat's ration in a split-pieces game
+	bag  config.Bag       // how the set is dealt: the standard bag (one of each, shuffled), the double bag (two of each), or no bag (independent draws)
 }
 
 // New creates a Sequence from the given seed: the standard 7-bag every peer
 // of an ordinary game runs.
 func New(seed uint64) *Sequence {
-	return &Sequence{seed: seed, set: slices.Clone(allPieces[:])}
+	return NewBag(seed, nil, config.BagSingle)
 }
 
 // NewSet creates a Sequence that draws only from set — one seat's ration in a
@@ -26,13 +28,27 @@ func New(seed uint64) *Sequence {
 // player holding one type sees only that one. An empty set falls back to the
 // full bag.
 func NewSet(seed uint64, set []game.PieceType) *Sequence {
+	return NewBag(seed, set, config.BagSingle)
+}
+
+// NewBag creates a Sequence over set — the seven types when it is empty, one
+// seat's ration in a split-pieces game otherwise (NewSet) — dealt the way bag
+// says (config.Bag, the game's randomizer rule): the standard bag is one of
+// each type shuffled, |set| pieces at a time; the double bag is two of each
+// shuffled together, 2|set| at a time; and no bag draws every piece on its
+// own, uniformly from the set, whatever came before. The standard bag over
+// the seven types is New's sequence bit for bit: an ordinary game's pieces
+// never moved because the rule exists. A ration draws from the game's seed
+// mixed with the ration (rationSeed), the full set from the raw seed, under
+// every bag kind alike.
+func NewBag(seed uint64, set []game.PieceType, bag config.Bag) *Sequence {
 	s := slices.Clone(set)
 	slices.Sort(s)
 	s = slices.Compact(s)
 	if len(s) == 0 {
-		return New(seed)
+		return &Sequence{seed: seed, set: slices.Clone(allPieces[:]), bag: bag.Normalized()}
 	}
-	return &Sequence{seed: rationSeed(seed, s), set: s}
+	return &Sequence{seed: rationSeed(seed, s), set: s, bag: bag.Normalized()}
 }
 
 var allPieces = [7]game.PieceType{
@@ -40,23 +56,36 @@ var allPieces = [7]game.PieceType{
 	game.PieceS, game.PieceZ, game.PieceJ, game.PieceL,
 }
 
-// Piece returns the piece type at the given index using a bag randomiser over
-// the sequence's set — the seven pieces of the standard bag, or the seat's
-// ration in a split-pieces game.
-// This is seekable: any index can be computed independently.
+// Piece returns the piece type at the given index using the sequence's
+// randomizer over its set — the seven pieces of the standard bag, or the
+// seat's ration in a split-pieces game. A bag is drawn as a Fisher-Yates
+// shuffle of its contents seeded by PCG(seed, bag number) and the index's
+// position within it read off; no bag seeds PCG(seed, index) and draws one
+// uniform pick from the set. This is seekable: any index can be computed
+// independently.
 func (s *Sequence) Piece(index uint64) game.PieceType {
-	n := uint64(len(s.set))
+	if s.bag == config.BagNone {
+		r := rand.New(rand.NewPCG(s.seed, index))
+		return s.set[r.IntN(len(s.set))]
+	}
+	pieces := slices.Clone(s.set)
+	if s.bag == config.BagDouble {
+		pieces = append(pieces, s.set...)
+	}
+	n := uint64(len(pieces))
 	bag := index / n
 	pos := index % n
 	src := rand.NewPCG(s.seed, bag)
 	r := rand.New(src)
-	pieces := slices.Clone(s.set)
 	r.Shuffle(len(pieces), func(i, j int) { pieces[i], pieces[j] = pieces[j], pieces[i] })
 	return pieces[pos]
 }
 
 // Set returns the piece types this sequence draws from, in piece order.
 func (s *Sequence) Set() []game.PieceType { return slices.Clone(s.set) }
+
+// Bag returns the randomizer this sequence deals its set with.
+func (s *Sequence) Bag() config.Bag { return s.bag }
 
 // dealStream is the PCG stream the piece SPLIT is dealt from. Bag streams are
 // numbered upwards from 0 (Piece), so the deal takes the one number no bag

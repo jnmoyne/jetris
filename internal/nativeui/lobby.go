@@ -1837,6 +1837,11 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		if g.Hold {
 			extra += " · hold"
 		}
+		// The piece randomizer, when it is not the classic 7-bag: "double
+		// bag" or "no bag" (config.Bag).
+		if bag := g.Bag.Normalized(); bag != config.BagSingle {
+			extra += " · " + bag.Label()
+		}
 		if g.GarbageHoles > 0 {
 			if g.RandomGarbageHoles {
 				extra += fmt.Sprintf(" · random holes %d", g.GarbageHoles)

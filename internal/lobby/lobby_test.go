@@ -449,3 +449,46 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 		t.Error("pre-field meta should have no hold")
 	}
 }
+
+// TestLobbyCreateGameBag: the bag rule reaches both records — the meta every
+// engine deals from and the listing the lobby row tags — normalized on the
+// way in, so an unknown kind is stored as the 7-bag (the field absent) and
+// no peer ever reads a randomizer it cannot deal.
+func TestLobbyCreateGameBag(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	for _, bag := range []config.Bag{config.BagDouble, config.BagNone} {
+		id, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, Bag: bag}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, _, err := natspkg.FetchGameMeta(ctx, js, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.Bag != bag || meta.Rules().Bag != bag {
+			t.Errorf("meta bag = %q, want %q", meta.Bag, bag)
+		}
+		time.Sleep(300 * time.Millisecond)
+		if g := lb.Games()[id]; g.Bag != bag || g.Rules().Bag != bag || g.Rules().IsGuideline(g.Mode) {
+			t.Errorf("listing bag = %q (guideline: %v), want %q and not the preset", g.Bag, g.Rules().IsGuideline(g.Mode), bag)
+		}
+	}
+
+	junk, err := lb.CreateGame(ctx, config.ModeCooperative, 1, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, Bag: "triple"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, js, junk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Bag != config.BagSingle {
+		t.Errorf("an unknown kind was stored as %q, want the 7-bag (absent)", meta.Bag)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if g := lb.Games()[junk]; g.Bag != config.BagSingle {
+		t.Errorf("an unknown kind was listed as %q, want the 7-bag (absent)", g.Bag)
+	}
+}

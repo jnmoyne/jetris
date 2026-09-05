@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"jetris/internal/config"
 	"jetris/internal/game"
 )
 
@@ -214,5 +215,145 @@ func TestPieceSetFor(t *testing.T) {
 	}
 	if got := PieceSetFor(42, 3, 9); len(got) != 7 {
 		t.Errorf("slot past the deal holds %v, want all seven", got)
+	}
+}
+
+// The bag rule (config.Bag, gameplays §1b): the same seed dealt three ways.
+
+// TestBagFixtures pins the double bag and no bag against the values every
+// port reproduces (golang-mk1's TestBagParity and --selftest,
+// example-python's selftest), as TestFullBagFixtures pins the 7-bag — over
+// the seven types and over a split-pieces ration — and pins NewBag's
+// standard bag to New's sequence, so the rule's existence moved no ordinary
+// game's pieces.
+func TestBagFixtures(t *testing.T) {
+	full := map[config.Bag]map[uint64][]game.PieceType{
+		config.BagDouble: {
+			42:    {6, 5, 2, 3, 0, 3, 2, 4, 1, 4, 0, 1, 6, 5, 4, 5, 4, 1, 3, 1, 3, 6, 0, 2, 5, 6, 0, 2},
+			12345: {3, 5, 4, 0, 3, 0, 6, 1, 6, 1, 5, 2, 2, 4, 4, 4, 1, 1, 0, 2, 0, 3, 5, 6, 6, 5, 3, 2},
+		},
+		config.BagNone: {
+			42:    {6, 1, 0, 4, 1, 2, 2, 5, 4, 6, 6, 5, 0, 0, 5, 0, 3, 0, 0, 0, 0},
+			12345: {5, 4, 0, 5, 5, 0, 2, 1, 4, 4, 1, 6, 2, 1, 5, 2, 1, 6, 5, 5, 5},
+		},
+	}
+	for bag, bySeed := range full {
+		for seed, want := range bySeed {
+			s := NewBag(seed, nil, bag)
+			if s.Bag() != bag {
+				t.Fatalf("NewBag(%d, nil, %q).Bag() = %q", seed, bag, s.Bag())
+			}
+			for i, w := range want {
+				if got := s.Piece(uint64(i)); got != w {
+					t.Fatalf("bag %q seed %d index %d: piece = %v, want %v", bag, seed, i, got, w)
+				}
+			}
+		}
+	}
+	// A ration under each kind: seed 42 dealt to two seats ({I O Z}, {T S J L}).
+	sets := PieceSets(42, 2)
+	rations := map[config.Bag][][]game.PieceType{
+		config.BagDouble: {{1, 0, 4, 1, 0, 4, 0, 4, 4, 1, 1, 0}, {6, 6, 5, 3, 3, 5, 2, 2, 6, 3, 5, 2}},
+		config.BagNone:   {{1, 0, 0, 4, 1, 0, 1, 4, 1, 0, 4, 4}, {2, 5, 6, 2, 6, 2, 2, 2, 5, 3, 6, 3}},
+	}
+	for bag, bySlot := range rations {
+		for slot, want := range bySlot {
+			s := NewBag(42, sets[slot], bag)
+			for i, w := range want {
+				if got := s.Piece(uint64(i)); got != w {
+					t.Errorf("bag %q ration %v index %d: piece = %v, want %v", bag, sets[slot], i, got, w)
+				}
+			}
+		}
+	}
+	// The standard bag through NewBag is New / NewSet unchanged.
+	for _, seed := range []uint64{42, 12345} {
+		single, plain := NewBag(seed, nil, config.BagSingle), New(seed)
+		set, ration := NewBag(seed, sets[1], config.BagSingle), NewSet(seed, sets[1])
+		for i := uint64(0); i < 50; i++ {
+			if single.Piece(i) != plain.Piece(i) {
+				t.Fatalf("seed %d index %d: NewBag's standard bag differs from New", seed, i)
+			}
+			if set.Piece(i) != ration.Piece(i) {
+				t.Fatalf("seed %d index %d: NewBag's standard bag over a ration differs from NewSet", seed, i)
+			}
+		}
+	}
+}
+
+// TestDoubleBagDealsEachTypeTwice: every fourteen pieces of a double bag are
+// two of each of the seven types — and every 2k of a ration's double bag two
+// of each of its k types.
+func TestDoubleBagDealsEachTypeTwice(t *testing.T) {
+	for _, seed := range []uint64{1, 42, 12345} {
+		for _, set := range append([][]game.PieceType{nil}, PieceSets(seed, 3)...) {
+			s := NewBag(seed, set, config.BagDouble)
+			n := uint64(len(s.Set()))
+			for bag := uint64(0); bag < 6; bag++ {
+				count := map[game.PieceType]int{}
+				for pos := uint64(0); pos < 2*n; pos++ {
+					count[s.Piece(bag*2*n+pos)]++
+				}
+				for _, pt := range s.Set() {
+					if count[pt] != 2 {
+						t.Errorf("seed %d set %v bag %d: piece %v dealt %d times, want 2", seed, s.Set(), bag, pt, count[pt])
+					}
+				}
+				if len(count) != len(s.Set()) {
+					t.Errorf("seed %d set %v bag %d: dealt %v outside the set", seed, s.Set(), bag, count)
+				}
+			}
+		}
+	}
+}
+
+// TestNoBagDrawsFromTheSet: no bag stays inside its set — the seven types,
+// or the ration — and, unlike a bag, is free to repeat: over a long enough
+// run every type turns up and some type twice in a row, while the draws stay
+// deterministic and seekable like every other sequence's.
+func TestNoBagDrawsFromTheSet(t *testing.T) {
+	for _, seed := range []uint64{1, 42, 12345} {
+		for _, set := range append([][]game.PieceType{nil}, PieceSets(seed, 2)...) {
+			s := NewBag(seed, set, config.BagNone)
+			seen := map[game.PieceType]bool{}
+			repeat := false
+			var prev game.PieceType
+			for i := uint64(0); i < 200; i++ {
+				p := s.Piece(i)
+				if !slices.Contains(s.Set(), p) {
+					t.Fatalf("seed %d set %v: drew %v", seed, s.Set(), p)
+				}
+				if i > 0 && p == prev {
+					repeat = true
+				}
+				seen[p], prev = true, p
+			}
+			if len(seen) != len(s.Set()) {
+				t.Errorf("seed %d set %v: 200 draws covered only %v", seed, s.Set(), seen)
+			}
+			if !repeat {
+				t.Errorf("seed %d set %v: 200 draws never repeated a type — that is a bag, not chance", seed, s.Set())
+			}
+		}
+	}
+	s := NewBag(42, nil, config.BagNone)
+	if a, b := s.Piece(25), s.Piece(25); a != b {
+		t.Errorf("Piece(25) = %v then %v; no bag must be seekable too", a, b)
+	}
+}
+
+// TestUnknownBagIsTheSevenBag: a kind this build does not know — a meta from
+// a newer one — is dealt as the standard 7-bag, as config.Bag.Normalized
+// reads it, rather than as nothing at all.
+func TestUnknownBagIsTheSevenBag(t *testing.T) {
+	s := NewBag(42, nil, config.Bag("triple"))
+	if s.Bag() != config.BagSingle {
+		t.Fatalf("Bag() = %q, want the 7-bag", s.Bag())
+	}
+	plain := New(42)
+	for i := uint64(0); i < 21; i++ {
+		if s.Piece(i) != plain.Piece(i) {
+			t.Fatalf("index %d: an unknown kind is not dealt as the 7-bag", i)
+		}
 	}
 }

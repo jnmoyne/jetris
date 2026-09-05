@@ -379,3 +379,49 @@ func TestMinPlayerCount(t *testing.T) {
 		t.Errorf("a solo co-op board is %d columns, want %d", got, StandardWidth)
 	}
 }
+
+// TestBagNormalized: the two named bag kinds read as themselves and
+// everything else — absent, the zero value, a kind this build does not know
+// — as the standard 7-bag, the rule a meta from before the field (or from a
+// newer build) is read by; and every kind has the label the lobby row tags
+// it with.
+func TestBagNormalized(t *testing.T) {
+	for in, want := range map[Bag]Bag{"": BagSingle, BagDouble: BagDouble, BagNone: BagNone, "triple": BagSingle, "7": BagSingle, "Double": BagSingle} {
+		if got := in.Normalized(); got != want {
+			t.Errorf("Bag(%q).Normalized() = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[Bag]string{BagSingle: "7-bag", BagDouble: "double bag", BagNone: "no bag", "triple": "7-bag"} {
+		if got := in.Label(); got != want {
+			t.Errorf("Bag(%q).Label() = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestRulesBag: the bag rides the rules bundle — the meta's mirror hands it
+// back, normalizing folds an unknown kind into the 7-bag — and the Guideline
+// preset deals the 7-bag, so the preset with any other bag is custom rules
+// (the lobby row then tags the bag instead of "guideline").
+func TestRulesBag(t *testing.T) {
+	if got := (GameMeta{Bag: BagNone}).Rules().Bag; got != BagNone {
+		t.Errorf("meta bag none reads back as %q", got)
+	}
+	if got := (GameRules{Bag: "triple"}).Normalized(ModeCooperative).Bag; got != BagSingle {
+		t.Errorf("an unknown kind normalized to %q, want the 7-bag", got)
+	}
+	if GuidelineRules().Bag != BagSingle || !GuidelineRules().IsGuideline(ModeCompetitive) {
+		t.Fatal("the Guideline preset should deal the 7-bag")
+	}
+	for _, bag := range []Bag{BagDouble, BagNone} {
+		r := GuidelineRules()
+		r.Bag = bag
+		if r.IsGuideline(ModeCompetitive) || r.IsGuideline(ModeCooperative) {
+			t.Errorf("the preset with bag %q still reads as the Guideline preset", bag)
+		}
+	}
+	r := GuidelineRules()
+	r.Bag = "triple"
+	if !r.IsGuideline(ModeCompetitive) {
+		t.Error("the preset with an unknown kind — the 7-bag once normalized — should still be the preset")
+	}
+}

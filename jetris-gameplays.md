@@ -24,23 +24,24 @@ Seven standard tetrominoes, each with 4 orientations (0-3):
 
 **Rotation:** Super Rotation System (SRS) with standard wall kick tables. Up to 5 kick offsets are tried per rotation attempt. The I-piece has its own kick table; the O-piece does not rotate.
 
-**Piece sequence:** 7-bag randomizer — within each group of 7 pieces, all 7 types appear exactly once in a random order. The bag is shuffled using a seedable PCG RNG so the sequence is deterministic and seekable. (One exception, by choice: a teams game created with **split pieces** deals the seven types out between the teammates and gives each seat a bag of its own ration — §5.)
+**Piece sequence:** 7-bag randomizer — within each group of 7 pieces, all 7 types appear exactly once in a random order. The bag is shuffled using a seedable PCG RNG so the sequence is deterministic and seekable. (Two exceptions, by choice: a game's **bag** rule (§1b) can deal a **double bag** — two of each type in every fourteen — or **no bag** at all, every piece an independent draw; and a teams game created with **split pieces** deals the seven types out between the teammates and gives each seat a bag of its own ration — §5.)
 
 Each player has a color associated with it: used for the outline color of the piece in spectator mode, and also for the outline color of the piece when it's dropped.
 
 ---
 
-## 1b. Piece Preview (the game's NEXT count), Ghost, Hold, Garbage — the play rules
+## 1b. Piece Preview (the game's NEXT count), Ghost, Hold, Bag, Garbage — the play rules
 
 **Every play rule below is chosen on one step of the create-game wizard (step 2,
 GAME RULES) by a single radio.** **Guideline** — the default — plays every rule at
 the setting closest to the Tetris Guideline this game can offer
-(`config.GuidelineRules`): `next_count` 6, the ghost piece, the `hold` queue and,
-for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
+(`config.GuidelineRules`): `next_count` 6, the ghost piece, the `hold` queue, the
+standard 7-bag and, for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
 sharing their hole column and `guideline_garbage`; the lobby row tags such a game
 `guideline`. **Custom** exposes each rule as its own editor or checkbox, with the
 classic defaults noted below, and the row tags every rule that differs from the
-classic game (`next N`, `hold`, `holes N` / `random holes N`, `guideline garbage`).
+classic game (`next N`, `hold`, `double bag` / `no bag`, `holes N` / `random holes N`,
+`guideline garbage`).
 Whichever way they were chosen, the rules are stored in the game's meta record —
 the rule book every engine reads at start — and bind every seat equally.
 
@@ -139,7 +140,33 @@ nothing extra (the wiki lists no table for them). Scoring and levels are the
 same under both settings; only the rows owed change. Independent of the hole
 attributes. The lobby row tags such a game `guideline garbage`.
 
-Because the 7-bag sequence is seekable, the preview is a pure read
+**The bag** is a fourth attribute on the same step (a radio, the 7-bag by
+default): `bag` (`GameMeta.Bag`). It sets **how the pieces are dealt** — the
+randomizer every seat's sequence is drawn with:
+
+- **7-bag** (the field absent: the default, the Guideline's randomizer, and what
+  every game created before the attribute plays) — every seven pieces are the
+  seven types shuffled, so every type turns up in every seven and a drought of
+  one type never lasts more than twelve pieces.
+- **`double`** — the double bag: every fourteen pieces are two of each type
+  shuffled together. Fair over a longer stretch, so two of a kind can come back
+  to back and a drought can last up to twenty-four pieces.
+- **`none`** — no bag: every piece is drawn on its own, any type as likely as any
+  other whatever came before. The old-school randomizer — three S's in a row and
+  a forty-piece I drought are both fair game.
+
+Every kind is dealt off the game's seed and stays seekable (§1): bag `k` is a
+Fisher-Yates shuffle of the bag's contents seeded by PCG(`seed`, `k`), and index
+`i` is position `i mod |bag|` of bag `i div |bag|`; no bag seeds PCG(`seed`, `i`)
+and takes one uniform pick (`rng.NewBag`). The standard 7-bag is bit for bit
+the sequence it always was. In a split-pieces teams game (§5) the rule shapes
+each seat's ration the same way — a double bag of the ration, two of each of
+its types, or independent draws from it. One rule for every seat, humans and
+agents alike (an agent reads `bag` from the meta and deals accordingly — agent
+guide §1.3). The lobby row tags such a game `double bag` or `no bag`; the
+Guideline preset always deals the 7-bag.
+
+Because every bag's sequence is seekable, the preview is a pure read
 (`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
 
 The same number is an **agent's lookahead allowance**: the fair-visibility contract

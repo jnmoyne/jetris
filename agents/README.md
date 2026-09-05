@@ -28,6 +28,10 @@ speaks the protocol and follows the rules.
   The horizon is the game's setting, read from its meta (absent = 0): a difficulty
   or flag of yours may use less of it, never more. **Never** the game seed beyond
   that horizon, and never protocol internals the UI doesn't render.
+- **Deal the pieces the game's way.** The meta's `bag` (absent = the 7-bag) may say
+  `double` — two of each type per bag of fourteen — or `none` — every piece an
+  independent uniform draw; compute your sequence accordingly, ration included in a
+  `split_pieces` game, or you will spawn pieces no other peer expects (guide §1.3).
 - **Garbage has a per-game shape.** The meta's `garbage_holes` (0-4, absent = 0) is how
   many empty cells every garbage row you raise on your own board is punched with (one
   random column set per raise, or one per row when `random_garbage_holes` is true). A

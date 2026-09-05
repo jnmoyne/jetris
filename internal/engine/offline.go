@@ -16,9 +16,10 @@ type OfflineGame struct {
 	// over the visible rows.
 	Board *game.Playfield
 	// Rules are the play rules a screen reads — the NEXT well's depth, the
-	// ghost, the hold queue — normalized for the mode as a live game's are.
+	// ghost, the hold queue, the bag — normalized for the mode as a live
+	// game's are.
 	Rules config.GameRules
-	// Seed is the piece sequence the NEXT well reads.
+	// Seed is the piece sequence the NEXT well reads (dealt by Rules.Bag).
 	Seed uint64
 	// Held is the piece in the hold slot, nil for an empty one.
 	Held *game.PieceType
@@ -44,7 +45,8 @@ func Offline(g OfflineGame) *Engine {
 	e.nextCount = rules.NextCount
 	e.noGhost = !rules.Ghost
 	e.hold = rules.Hold
-	e.seq = rng.New(g.Seed)
+	e.bag = rules.Bag
+	e.seq = rng.NewBag(g.Seed, nil, e.bag)
 	if g.Held != nil {
 		e.heldPiece, e.hasHeld = *g.Held, true
 	}

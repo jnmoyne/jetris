@@ -130,6 +130,50 @@ func TeamLetter(team int) string {
 	return string(rune('A' + team))
 }
 
+// Bag is a game's piece randomizer: how its sequence groups the seven piece
+// types. The standard 7-bag — the Tetris Guideline's — deals the seven types
+// once each, shuffled, seven pieces at a time; the double bag deals them
+// twice each, fourteen at a time, so a stretch stays fair over a longer run
+// but two of a kind can come back to back and a drought can last twice as
+// long; and no bag at all draws every piece on its own, any type as likely as
+// any other whatever came before — the old-school randomizer where three S's
+// in a row and a forty-piece I drought are both fair game. One rule for every
+// seat, chosen with the play rules (GameRules.Bag), stored on the meta
+// (GameMeta.Bag) and read by every engine at Start — humans, spectators and
+// agents draw the same sequence only if they draw it the same way.
+type Bag string
+
+const (
+	BagSingle Bag = ""       // the standard 7-bag: the default, and every meta written before the field
+	BagDouble Bag = "double" // the double bag: every fourteen pieces are two of each type, shuffled together
+	BagNone   Bag = "none"   // no bag: every piece is an independent uniform draw
+)
+
+// Normalized reads a recorded bag: the two named kinds as themselves, and
+// anything else — absent, the zero value, every meta written before the
+// field — as the standard 7-bag.
+func (b Bag) Normalized() Bag {
+	switch b {
+	case BagDouble, BagNone:
+		return b
+	default:
+		return BagSingle
+	}
+}
+
+// Label names the bag the way the lobby row tags it and the wizard lists it:
+// "7-bag", "double bag" or "no bag".
+func (b Bag) Label() string {
+	switch b.Normalized() {
+	case BagDouble:
+		return "double bag"
+	case BagNone:
+		return "no bag"
+	default:
+		return "7-bag"
+	}
+}
+
 type GameStatus string
 
 const (
@@ -155,6 +199,7 @@ type GameMeta struct {
 	RandomGarbageHoles bool       `json:"random_garbage_holes,omitempty"` // every garbage row draws its own hole columns ("messy" garbage); unset — the default, and every meta written before the field — every row of one raise shares a single draw, so its holes line up into a well ("clean" garbage). Moot at GarbageHoles 0
 	GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // attack strength follows the Tetris Guideline table — a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (game.AttackRows); unset — the default, and every meta written before the field — every cleared line sends one row
 	SplitPieces        bool       `json:"split_pieces,omitempty"`         // teams mode: the seven piece types are dealt out between the teammates (rng.PieceSets), every seat drawing only from its own ration and the whole bag present across the team. Unset — the default, and every meta written before the field — every seat runs the full 7-bag. Structural like TeamSize, not a play rule: the deal follows Seed, so both teams' slot N hold the same ration (see SplitsPieces)
+	Bag                Bag        `json:"bag,omitempty"`                  // the piece randomizer every seat's sequence is drawn with (Bag): "double" for the double bag, "none" for no bag at all; unset — the default, and every meta written before the field — the standard 7-bag. One rule for every seat, like NextCount; in a split-pieces game it shapes each seat's ration the same way (a double bag of the ration, or independent draws from it)
 	Seed               uint64     `json:"seed"`
 	Status             GameStatus `json:"status"`
 	CreatorID          string     `json:"creator_id"`
@@ -170,12 +215,14 @@ type GameMeta struct {
 // openInvitePicker): every field lands in GameMeta — the rule book every
 // engine reads at Start — and is mirrored on the lobby listing for the row's
 // tags. The zero value is the pre-attribute Jetris game (no preview, no hold,
-// solid garbage, one row per line) except for Ghost, which the wizard defaults
-// on — the meta stores it inverted (NoGhost) for the same reason.
+// the 7-bag, solid garbage, one row per line) except for Ghost, which the
+// wizard defaults on — the meta stores it inverted (NoGhost) for the same
+// reason.
 type GameRules struct {
 	NextCount          int  // upcoming pieces the game reveals (0..MaxNextCount)
 	Ghost              bool // the hard-drop ghost preview (GameMeta.NoGhost, inverted)
 	Hold               bool // the Guideline hold queue (GameMeta.Hold): swap the falling piece for a held one, once per piece
+	Bag                Bag  // the piece randomizer (GameMeta.Bag): the standard 7-bag, the double bag, or no bag at all
 	GarbageHoles       int  // holes per garbage row in the modes that raise garbage (0..MaxGarbageHoles; 0 = solid rows that never clear)
 	RandomGarbageHoles bool // every garbage row draws its own hole columns (off: the rows of one attack share a draw)
 	GuidelineGarbage   bool // attack strength by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines (off: one row per line)
@@ -184,9 +231,9 @@ type GameRules struct {
 // GuidelineRules is the create wizard's "Guideline" preset: every rule at the
 // setting closest to the Tetris Guideline this game can offer — the longest
 // next queue the game reveals (MaxNextCount), the ghost piece, the hold queue,
-// and Guideline-style garbage: one hole per row, the rows of one attack
-// sharing it (clean garbage that digs out as a well), attacks by the
-// Guideline table.
+// the standard 7-bag (BagSingle, the zero value), and Guideline-style
+// garbage: one hole per row, the rows of one attack sharing it (clean garbage
+// that digs out as a well), attacks by the Guideline table.
 func GuidelineRules() GameRules {
 	return GameRules{
 		NextCount:        MaxNextCount,
@@ -198,11 +245,13 @@ func GuidelineRules() GameRules {
 }
 
 // Normalized returns the rules clamped to their legal ranges as a game of
-// mode stores them: NextCount and GarbageHoles within their caps, random
-// holes only meaningful with holes — and, since a cooperative game raises no
-// garbage, its garbage rules zeroed so no listing tag misleads.
+// mode stores them: NextCount and GarbageHoles within their caps, the bag one
+// of the kinds there are, random holes only meaningful with holes — and,
+// since a cooperative game raises no garbage, its garbage rules zeroed so no
+// listing tag misleads.
 func (r GameRules) Normalized(mode GameMode) GameRules {
 	r.NextCount = min(max(r.NextCount, 0), MaxNextCount)
+	r.Bag = r.Bag.Normalized()
 	if mode == ModeCooperative {
 		r.GarbageHoles, r.RandomGarbageHoles, r.GuidelineGarbage = 0, false, false
 	}
@@ -223,6 +272,7 @@ func (m GameMeta) Rules() GameRules {
 		NextCount:          m.NextCount,
 		Ghost:              !m.NoGhost,
 		Hold:               m.Hold,
+		Bag:                m.Bag,
 		GarbageHoles:       m.GarbageHoles,
 		RandomGarbageHoles: m.RandomGarbageHoles,
 		GuidelineGarbage:   m.GuidelineGarbage,

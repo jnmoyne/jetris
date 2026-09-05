@@ -51,7 +51,8 @@ func main() {
 	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (default: one row per line)")
 	hold := flag.Bool("hold", false, "the Guideline hold queue when creating a game (the agent itself never holds; the humans in the game may)")
 	splitPieces := flag.Bool("split-pieces", false, "when creating a TEAMS game of two or more per team: deal the seven piece types out between the teammates, each seat playing only its own ration")
-	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 6, hold, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage and --hold")
+	bag := flag.String("bag", "", "piece randomizer when creating a game: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
+	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 6, hold, the 7-bag, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
@@ -91,10 +92,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mode %q (want cooperative, competitive or teams)\n", *modeStr)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces}
+		if normalizeBag(*bag) != *bag {
+			fmt.Fprintf(os.Stderr, "--bag %q is not a bag kind: use double, none, or leave it unset for the 7-bag\n", *bag)
+			os.Exit(2)
+		}
+		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
-			host.next, host.holes, host.random, host.guideline, host.hold = maxNextCount, 1, false, true, true
+			host.next, host.holes, host.random, host.guideline, host.hold, host.bag = maxNextCount, 1, false, true, true, bagSingle
 		}
 	}
 
@@ -155,6 +160,27 @@ func runSelftest() {
 					if got[slot][i] != want[slot][i] {
 						log.Fatalf("split mismatch seed %d seats %d slot %d: %v != %v", seed, seats, slot, got[slot], want[slot])
 					}
+				}
+			}
+		}
+	}
+	// The bag rule (meta bag): the double bag and no bag against the fixtures
+	// internal/rng's TestBagFixtures pins — the same seeds, dealt two more ways.
+	bagFixtures := map[string]map[uint64][]int{
+		bagDouble: {
+			42:    {6, 5, 2, 3, 0, 3, 2, 4, 1, 4, 0, 1, 6, 5, 4, 5, 4, 1, 3, 1, 3, 6, 0, 2, 5, 6, 0, 2},
+			12345: {3, 5, 4, 0, 3, 0, 6, 1, 6, 1, 5, 2, 2, 4, 4, 4, 1, 1, 0, 2, 0, 3, 5, 6, 6, 5, 3, 2},
+		},
+		bagNone: {
+			42:    {6, 1, 0, 4, 1, 2, 2, 5, 4, 6, 6, 5, 0, 0, 5, 0, 3, 0, 0, 0, 0},
+			12345: {5, 4, 0, 5, 5, 0, 2, 1, 4, 4, 1, 6, 2, 1, 5, 2, 1, 6, 5, 5, 5},
+		},
+	}
+	for kind, bySeed := range bagFixtures {
+		for seed, seq := range bySeed {
+			for i, want := range seq {
+				if got := pieceAtBag(seed, nil, kind, i); got != want {
+					log.Fatalf("bag %q mismatch seed %d index %d: %d != %d", kind, seed, i, got, want)
 				}
 			}
 		}

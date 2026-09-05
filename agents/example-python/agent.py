@@ -124,9 +124,11 @@ def parse_rfc3339(s):
 
 
 # --------------------------------------------------------------------------
-# The piece RNG: every peer derives the same deterministic 7-bag sequence from
-# GameMeta.Seed. This reproduces Go's math/rand/v2 PCG + Fisher-Yates shuffle
-# bit for bit (the sequence is seekable: bag k uses PCG(seed, k)).
+# The piece RNG: every peer derives the same deterministic piece sequence from
+# GameMeta.Seed — the standard 7-bag, or the double bag / no bag the meta's
+# ``bag`` may ask for (guide §1.3). This reproduces Go's math/rand/v2 PCG +
+# Fisher-Yates shuffle bit for bit (the sequence is seekable: bag k uses
+# PCG(seed, k); no bag uses PCG(seed, index) for one pick).
 
 M64 = (1 << 64) - 1
 
@@ -167,12 +169,22 @@ def _uint64n(pcg, n):
     return hi
 
 
-def piece_at(seed, index):
-    """Piece type (0..6) at the given global sequence index."""
-    bag, pos = index // 7, index % 7
-    pcg = _PCG(seed, bag)
+def piece_at(seed, index, bag=""):
+    """Piece type (0..6) at the given global sequence index, dealt the way the
+    game's ``bag`` rule says (guide §1.3): the standard 7-bag when absent, the
+    double bag under "double" (two of each type shuffled together, fourteen at
+    a time), no bag under "none" (every piece an independent uniform draw, the
+    first pick off PCG(seed, index)). Anything else is the 7-bag, as the game
+    reads it."""
+    if bag == "none":
+        return _uint64n(_PCG(seed, index), 7)
     pieces = [0, 1, 2, 3, 4, 5, 6]
-    for i in range(6, 0, -1):
+    if bag == "double":
+        pieces = pieces + pieces
+    n = len(pieces)
+    bagno, pos = index // n, index % n
+    pcg = _PCG(seed, bagno)
+    for i in range(n - 1, 0, -1):
         j = _uint64n(pcg, i + 1)
         pieces[i], pieces[j] = pieces[j], pieces[i]
     return pieces[pos]
@@ -1012,7 +1024,7 @@ class Game:
             # A live piece survived (adopted by a repair): resume it instead
             # of spawning over it — the caller re-plans from where it stands.
             return time.monotonic()
-        pt = piece_at(self.meta["seed"], self.piece_idx)
+        pt = piece_at(self.meta["seed"], self.piece_idx, self.meta.get("bag", ""))
         row, col = 2, (WIDTH - 4) // 2
         cells = piece_cells(pt, 0, row, col)
         if not can_place(self.locked, self.height, cells):
@@ -1475,6 +1487,24 @@ def selftest():
         assert got == seq, f"RNG mismatch for seed {seed}: {got} != {seq}"
         bag = sorted(got[:7])
         assert bag == [0, 1, 2, 3, 4, 5, 6], f"first bag not a permutation: {bag}"
+        assert [piece_at(seed, i, "triple") for i in range(len(seq))] == seq
+    # The bag rule (meta ``bag``, guide §1.3): the double bag and no bag, the
+    # same fixtures internal/rng's TestBagFixtures pins.
+    double = {
+        42: [6, 5, 2, 3, 0, 3, 2, 4, 1, 4, 0, 1, 6, 5, 4, 5, 4, 1, 3, 1, 3, 6, 0, 2, 5, 6, 0, 2],
+        12345: [3, 5, 4, 0, 3, 0, 6, 1, 6, 1, 5, 2, 2, 4, 4, 4, 1, 1, 0, 2, 0, 3, 5, 6, 6, 5, 3, 2],
+    }
+    for seed, seq in double.items():
+        got = [piece_at(seed, i, "double") for i in range(len(seq))]
+        assert got == seq, f"double bag mismatch for seed {seed}: {got} != {seq}"
+        assert sorted(got[:14]) == sorted(list(range(7)) * 2), f"first double bag not two of each: {got[:14]}"
+    none = {
+        42: [6, 1, 0, 4, 1, 2, 2, 5, 4, 6, 6, 5, 0, 0, 5, 0, 3, 0, 0, 0, 0],
+        12345: [5, 4, 0, 5, 5, 0, 2, 1, 4, 4, 1, 6, 2, 1, 5, 2, 1, 6, 5, 5, 5],
+    }
+    for seed, seq in none.items():
+        got = [piece_at(seed, i, "none") for i in range(len(seq))]
+        assert got == seq, f"no-bag mismatch for seed {seed}: {got} != {seq}"
     assert piece_cells(0, 0, 2, 3) == [(3, 3), (3, 4), (3, 5), (3, 6)]  # I spawn
     assert len({tuple(sorted(piece_cells(t, o, 0, 0))) for t in range(7)
                 for o in range(4)}) > 7

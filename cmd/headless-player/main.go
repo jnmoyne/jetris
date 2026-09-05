@@ -36,6 +36,7 @@ func main() {
 	teams := flag.Int("teams", config.DefaultTeamCount, "teams mode: how many teams play each other (2-6)")
 	extraCols := flag.Int("extra-cols", config.DefaultExtraColumns, "shared-board width: columns every seat beyond the first adds to the standard 10")
 	splitPieces := flag.Bool("split-pieces", false, "teams: deal the seven piece types out between the teammates, each seat playing only its own ration")
+	bag := flag.String("bag", "", "piece randomizer: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -85,7 +86,7 @@ func main() {
 	if *mode == "cooperative" {
 		gameMode, playerCount, teamCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 0, 1
 	}
-	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamCount, teamSize, *extraCols, maxAgents, *splitPieces, config.GameRules{NextCount: config.MaxNextCount, Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamCount, teamSize, *extraCols, maxAgents, *splitPieces, config.GameRules{NextCount: config.MaxNextCount, Ghost: true, Bag: config.Bag(*bag)}, false)
 	if err != nil {
 		log.Fatal(err)
 	}

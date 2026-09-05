@@ -124,6 +124,29 @@ every difficulty against every preview size, plus the absent-field case). Do the
 same in yours — it is the easiest rule in this guide to break by accident while
 tuning a planner.
 
+### 1.3 The bag: how your sequence is dealt
+
+The meta's `bag` (absent by default) is the game's randomizer — the way every
+seat's sequence is dealt off `seed` — and you must deal yours the same way, or
+you will spawn pieces no other peer expects (gameplays §1b):
+
+- absent (or `""`) — the **standard 7-bag**: index `i` is position `i % 7` of a
+  Fisher-Yates shuffle of the seven types seeded by PCG(`seed`, `i / 7`). What
+  every game created before the field plays.
+- `"double"` — the **double bag**: the fourteen pieces `[0..6, 0..6]` shuffled
+  the same way, index `i` at position `i % 14` of bag `i / 14`.
+- `"none"` — **no bag**: index `i` is one uniform pick from the seven —
+  `uint64n(7)` off PCG(`seed`, `i`) — every piece independent of every other.
+
+Under `split_pieces` (§1.2) the same rule applies to your ration: a double bag
+holds the ration twice (`2k` pieces), no bag picks uniformly from the ration,
+and the stream is the ration's mixed seed either way. Treat any other value as
+the 7-bag, as the game does (`config.Bag.Normalized`). `internal/rng.NewBag` is
+the original; `agents/golang-mk1/rng.go`'s `pieceAtBag` is the bit-exact port,
+pinned by `TestBagParity` and `--selftest`, and `example-python`'s `piece_at`
+takes the kind as its third argument. A game without the field is the 7-bag,
+unchanged.
+
 ## 2. Announce yourself: the agent flag and the agent policy
 
 Agents are first-class but visible:
@@ -214,7 +237,7 @@ cd agents/golang-mk1 && go build .
 ```
 
 Its reading order (see its [README](agents/golang-mk1/README.md)): `pieces.go` →
-`rng.go` (the bit-exact PCG + 7-bag port, and the `split_pieces` deal) →
+`rng.go` (the bit-exact PCG + 7-bag port, the `bag` kinds, and the `split_pieces` deal) →
 `engine.go` → `planner.go` →
 `difficulty.go` → `types.go` → `agent.go` (the lobby) → `game.go` (one game).
 
@@ -258,7 +281,7 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore; `split_pieces` (bool, absent = false) is the TEAMS-mode piece split — the seven types are dealt out between a team's seats and your seat plays only its own ration, see below; `team_count` (2-6, absent = 2) is how many teams a TEAMS game is played between and `team_size` how many seats each of them holds, so `player_count = team_count × team_size`, team indices run `0..team_count-1`, a team board has the standard 20 visible rows like every other board, and the game is over once at most one team still has a member standing (§5 of the gameplays) |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` is a UI-only rule (the hard-drop ghost preview) agents can ignore; `split_pieces` (bool, absent = false) is the TEAMS-mode piece split — the seven types are dealt out between a team's seats and your seat plays only its own ration, see below; `bag` (`"double"` / `"none"`, absent = the 7-bag) is how every seat's piece sequence is dealt — the double bag, or no bag at all (§1.3); `team_count` (2-6, absent = 2) is how many teams a TEAMS game is played between and `team_size` how many seats each of them holds, so `player_count = team_count × team_size`, team indices run `0..team_count-1`, a team board has the standard 20 visible rows like every other board, and the game is over once at most one team still has a member standing (§5 of the gameplays) |
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
@@ -549,6 +572,7 @@ each lock of yours:
 - [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
 - [ ] In a teams game with the meta's `split_pieces`, pieces drawn from YOUR seat's ration — the deal computed off `seed` and `team_size` for your `team_slot` (§1.2)
+- [ ] Pieces dealt by the meta's `bag` — the 7-bag when absent, the double bag under `"double"`, independent draws under `"none"`, a ration shaped the same way (§1.3)
 - [ ] Garbage rows raised with the meta's `garbage_holes` (one column set per raise, or one per row under `random_garbage_holes`), and a holed garbage row cleared like any line once its holes are filled — a solid garbage row never (§4.2, §4.4)
 - [ ] Attacks delivered by CAS-adding victims' garbage registers (never events), sized one row per line — or by the Guideline table (0/1/2/4 for plain clears, the T-spin rows, the Back-to-Back and perfect-clear bonuses) when the meta's `guideline_garbage` is true (§4.4)
 - [ ] Your own locks scored by the Guideline table and announced with your cumulative totals — every clear, and on a shared board every lock that scored (§4.6)

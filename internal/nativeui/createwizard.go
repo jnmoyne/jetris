@@ -18,7 +18,7 @@ import (
 // agent question — an invite-only game's agent policy is per-invite).
 const (
 	wizStepMode   = 1 // game type + seat count
-	wizStepNext   = 2 // the play rules: the Guideline preset, or custom (preview, ghost, hold, garbage)
+	wizStepNext   = 2 // the play rules: the Guideline preset, or custom (preview, ghost, hold, bag, garbage)
 	wizStepJoin   = 3 // open vs invite-only
 	wizStepAgents = 4 // agent policy (open games only)
 )
@@ -162,11 +162,12 @@ func (a *App) finishCreateWizard() {
 // preview is how many next pieces the game reveals to everyone (players,
 // spectators, agents): blank or junk falls back to the default of 6. The
 // ghost and the hold are per-game rules like the preview — the creator's
-// checkboxes decide them for every seat. Garbage holes are how many empty
-// cells every garbage row is raised with in the modes that raise garbage
-// (blank or junk: the default of 0, solid rows that never clear), with the
-// random-positions and Guideline-attack-table checkboxes beside it. Ranges
-// are clamped by GameRules.Normalized.
+// checkboxes decide them for every seat — and so is the bag the pieces are
+// dealt from (wizardBag). Garbage holes are how many empty cells every
+// garbage row is raised with in the modes that raise garbage (blank or junk:
+// the default of 0, solid rows that never clear), with the random-positions
+// and Guideline-attack-table checkboxes beside it. Ranges are clamped by
+// GameRules.Normalized.
 func (a *App) customRules() config.GameRules {
 	nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
 	if err != nil {
@@ -180,9 +181,39 @@ func (a *App) customRules() config.GameRules {
 		NextCount:          nextCount,
 		Ghost:              a.ghostCb.Value,
 		Hold:               a.holdCb.Value,
+		Bag:                a.wizardBag(),
 		GarbageHoles:       holes,
 		RandomGarbageHoles: a.randomHolesCb.Value,
 		GuidelineGarbage:   a.guidelineCb.Value,
+	}
+}
+
+// wizardBag reads step 2's piece-bag radio (custom rules): the randomizer
+// every seat's sequence is dealt with — the standard 7-bag unless the creator
+// picked the double bag or no bag at all (config.Bag). The Guideline preset
+// never asks: the Guideline's randomizer is the 7-bag.
+func (a *App) wizardBag() config.Bag {
+	switch a.bagEnum.Value {
+	case "double":
+		return config.BagDouble
+	case "none":
+		return config.BagNone
+	default:
+		return config.BagSingle
+	}
+}
+
+// bagHint describes the bag the radio has picked in the terms a player feels
+// it: whether two of a kind can come back to back, and how long a drought of
+// one type can last.
+func bagHint(bag config.Bag) string {
+	switch bag {
+	case config.BagDouble:
+		return "Two of each type in every fourteen pieces, shuffled together: fair over a longer stretch, so two of a kind can come back to back and a drought can last up to twenty-four pieces."
+	case config.BagNone:
+		return "Pure chance, the old-school way: every piece is drawn on its own, any type as likely as any other — three S's in a row and a forty-piece I drought are both fair game."
+	default:
+		return "The Guideline randomizer: every seven pieces are the seven types shuffled, so every type turns up in every seven and a drought never lasts more than twelve."
 	}
 }
 
@@ -481,10 +512,10 @@ func (a *App) wizardBoardWidth(gtx C, mode config.GameMode) D {
 // wizardNextStep is step 2: the game's play rules, fixed at creation, one
 // setting for every seat. A single radio picks the Guideline preset — every
 // rule at the setting closest to the Tetris Guideline, listed read-only — or
-// custom rules: the upcoming-piece preview count, whether the hard-drop
-// ghost shows, whether the hold queue is on, and (in the modes that raise
-// garbage) how strong an attack is and how many holes every garbage row
-// comes with, each row drawing its own or not.
+// custom rules: the upcoming-piece preview count, the bag the pieces are
+// dealt from, whether the hard-drop ghost shows, whether the hold queue is
+// on, and (in the modes that raise garbage) how strong an attack is and how
+// many holes every garbage row comes with, each row drawing its own or not.
 func (a *App) wizardNextStep(gtx C) D {
 	custom := a.rulesEnum.Value == "custom"
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -535,6 +566,7 @@ func guidelineSummary(mode config.GameMode) [][2]string {
 		{"Next pieces", fmt.Sprintf("%d — the NEXT well, and how far agents may look ahead", r.NextCount)},
 		{"Ghost piece", "on — the landing preview of every player's piece"},
 		{"Hold", "on — C or the HOLD button sets the falling piece aside for later, once per piece"},
+		{"Piece bag", "the 7-bag — every seven pieces are the seven types, shuffled"},
 	}
 	if mode != config.ModeCooperative {
 		rows = append(rows,
@@ -563,6 +595,13 @@ func (a *App) wizardCustomRules(gtx C) D {
 		}),
 		layout.Rigid(spacer(4)),
 		layout.Rigid(a.body("The NEXT well every player sees — and exactly how far agents may look ahead. 0 hides it: nobody sees what's coming.", colMuted)),
+		layout.Rigid(spacer(10)),
+		layout.Rigid(a.body("Piece bag:", colMuted)),
+		layout.Rigid(a.wizardRadio(&a.bagEnum, "single", "7-bag — every seven pieces are the seven types, shuffled")),
+		layout.Rigid(a.wizardRadio(&a.bagEnum, "double", "Double bag — every fourteen pieces are two of each type, shuffled together")),
+		layout.Rigid(a.wizardRadio(&a.bagEnum, "none", "No bag — every piece is a fresh random draw")),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body(bagHint(a.wizardBag()), colMuted)),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
 			cb := material.CheckBox(a.th, &a.ghostCb, "Show ghost piece")

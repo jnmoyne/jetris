@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -266,6 +267,12 @@ const replayIdleCheck = 10 * time.Second
 // not throttled by the window.
 const replayProgressEvery = 200
 
+// replayPullBatch is how many messages each pull request behind the load asks
+// for. At nats.go's default of 500 a long game is a hundred batches, each
+// gated on a round trip to the server; a replay is read whole and as fast as
+// possible, so it asks for much more at once.
+const replayPullBatch = 2500
+
 // runReplayLoad reads the game's whole slice of the shared replay stream (one
 // ordered consumer on "jetris.replay.<id>.>") as fast as the server will send
 // it, decoding every message into the timeline the transport then plays. It
@@ -287,7 +294,15 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 		a.setReplayErr(rv, "Not connected.")
 		return
 	}
-	markerSeq, total, err := natspkg.GetReplayMarker(ctx, js, gameID)
+	t0 := time.Now()
+	// One stream lookup serves the marker get, the height info and the idle
+	// re-checks — each is a round trip to a possibly distant server.
+	rs, err := js.Stream(ctx, config.ReplayStream)
+	if err != nil {
+		a.setReplayErr(rv, "This game's replay is no longer available.")
+		return
+	}
+	markerSeq, total, err := natspkg.GetReplayMarkerOn(ctx, rs, gameID)
 	if err != nil {
 		a.setReplayErr(rv, "This game's replay is no longer available.")
 		return
@@ -295,7 +310,7 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 	// The boards' height, measured off the recording itself before a single
 	// message of it is decoded: the game's subjects say how tall its boards
 	// were, and every cell the load then reads has a row to land on.
-	height := replayBoardHeight(ctx, js, rv.rec)
+	height := replayBoardHeight(ctx, rs, rv.rec)
 	boards, byPlayer := newReplayBoards(rv.rec, height)
 	a.mu.Lock()
 	rv.total = int(total)
@@ -303,14 +318,16 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 	a.mu.Unlock()
 
 	ch, cancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
-		Stream:        config.ReplayStream,
-		FilterSubject: config.ReplayFilter(gameID),
+		Stream:          config.ReplayStream,
+		FilterSubject:   config.ReplayFilter(gameID),
+		PullMaxMessages: replayPullBatch,
 	})
 	if err != nil {
 		a.setReplayErr(rv, "Replay failed to load: "+err.Error())
 		return
 	}
 	defer cancel()
+	setup := time.Since(t0)
 
 	b := newReplayBuilder(rv.rec, height)
 	idle := time.NewTimer(replayIdleCheck)
@@ -329,7 +346,7 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 		case <-idle.C:
 			// Quiet channel without the marker: purged mid-load, or just a
 			// slow server — the marker lookup tells them apart.
-			if _, _, err := natspkg.GetReplayMarker(ctx, js, gameID); err != nil {
+			if _, _, err := natspkg.GetReplayMarkerOn(ctx, rs, gameID); err != nil {
 				a.setReplayErr(rv, "Replay ended early — this game's replay was just removed.")
 				return
 			}
@@ -344,6 +361,10 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 			}
 			if doneSeq || msg.Subject() == config.ReplayMarkerSubject(gameID) {
 				tl := b.finish()
+				streamed := time.Since(t0) - setup
+				log.Printf("replay %s: %d messages loaded in %v (setup %v, stream %v, %.0f msgs/s)",
+					gameID, b.n, time.Since(t0).Round(time.Millisecond), setup.Round(time.Millisecond),
+					streamed.Round(time.Millisecond), float64(b.n)/max(streamed.Seconds(), 1e-9))
 				a.mu.Lock()
 				rv.loaded, rv.tl = b.n, tl
 				rv.playing = true
@@ -370,8 +391,8 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 // piece reached the floor still stands a whole board tall. A recording with
 // no cells at all, or a stream that cannot be asked, falls back to the
 // archive record's own word (config.ArchiveRecord.BoardHeight).
-func replayBoardHeight(ctx context.Context, js jetstream.JetStream, rec config.ArchiveRecord) int {
-	h, err := natspkg.ReplayBoardHeight(ctx, js, rec.GameID)
+func replayBoardHeight(ctx context.Context, rs jetstream.Stream, rec config.ArchiveRecord) int {
+	h, err := natspkg.ReplayBoardHeightOn(ctx, rs, rec.GameID)
 	if err != nil || h <= 0 {
 		return rec.BoardHeight()
 	}

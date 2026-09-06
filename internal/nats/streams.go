@@ -277,6 +277,12 @@ func GetReplayMarker(ctx context.Context, js jetstream.JetStream, gameID string)
 	if err != nil {
 		return 0, 0, err
 	}
+	return GetReplayMarkerOn(ctx, s, gameID)
+}
+
+// GetReplayMarkerOn is GetReplayMarker on a replay stream handle already in
+// hand — a load that asks the stream several things looks it up once.
+func GetReplayMarkerOn(ctx context.Context, s jetstream.Stream, gameID string) (seq, msgs uint64, err error) {
 	msg, err := s.GetLastMsgForSubject(ctx, config.ReplayMarkerSubject(gameID))
 	if err != nil {
 		return 0, 0, err
@@ -306,6 +312,12 @@ func ReplayBoardHeight(ctx context.Context, js jetstream.JetStream, gameID strin
 	if err != nil {
 		return 0, err
 	}
+	return ReplayBoardHeightOn(ctx, s, gameID)
+}
+
+// ReplayBoardHeightOn is ReplayBoardHeight on a replay stream handle already
+// in hand.
+func ReplayBoardHeightOn(ctx context.Context, s jetstream.Stream, gameID string) (int, error) {
 	info, err := s.Info(ctx, jetstream.WithSubjectFilter(config.ReplayFilter(gameID)))
 	if err != nil {
 		return 0, err

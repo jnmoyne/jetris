@@ -24,6 +24,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetris/internal/config"
+	natspkg "jetris/internal/nats"
 )
 
 func TestLiveReplayLoad(t *testing.T) {
@@ -42,18 +43,42 @@ func TestLiveReplayLoad(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// The most recently archived game.
+	// The most recently archived game, or the one JETRIS_LIVE_GAME names (a
+	// long game is the one to time).
 	st, err := js.Stream(ctx, config.ArchiveStream)
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, err := st.GetLastMsgForSubject(ctx, config.ArchiveSubject)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var rec config.ArchiveRecord
-	if err := json.Unmarshal(msg.Data, &rec); err != nil {
-		t.Fatal(err)
+	if want := os.Getenv("JETRIS_LIVE_GAME"); want != "" {
+		lastSeq := st.CachedInfo().State.LastSeq
+		ch, cancel, err := natspkg.NewOrderedConsumer(ctx, js, natspkg.OrderedConsumerConfig{
+			Stream: config.ArchiveStream, FilterSubject: config.ArchiveSubject,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for m := range ch {
+			var r config.ArchiveRecord
+			if json.Unmarshal(m.Data(), &r) == nil && r.GameID == want {
+				rec = r
+			}
+			if md, err := m.Metadata(); err == nil && md.Sequence.Stream >= lastSeq {
+				break
+			}
+		}
+		cancel()
+		if rec.GameID == "" {
+			t.Fatalf("no archive record for %s", want)
+		}
+	} else {
+		msg, err := st.GetLastMsgForSubject(ctx, config.ArchiveSubject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(msg.Data, &rec); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	a := newTestApp()

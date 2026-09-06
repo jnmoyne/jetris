@@ -11,6 +11,13 @@ type OrderedConsumerConfig struct {
 	Stream        string
 	FilterSubject string
 	StartSeq      uint64 // 0 = from beginning
+	// PullMaxMessages / PullMaxBytes size the pull requests behind the
+	// channel; zero keeps nats.go's defaults (500 messages, refilled at 250).
+	// A whole-stream read to a remote server (a replay load) is bounded by
+	// one round trip per batch at the defaults — a bigger batch is more of
+	// the read in flight at once.
+	PullMaxMessages int
+	PullMaxBytes    int
 }
 
 // NewOrderedConsumer creates an ordered consumer and returns a channel of messages.
@@ -42,7 +49,14 @@ func NewOrderedConsumer(
 	cctx, cancel := context.WithCancel(ctx)
 	ch := make(chan jetstream.Msg, 64)
 
-	iter, err := cons.Messages()
+	var pullOpts []jetstream.PullMessagesOpt
+	if cfg.PullMaxMessages > 0 {
+		pullOpts = append(pullOpts, jetstream.PullMaxMessages(cfg.PullMaxMessages))
+	}
+	if cfg.PullMaxBytes > 0 {
+		pullOpts = append(pullOpts, jetstream.PullMaxBytes(cfg.PullMaxBytes))
+	}
+	iter, err := cons.Messages(pullOpts...)
 	if err != nil {
 		cancel()
 		return nil, nil, err

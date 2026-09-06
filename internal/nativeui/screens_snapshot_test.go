@@ -387,7 +387,7 @@ func TestScreenSnapshots(t *testing.T) {
 				fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
 				layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
 					return a.lobbyPanel(gtx, sampleLobbyGames(), map[string]bool{"gone-game-9999": true},
-						a.archivesForDisplay(sampleLobbyArchives()), sampleServerLog())
+						a.archivesForDisplay(sampleLobbyArchives(), nonePinned), sampleServerLog())
 				})
 				scanlines(gtx)
 			})
@@ -532,6 +532,7 @@ func TestScreenSnapshots(t *testing.T) {
 			a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Team: 1}, {PlayerID: "bob", Name: "bob", Agent: true}}
 			a.screen = screenGame
 			a.gameOver, a.won, a.score, a.level = true, true, 4200, 4
+			a.gameStatus = string(config.GameStatusFinished) // over for everyone: the box offers Pin and Share
 			a.teamScores, a.teamLevels = []int{3100, 4200}, []int{3, 4}
 			a.fireworks = newFireworksShow(now.Add(-2500 * time.Millisecond))
 			a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = now.Add(-3300*time.Millisecond), tc.rank, tc.of, true
@@ -540,6 +541,23 @@ func TestScreenSnapshots(t *testing.T) {
 				a.layout(gtx)
 			})
 		}
+		// The game-over box's Share over the winning screen: the modal and
+		// its QR code stand above the crown, which floats over the
+		// fireworks but never over a modal.
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0, 0, 0)
+		a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob", Agent: true}}
+		a.screen = screenGame
+		a.gameStatus = string(config.GameStatusFinished)
+		a.gameOver, a.won, a.score, a.level = true, true, 4200, 4
+		a.fireworks = newFireworksShow(now.Add(-2500 * time.Millisecond))
+		a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = now.Add(-3300*time.Millisecond), 1, 12, true
+		a.connName, a.connURL = "My LAN", "ws://192.168.1.20:4223"
+		a.openShareFor("g1")
+		snapshotPNG(t, w, dir, "screen_game_won_share", func(gtx C) {
+			gtx.Now = now
+			a.layout(gtx)
+		})
 	})
 
 	t.Run("replay_done", func(t *testing.T) {
@@ -598,6 +616,7 @@ func snapshotSpectateDone(t *testing.T, w *headless.Window, dir string) {
 				{PlayerID: "carol", Name: "carol", Team: 1, Agent: true}, {PlayerID: "dave", Name: "dave", Team: 1}}
 		}
 		a.eng, a.gamePlayers, a.screen = eng, roster, screenGame
+		a.gameStatus = string(config.GameStatusFinished) // the result box offers Pin and Share
 		a.teamScores, a.teamLevels = []int{3100, 4200}, []int{3, 4}
 		snapshotPNG(t, w, dir, "screen_spectate_done_"+tc.name, func(gtx C) {
 			gtx.Now = now

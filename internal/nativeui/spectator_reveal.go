@@ -284,7 +284,7 @@ func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.
 // spectator beside the boards (never over them — the final playfields stay
 // fully visible): GAME OVER, the verdict in bold italic gold (a draw plainly),
 // the final scores — both teams', or every player's, winners first — and the
-// Back to Lobby button.
+// buttons (gameOverActions: Pin, Share and Back to Lobby).
 func (a *App) spectatorResultBox(gtx C, view gameView, oc liveOutcome, gmode config.GameMode) D {
 	verdict := a.pixelEmph(unit.Sp(12), oc.verdict, colGold)
 	if oc.verdict == "DRAW" {
@@ -324,9 +324,7 @@ func (a *App) spectatorResultBox(gtx C, view gameView, oc liveOutcome, gmode con
 							return l.Layout(gtx)
 						}),
 						layout.Rigid(spacer(14)),
-						layout.Rigid(func(gtx C) D {
-							return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
-						}),
+						layout.Rigid(func(gtx C) D { return a.gameOverActions(gtx, view) }),
 					)
 				})
 			})

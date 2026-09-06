@@ -808,6 +808,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.gameStatus = status
 	a.countdown = -1
 	a.gameOver = false
+	a.gameOverNote = ""
 	a.won = false
 	a.fireworks = nil
 	a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = time.Time{}, 0, 0, false
@@ -973,6 +974,7 @@ func (a *App) returnToLobby() {
 	a.engCancel = nil
 	a.voice = nil
 	a.gameOver = false
+	a.gameOverNote = ""
 	a.won = false
 	a.fireworks = nil
 	a.decidedAt, a.liveRank, a.liveOf, a.liveRankFinal = time.Time{}, 0, 0, false

@@ -27,10 +27,11 @@ func JoinLink(page, server, name string) (string, error) {
 
 // ReplayLink builds the link to one game's replay on a server:
 // <page>/join.html?server=…[&name=…]&replay=<gameID> — the replay screen's
-// Share. It is a join link with the game named: the join page asks the one
-// thing a link cannot know (who is watching), and the game connects, lands
-// in the lobby and opens that replay (config.Config.ReplayGameID). The same
-// rules as JoinLink's: the server must be a WebSocket URL.
+// Share. It is a join link with the game named: the join page asks nothing
+// and hands straight over to the game, which deals a Watcher_ name,
+// connects, lands in the lobby and opens that replay
+// (config.Config.ReplayGameID). The same rules as JoinLink's: the server
+// must be a WebSocket URL.
 func ReplayLink(page, server, name, gameID string) (string, error) {
 	if gameID == "" {
 		return "", fmt.Errorf("replay link: no game ID")

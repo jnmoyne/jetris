@@ -37,7 +37,7 @@ func TestArchivesForDisplay(t *testing.T) {
 	// Score sort: agents-only first (despite its low score), then the mixed
 	// game, then the two human games by score.
 	a.histSortEnum.Value = "score"
-	got := a.archivesForDisplay(recs())
+	got := a.archivesForDisplay(recs(), nonePinned)
 	if want := []string{"agents-only", "mixed", "human-high", "human-low"}; !sameIDs(got, want) {
 		t.Fatalf("score sort = %v, want %v", ids(got), want)
 	}
@@ -46,7 +46,7 @@ func TestArchivesForDisplay(t *testing.T) {
 	// human game from t0+1h, the mixed game from t0+30m, the human game from
 	// t0 — no crew grouping.
 	a.histSortEnum.Value = "date"
-	got = a.archivesForDisplay(recs())
+	got = a.archivesForDisplay(recs(), nonePinned)
 	if want := []string{"agents-only", "human-low", "mixed", "human-high"}; !sameIDs(got, want) {
 		t.Fatalf("date sort = %v, want %v", ids(got), want)
 	}
@@ -56,27 +56,50 @@ func TestArchivesForDisplay(t *testing.T) {
 	// box alone lists just that class; all off lists nothing.
 	a.histSortEnum.Value = "score"
 	a.histAgentsOnlyCb.Value = false
-	got = a.archivesForDisplay(recs())
+	got = a.archivesForDisplay(recs(), nonePinned)
 	if want := []string{"mixed", "human-high", "human-low"}; !sameIDs(got, want) {
 		t.Fatalf("without agents-only = %v, want %v", ids(got), want)
 	}
 	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = true, false, false
-	if got, want := a.archivesForDisplay(recs()), []string{"human-high", "human-low"}; !sameIDs(got, want) {
+	if got, want := a.archivesForDisplay(recs(), nonePinned), []string{"human-high", "human-low"}; !sameIDs(got, want) {
 		t.Fatalf("players only = %v, want %v", ids(got), want)
 	}
 	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = false, true, false
-	if got, want := a.archivesForDisplay(recs()), []string{"mixed"}; !sameIDs(got, want) {
+	if got, want := a.archivesForDisplay(recs(), nonePinned), []string{"mixed"}; !sameIDs(got, want) {
 		t.Fatalf("agents and players = %v, want %v", ids(got), want)
 	}
 	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = false, false, true
-	if got, want := a.archivesForDisplay(recs()), []string{"agents-only"}; !sameIDs(got, want) {
+	if got, want := a.archivesForDisplay(recs(), nonePinned), []string{"agents-only"}; !sameIDs(got, want) {
 		t.Fatalf("agents only = %v, want %v", ids(got), want)
 	}
 	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = false, false, false
-	if got := a.archivesForDisplay(recs()); len(got) != 0 {
+	if got := a.archivesForDisplay(recs(), nonePinned); len(got) != 0 {
 		t.Fatalf("all filters off = %v, want nothing", ids(got))
 	}
+
+	// Pinned only narrows whatever the crew boxes list to the pinned
+	// replays, in the same order; off, pins change nothing.
+	a.histHumansCb.Value, a.histMixedCb.Value, a.histAgentsOnlyCb.Value = true, true, true
+	pinned := func(id string) bool { return id == "human-low" || id == "agents-only" }
+	a.histPinnedCb.Value = true
+	if got, want := a.archivesForDisplay(recs(), pinned), []string{"agents-only", "human-low"}; !sameIDs(got, want) {
+		t.Fatalf("pinned only = %v, want %v", ids(got), want)
+	}
+	a.histAgentsOnlyCb.Value = false
+	if got, want := a.archivesForDisplay(recs(), pinned), []string{"human-low"}; !sameIDs(got, want) {
+		t.Fatalf("pinned only, without agents-only = %v, want %v", ids(got), want)
+	}
+	if got := a.archivesForDisplay(recs(), nonePinned); len(got) != 0 {
+		t.Fatalf("pinned only with nothing pinned = %v, want nothing", ids(got))
+	}
+	a.histPinnedCb.Value = false
+	if got, want := a.archivesForDisplay(recs(), pinned), []string{"mixed", "human-high", "human-low"}; !sameIDs(got, want) {
+		t.Fatalf("pinned only off = %v, want the crew boxes' list", ids(got))
+	}
 }
+
+// nonePinned is a history with no pinned replay.
+func nonePinned(string) bool { return false }
 
 // TestTeamStandings pins the all-time teams scoreboard fold: only teams games
 // count, draws credit neither side, and points sum each team's final scores.

@@ -21,6 +21,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"image"
 	"log"
 	"net/url"
 	"strings"
@@ -60,16 +61,22 @@ func (a *App) isPinned(lb *lobby.Lobby, gameID string) bool {
 	return lb.IsPinned(gameID)
 }
 
-// toggleReplayPin pins the replay, or unpins it if it is pinned. The KV
-// write runs off the UI goroutine; the screen follows the lobby's watcher,
-// not the click, so a refused write changes nothing on screen but the
-// status line.
+// toggleReplayPin pins the replay on screen, or unpins it if it is pinned.
 func (a *App) toggleReplayPin(rv *replayView) {
+	a.togglePin(rv.rec.GameID, func(msg string) { a.setReplayErr(rv, msg) })
+}
+
+// togglePin pins a game's replay, or unpins it if it is pinned — the replay
+// screen's Pin, and the game-over box's (the game just played, its replay
+// being written as the box is drawn: the pin is a KV entry by game ID, so
+// it holds whether or not the record is there yet). The KV write runs off
+// the UI goroutine; the screen follows the lobby's watcher, not the click,
+// so a refused write changes nothing on screen but what report says.
+func (a *App) togglePin(gameID string, report func(msg string)) {
 	lb := a.getLobby()
 	if lb == nil {
 		return
 	}
-	gameID := rv.rec.GameID
 	pinned := lb.IsPinned(gameID)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -86,10 +93,19 @@ func (a *App) toggleReplayPin(rv *replayView) {
 				verb = "unpin"
 			}
 			log.Printf("replay %s: %s: %v", gameID, verb, err)
-			a.setReplayErr(rv, fmt.Sprintf("Couldn't %s the replay: %v", verb, err))
+			report(fmt.Sprintf("Couldn't %s the replay: %v", verb, err))
 		}
 		a.invalidate()
 	}()
+}
+
+// setGameOverNote puts a line under the game-over box's buttons (a refused
+// pin), for the rest of the game screen's stay.
+func (a *App) setGameOverNote(msg string) {
+	a.mu.Lock()
+	a.gameOverNote = msg
+	a.mu.Unlock()
+	a.invalidate()
 }
 
 // replayShareLink builds the share link for one game's replay, or says why
@@ -182,10 +198,14 @@ func webSocketSibling(host string, favorites []prefs.Favorite) (prefs.Favorite, 
 	return prefs.Favorite{}, false
 }
 
-// openShare puts the share modal up for the replay on screen, the link
-// built (and its QR code encoded) once here rather than every frame.
-func (a *App) openShare(rv *replayView) {
-	link, why := a.replayShareLink(rv.rec.GameID)
+// openShare puts the share modal up for the replay on screen.
+func (a *App) openShare(rv *replayView) { a.openShareFor(rv.rec.GameID) }
+
+// openShareFor puts the share modal up for one game's replay — the replay
+// screen's Share, and the game-over box's — the link built (and its QR code
+// encoded) once here rather than every frame.
+func (a *App) openShareFor(gameID string) {
+	link, why := a.replayShareLink(gameID)
 	a.shareLink, a.shareWhy, a.shareCode = link, why, nil
 	if link != "" {
 		a.shareCode, _ = qr.Encode([]byte(link))
@@ -215,6 +235,99 @@ func (a *App) handleReplayActions(gtx C, rv *replayView) (modal bool) {
 		a.openShare(rv)
 	}
 	return a.shareOpen
+}
+
+// handleGameOverActions is handleReplayActions for the game screen: the
+// game-over box's Pin and Share (gameOverActions) and the share modal's
+// own buttons, for the game just played, and whether the modal is up.
+func (a *App) handleGameOverActions(gtx C, gameID string) (modal bool) {
+	if a.shareOpen {
+		if a.shareOKBtn.Clicked(gtx) {
+			a.shareOpen = false
+		}
+		if a.shareCopyBtn.Clicked(gtx) && a.shareLink != "" {
+			a.shareCopyOK = copyText(gtx, a.shareLink)
+			a.shareCopiedAt = gtx.Now
+		}
+		return a.shareOpen
+	}
+	if a.gameOverPinBtn.Clicked(gtx) {
+		a.togglePin(gameID, a.setGameOverNote)
+	}
+	if a.gameOverShareBtn.Clicked(gtx) {
+		a.openShareFor(gameID)
+	}
+	return a.shareOpen
+}
+
+// gameOverActions is the row under a finished game's result box — the
+// player's (gameOverBox) and the spectator's (spectatorResultBox) alike:
+// Pin (Unpin while it is pinned), Share and Back to Lobby, the replay
+// screen's three actions brought forward to the moment the game ends (on a
+// compact screen Back goes under the other two). A
+// game still running for the others (the local player out, their team
+// playing on) has no replay to pin or share yet, so only Back is offered.
+// note, when set, goes under the row (a refused pin).
+func (a *App) gameOverActions(gtx C, view gameView) D {
+	back := func(gtx C) D { return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby") }
+	if !view.finished {
+		return back(gtx)
+	}
+	pin := func(gtx C) D {
+		label := "Pin"
+		if view.pinned {
+			label = "Unpin"
+		}
+		return a.secondaryButton(gtx, &a.gameOverPinBtn, label)
+	}
+	share := func(gtx C) D { return a.secondaryButton(gtx, &a.gameOverShareBtn, "Share") }
+	row := func(gtx C) D {
+		if a.form.compact {
+			// A phone's box has no width for three: Back goes under the two.
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(pin),
+						layout.Rigid(hSpacer(8)),
+						layout.Rigid(share),
+					)
+				}),
+				layout.Rigid(spacer(8)),
+				layout.Rigid(back),
+			)
+		}
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(pin),
+			layout.Rigid(hSpacer(8)),
+			layout.Rigid(share),
+			layout.Rigid(hSpacer(8)),
+			layout.Rigid(back),
+		)
+	}
+	if view.gameOverNote == "" {
+		return row(gtx)
+	}
+	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(row),
+		layout.Rigid(spacer(8)),
+		layout.Rigid(a.body(view.gameOverNote, colErr)),
+	)
+}
+
+// shareModalOver stacks the share modal over a screen: the screen scrimmed
+// and its clicks swallowed, the modal centered on top.
+func (a *App) shareModalOver(gtx C, screen layout.Widget) D {
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(screen),
+		layout.Expanded(func(gtx C) D {
+			fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0xc0))
+			return D{Size: gtx.Constraints.Max}
+		}),
+		layout.Stacked(func(gtx C) D {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return a.shareOverlay(gtx)
+		}),
+	)
 }
 
 // shareOverlay is the share modal: the replay's link as a QR code on a
@@ -256,7 +369,7 @@ func (a *App) shareOverlay(gtx C) D {
 								layout.Rigid(spacer(12)),
 								layout.Rigid(a.body(link, colFg)),
 								layout.Rigid(spacer(8)),
-								layout.Rigid(a.body("Anyone who opens the link — or scans the code — types a name and watches this replay in their browser, on this server.", colMuted)),
+								layout.Rigid(a.body("Anyone who opens the link — or scans the code — watches this replay in their browser, on this server. No name to type: they watch as a Watcher_.", colMuted)),
 								layout.Rigid(spacer(16)),
 								layout.Rigid(func(gtx C) D {
 									return layout.Flex{Alignment: layout.Middle}.Layout(gtx,

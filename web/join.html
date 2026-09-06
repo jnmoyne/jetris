@@ -55,7 +55,8 @@
       <p class="url mono" id="server-url"></p>
       <label for="player">Your name</label>
       <input id="player" name="player" type="text" maxlength="32" autocomplete="nickname"
-             autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" required>
+             autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"
+             placeholder="blank gets you a random one">
       <button type="submit" id="join">▶ JOIN</button>
       <p class="err" id="err" role="alert"></p>
     </form>
@@ -87,13 +88,47 @@
       const server = (params.get("server") || "").trim();
       const label = (params.get("name") || "").trim();
       // A replay's share link (the replay screen's Share, webdist.ReplayLink)
-      // names the game as well: the same one question, and the game page
-      // opens that replay the moment it lands in the lobby.
+      // names the game as well, and asks nothing: it goes straight on to
+      // the game page, which deals a Watcher_ name, connects and opens that
+      // replay the moment it lands in the lobby.
       const replay = (params.get("replay") || "").trim();
       const form = document.getElementById("form");
       const input = document.getElementById("player");
       const errLine = document.getElementById("err");
       const NAME_KEY = "jetris.playerName";
+
+      // JOIN with the name blank deals one rather than demanding one:
+      // Anonymous_, a handle from this list (the game's
+      // internal/nativeui/playernames.go carries the same one) and two
+      // digits, e.g. Anonymous_TSpinGod07.
+      const HANDLES = [
+        "TSpinGod", "PerfectClear", "BackToBack", "TetrisReady", "MatrixMaster",
+        "DPC_Enthusiast", "Maxout", "HyperTapper", "RollingPro", "Sub40Sprint", "AllClearPro",
+        "MatrixRunner", "GravityDefier", "RenMaster", "OpenerGod", "SprintKing", "KPP_Elite",
+        "TetraChamp", "LinePiecePls", "BlockParty", "HolyMolyTSpin", "GarbageSender",
+        "MisdropMistake", "BrickLayer", "WellProtected", "HoldMyI_Piece", "WhereIsTheI_Piece",
+        "GarbageCollector", "TSpinToWin", "BlockHead", "TetriSaurus", "OopsWrongRotate",
+        "AccidentalCombo", "PanickedStacking", "GhostPiece", "Tetromino", "Z_Block", "Skyline",
+        "Das_Charge", "ComboBreaker", "Gravity", "FortyLines", "ZeroGravity", "GridRunner",
+        "O_Piece", "L_Block", "S_Block", "CyanI_Piece", "OrangeRicky", "BlueRhino",
+        "ClevelandZ", "RhodeIslandS", "Teewee", "HeroPiece"
+      ];
+      function randomName() {
+        const handle = HANDLES[Math.floor(Math.random() * HANDLES.length)];
+        return "Anonymous_" + handle + String(Math.floor(Math.random() * 100)).padStart(2, "0");
+      }
+
+      // gameURL is the game page's address with what this link carried;
+      // player, when given, is who is joining. location.replace, not a
+      // plain navigation: the browser's Back button should reach whatever
+      // came before this link, not this page again.
+      function gameURL(player) {
+        const next = new URLSearchParams({ server: server });
+        if (label) next.set("name", label);
+        if (player) next.set("player", player);
+        if (replay) next.set("replay", replay);
+        return "./?" + next.toString();
+      }
 
       function refuse(why) {
         document.getElementById("bad-why").textContent = why;
@@ -123,7 +158,6 @@
       // characters a subject gives meaning to. Checked here so a typo costs a
       // keystroke rather than a download.
       function nameProblem(name) {
-        if (!name) return "Enter your name.";
         if (new TextEncoder().encode(name).length > 32) return "That name is too long (32 characters at most).";
         for (const c of name) {
           if (".* >\t\n\r\0".includes(c)) {
@@ -140,15 +174,20 @@
       }
 
       document.getElementById("server-name").textContent = label || server;
-      if (replay) {
-        document.getElementById("lead").textContent = "Watch a replay on";
-        document.getElementById("join").textContent = "▶ WATCH";
-        document.title = "Jetris — watch a replay";
-      }
       const urlLine = document.getElementById("server-url");
       // With no name to head the card the URL is already the title; showing
       // it twice just makes the card look broken.
       if (label) urlLine.textContent = server; else urlLine.hidden = true;
+      if (replay) {
+        // Straight on to the replay: the card only says where, for the
+        // moment the game page takes to come up, and the game deals the
+        // watcher's name itself (the same Watcher_ name a desktop's --replay
+        // without --name gets).
+        document.getElementById("lead").textContent = "Opening a replay on";
+        document.title = "Jetris — watch a replay";
+        location.replace(gameURL(""));
+        return;
+      }
       form.hidden = false;
 
       // A rejoin — the same QR, scanned again after a game — is one tap.
@@ -162,21 +201,17 @@
 
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
-        const name = input.value.trim();
+        let name = input.value.trim();
+        if (!name) { name = randomName(); input.value = name; }
         const bad = nameProblem(name);
         errLine.textContent = bad;
         if (bad) { input.focus(); return; }
         try { localStorage.setItem(NAME_KEY, name); } catch {}
-        // No going back to a half-filled form: the game page takes over from
-        // here, and the browser's Back button should reach whatever came
-        // before this link, not this form again.
-        const next = new URLSearchParams({ server: server });
-        if (label) next.set("name", label);
-        next.set("player", name);
-        if (replay) next.set("replay", replay);
+        // No going back to a half-filled form: the game page takes over
+        // from here.
         document.getElementById("join").disabled = true;
         document.getElementById("join").textContent = "STARTING…";
-        location.replace("./?" + next.toString());
+        location.replace(gameURL(name));
       });
     })();
   </script>

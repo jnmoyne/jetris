@@ -35,6 +35,9 @@ type gameView struct {
 	countdown            int
 	countdownAt          time.Time
 	gameOver, won        bool
+	finished             bool   // the game is over for everyone (finished or archived) — its replay is there to pin and share
+	pinned               bool   // the lobby's word on whether that replay is pinned (gameOverActions)
+	gameOverNote         string // under the game-over box's buttons: a refused pin
 	myReady              bool
 	players, readyPlayer []lobby.PlayerSummary
 	flash                map[[2]int]time.Time
@@ -152,6 +155,8 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		countdown:      a.countdown,
 		countdownAt:    a.countdownAt,
 		gameOver:       a.gameOver,
+		gameOverNote:   a.gameOverNote,
+		finished:       a.gameStatus == string(config.GameStatusFinished) || a.gameStatus == string(config.GameStatusArchived),
 		won:            a.won,
 		myReady:        a.myReady,
 		players:        append([]lobby.PlayerSummary(nil), a.gamePlayers...),
@@ -190,6 +195,9 @@ func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
 	live := !a.tutorialUp()
 
 	view := a.snapshotGame(gtx.Now)
+	if view.finished && live {
+		view.pinned = a.replayPinned(eng.GameID()) // the lobby's word, asked outside the lock
+	}
 	// The decided game — a spectator's, or a winning player's own: the reveal
 	// the boards, the legend and the spectator's result box all draw from
 	// (spectator_reveal.go).
@@ -246,7 +254,14 @@ func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
 	if a.readyBtn.Clicked(gtx) && live {
 		go a.toggleReady()
 	}
-	if a.backBtn.Clicked(gtx) && live {
+	// The game-over box's Pin and Share, and the share modal's buttons while
+	// it is up (share.go); the modal scrims the screen, so Back is not
+	// answered under it.
+	shareUp := false
+	if live {
+		shareUp = a.handleGameOverActions(gtx, eng.GameID())
+	}
+	if a.backBtn.Clicked(gtx) && live && !shareUp {
 		// Walking out of a running game deserves an "are you sure?" — the seat
 		// is kept and the lobby offers Rejoin, but the board plays on without
 		// you. Any other state (pre-start, game over, spectating) leaves
@@ -313,6 +328,9 @@ func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
 		}
 	}
 	screen := base
+	if shareUp {
+		screen = func(gtx C) D { return a.shareModalOver(gtx, base) }
+	}
 	if a.confirmLeave {
 		// Leave confirmation modal: scrim the game and swallow clicks behind it.
 		screen = func(gtx C) D {
@@ -1131,9 +1149,11 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 				// rank is the prize), or a winning player's own. Over
 				// the victory fireworks the show is painted last, so
 				// the crown floats above the rockets and bursts — but
-				// never above the leave-game modal.
+				// never above a modal: the leave-game one, or the share
+				// modal the game-over box's Share puts up (its QR code
+				// stands where the badge would float).
 				crown := a.crownBoard
-				if view.fireworks != nil && view.fireworks.active(gtx.Now) && !a.confirmLeave {
+				if view.fireworks != nil && view.fireworks.active(gtx.Now) && !a.confirmLeave && !a.shareOpen {
 					crown = a.crownBoardOnTop
 				}
 				bw = crown(view.outcome.fx(), gtx.Now)(bw, cell)
@@ -1617,7 +1637,8 @@ func teamScoreLine(view gameView, first int) string {
 
 // gameOverBox is the panel shown beside the board once the local player is out
 // (or the game is over): title, win/loss message, the final score, and the
-// Back to Lobby button. It is laid out next to the playfield — never over it,
+// buttons — Pin, Share and Back to Lobby once the game is over for everyone
+// (gameOverActions), Back alone while it plays on. It is laid out next to the playfield — never over it,
 // so the final board stays fully visible. myTeam is the local player's team
 // index (teams mode only).
 func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam int) D {
@@ -1680,7 +1701,7 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam in
 						}))
 					}
 					children = append(children, layout.Rigid(spacer(14)), layout.Rigid(func(gtx C) D {
-						return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
+						return a.gameOverActions(gtx, view)
 					}))
 					return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx, children...)
 				})

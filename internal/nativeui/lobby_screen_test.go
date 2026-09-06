@@ -322,8 +322,8 @@ func TestHistoryTableFoldsOnANarrowPanel(t *testing.T) {
 // TestHistoryControlsStackWhenTheyMust: the sort selector and the crew filters
 // run on one line where they fit, drop to two where they do not, and take a
 // line each rather than let a checkbox wrap its own label. The two failures
-// are told apart by height: three filters on lines of their own are SHORTER
-// than three squeezed side by side with one of their labels broken into
+// are told apart by height: four filters on lines of their own are SHORTER
+// than four squeezed side by side with one of their labels broken into
 // stacked syllables, which is what a phone was drawing.
 func TestHistoryControlsStackWhenTheyMust(t *testing.T) {
 	a := newTestApp()
@@ -332,6 +332,7 @@ func TestHistoryControlsStackWhenTheyMust(t *testing.T) {
 		layout.Rigid(a.histFilterBox(&a.histHumansCb, "Players only")),
 		layout.Rigid(a.histFilterBox(&a.histMixedCb, "Agents and players")),
 		layout.Rigid(a.histFilterBox(&a.histAgentsOnlyCb, "Agents only")),
+		layout.Rigid(a.histFilterBox(&a.histPinnedCb, "Pinned only")),
 	).Size.Y
 	if wide := a.historyControls(looseCtx(1200, 200)); wide.Size.Y > box {
 		t.Errorf("the controls took %d dp at 1200 dp wide, past the one line (%d dp) they fit on", wide.Size.Y, box)

@@ -19,10 +19,12 @@ import (
 // does on the desktop; &name=.. names it for the browser row and the lobby
 // header; &player=.. answers the login screen's one question, so the game
 // connects and lands in the lobby without it; and &replay=<gameID> opens
-// that game's replay on landing (a replay's share link, webdist.ReplayLink).
-// The join page (web/join.html), which the QR codes of scripts/gen-qr.go
-// and the replay screen's Share point at, is nothing but a form that
-// collects that player name and comes back here with it.
+// that game's replay on landing (a replay's share link, webdist.ReplayLink)
+// — with no &player= the game deals a Watcher_ name rather than ask. The
+// join page (web/join.html), which the QR codes of scripts/gen-qr.go and
+// the replay screen's Share point at, is nothing but a form that collects
+// that player name and comes back here with it (a replay link skips the
+// form and comes straight here).
 func applyPageParams(cfg *config.Config) {
 	loc := js.Global().Get("location")
 	if !loc.Truthy() {

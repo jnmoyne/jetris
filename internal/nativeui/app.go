@@ -353,15 +353,21 @@ type App struct {
 	// taken once (takeLinkedReplay); guarded by mu.
 	replayPinBtn   widget.Clickable
 	replayShareBtn widget.Clickable
-	shareOKBtn     widget.Clickable
-	shareCopyBtn   widget.Clickable
-	shareOpen      bool
-	shareLink      string
-	shareWhy       string
-	shareCode      *qr.Code
-	shareCopiedAt  time.Time
-	shareCopyOK    bool // whether the last copy reached the clipboard (copyText)
-	linkedReplay   string
+	// The game-over box's own Pin and Share (gameOverActions), for the game
+	// just played; gameOverNote is the line under them (a refused pin),
+	// cleared with the rest of the game state (lifecycle.go).
+	gameOverPinBtn   widget.Clickable
+	gameOverShareBtn widget.Clickable
+	gameOverNote     string
+	shareOKBtn       widget.Clickable
+	shareCopyBtn     widget.Clickable
+	shareOpen        bool
+	shareLink        string
+	shareWhy         string
+	shareCode        *qr.Code
+	shareCopiedAt    time.Time
+	shareCopyOK      bool // whether the last copy reached the clipboard (copyText)
+	linkedReplay     string
 
 	// connPicked: the player clicked a browser row since the page-opening
 	// refresh started, so its result must not move the selection. favOrder
@@ -431,6 +437,7 @@ type App struct {
 	histHumansCb     widget.Bool // history filter: list all-human games ("Players only")
 	histMixedCb      widget.Bool // history filter: list mixed human/agent games ("Agents and players")
 	histAgentsOnlyCb widget.Bool // history filter: list agent-vs-agent games ("Agents only")
+	histPinnedCb     widget.Bool // history filter: list only the games whose replay is pinned ("Pinned only"; off = every game)
 	chatList         widget.List
 	gameBtns         map[string]*gameRowBtns
 	// uninviteBtns are the per-invitation Uninvite/Dismiss buttons on the
@@ -814,7 +821,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 // that does connect: it fills the name field and arms the screen's
 // one-shot auto-submit (App.autoLogin), so the player lands in the lobby
 // without seeing the screen — unless something fails, when they see it with
-// the error and their name still in place.
+// the error and their name still in place. A replay link (cfg.ReplayGameID:
+// --replay, or ?replay=) with no name does the same under a dealt
+// Watcher_ name: nobody is asked who they are on the way to a replay.
 func NewWithPicker(cfg config.Config, contexts []string, selected string, favorites []prefs.Favorite) *App {
 	a := New(nil, nil)
 	a.needConn = true
@@ -822,6 +831,9 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	// A name given up front fills the field and arms the auto-submit; the
 	// screen is still drawn (and still shown on failure), it just doesn't
 	// wait to be told what it already knows.
+	if cfg.PlayerName == "" && cfg.ReplayGameID != "" {
+		cfg.PlayerName = dealName(watcherPrefix)
+	}
 	if cfg.PlayerName != "" {
 		a.loginEd.SetText(cfg.PlayerName)
 		a.autoLogin = true
@@ -1016,6 +1028,12 @@ func (a *App) layout(gtx C) D {
 	a.touchDebugFrame()
 	var d D
 	tourGame := a.tutorialScene() == tutSceneGame
+	// The share modal belongs to the replay screen and the game-over box;
+	// a screen change under it (the game torn down, say) leaves it closed
+	// rather than waiting for the next of those screens.
+	if s := a.getScreen(); a.shareOpen && s != screenReplay && s != screenGame {
+		a.shareOpen = false
+	}
 	switch a.getScreen() {
 	case screenLogin:
 		d = a.layoutLogin(gtx)

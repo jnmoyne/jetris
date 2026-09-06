@@ -376,6 +376,13 @@ func (a *App) loginCard(gtx C, content layout.Widget) D {
 // (already connected) plain doLogin. Runs on the UI goroutine.
 func (a *App) submitLogin() {
 	name := strings.TrimSpace(a.loginEd.Text())
+	if name == "" {
+		// Play with the field blank deals a name rather than demanding one:
+		// Anonymous_, a listed handle and two digits, put in the field so the
+		// player sees who they are — and can retype it if the server has it.
+		name = dealName(anonymousPrefix)
+		a.loginEd.SetText(name)
+	}
 	if err := config.ValidatePlayerName(name); err != nil {
 		a.setLoginErr(err.Error())
 		return
@@ -607,7 +614,7 @@ func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
 			return a.editorBox(gtx, &a.loginEd, "Enter your name")
 		}),
 		layout.Rigid(func(gtx C) D {
-			l := material.Body2(a.th, "No spaces, dots, or wildcards; max 32 characters.")
+			l := material.Body2(a.th, "No spaces, dots, or wildcards; max 32 characters. Blank gets you a random one.")
 			l.Color = colMuted
 			return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, l.Layout)
 		}),

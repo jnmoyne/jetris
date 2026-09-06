@@ -160,7 +160,7 @@ func (a *App) layoutLobby(gtx C) D {
 	}
 
 	// --- render ---
-	archives := a.archivesForDisplay(archiveRecs)
+	archives := a.archivesForDisplay(archiveRecs, func(id string) bool { return a.isPinned(lb, id) })
 	// Under the bar: whichever columns are switched on, the panel with
 	// everything they leave, and the chat strip along the bottom.
 	body := func(gtx C) D {
@@ -993,7 +993,9 @@ func (a *App) historyControls(gtx C) D {
 			)
 		}
 	}
-	crew := func(humans, mixed, agents *widget.Bool) layout.Widget {
+	// The filters: the three crew boxes, and Pinned only (share.go's pins)
+	// after them.
+	crew := func(humans, mixed, agents, pinned *widget.Bool) layout.Widget {
 		return func(gtx C) D {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(a.histFilterBox(humans, "Players only")),
@@ -1001,19 +1003,22 @@ func (a *App) historyControls(gtx C) D {
 				layout.Rigid(a.histFilterBox(mixed, "Agents and players")),
 				layout.Rigid(hSpacer(6)),
 				layout.Rigid(a.histFilterBox(agents, "Agents only")),
+				layout.Rigid(hSpacer(6)),
+				layout.Rigid(a.histFilterBox(pinned, "Pinned only")),
 			)
 		}
 	}
-	// Stacked, for a panel that cannot hold the three of them side by side: a
+	// Stacked, for a panel that cannot hold the four of them side by side: a
 	// checkbox handed less width than its label wants does not elide, it
 	// WRAPS — "Agents only" came out as three lines of stacked syllables on a
 	// phone — so below the width they need each one takes a line.
-	crewStack := func(humans, mixed, agents *widget.Bool) layout.Widget {
+	crewStack := func(humans, mixed, agents, pinned *widget.Bool) layout.Widget {
 		return func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(a.histFilterBox(humans, "Players only")),
 				layout.Rigid(a.histFilterBox(mixed, "Agents and players")),
 				layout.Rigid(a.histFilterBox(agents, "Agents only")),
+				layout.Rigid(a.histFilterBox(pinned, "Pinned only")),
 			)
 		}
 	}
@@ -1033,20 +1038,20 @@ func (a *App) historyControls(gtx C) D {
 	// screen's: a desktop lobby with both columns up leaves the panel far
 	// less than the window.
 	var mEnum widget.Enum
-	var mHumans, mMixed, mAgents widget.Bool
+	var mHumans, mMixed, mAgents, mPinned widget.Bool
 	m := gtx
 	m.Constraints.Min = image.Point{}
 	m.Constraints.Max.X = 1 << 20
 	rec := op.Record(gtx.Ops)
-	bothW := oneLine(sort(&mEnum), crew(&mHumans, &mMixed, &mAgents))(m).Size.X
-	crewW := crew(&mHumans, &mMixed, &mAgents)(m).Size.X
+	bothW := oneLine(sort(&mEnum), crew(&mHumans, &mMixed, &mAgents, &mPinned))(m).Size.X
+	crewW := crew(&mHumans, &mMixed, &mAgents, &mPinned)(m).Size.X
 	rec.Stop() // measure only — discard the recorded ops
-	row := crew(&a.histHumansCb, &a.histMixedCb, &a.histAgentsOnlyCb)
+	row := crew(&a.histHumansCb, &a.histMixedCb, &a.histAgentsOnlyCb, &a.histPinnedCb)
 	switch {
 	case bothW <= gtx.Constraints.Max.X:
 		return oneLine(sort(&a.histSortEnum), row)(gtx)
 	case crewW > gtx.Constraints.Max.X:
-		row = crewStack(&a.histHumansCb, &a.histMixedCb, &a.histAgentsOnlyCb)
+		row = crewStack(&a.histHumansCb, &a.histMixedCb, &a.histAgentsOnlyCb, &a.histPinnedCb)
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(sort(&a.histSortEnum)),
@@ -1055,8 +1060,9 @@ func (a *App) historyControls(gtx C) D {
 	)
 }
 
-// histFilterBox is one of the GAME HISTORY crew filters: a checkbox that
-// lists (checked) or hides the games of one agent composition.
+// histFilterBox is one of the GAME HISTORY filters: a checkbox that lists
+// (checked) or hides the games of one agent composition — or, Pinned only,
+// narrows the list to the pinned replays.
 func (a *App) histFilterBox(b *widget.Bool, label string) layout.Widget {
 	return func(gtx C) D {
 		cb := material.CheckBox(a.th, b, label)
@@ -1068,13 +1074,14 @@ func (a *App) histFilterBox(b *widget.Bool, label string) layout.Widget {
 
 // archivesForDisplay applies the history controls: keep only the games whose
 // crew composition (config.ArchiveRecord.AgentClass — all-human, mixed
-// human/agent, or agents-only) has its filter box checked, then order the
-// survivors by the selected key. "By score" (the default) is the ranking
+// human/agent, or agents-only) has its filter box checked — only the pinned
+// ones among them while Pinned only is checked (the lobby's pins, share.go;
+// pinned tells which) — then order the survivors by the selected key. "By score" (the default) is the ranking
 // table: agent composition first — agents-only games, then mixed human/agent
 // games, then all-human games — and the shared RankBefore order within each
 // group. "By date" is strictly chronological, the last game played at the
 // top, whoever played it.
-func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRecord {
+func (a *App) archivesForDisplay(recs []config.ArchiveRecord, pinned func(gameID string) bool) []config.ArchiveRecord {
 	listed := map[int]bool{
 		config.AgentClassHumansOnly: a.histHumansCb.Value,
 		config.AgentClassMixed:      a.histMixedCb.Value,
@@ -1082,7 +1089,7 @@ func (a *App) archivesForDisplay(recs []config.ArchiveRecord) []config.ArchiveRe
 	}
 	kept := recs[:0:0]
 	for _, r := range recs {
-		if listed[r.AgentClass()] {
+		if listed[r.AgentClass()] && (!a.histPinnedCb.Value || pinned(r.GameID)) {
 			kept = append(kept, r)
 		}
 	}

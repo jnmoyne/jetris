@@ -8,6 +8,7 @@ import (
 	"log"
 	mrand "math/rand/v2"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -840,7 +841,6 @@ func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 		return
 	}
 	c := g.scoreLock(ctx, cleared, fell, clearedRows)
-	log.Printf("cleared %d line(s): %s, score %d", cleared, c.name(), g.score)
 	if rows := c.attackRows(g.guideline); rows > 0 {
 		switch g.mode {
 		case modeCompetitive:
@@ -1304,6 +1304,28 @@ func (g *Game) stopConsumers() {
 
 // ---- the game ------------------------------------------------------------
 
+// opponentNames lists the other seats' display names for the log.
+func (g *Game) opponentNames() string {
+	var names []string
+	for _, p := range g.roster {
+		if p.PlayerID == g.a.name {
+			continue
+		}
+		n := p.Name
+		if n == "" {
+			n = p.PlayerID
+		}
+		if g.mode == modeTeams {
+			n += " (team " + teamLetter(p.Team) + ")"
+		}
+		names = append(names, n)
+	}
+	if len(names) == 0 {
+		return "nobody else"
+	}
+	return strings.Join(names, ", ")
+}
+
 func (g *Game) run(ctx context.Context) bool {
 	meta, _, err := g.a.fetchMeta(ctx, g.id)
 	if err != nil {
@@ -1393,7 +1415,7 @@ func (g *Game) run(ctx context.Context) bool {
 		g.roster = pl
 	}
 	g.a.mu.Unlock()
-	log.Print("game started")
+	log.Printf("game started with %s", g.opponentNames())
 
 	won := g.playPieces(ctx)
 	if won {

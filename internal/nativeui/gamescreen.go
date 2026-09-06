@@ -429,7 +429,8 @@ func (a *App) opponentBoards(gtx C, eng *engine.Engine, view gameView) D {
 	}
 	sort.Strings(ids)
 	first := opps[ids[0]]
-	vis := first.Height - first.VisibleStart
+	headroom := eng.ShowHeadroom()
+	vis := boardRows(first, headroom)
 	cell := fitCellPx(gtx, first.Width, vis*len(ids), 1, gtx.Dp(8), len(ids)*gtx.Dp(16), 3, 14)
 	teams := eng.GameMode() == config.ModeTeams
 	return layout.Center.Layout(gtx, func(gtx C) D {
@@ -469,7 +470,7 @@ func (a *App) opponentBoards(gtx C, eng *engine.Engine, view gameView) D {
 					)
 				}),
 				layout.Rigid(spacer(3)),
-				layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now)),
+				layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now, headroom)),
 			)
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)

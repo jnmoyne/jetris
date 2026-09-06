@@ -50,16 +50,22 @@ func (b *replayBoard) reset() {
 }
 
 // snapshot deep-copies the board's visible region into a renderable
-// BoardSnapshot. Caller holds App.mu.
-func (b *replayBoard) snapshot() engine.BoardSnapshot {
-	h := b.height - b.visibleStart
+// BoardSnapshot — or, with headroom, the whole board with its visible region
+// marked, for the strip to draw the hidden rows behind smoked glass
+// (boardRows, drawBoard). Caller holds App.mu.
+func (b *replayBoard) snapshot(headroom bool) engine.BoardSnapshot {
+	top := b.visibleStart
+	if headroom {
+		top = 0
+	}
+	h := b.height - top
 	rows := make([]game.Row, h)
 	for r := 0; r < h; r++ {
 		cells := make([]game.Cell, b.width)
-		copy(cells, b.rows[b.visibleStart+r].Cells)
+		copy(cells, b.rows[top+r].Cells)
 		rows[r] = game.Row{Cells: cells}
 	}
-	return engine.BoardSnapshot{Width: b.width, Height: h, VisibleStart: 0, Rows: rows}
+	return engine.BoardSnapshot{Width: b.width, Height: h, VisibleStart: b.visibleStart - top, Rows: rows}
 }
 
 // newReplayBoards builds the mode-appropriate board set for an archived game —
@@ -455,7 +461,7 @@ func (a *App) layoutReplay(gtx C) D {
 	}
 	boards := make([]labeledBoard, len(rv.boards))
 	for i, b := range rv.boards {
-		boards[i] = labeledBoard{label: b.label, idx: b.idx, snap: b.snapshot()}
+		boards[i] = labeledBoard{label: b.label, idx: b.idx, snap: b.snapshot(rv.tl.headroom), headroom: rv.tl.headroom}
 	}
 	reveal := rv.done
 	if reveal {

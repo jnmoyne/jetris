@@ -393,6 +393,7 @@ type App struct {
 	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take
 	rulesEnum     widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
 	holdCb        widget.Bool   // wizard (custom rules): the Guideline hold queue
+	headroomCb    widget.Bool   // wizard (custom rules): the hidden headroom rows drawn above the playfield, behind smoked glass (config.GameMeta.ShowHeadroom)
 	bagEnum       widget.Enum   // wizard (custom rules): the piece randomizer — "single" (the 7-bag), "double" (the double bag) or "none" (no bag; config.Bag)
 	nextCountEd   widget.Editor // wizard: how many upcoming pieces the game reveals (0..config.MaxNextCount)
 	holesEd       widget.Editor // wizard: holes per garbage row in competitive/teams (0..config.MaxGarbageHoles; 0 = solid, unclearable rows)
@@ -472,8 +473,9 @@ type App struct {
 	// classic game) or labAsync (Optimistic async ☺, the default).
 	labEnum widget.Enum
 	// ghostCb is the create wizard's "Show ghost piece" checkbox, ON by
-	// default: whether the game being created renders the hard-drop landing
-	// preview. A per-GAME rule stored in the meta (GameMeta.NoGhost,
+	// default like every custom rule the Guideline preset has on
+	// (setCustomRules): whether the game being created renders the hard-drop
+	// landing preview. A per-GAME rule stored in the meta (GameMeta.NoGhost,
 	// inverted), not a per-player view toggle — the creator decides once and
 	// every player gets the same aid, like the piece preview.
 	ghostCb widget.Bool
@@ -704,7 +706,10 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 		uninviteBtns:    map[string]*widget.Clickable{},
 		msgGroupOf:      map[string]int{},
 	}
-	a.ghostCb.Value = true // hard-drop ghost preview on by default
+	// The custom rules open at the Guideline preset's settings (they change
+	// only what the creator changes), so switching the radio to custom is a
+	// starting point and not a step back to the classic game.
+	a.setCustomRules(config.GuidelineRules())
 	a.setExtraColumns(config.DefaultExtraColumns)
 	a.setTeamCount(config.DefaultTeamCount)
 	a.labEnum.Value = labAsync // Optimistic async, the default
@@ -732,14 +737,11 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.nextCountEd.SingleLine = true
 	a.nextCountEd.Filter = "0123456789"
 	a.nextCountEd.InputHint = key.HintNumeric
-	a.nextCountEd.SetText("6")
 	a.holesEd.SingleLine = true
 	a.holesEd.Filter = "0123456789"
 	a.holesEd.InputHint = key.HintNumeric
-	a.holesEd.SetText("0")
 	a.modeEnum.Value = "cooperative"
 	a.rulesEnum.Value = "guideline"   // the Guideline preset until the creator asks for custom rules
-	a.bagEnum.Value = "single"        // custom rules deal the standard 7-bag until the creator picks another
 	a.createJoinEnum.Value = "invite" // invite-only by default; open games are the opt-in
 	a.histSortEnum.Value = "score"
 	// Every crew composition is listed by default; each box hides its class.

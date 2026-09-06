@@ -30,23 +30,24 @@ Each player has a color associated with it: used for the outline color of the pi
 
 ---
 
-## 1b. Piece Preview (the game's NEXT count), Ghost, Hold, Bag, Garbage — the play rules
+## 1b. Piece Preview (the game's NEXT count), Ghost, Hold, Bag, Hidden Rows, Garbage — the play rules
 
 **Every play rule below is chosen on one step of the create-game wizard (step 2,
 GAME RULES) by a single radio.** **Guideline** — the default — plays every rule at
 the setting closest to the Tetris Guideline this game can offer
 (`config.GuidelineRules`): `next_count` 6, the ghost piece, the `hold` queue, the
-standard 7-bag and, for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
+standard 7-bag, the hidden rows out of sight and, for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
 sharing their hole column and `guideline_garbage`; the lobby row tags such a game
-`guideline`. **Custom** exposes each rule as its own editor or checkbox, with the
-classic defaults noted below, and the row tags every rule that differs from the
-classic game (`next N`, `hold`, `double bag` / `no bag`, `holes N` / `random holes N`,
+`guideline`. **Custom** exposes each rule as its own editor or checkbox — opening
+at the preset's own settings, so the creator changes only what they mean to —
+and the row tags every rule that differs from the
+classic game (`next N`, `hold`, `double bag` / `no bag`, `hidden rows`, `holes N` / `random holes N`,
 `guideline garbage`).
 Whichever way they were chosen, the rules are stored in the game's meta record —
 the rule book every engine reads at start — and bind every seat equally.
 
 **How many upcoming pieces a game reveals is a per-game attribute**: `next_count`,
-an integer 0-6 (the custom editor's default is 6)
+an integer 0-6 (the custom editor opens at the preset's 6)
 and fixed for the life of the game in its meta record (`GameMeta.NextCount`). It applies to
 every mode and to **everyone in the game equally — humans and agents**:
 
@@ -71,7 +72,7 @@ preview it is one rule for every eye (agents already compute their drop
 destinations, so the ghost only levels the field for humans either way).
 
 **The hold queue is a per-game attribute on the same step**: `hold`
-(`GameMeta.Hold`; the custom checkbox "Hold piece", off by default; on in the
+(`GameMeta.Hold`; the custom checkbox "Hold piece", on by default as in the
 Guideline preset). With it on, **C** — or the control pad's HOLD button, or a tap
 on the HOLD box itself, or an upward swipe on the playfield — sets the falling piece
 aside, as in the Guideline: with
@@ -95,7 +96,7 @@ same rule; the reference agent does not.
 
 **Garbage holes are a per-game attribute on the same wizard step** (shown for the
 modes that raise garbage — competitive and teams): `garbage_holes`, an integer 0-4
-(default 0, `config.MaxGarbageHoles`), stored in the meta (`GameMeta.GarbageHoles`)
+(the custom editor opens at the preset's 1; `config.MaxGarbageHoles`), stored in the meta (`GameMeta.GarbageHoles`)
 and mirrored on the lobby row as a `holes N` tag. It is how many **empty cells every
 garbage row is raised with**:
 
@@ -120,8 +121,8 @@ and each row has to be cleared on its own terms. The lobby row tags such a game
 `random holes N`. Games created before the attribute — and 0-hole games — behave
 as unset.
 
-**Guideline garbage** is a third attribute on the same step (a checkbox, off by
-default): `guideline_garbage` (`GameMeta.GuidelineGarbage`). It sets **how much
+**Guideline garbage** is a third attribute on the same step (a checkbox, on by
+default as in the preset): `guideline_garbage` (`GameMeta.GuidelineGarbage`). It sets **how much
 garbage a clear sends**. Unset, every cleared line owes one garbage row (the
 original Jetris rule), whatever the clear was. Set, the attack follows the Tetris
 Guideline table (`game.Clear.AttackRows`; tetris.wiki/Garbage, "General Garbage
@@ -165,6 +166,23 @@ its types, or independent draws from it. One rule for every seat, humans and
 agents alike (an agent reads `bag` from the meta and deals accordingly — agent
 guide §1.3). The lobby row tags such a game `double bag` or `no bag`; the
 Guideline preset always deals the 7-bag.
+
+**The hidden rows** are a fifth attribute on the same step (the custom checkbox
+"Show hidden rows", off by default; off in the Guideline preset): `show_headroom`
+(`GameMeta.ShowHeadroom`). Every board has `config.HeadroomRows` (4) rows above
+its 20 visible ones where a piece spawns (§2), normally out of sight — the
+Guideline playfield is the twenty rows and no more. With the setting on, **every
+board of the game draws its headroom rows above the playfield, behind smoked
+glass**: a dark translucent pane with a diagonal sheen and a lit lower edge where
+it meets the playfield, through which a piece shows dimly the moment it spawns
+and a stack shows how close it is to topping out. The pane covers everything up
+there — cells, the ghost, the CAS outlines, the row strobes — and it is on the
+player's own board, the opponents' thumbnails, every spectator board and the
+replay alike (the replay reads it off the recorded meta). Presentation only:
+spawning, the top-out rule, the visible region the engines play by and every
+protocol message are exactly what they were, and agents ignore the field. Absent
+— every game created before the attribute — the boards start at the playfield.
+The lobby row tags such a game `hidden rows`.
 
 Because every bag's sequence is seekable, the preview is a pure read
 (`seq.Piece(pieceIdx+1 .. +next_count)`) — no queue state exists anywhere.
@@ -564,9 +582,10 @@ ration, §5. It sits on this step, not step 2, because it shapes the TEAM the
 way the seat count and the board width do: a Guideline game may split its
 pieces too),
 **2. game rules** (a single radio: the **Guideline** preset — the default,
-listed read-only — or **custom**: the next-piece count, 0-6, default 6, the
-"Show ghost piece" checkbox, on by default, the "Hold piece" checkbox, off by
-default, and the garbage rules for competitive/teams — see §1b),
+listed read-only — or **custom**, every rule opening at the preset's setting:
+the next-piece count, 0-6, the "Show ghost piece" and "Hold piece" checkboxes,
+the piece bag, the hidden rows, and the garbage rules for competitive/teams —
+see §1b),
 **3. who can join** (**open game** or **invite only**), and — open games only —
 **4. agents** (the agent policy below). Each step has Next/Back plus a Cancel
 that closes the wizard without creating anything, and the previous run's choices

@@ -163,6 +163,7 @@ type labeledBoard struct {
 	snap     engine.BoardSnapshot
 	labelCol colorN // label color when A != 0 (else the idx color)
 	emph     bool   // bold italic label
+	headroom bool   // draw the snapshot's headroom rows too, behind smoked glass (a replay of a game that showed its hidden rows)
 	wrap     func(board layout.Widget, cellPx int) layout.Widget
 }
 
@@ -185,7 +186,7 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 	cols, rows, labeled := 0, 0, false
 	for _, b := range boards {
 		cols = max(cols, b.snap.Width)
-		rows = max(rows, b.snap.Height-b.snap.VisibleStart)
+		rows = max(rows, boardRows(b.snap, b.headroom))
 		labeled = labeled || b.label != ""
 	}
 	// Reserved: each board's right inset, and over it the label line with the
@@ -221,7 +222,7 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 					}),
 					layout.Rigid(spacer(4)),
 					layout.Rigid(func(gtx C) D {
-						board := a.boardWidget(b.snap, b.idx, cell, true, nil, gtx.Now)
+						board := a.boardWidget(b.snap, b.idx, cell, true, nil, gtx.Now, b.headroom)
 						if b.wrap != nil {
 							board = b.wrap(board, cell)
 						}

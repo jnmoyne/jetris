@@ -54,7 +54,7 @@ func TestCASRecoilSnapshots(t *testing.T) {
 			at := base.Add(off)
 			children = append(children, layout.Rigid(func(gtx C) D {
 				return layout.UniformInset(6).Layout(gtx, func(gtx C) D {
-					return drawBoard(gtx, snap, 0, cell, true, fx(from), at)
+					return drawBoard(gtx, snap, 0, cell, true, fx(from), at, false)
 				})
 			}))
 		}
@@ -130,7 +130,7 @@ func TestCASRecoilSnapshots(t *testing.T) {
 	snapshotPNGSized(t, w, dir, "cas_recoil_rest", size, func(gtx C) {
 		fillRect(gtx.Ops, image.Rect(0, 0, size.X, size.Y), colBg)
 		layout.UniformInset(6).Layout(gtx, func(gtx C) D {
-			return drawBoard(gtx, snap, 0, cell, true, &boardFX{frame: colFocus}, base)
+			return drawBoard(gtx, snap, 0, cell, true, &boardFX{frame: colFocus}, base, false)
 		})
 	})
 }

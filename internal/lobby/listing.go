@@ -24,6 +24,7 @@ type GameListing struct {
 	GuidelineGarbage   bool              `json:"guideline_garbage,omitempty"`    // Guideline attack table (0/1/2/4 rows for 1/2/3/4 lines); mirrors GameMeta.GuidelineGarbage for the lobby row's "guideline garbage" tag
 	SplitPieces        bool              `json:"split_pieces,omitempty"`         // teams: the seven piece types are dealt out between teammates; mirrors GameMeta.SplitPieces for the lobby row's "split pieces" tag (see SplitsPieces)
 	Bag                config.Bag        `json:"bag,omitempty"`                  // the piece randomizer ("double" / "none"; absent = the 7-bag); mirrors GameMeta.Bag for the lobby row's "double bag" / "no bag" tag
+	ShowHeadroom       bool              `json:"show_headroom,omitempty"`        // the hidden headroom rows are drawn above the playfield, behind smoked glass; mirrors GameMeta.ShowHeadroom for the lobby row's "hidden rows" tag
 	InviteOnly         bool              `json:"invite_only,omitempty"`          // players join by invitation only (creator excepted); auto-joining agents skip it
 	CreatorID          string            `json:"creator_id,omitempty"`           // who created (and may always join) the game
 	Players            []PlayerSummary   `json:"players"`
@@ -48,6 +49,7 @@ func (g GameListing) Rules() config.GameRules {
 		Ghost:              !g.NoGhost,
 		Hold:               g.Hold,
 		Bag:                g.Bag,
+		ShowHeadroom:       g.ShowHeadroom,
 		GarbageHoles:       g.GarbageHoles,
 		RandomGarbageHoles: g.RandomGarbageHoles,
 		GuidelineGarbage:   g.GuidelineGarbage,

@@ -492,3 +492,30 @@ func TestLobbyCreateGameBag(t *testing.T) {
 		t.Errorf("an unknown kind was listed as %q, want the 7-bag (absent)", g.Bag)
 	}
 }
+
+// TestLobbyCreateGameShowHeadroom: the hidden-rows setting reaches both
+// records — the meta every engine reads at Start (and the replay off the
+// stream) and the listing the lobby row tags — and a game created without it
+// stores nothing (the field absent, as every game before it).
+func TestLobbyCreateGameShowHeadroom(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	for _, show := range []bool{true, false} {
+		id, err := lb.CreateGame(ctx, config.ModeCooperative, 1, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, ShowHeadroom: show}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, _, err := natspkg.FetchGameMeta(ctx, js, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.ShowHeadroom != show || meta.Rules().ShowHeadroom != show {
+			t.Errorf("meta show_headroom = %v, want %v", meta.ShowHeadroom, show)
+		}
+		time.Sleep(300 * time.Millisecond)
+		if g := lb.Games()[id]; g.ShowHeadroom != show || g.Rules().ShowHeadroom != show {
+			t.Errorf("listing show_headroom = %v, want %v", g.ShowHeadroom, show)
+		}
+	}
+}

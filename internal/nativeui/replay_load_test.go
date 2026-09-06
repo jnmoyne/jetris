@@ -284,7 +284,7 @@ func TestReplayBoardHeightComesFromTheStream(t *testing.T) {
 	if !p2.rows[bottom].Cells[7].Occupied || !p2.rows[config.TotalRows-1].Cells[0].Occupied {
 		t.Error("the cells the game wrote are missing from the replayed board")
 	}
-	if got := p2.snapshot().Height; got != bottom+1-config.VisibleRowStart {
+	if got := p2.snapshot(false).Height; got != bottom+1-config.VisibleRowStart {
 		t.Errorf("visible snapshot is %d rows, want %d", got, bottom+1-config.VisibleRowStart)
 	}
 }

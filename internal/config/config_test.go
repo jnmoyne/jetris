@@ -424,3 +424,30 @@ func TestRulesBag(t *testing.T) {
 		t.Error("the preset with an unknown kind — the 7-bag once normalized — should still be the preset")
 	}
 }
+
+// TestRulesShowHeadroom: the hidden-rows setting rides the rules bundle —
+// the meta's mirror hands it back, normalizing leaves it alone in every mode
+// — and the Guideline preset hides the rows, so the preset with them shown
+// is custom rules (the lobby row then tags "hidden rows" instead of
+// "guideline").
+func TestRulesShowHeadroom(t *testing.T) {
+	if !(GameMeta{ShowHeadroom: true}).Rules().ShowHeadroom {
+		t.Error("a meta showing its headroom reads back hidden")
+	}
+	if (GameMeta{}).Rules().ShowHeadroom {
+		t.Error("a meta without the field shows its headroom")
+	}
+	for _, mode := range []GameMode{ModeCooperative, ModeCompetitive, ModeTeams} {
+		if !(GameRules{ShowHeadroom: true}).Normalized(mode).ShowHeadroom {
+			t.Errorf("%s: normalizing dropped the hidden-rows setting", mode)
+		}
+	}
+	if GuidelineRules().ShowHeadroom {
+		t.Fatal("the Guideline preset should hide the headroom")
+	}
+	r := GuidelineRules()
+	r.ShowHeadroom = true
+	if r.IsGuideline(ModeCompetitive) || r.IsGuideline(ModeCooperative) {
+		t.Error("the preset with the hidden rows shown still reads as the Guideline preset")
+	}
+}

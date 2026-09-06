@@ -45,6 +45,11 @@ type Engine struct {
 	playerCount int  // number of players in the game
 	nextCount   int  // how many upcoming pieces this game reveals (from meta at Start; 0 = none)
 	noGhost     bool // this game hides the hard-drop ghost preview (GameMeta.NoGhost at Start)
+	// showHeadroom is whether this game draws the hidden headroom rows above
+	// the playfield, behind smoked glass (GameMeta.ShowHeadroom at Start).
+	// Presentation only: the engine's own visible region (visibleRowStart)
+	// is untouched, and so is everything that reads it.
+	showHeadroom bool
 	// hold is whether this game has the Guideline hold queue (GameMeta.Hold
 	// at Start). The slot is local state — nothing of it is on the wire
 	// beyond the swap's own cell batch (the piece that comes out simply
@@ -373,6 +378,7 @@ func (e *Engine) Start() error {
 	e.extraCols = meta.ExtraColumns
 	e.nextCount = meta.NextCount
 	e.noGhost = meta.NoGhost
+	e.showHeadroom = meta.ShowHeadroom
 	e.hold = meta.Hold
 	e.garbageHoles = min(max(meta.GarbageHoles, 0), config.MaxGarbageHoles)
 	e.randomGarbageHoles = meta.RandomGarbageHoles && e.garbageHoles > 0
@@ -1455,6 +1461,14 @@ func (e *Engine) HoldUsed() bool {
 // (GameMeta.NoGhost inverted — a creation-time rule shared by every player,
 // like the piece preview).
 func (e *Engine) ShowGhost() bool { return !e.noGhost }
+
+// ShowHeadroom reports whether this game draws the hidden headroom rows
+// above the playfield — behind smoked glass — on every board
+// (GameMeta.ShowHeadroom, a creation-time setting shared by every seat and
+// spectator; off by default, the Guideline way). Presentation only: the
+// visible region the engine plays by (VisibleRowStart) is the same either
+// way.
+func (e *Engine) ShowHeadroom() bool { return e.showHeadroom }
 
 // GarbageHoles reports how many holes every garbage row this game raises is
 // punched with (GameMeta.GarbageHoles, fixed at creation; 0 = solid rows

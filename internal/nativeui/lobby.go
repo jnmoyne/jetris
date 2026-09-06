@@ -1842,6 +1842,11 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		if bag := g.Bag.Normalized(); bag != config.BagSingle {
 			extra += " · " + bag.Label()
 		}
+		// The hidden rows drawn above the playfield, behind smoked glass
+		// (config.GameMeta.ShowHeadroom).
+		if g.ShowHeadroom {
+			extra += " · hidden rows"
+		}
 		if g.GarbageHoles > 0 {
 			if g.RandomGarbageHoles {
 				extra += fmt.Sprintf(" · random holes %d", g.GarbageHoles)

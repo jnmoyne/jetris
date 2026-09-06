@@ -44,6 +44,7 @@ func Offline(g OfflineGame) *Engine {
 	rules := g.Rules.Normalized(g.Mode)
 	e.nextCount = rules.NextCount
 	e.noGhost = !rules.Ghost
+	e.showHeadroom = rules.ShowHeadroom
 	e.hold = rules.Hold
 	e.bag = rules.Bag
 	e.seq = rng.NewBag(g.Seed, nil, e.bag)

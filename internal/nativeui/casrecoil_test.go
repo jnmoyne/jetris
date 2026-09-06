@@ -197,7 +197,7 @@ func TestRecoilIsPaintOnly(t *testing.T) {
 			Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
 			Constraints: layout.Exact(image.Pt(1200, 820)),
 		}
-		return drawBoard(gtx, snap, 0, cell, true, fx, at)
+		return drawBoard(gtx, snap, 0, cell, true, fx, at, false)
 	}
 	rest := draw(&boardFX{}, now)
 	fx := &boardFX{

@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"time"
 
+	"gioui.org/f32"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -227,6 +228,54 @@ type recoilCell struct {
 	outlineW int
 }
 
+// boardRows is how many rows drawBoard paints of snap: the visible region
+// below the headroom, or the whole board — the headroom rows behind smoked
+// glass over the playfield — when the game shows its hidden rows
+// (Engine.ShowHeadroom). Every layout that sizes a board by its row count
+// asks here, so the cell fits the board that is actually drawn.
+func boardRows(snap engine.BoardSnapshot, headroom bool) int {
+	if headroom {
+		return snap.Height
+	}
+	return snap.Height - snap.VisibleStart
+}
+
+// The smoked glass over a board's headroom rows (drawBoard, headroom):
+// colSmoke is the pane's tint, laid over the rows at smokeAlpha so what is
+// behind it — a piece the moment it spawns, a stack climbing out of the
+// playfield — shows through dark and dim rather than not at all; the sheen
+// is a diagonal highlight fading off the pane's top-left corner, the
+// reflection that says "glass"; and the pane's lower edge, where it meets the
+// playfield, catches the light as a thin bright line. Alpha values, 0..1.
+const (
+	smokeAlpha     = 0.66
+	smokeSheen     = 0.10
+	smokeEdgeAlpha = 0.28
+)
+
+var colSmoke = color.NRGBA{R: 0x0a, G: 0x09, B: 0x12, A: 0xff}
+
+// smokedGlass lays the pane over band (absolute widget coordinates): the tint,
+// the sheen, the lit edge along the bottom.
+func smokedGlass(ops *op.Ops, band image.Rectangle, cellPx int) {
+	if band.Empty() {
+		return
+	}
+	fillRect(ops, band, withAlpha(colSmoke, smokeAlpha))
+	func() {
+		defer clip.Rect(band).Push(ops).Pop()
+		paint.LinearGradientOp{
+			Stop1:  f32.Pt(float32(band.Min.X), float32(band.Min.Y)),
+			Stop2:  f32.Pt(float32(band.Min.X)+float32(band.Dx())*0.45, float32(band.Max.Y)),
+			Color1: withAlpha(color.NRGBA{R: 0xff, G: 0xff, B: 0xff}, smokeSheen),
+			Color2: color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0},
+		}.Add(ops)
+		paint.PaintOp{}.Add(ops)
+	}()
+	edge := max(1, cellPx/16)
+	fillRect(ops, image.Rect(band.Min.X, band.Max.Y-edge, band.Max.X, band.Max.Y), withAlpha(color.NRGBA{R: 0xff, G: 0xff, B: 0xff}, smokeEdgeAlpha))
+}
+
 // drawBoard renders a playfield snapshot at the current transform origin and
 // returns its pixel dimensions (cells plus the surrounding "well" frame).
 // localIdx is the viewer's player index (-1 for spectators). fx (may be nil)
@@ -234,14 +283,22 @@ type recoilCell struct {
 // blinking outline where a rejected step wanted the piece, the recoil that
 // vibrates the piece it was taken from, the hard-drop ghost (empty squares
 // only — real cells always win), and the clear/garbage row strobes painted
-// over the finished cells.
-func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time) D {
+// over the finished cells. headroom draws the hidden rows above the visible
+// region too — the whole board, its headroom behind smoked glass painted
+// over everything up there, effects included (boardRows sizes it).
+func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time, headroom bool) D {
 	fw := cellPx / 8 // chunky arcade-well frame around the playfield
 	if fw < 2 {
 		fw = 2
 	}
+	// top is the first row painted: the visible region's, or row 0 with the
+	// headroom shown.
+	top := snap.VisibleStart
+	if headroom {
+		top = 0
+	}
 	w := snap.Width*cellPx + 2*fw
-	h := (snap.Height-snap.VisibleStart)*cellPx + 2*fw
+	h := boardRows(snap, headroom)*cellPx + 2*fw
 	if h < 2*fw {
 		h = 2 * fw
 	}
@@ -262,9 +319,9 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 	if fx != nil && len(fx.kick) > 0 {
 		kick = casRecoilOffset(cellPx, fx.kickFrom, now.Sub(fx.kickAt))
 	}
-	for r := snap.VisibleStart; r < snap.Height && r < len(snap.Rows); r++ {
+	for r := top; r < snap.Height && r < len(snap.Rows); r++ {
 		row := snap.Rows[r]
-		y := fw + (r-snap.VisibleStart)*cellPx
+		y := fw + (r-top)*cellPx
 		for c := 0; c < snap.Width && c < len(row.Cells); c++ {
 			cell := row.Cells[c]
 			ap := render.CellStyle(cell, localIdx, showOutline)
@@ -323,14 +380,14 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 	if fx != nil {
 		for rc, start := range fx.want {
 			r, c := rc[0], rc[1]
-			if r < snap.VisibleStart || r >= snap.Height || c < 0 || c >= snap.Width {
+			if r < top || r >= snap.Height || c < 0 || c >= snap.Width {
 				continue
 			}
 			el := now.Sub(start)
 			if el < 0 || el >= flashDur || el%casWantBlink >= casWantBlink/2 {
 				continue
 			}
-			x, y := fw+c*cellPx, fw+(r-snap.VisibleStart)*cellPx
+			x, y := fw+c*cellPx, fw+(r-top)*cellPx
 			strokeRect(gtx.Ops, image.Rect(x, y, x+cellPx, y+cellPx), max(2, cellPx/10), rainbow(el))
 		}
 	}
@@ -338,16 +395,21 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 	// the lit half of each blink cycle — hard on/off, the arcade way.
 	if fx != nil {
 		for r, rs := range fx.rows {
-			if r < snap.VisibleStart || r >= snap.Height {
+			if r < top || r >= snap.Height {
 				continue
 			}
 			el := now.Sub(rs.start)
 			if el < 0 || el >= rowStrobeDur || el%rowStrobeBlink >= rowStrobeBlink/2 {
 				continue
 			}
-			y := fw + (r-snap.VisibleStart)*cellPx
+			y := fw + (r-top)*cellPx
 			fillRect(gtx.Ops, image.Rect(fw, y, w-fw, y+cellPx), withAlpha(rs.col, rowStrobeAlpha))
 		}
+	}
+	// The smoked glass over the headroom paints last of all: everything up
+	// there — cells, ghost, outlines, strobes — is behind it.
+	if snap.VisibleStart > top {
+		smokedGlass(gtx.Ops, image.Rect(fw, fw, w-fw, fw+(snap.VisibleStart-top)*cellPx), cellPx)
 	}
 	return D{Size: image.Pt(w, h)}
 }
@@ -403,8 +465,8 @@ func fitCellPx(gtx C, cols, rows, boards, reservedX, reservedY int, minDp, maxDp
 }
 
 // boardWidget wraps drawBoard as a layout.Widget for placement in a Flex/Stack.
-func (a *App) boardWidget(snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time) layout.Widget {
+func (a *App) boardWidget(snap engine.BoardSnapshot, localIdx, cellPx int, showOutline bool, fx *boardFX, now time.Time, headroom bool) layout.Widget {
 	return func(gtx C) D {
-		return drawBoard(gtx, snap, localIdx, cellPx, showOutline, fx, now)
+		return drawBoard(gtx, snap, localIdx, cellPx, showOutline, fx, now, headroom)
 	}
 }

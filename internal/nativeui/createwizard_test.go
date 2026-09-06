@@ -177,6 +177,35 @@ func TestWizardModeStepRendersSoloCoop(t *testing.T) {
 	}
 }
 
+// TestWizardCustomDefaults: the custom rules open at the Guideline preset —
+// a fresh wizard's custom read-out IS the preset in every mode, so a creator
+// who switches the radio to custom starts from the Guideline and changes
+// only what they mean to.
+func TestWizardCustomDefaults(t *testing.T) {
+	a := newTestApp()
+	for _, mode := range []config.GameMode{config.ModeCooperative, config.ModeCompetitive, config.ModeTeams} {
+		if got, want := a.customRules().Normalized(mode), config.GuidelineRules().Normalized(mode); got != want {
+			t.Errorf("%s: a fresh wizard's custom rules = %+v, want the Guideline preset %+v", mode, got, want)
+		}
+	}
+	if a.nextCountEd.Text() != "6" || a.holesEd.Text() != "1" || !a.holdCb.Value || !a.guidelineCb.Value || a.bagEnum.Value != "single" {
+		t.Errorf("the custom widgets do not show the preset: next %q, holes %q, hold %v, guideline garbage %v, bag %q",
+			a.nextCountEd.Text(), a.holesEd.Text(), a.holdCb.Value, a.guidelineCb.Value, a.bagEnum.Value)
+	}
+	// Blank editors fall back to the preset too.
+	a.nextCountEd.SetText("")
+	a.holesEd.SetText("")
+	if r := a.customRules(); r.NextCount != config.MaxNextCount || r.GarbageHoles != 1 {
+		t.Errorf("blank editors read as next %d, holes %d; want the preset's 6 and 1", r.NextCount, r.GarbageHoles)
+	}
+	// setCustomRules round-trips every rule, the bag radio included.
+	want := config.GameRules{NextCount: 2, Ghost: false, Hold: false, Bag: config.BagNone, ShowHeadroom: true, GarbageHoles: 3, RandomGarbageHoles: true}
+	a.setCustomRules(want)
+	if got := a.customRules(); got != want {
+		t.Errorf("setCustomRules → customRules = %+v, want %+v", got, want)
+	}
+}
+
 // TestWizardBag pins step 2's piece-bag radio: "single" — the default — is
 // the 7-bag, "double" and "none" the other two kinds, junk the 7-bag; the
 // custom read-out carries it, the Guideline preset's read-only list names
@@ -207,5 +236,32 @@ func TestWizardBag(t *testing.T) {
 	}
 	if len(hints) != 3 {
 		t.Errorf("the three bag kinds share a hint: %v", hints)
+	}
+}
+
+// TestWizardHiddenRows pins step 2's "Show hidden rows" checkbox: off in a
+// fresh wizard, its value reaches the custom rules, the Guideline preset
+// never shows the rows whatever the box says, and the preset's read-only
+// list says so.
+func TestWizardHiddenRows(t *testing.T) {
+	a := newTestApp()
+	if a.headroomCb.Value || a.customRules().ShowHeadroom {
+		t.Fatal("a fresh wizard shows the hidden rows; they are off by default")
+	}
+	a.headroomCb.Value = true
+	if !a.customRules().ShowHeadroom {
+		t.Error("the checkbox does not reach the custom rules")
+	}
+	if config.GuidelineRules().ShowHeadroom {
+		t.Error("the Guideline preset shows the hidden rows")
+	}
+	found := false
+	for _, row := range guidelineSummary(config.ModeCooperative) {
+		if row[0] == "Hidden rows" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the Guideline preset's list does not name the hidden rows")
 	}
 }

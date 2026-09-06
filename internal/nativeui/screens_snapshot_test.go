@@ -340,7 +340,7 @@ func TestScreenSnapshots(t *testing.T) {
 		a := newTestApp()
 		snap := sampleBoard()
 		snapshotPNG(t, w, dir, "screen_board", func(gtx C) {
-			layout.Center.Layout(gtx, a.boardWidget(snap, 0, 32, true, nil, gtx.Now))
+			layout.Center.Layout(gtx, a.boardWidget(snap, 0, 32, true, nil, gtx.Now, false))
 			scanlines(gtx)
 		})
 	})
@@ -363,7 +363,7 @@ func TestScreenSnapshots(t *testing.T) {
 							return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 								layout.Rigid(a.body(label, col)),
 								layout.Rigid(spacer(4)),
-								layout.Rigid(a.boardWidget(snap, -1, 28, true, &boardFX{tint: col}, gtx.Now)),
+								layout.Rigid(a.boardWidget(snap, -1, 28, true, &boardFX{tint: col}, gtx.Now, false)),
 							)
 						})
 					}))
@@ -615,7 +615,7 @@ func snapshotSpectateDone(t *testing.T, w *headless.Window, dir string) {
 												if wl.idx < 0 {
 													fx.tint = wl.col
 												}
-												board := a.boardWidget(sampleBoard(), wl.idx, cell, true, fx, gtx.Now)
+												board := a.boardWidget(sampleBoard(), wl.idx, cell, true, fx, gtx.Now, false)
 												if wl.won {
 													return a.crownBoard(tc.oc.fx(), gtx.Now)(board, cell)(gtx)
 												}

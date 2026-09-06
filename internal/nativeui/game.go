@@ -1074,6 +1074,10 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	nextPieces := eng.NextPieces()
 	showNext := mode == engine.ModePlayer && len(nextPieces) > 0
 	showHold := mode == engine.ModePlayer && eng.HoldEnabled()
+	// The hidden rows above the playfield, behind smoked glass, when the
+	// game shows them (GameMeta.ShowHeadroom) — one setting for every
+	// board, the opponents' thumbnails included.
+	headroom := eng.ShowHeadroom()
 	board := func(gtx C) D {
 		// Cell size tracks the window: as much board as fits after reserving
 		// room for the wells beside it, the player's move-buffer strip under
@@ -1107,7 +1111,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		if showNext {
 			wells.nextH = measure(func(gtx C, cell int) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) })
 		}
-		plan := a.fitBoardAndPad(gtx, snap.Width, snap.Height-snap.VisibleStart, wells, player, showPad, hold)
+		plan := a.fitBoardAndPad(gtx, snap.Width, boardRows(snap, headroom), wells, player, showPad, hold)
 		cell := plan.cell
 		padEnabled := view.status == string(config.GameStatusInProgress)
 		// boardOnly is the playfield itself, with its effects and the
@@ -1120,7 +1124,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 			if view.boardFocused {
 				fx.frame = colFocus // the well's frame lights up: the keys drive the piece
 			}
-			bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now)
+			bw := a.boardWidget(snap, localIdx, cell, true, fx, gtx.Now, headroom)
 			if view.outcome.decided {
 				// The finished board wears the winner show: the crew's
 				// co-op board (a spectator's or a player's — the run's
@@ -1389,8 +1393,9 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	// Reactive cells: fit every player's board side by side (16 dp gaps, name
 	// row above each); below the minimum the strip scrolls instead.
 	dims := eng.Snapshot()
+	headroom := eng.ShowHeadroom()
 	n := max(len(view.players), 1)
-	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, n, n*gtx.Dp(16), gtx.Dp(30), 8, 30)
+	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), n, n*gtx.Dp(16), gtx.Dp(30), 8, 30)
 
 	// Elimination states drive the per-board overlays: an eliminated player's
 	// board reads OUT while the game goes on, and once it is decided — all
@@ -1418,7 +1423,7 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 							return a.body("Loading…", colMuted)(gtx)
 						}
 						a.detectGarbageOn(gtx, i, snap) // landed garbage strobes on this board
-						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i], rows: view.specRowStrobes[i]}, gtx.Now)
+						board := a.boardWidget(snap, i, cell, true, &boardFX{flash: view.specFlash[i], rows: view.specRowStrobes[i]}, gtx.Now, headroom)
 						switch {
 						case oc.wins(p.PlayerID):
 							return a.crownBoard(oc.fx(), gtx.Now)(board, cell)(gtx)
@@ -1502,7 +1507,8 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 	// Thumbnail cells scale with the window height: the whole stack of
 	// opponent boards (plus ~34 dp of label/spacing each) should fit.
 	first := opps[ids[0]]
-	vis := first.Height - first.VisibleStart
+	headroom := eng.ShowHeadroom()
+	vis := boardRows(first, headroom)
 	cell := fitCellPx(gtx, first.Width, vis*len(ids), 1, 0, len(ids)*gtx.Dp(34), 6, 13)
 	var children []layout.FlexChild
 	for _, id := range ids {
@@ -1519,7 +1525,7 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 		children = append(children,
 			layout.Rigid(a.body(label, colMuted)),
 			layout.Rigid(spacer(2)),
-			layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now)),
+			layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now, headroom)),
 			layout.Rigid(spacer(12)),
 		)
 	}
@@ -1537,8 +1543,9 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	// Reactive cells: the team boards side by side, scrolling below the minimum.
 	dims := eng.Snapshot()
+	headroom := eng.ShowHeadroom()
 	teams := eng.TeamCount()
-	cell := fitCellPx(gtx, dims.Width, dims.Height-dims.VisibleStart, teams, teams*gtx.Dp(16), gtx.Dp(26), 10, 40)
+	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), teams, teams*gtx.Dp(16), gtx.Dp(26), 10, 40)
 	opps := eng.OpponentSnapshots()
 	oc := view.outcome
 
@@ -1571,7 +1578,7 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 							return a.body("Loading…", colMuted)(gtx)
 						}
 						a.detectGarbageOn(gtx, b.team, b.snap) // landed garbage strobes on this board
-						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], rows: view.specRowStrobes[b.team], tint: teamCol}, gtx.Now)
+						board := a.boardWidget(b.snap, -1, cell, true, &boardFX{flash: view.specFlash[b.team], rows: view.specRowStrobes[b.team], tint: teamCol}, gtx.Now, headroom)
 						switch {
 						case won:
 							return a.crownBoard(oc.fx(), gtx.Now)(board, cell)(gtx)

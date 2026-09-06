@@ -158,30 +158,59 @@ func (a *App) finishCreateWizard() {
 	go func() { a.createGame(mode, count, teamCount, extraCols, maxAgents, splitPieces, rules, false) }()
 }
 
+// setCustomRules loads the wizard's custom-rules widgets from a rules bundle
+// — the Guideline preset at startup (App.New), so custom rules begin as the
+// preset and the creator changes only what they mean to change.
+func (a *App) setCustomRules(r config.GameRules) {
+	a.nextCountEd.SetText(strconv.Itoa(r.NextCount))
+	a.ghostCb.Value = r.Ghost
+	a.holdCb.Value = r.Hold
+	a.bagEnum.Value = bagRadio(r.Bag)
+	a.headroomCb.Value = r.ShowHeadroom
+	a.holesEd.SetText(strconv.Itoa(r.GarbageHoles))
+	a.randomHolesCb.Value = r.RandomGarbageHoles
+	a.guidelineCb.Value = r.GuidelineGarbage
+}
+
+// bagRadio is the piece-bag radio's value for a bag kind (wizardBag read
+// backwards).
+func bagRadio(bag config.Bag) string {
+	switch bag.Normalized() {
+	case config.BagDouble:
+		return "double"
+	case config.BagNone:
+		return "none"
+	default:
+		return "single"
+	}
+}
+
 // customRules reads the wizard's custom-rules widgets. The upcoming-piece
 // preview is how many next pieces the game reveals to everyone (players,
-// spectators, agents): blank or junk falls back to the default of 6. The
-// ghost and the hold are per-game rules like the preview — the creator's
-// checkboxes decide them for every seat — and so is the bag the pieces are
-// dealt from (wizardBag). Garbage holes are how many empty cells every
-// garbage row is raised with in the modes that raise garbage (blank or junk:
-// the default of 0, solid rows that never clear), with the random-positions
+// spectators, agents): blank or junk falls back to the Guideline preset's
+// count. The ghost, the hold and the hidden rows are per-game rules like the
+// preview — the creator's checkboxes decide them for every seat — and so is
+// the bag the pieces are dealt from (wizardBag). Garbage holes are how many
+// empty cells every garbage row is raised with in the modes that raise
+// garbage (blank or junk: the preset's one hole), with the random-positions
 // and Guideline-attack-table checkboxes beside it. Ranges are clamped by
 // GameRules.Normalized.
 func (a *App) customRules() config.GameRules {
+	preset := config.GuidelineRules()
 	nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
 	if err != nil {
-		nextCount = 6
+		nextCount = preset.NextCount
 	}
 	holes, err := strconv.Atoi(strings.TrimSpace(a.holesEd.Text()))
 	if err != nil {
-		holes = 0
+		holes = preset.GarbageHoles
 	}
 	return config.GameRules{
 		NextCount:          nextCount,
 		Ghost:              a.ghostCb.Value,
 		Hold:               a.holdCb.Value,
 		Bag:                a.wizardBag(),
+		ShowHeadroom:       a.headroomCb.Value,
 		GarbageHoles:       holes,
 		RandomGarbageHoles: a.randomHolesCb.Value,
 		GuidelineGarbage:   a.guidelineCb.Value,
@@ -572,6 +601,7 @@ func guidelineSummary(mode config.GameMode) [][2]string {
 		{"Ghost piece", "on — the landing preview of every player's piece"},
 		{"Hold", "on — C or the HOLD button sets the falling piece aside for later, once per piece"},
 		{"Piece bag", "the 7-bag — every seven pieces are the seven types, shuffled"},
+		{"Hidden rows", "hidden — the board is the twenty-row playfield, nothing above it"},
 	}
 	if mode != config.ModeCooperative {
 		rows = append(rows,
@@ -594,7 +624,7 @@ func (a *App) wizardCustomRules(gtx C) D {
 				layout.Rigid(func(gtx C) D {
 					gtx.Constraints.Max.X = gtx.Dp(40)
 					gtx.Constraints.Min.X = gtx.Dp(40)
-					return a.editorBox(gtx, &a.nextCountEd, "6")
+					return a.editorBox(gtx, &a.nextCountEd, strconv.Itoa(config.GuidelineRules().NextCount))
 				}),
 			)
 		}),
@@ -625,6 +655,15 @@ func (a *App) wizardCustomRules(gtx C) D {
 		}),
 		layout.Rigid(spacer(4)),
 		layout.Rigid(a.body("The Guideline hold: C or the HOLD button sets the falling piece aside and plays the next one, or swaps it back in later — once per piece.", colMuted)),
+		layout.Rigid(spacer(10)),
+		layout.Rigid(func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.headroomCb, "Show hidden rows")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body(fmt.Sprintf("The %d rows above the playfield, where every piece appears, drawn behind smoked glass on every board: see a piece the moment it spawns and a stack about to top out. Off, the board is the playfield alone.", config.HeadroomRows), colMuted)),
 		layout.Rigid(func(gtx C) D {
 			if !garbage {
 				return D{}
@@ -638,7 +677,7 @@ func (a *App) wizardCustomRules(gtx C) D {
 						layout.Rigid(func(gtx C) D {
 							gtx.Constraints.Max.X = gtx.Dp(40)
 							gtx.Constraints.Min.X = gtx.Dp(40)
-							return a.editorBox(gtx, &a.holesEd, "0")
+							return a.editorBox(gtx, &a.holesEd, strconv.Itoa(config.GuidelineRules().GarbageHoles))
 						}),
 					)
 				}),

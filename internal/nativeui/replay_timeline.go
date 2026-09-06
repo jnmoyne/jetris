@@ -62,6 +62,11 @@ type replayTimeline struct {
 	marks    []clearMark
 	startOff time.Duration
 	dur      time.Duration
+	// headroom is the recorded game's hidden-rows setting
+	// (config.GameMeta.ShowHeadroom, read off its meta as the copy holds
+	// it): the replay's boards then draw their headroom behind smoked glass
+	// as the players saw it.
+	headroom bool
 }
 
 // countdownAt returns the countdown number to show at the playhead — the last
@@ -146,7 +151,11 @@ func (b *replayBuilder) add(subject string, data []byte, ts time.Time) {
 		return
 	case replayMetaSubject(gameID):
 		var meta config.GameMeta
-		if err := json.Unmarshal(data, &meta); err != nil || preStartStatus(string(meta.Status)) || b.started {
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return
+		}
+		b.tl.headroom = meta.ShowHeadroom // the setting rides every meta of the game
+		if preStartStatus(string(meta.Status)) || b.started {
 			return
 		}
 		// The status that ends the countdown, at the moment it was recorded:

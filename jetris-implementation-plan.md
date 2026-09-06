@@ -3937,6 +3937,53 @@ ration and an unsplit game no bag (`TestDoubleBagReachesEverySeat`,
 `TestNoBagReachesEverySeat`, `TestOfflineBag`); the wizard radio
 (`TestWizardBag`).
 
+## Phase 21 — Hidden Rows (`show_headroom`)
+
+**Goal:** a create-time setting (off by default, off in the Guideline preset)
+that draws the hidden headroom rows above the playfield — the four rows a piece
+spawns in — on every board of the game, **behind smoked glass**: a dark
+translucent pane with a diagonal sheen and a lit lower edge where it meets the
+playfield, so a piece shows dimly the moment it spawns and a stack shows how
+close it is to topping out. Presentation only: spawning, the top-out rule, the
+engine's visible region and the protocol are untouched, and agents ignore it.
+
+**Data:** `GameMeta.ShowHeadroom` (`show_headroom`, omitempty — absent and
+pre-field metas hide the rows), `GameRules.ShowHeadroom` (the preset leaves it
+off, so a preset with the rows shown is custom rules), mirrored as
+`GameListing.ShowHeadroom` for the lobby row's `hidden rows` tag.
+
+**Engine:** captures the setting at `Start` (`e.showHeadroom`, accessor
+`ShowHeadroom()`); the offline engine does the same off its rules.
+`visibleRowStart` and everything that reads it are as they were.
+
+**UI:** `drawBoard` takes a `headroom` flag — it paints from row 0 and lays
+`smokedGlass` over the headroom band last of all (cells, ghost, outlines and
+strobes all behind it); `boardRows` is the row count every board layout sizes
+its cell by (the player's board and pad plan, the opponents' sidebar and
+thumbnails, the spectator strips, the archive/replay strip). The replay reads
+the setting off the recorded meta (`replayTimeline.headroom`) and its boards
+snapshot the whole board with the visible region marked. The wizard's custom
+rules get a "Show hidden rows" checkbox (`headroomCb`) with its hint, the
+preset's read-only list a "Hidden rows: hidden" line, the tutorial's rules step
+mentions it; `gameRow` tags "· hidden rows". Docs: gameplays §1b, the agent
+guide's meta table, the project structure.
+
+**Custom defaults:** with this phase the wizard's custom rules open AT the
+Guideline preset (`setCustomRules(config.GuidelineRules())` in `App.New`: next 6,
+ghost and hold on, the 7-bag, hidden rows off, 1 clean hole, Guideline garbage)
+and a blank editor reads as the preset's value, so switching the radio to custom
+is a starting point rather than a step back to the classic game
+(`TestWizardCustomDefaults`).
+
+**Tests:** the rules bundle round-trips it and the preset with it on is not the
+preset (`TestRulesShowHeadroom`); `CreateGame` stores it on both records
+(`TestLobbyCreateGameShowHeadroom`); the wizard checkbox reaches the custom
+rules and the preset's list names it (`TestWizardHiddenRows`); the engine and
+the offline engine read it (`TestShowHeadroomReachesEngine`,
+`TestOfflineShowHeadroom`); the board paints headroom rows only when asked, at
+the taller size (`TestBoardRowsHeadroom`); an opt-in GPU snapshot of the
+player's screen with the pane (`TestHeadroomSnapshot`, `FW_SNAPSHOT_DIR`).
+
 ## Cross-Cutting Implementation Rules
 
 These rules apply throughout all phases:

@@ -200,6 +200,7 @@ type GameMeta struct {
 	GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // attack strength follows the Tetris Guideline table — a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (game.AttackRows); unset — the default, and every meta written before the field — every cleared line sends one row
 	SplitPieces        bool       `json:"split_pieces,omitempty"`         // teams mode: the seven piece types are dealt out between the teammates (rng.PieceSets), every seat drawing only from its own ration and the whole bag present across the team. Unset — the default, and every meta written before the field — every seat runs the full 7-bag. Structural like TeamSize, not a play rule: the deal follows Seed, so both teams' slot N hold the same ration (see SplitsPieces)
 	Bag                Bag        `json:"bag,omitempty"`                  // the piece randomizer every seat's sequence is drawn with (Bag): "double" for the double bag, "none" for no bag at all; unset — the default, and every meta written before the field — the standard 7-bag. One rule for every seat, like NextCount; in a split-pieces game it shapes each seat's ration the same way (a double bag of the ration, or independent draws from it)
+	ShowHeadroom       bool       `json:"show_headroom,omitempty"`        // the hidden headroom rows above the playfield (HeadroomRows, where a piece spawns) are drawn — behind smoked glass, so they read as the out-of-bounds they are — on every board of the game; unset — the default, and every meta written before the field — the boards start at the visible playfield, the Guideline way. Presentation only: nothing about play changes, and agents may ignore it. One setting for every seat and spectator, like NoGhost
 	Seed               uint64     `json:"seed"`
 	Status             GameStatus `json:"status"`
 	CreatorID          string     `json:"creator_id"`
@@ -215,14 +216,15 @@ type GameMeta struct {
 // openInvitePicker): every field lands in GameMeta — the rule book every
 // engine reads at Start — and is mirrored on the lobby listing for the row's
 // tags. The zero value is the pre-attribute Jetris game (no preview, no hold,
-// the 7-bag, solid garbage, one row per line) except for Ghost, which the
-// wizard defaults on — the meta stores it inverted (NoGhost) for the same
-// reason.
+// the 7-bag, solid garbage, one row per line, the headroom out of sight)
+// except for Ghost, which the wizard defaults on — the meta stores it
+// inverted (NoGhost) for the same reason.
 type GameRules struct {
 	NextCount          int  // upcoming pieces the game reveals (0..MaxNextCount)
 	Ghost              bool // the hard-drop ghost preview (GameMeta.NoGhost, inverted)
 	Hold               bool // the Guideline hold queue (GameMeta.Hold): swap the falling piece for a held one, once per piece
 	Bag                Bag  // the piece randomizer (GameMeta.Bag): the standard 7-bag, the double bag, or no bag at all
+	ShowHeadroom       bool // the hidden headroom rows drawn above the playfield, behind smoked glass (GameMeta.ShowHeadroom; off: the boards start at the visible playfield)
 	GarbageHoles       int  // holes per garbage row in the modes that raise garbage (0..MaxGarbageHoles; 0 = solid rows that never clear)
 	RandomGarbageHoles bool // every garbage row draws its own hole columns (off: the rows of one attack share a draw)
 	GuidelineGarbage   bool // attack strength by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines (off: one row per line)
@@ -231,9 +233,11 @@ type GameRules struct {
 // GuidelineRules is the create wizard's "Guideline" preset: every rule at the
 // setting closest to the Tetris Guideline this game can offer — the longest
 // next queue the game reveals (MaxNextCount), the ghost piece, the hold queue,
-// the standard 7-bag (BagSingle, the zero value), and Guideline-style
-// garbage: one hole per row, the rows of one attack sharing it (clean garbage
-// that digs out as a well), attacks by the Guideline table.
+// the standard 7-bag (BagSingle, the zero value), the headroom rows hidden
+// (ShowHeadroom off: the Guideline playfield shows twenty rows and no more),
+// and Guideline-style garbage: one hole per row, the rows of one attack
+// sharing it (clean garbage that digs out as a well), attacks by the
+// Guideline table.
 func GuidelineRules() GameRules {
 	return GameRules{
 		NextCount:        MaxNextCount,
@@ -273,6 +277,7 @@ func (m GameMeta) Rules() GameRules {
 		Ghost:              !m.NoGhost,
 		Hold:               m.Hold,
 		Bag:                m.Bag,
+		ShowHeadroom:       m.ShowHeadroom,
 		GarbageHoles:       m.GarbageHoles,
 		RandomGarbageHoles: m.RandomGarbageHoles,
 		GuidelineGarbage:   m.GuidelineGarbage,

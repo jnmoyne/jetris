@@ -138,8 +138,8 @@ func (a *App) replayKeys(gtx C, rv *replayView) (leave bool) {
 			leave = true
 			continue
 		}
-		if rv.tl == nil {
-			continue // still loading: there is no playhead to move yet
+		if rv.tl == nil || a.shareOpen {
+			continue // still loading (no playhead to move yet), or the share modal has the keys
 		}
 		switch e.Name {
 		case key.NameSpace:
@@ -198,10 +198,11 @@ func (a *App) keyHintLine(gtx C, txt string) D {
 }
 
 // replayTransport is the whole deck: the scrubber (clear timeline over scrub
-// slider), then the buttons — the five transport keys, the speed selector, and
-// the way back to the lobby. On a compact screen the row splits in two rather
-// than shrinking the keys.
-func (a *App) replayTransport(gtx C, rv *replayView) D {
+// slider), then the buttons — the five transport keys, the speed selector,
+// Pin (Unpin while the replay is pinned — pinned says which; share.go), Share,
+// and the way back to the lobby. On a compact screen the row splits in three
+// rather than shrinking the keys.
+func (a *App) replayTransport(gtx C, rv *replayView, pinned bool) D {
 	keys := func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Rigid(func(gtx C) D { return a.transportButton(gtx, &a.replayStartBtn, "|<", false) }),
@@ -241,6 +242,25 @@ func (a *App) replayTransport(gtx C, rv *replayView) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 	}
 	back := func(gtx C) D { return a.secondaryButton(gtx, &a.replayBackBtn, "Back to Lobby") }
+	pin := func(gtx C) D {
+		label := "Pin"
+		if pinned {
+			label = "Unpin"
+		}
+		return a.secondaryButton(gtx, &a.replayPinBtn, label)
+	}
+	share := func(gtx C) D { return a.secondaryButton(gtx, &a.replayShareBtn, "Share") }
+	// The three actions that are about the recording rather than the
+	// playhead, kept together at the end of the deck.
+	actions := func(gtx C) D {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(pin),
+			layout.Rigid(hSpacer(8)),
+			layout.Rigid(share),
+			layout.Rigid(hSpacer(8)),
+			layout.Rigid(back),
+		)
+	}
 
 	return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
@@ -256,13 +276,9 @@ func (a *App) replayTransport(gtx C, rv *replayView) D {
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(keys),
 					layout.Rigid(spacer(8)),
-					layout.Rigid(func(gtx C) D {
-						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-							layout.Rigid(speeds),
-							layout.Rigid(hSpacer(10)),
-							layout.Rigid(back),
-						)
-					}),
+					layout.Rigid(speeds),
+					layout.Rigid(spacer(8)),
+					layout.Rigid(actions),
 				)
 			}
 			return layout.Center.Layout(gtx, func(gtx C) D {
@@ -271,7 +287,7 @@ func (a *App) replayTransport(gtx C, rv *replayView) D {
 					layout.Rigid(hSpacer(20)),
 					layout.Rigid(speeds),
 					layout.Rigid(hSpacer(20)),
-					layout.Rigid(back),
+					layout.Rigid(actions),
 				)
 			})
 		}),

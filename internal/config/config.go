@@ -22,7 +22,12 @@ type Config struct {
 	// ServerLabel names NATSURL for the player (the browser page's ?name=):
 	// the server browser's row shows it instead of "--server", and the lobby
 	// header reads "<label> (<url>)" the way a favorite's does.
-	ServerLabel      string
+	ServerLabel string
+	// ReplayGameID is a game whose replay the app opens as soon as it lands
+	// in the lobby (--replay, or a share link's ?replay= — see
+	// webdist.ReplayLink): the link to one particular recording. Empty
+	// means the lobby as usual.
+	ReplayGameID     string
 	RunEmbedded      bool   // run an in-process JetStream-enabled nats-server and connect to it
 	EmbeddedHost     string // address the embedded server is advertised and dialed on ("" = auto-detected LAN IP); it always LISTENS on every interface, so this only overrides a wrong auto-detection
 	EmbeddedPort     int    // port for the embedded server (0 = DefaultEmbeddedPort)
@@ -398,7 +403,10 @@ const ArchiveChatCap = 200
 // Every finishing game is by definition among the most recent, so every game
 // gets a replay at first; it survives the next ReplayRecentN finishes only by
 // ranking in its bucket's top N. Games that fall out of both sets lose their
-// replay (the archiver purges them — see archive.maybeArchiveReplay).
+// replay (the archiver purges them — see archive.maybeArchiveReplay) —
+// unless someone PINNED it: a pin (a LobbyPinKey entry in the lobby KV, see
+// ReplayPin) keeps a replay for good, whatever its rank or age, until the
+// pin is removed.
 const (
 	ReplayTopN    = 10
 	ReplayRecentN = 25
@@ -588,15 +596,30 @@ func ReplayRecent(recs []ArchiveRecord) map[string]bool {
 }
 
 // ReplayKeepSet returns the game IDs whose replay is retained given the full
-// set of archive records: ReplayTopRanked ∪ ReplayRecent. A pure function of
-// the records, so every archiver — GUI or agent — computes the same set and
-// purges the same displaced replays.
-func ReplayKeepSet(recs []ArchiveRecord) map[string]bool {
+// set of archive records and the set of pinned games: ReplayTopRanked ∪
+// ReplayRecent ∪ pinned. A pure function of the records and the pins, so
+// every archiver — GUI or agent — computes the same set and purges the same
+// displaced replays. pinned may be nil (no pins).
+func ReplayKeepSet(recs []ArchiveRecord, pinned map[string]bool) map[string]bool {
 	keep := ReplayTopRanked(recs)
 	for id := range ReplayRecent(recs) {
 		keep[id] = true
 	}
+	for id, on := range pinned {
+		if on {
+			keep[id] = true
+		}
+	}
 	return keep
+}
+
+// ReplayPin is the value of a pinned replay's lobby KV entry (LobbyPinKey):
+// the pin itself is the key's existence — the value only says who pinned
+// the game and when, for the record. Unpinning deletes the key.
+type ReplayPin struct {
+	GameID   string    `json:"game_id"`
+	PinnedBy string    `json:"pinned_by,omitempty"` // the pinning player's name
+	PinnedAt time.Time `json:"pinned_at"`
 }
 
 // HasAgents reports whether any seat in the archived game was played by an
@@ -1102,6 +1125,30 @@ func LobbyPlayerKey(playerID string) string {
 
 func LobbyGameKey(gameID string) string {
 	return "games." + gameID
+}
+
+// LobbyPinPrefix is the KV key prefix under which pinned replays live
+// ("pins.<gameID>", see ReplayPin): a key's existence is the pin. Pins are
+// lobby KV entries — written without a TTL, so they live until deleted —
+// rather than replay-stream messages, so every lobby's KV watcher sees a
+// pin and an UNPIN alike the moment it happens (a purge on a stream is
+// silent to a consumer), and an archiver reads the pin set straight off the
+// bucket when it cuts the keep set (ReplayKeepSet).
+const LobbyPinPrefix = "pins."
+
+// LobbyPinKey is the KV key that pins one game's replay.
+func LobbyPinKey(gameID string) string {
+	return LobbyPinPrefix + gameID
+}
+
+// GameIDFromPinKey extracts the game ID from a pin key ("" if the key is not
+// one).
+func GameIDFromPinKey(key string) string {
+	id, ok := strings.CutPrefix(key, LobbyPinPrefix)
+	if !ok {
+		return ""
+	}
+	return id
 }
 
 // LobbyInviteKey is the KV key holding one player's invitation to one game.

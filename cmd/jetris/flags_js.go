@@ -17,11 +17,12 @@ import (
 //
 // preselects that server in the login screen's browser, just as --server
 // does on the desktop; &name=.. names it for the browser row and the lobby
-// header; and &player=.. answers the login screen's one question, so the
-// game connects and lands in the lobby without it. The join page
-// (web/join.html), which the QR codes of scripts/gen-qr.go point at, is
-// nothing but a form that collects that player name and comes back here
-// with it.
+// header; &player=.. answers the login screen's one question, so the game
+// connects and lands in the lobby without it; and &replay=<gameID> opens
+// that game's replay on landing (a replay's share link, webdist.ReplayLink).
+// The join page (web/join.html), which the QR codes of scripts/gen-qr.go
+// and the replay screen's Share point at, is nothing but a form that
+// collects that player name and comes back here with it.
 func applyPageParams(cfg *config.Config) {
 	loc := js.Global().Get("location")
 	if !loc.Truthy() {
@@ -47,5 +48,8 @@ func applyPageParams(cfg *config.Config) {
 	}
 	if v := strings.TrimSpace(q.Get("player")); v != "" {
 		cfg.PlayerName = v
+	}
+	if v := strings.TrimSpace(q.Get("replay")); v != "" {
+		cfg.ReplayGameID = v
 	}
 }

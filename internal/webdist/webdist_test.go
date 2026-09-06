@@ -159,6 +159,24 @@ func TestJoinLink(t *testing.T) {
 	}
 }
 
+// A replay's share link is the join link with the game named, under the
+// same rules: a WebSocket server, a full page URL — and a game ID.
+func TestReplayLink(t *testing.T) {
+	link, err := ReplayLink(DefaultPage, "wss://eu-central.jetris.net:4223", "Jetris EU central", "1a2b-3c4d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://jnmoyne.github.io/jetris/join.html?name=Jetris+EU+central&replay=1a2b-3c4d&server=wss%3A%2F%2Feu-central.jetris.net%3A4223"; link != want {
+		t.Fatalf("link = %q, want %q", link, want)
+	}
+	if _, err := ReplayLink(DefaultPage, "wss://host:443", "", ""); err == nil {
+		t.Fatal("a replay link without a game ID accepted")
+	}
+	if _, err := ReplayLink(DefaultPage, "nats://host:4222", "", "g"); err == nil {
+		t.Fatal("a nats:// server accepted in a replay link")
+	}
+}
+
 // tlsClient trusts nothing — the page's certificate is its own.
 func tlsClient() *http.Client {
 	return &http.Client{

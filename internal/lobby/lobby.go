@@ -31,12 +31,13 @@ type Lobby struct {
 	games           map[string]GameListing
 	abandoned       map[string]bool // games the periodic checker flagged as abandoned
 	archives        []config.ArchiveRecord
-	topRanked       map[string]bool   // archived game IDs the history marks TOP 10 (see config.ReplayTopRankedCut)
-	replays         map[string]bool   // archived game IDs that have a replay (see runReplayMarkerConsumer)
-	replayKick      chan struct{}     // pings the refresher to re-list the replay markers
-	chatLog         []ChatMessage     // lobby + game chat, in stream order, capped at chatLogCap
-	logEntries      []config.LogEntry // the server log's tail, oldest first, capped at logCap (see serverlog.go)
-	departed        bool              // this player's disconnection is journaled (guarded by presenceMu)
+	topRanked       map[string]bool             // archived game IDs the history marks TOP 10 (see config.ReplayTopRankedCut)
+	replays         map[string]bool             // archived game IDs that have a replay (see runReplayMarkerConsumer)
+	pins            map[string]config.ReplayPin // pinned replays, by game ID: the lobby KV's pins.* keys (see handlePinUpdate)
+	replayKick      chan struct{}               // pings the refresher to re-list the replay markers
+	chatLog         []ChatMessage               // lobby + game chat, in stream order, capped at chatLogCap
+	logEntries      []config.LogEntry           // the server log's tail, oldest first, capped at logCap (see serverlog.go)
+	departed        bool                        // this player's disconnection is journaled (guarded by presenceMu)
 	status          PresenceStatus
 	currentGameID   string
 	presenceMu      sync.Mutex            // serializes presence KV writes with their state read (see publishPresence)
@@ -69,6 +70,7 @@ func New(
 		abandoned:       make(map[string]bool),
 		topRanked:       make(map[string]bool),
 		replays:         make(map[string]bool),
+		pins:            make(map[string]config.ReplayPin),
 		replayKick:      make(chan struct{}, 1),
 		invites:         make(map[string]Invitation),
 		status:          StatusInLobby,
@@ -303,7 +305,59 @@ func (l *Lobby) handleKVUpdate(entry jetstream.KeyValueEntry) {
 		l.handleGameUpdate(entry)
 	} else if strings.HasPrefix(key, "invites.") {
 		l.handleInviteUpdate(entry)
+	} else if strings.HasPrefix(key, config.LobbyPinPrefix) {
+		l.handlePinUpdate(entry)
 	}
+}
+
+// handlePinUpdate keeps the pinned-replay set in step with the KV's pins.*
+// keys: a put pins the game, a delete (or purge) unpins it. Either is a
+// change to the history's rows, hence the archive ping.
+func (l *Lobby) handlePinUpdate(entry jetstream.KeyValueEntry) {
+	gameID := config.GameIDFromPinKey(entry.Key())
+	if gameID == "" {
+		return
+	}
+	l.mu.Lock()
+	switch entry.Operation() {
+	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
+		delete(l.pins, gameID)
+	default:
+		var pin config.ReplayPin
+		_ = json.Unmarshal(entry.Value(), &pin)
+		pin.GameID = gameID
+		l.pins[gameID] = pin
+	}
+	l.mu.Unlock()
+	l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateArchive})
+}
+
+// IsPinned reports whether an archived game's replay is pinned — kept for
+// good, out of the archivers' displacement purge, until unpinned.
+func (l *Lobby) IsPinned(gameID string) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	_, ok := l.pins[gameID]
+	return ok
+}
+
+// Pin returns a pinned game's pin record (who, when) and whether it is pinned.
+func (l *Lobby) Pin(gameID string) (config.ReplayPin, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	pin, ok := l.pins[gameID]
+	return pin, ok
+}
+
+// PinReplay pins a game's replay in this player's name; UnpinReplay removes
+// the pin. Both are KV writes every lobby's watcher sees, this one included
+// — the local set follows from the watcher, not from here.
+func (l *Lobby) PinReplay(ctx context.Context, gameID string) error {
+	return natspkg.PinReplay(ctx, l.kv, gameID, l.name)
+}
+
+func (l *Lobby) UnpinReplay(ctx context.Context, gameID string) error {
+	return natspkg.UnpinReplay(ctx, l.kv, gameID)
 }
 
 func (l *Lobby) handlePlayerUpdate(entry jetstream.KeyValueEntry) {

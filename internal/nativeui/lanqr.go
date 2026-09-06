@@ -46,21 +46,11 @@ var browserBuildReady = webdist.Ready
 // page. Read per request by the HTTP server, so it must be cheap and lock
 // only briefly.
 func (a *App) lanJoinLink() string {
-	a.mu.Lock()
-	httpAddr, wsAddr, name, scheme := a.embHTTPAddr, a.embWSAddr, a.embName, a.embHTTPScheme
-	a.mu.Unlock()
-	if httpAddr == "" || wsAddr == "" {
+	page, server, name, ok := a.lanLinkParts()
+	if !ok {
 		return ""
 	}
-	// An https page proxies the browser build's WebSocket on its own
-	// origin (webdist.Options), so the socket is the page's address and the
-	// guest's one accepted certificate covers both; a plain http page sends
-	// the browser to the server's own listener.
-	page, server := "http://"+httpAddr+"/", "ws://"+wsAddr
-	if scheme == "https" {
-		page, server = "https://"+httpAddr+"/", "wss://"+httpAddr
-	}
-	link, err := webdist.JoinLink(page, server, embeddedNameOrDefault(name))
+	link, err := webdist.JoinLink(page, server, name)
 	if err != nil {
 		return ""
 	}

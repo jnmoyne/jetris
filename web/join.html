@@ -50,7 +50,7 @@
 
     <!-- The join form, shown once the link's server checks out. -->
     <form class="card" id="form" hidden>
-      <p class="lead">Connect to</p>
+      <p class="lead" id="lead">Connect to</p>
       <p class="server" id="server-name"></p>
       <p class="url mono" id="server-url"></p>
       <label for="player">Your name</label>
@@ -86,6 +86,10 @@
       const params = new URLSearchParams(location.search);
       const server = (params.get("server") || "").trim();
       const label = (params.get("name") || "").trim();
+      // A replay's share link (the replay screen's Share, webdist.ReplayLink)
+      // names the game as well: the same one question, and the game page
+      // opens that replay the moment it lands in the lobby.
+      const replay = (params.get("replay") || "").trim();
       const form = document.getElementById("form");
       const input = document.getElementById("player");
       const errLine = document.getElementById("err");
@@ -136,6 +140,11 @@
       }
 
       document.getElementById("server-name").textContent = label || server;
+      if (replay) {
+        document.getElementById("lead").textContent = "Watch a replay on";
+        document.getElementById("join").textContent = "▶ WATCH";
+        document.title = "Jetris — watch a replay";
+      }
       const urlLine = document.getElementById("server-url");
       // With no name to head the card the URL is already the title; showing
       // it twice just makes the card look broken.
@@ -164,6 +173,7 @@
         const next = new URLSearchParams({ server: server });
         if (label) next.set("name", label);
         next.set("player", name);
+        if (replay) next.set("replay", replay);
         document.getElementById("join").disabled = true;
         document.getElementById("join").textContent = "STARTING…";
         location.replace("./?" + next.toString());

@@ -564,6 +564,11 @@ func (a *App) doLogin(name string, force bool) {
 	a.screen = screenLobby
 	a.mu.Unlock()
 	a.invalidate()
+	// A share link's landing (share.go): the replay it named opens as soon
+	// as the lobby holds the game's record.
+	if id := a.takeLinkedReplay(); id != "" {
+		go a.openLinkedReplay(id)
+	}
 }
 
 // initLobby mirrors ui.Server.initLobby: create the lobby, start it, wait for the

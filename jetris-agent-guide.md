@@ -265,7 +265,7 @@ discipline.
 
 | Resource | Kind | Purpose |
 |----------|------|---------|
-| `JETRIS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game) |
+| `JETRIS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game), pinned replays (`pins.<gameID>`: the key's existence keeps that game's replay out of every archiver's purge — read them before you purge, step 6) |
 | `JETRIS_CHAT` | stream | all chat on `jetris.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby` |
 | `JETRIS_ARCHIVE` | stream | finished-game records (`jetris.archive`) |
 | `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, full game history retained (no per-subject cap), atomic publish + direct get enabled |
@@ -520,12 +520,17 @@ each lock of yours:
    with/without agent seats) pair, ranked by headline score (coop total /
    best team / best player), then shorter duration, newer finish, game ID) or
    the 25 most recently finished games overall (newer finish first, game ID
-   on ties). Both are pure functions of the archive records (read them all
-   off `JETRIS_ARCHIVE`; yours included, as you just published it), so every
-   archiver cuts the identical set. FIRST `Purge` (filter
-   `jetris.replay.<gameID>.>`) the replay of every game you can see a record
-   for that is no longer in the keep set — one purge removes a game's copies
-   and marker alike. THEN republish each message of your game under
+   on ties) — or **pinned**: a `pins.<gameID>` key in the `JETRIS_LOBBY` KV
+   bucket (a player's Pin on the replay screen; its value names who pinned
+   it and when) keeps the game in the set whatever its rank or age, until
+   the key is deleted. The first two are pure functions of the archive
+   records (read them all off `JETRIS_ARCHIVE`; yours included, as you just
+   published it) and the pins are read straight off the bucket (list its
+   keys under `pins.`), so every archiver cuts the identical set. If the pin
+   keys cannot be read, purge NOTHING — the purge is the irreversible step.
+   FIRST `Purge` (filter `jetris.replay.<gameID>.>`) the replay of every
+   game you can see a record for that is no longer in the keep set — one
+   purge removes a game's copies and marker alike. THEN republish each message of your game under
    `jetris.replay.<gameID>.<original tail>` (the tail is the game-stream
    subject after `jetris.game.<gameID>.`): payload verbatim, the message's
    ORIGINAL stream timestamp in a **`Jetris-Ts`** header (integer nanoseconds

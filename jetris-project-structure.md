@@ -142,6 +142,9 @@ jetris/
 │   │   ├── game.go
 │   │   ├── gesture.go
 │   │   ├── lanqr.go                  ← LAN party: the join link (lanJoinLink) and the lobby's Show QR code modal
+│   │   ├── share.go                  ← the replay screen's Pin (a pins.<gameID> lobby KV entry: kept out of every archiver's
+│   │   │                                purge until unpinned) and Share (the replay's link — webdist.ReplayLink — as a QR code
+│   │   │                                with Copy link), and a share link's landing (Config.ReplayGameID → openLinkedReplay)
 │   │   ├── input.go
 │   │   ├── lab.go
 │   │   ├── lifecycle.go
@@ -2503,6 +2506,8 @@ Orphaned-stream detection relies solely on the JetStream `StreamNames` listing c
 | `JETRIS_GAME_<id>` stream exists, no matching KV entry | If meta status is `in_progress`/`starting`, re-create the KV listing (don't delete a live game); otherwise delete the orphaned stream (also delete if meta can't be read) |
 
 Note: During normal play the engine archives a finished game right at game end via `OnGameFinished` → `archive.ArchiveAndCleanup` (record at once; delete stream + remove KV after a 5 s grace; see Section 9). The cleanup pass handles only games left in a stale state by a crash or disconnect, and seals (rather than deletes) an orphaned finished stream.
+
+Replays are cleaned up by the archivers, not by this pass: `archive.maybeArchiveReplay` purges the replays of games that fell out of the keep set (`config.ReplayKeepSet`: the top N of each bucket, the most recent N, and the PINNED games — `pins.<gameID>` keys in the lobby KV, `config.LobbyPinKey`, set and cleared from the replay screen). A pinned replay is never purged; pin keys themselves are never expired or reconciled — a pin outlives its game's record only if someone pins a replay that is then purged by an archiver too old to know about pins.
 
 ### CAS Coordination
 

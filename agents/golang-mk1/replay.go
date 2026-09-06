@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -38,7 +39,8 @@ const (
 	replayStream        = "JETRIS_REPLAY"
 	replaySubjectPrefix = "jetris.replay."
 	replayTsHeader      = "Jetris-Ts"
-	replayCopyChunk     = 512 // async publishes in flight during a copy
+	replayPinPrefix     = "pins." // lobby KV keys of the pinned replays
+	replayCopyChunk     = 512     // async publishes in flight during a copy
 )
 
 func replayFilter(gameID string) string        { return replaySubjectPrefix + gameID + ".>" }
@@ -152,10 +154,12 @@ type replayBucket struct {
 }
 
 // replayKeepSet is the retention policy as a pure function of the archive
-// records (one per game ID): every bucket's top replayTopN by rankBefore,
-// plus the replayRecentN most recent finishes overall by recentBefore. top
-// reports which of the kept games rank (the rest are kept for recency).
-func replayKeepSet(recs []replayRecord) (keep, top map[string]bool) {
+// records (one per game ID) and the pinned games: every bucket's top
+// replayTopN by rankBefore, plus the replayRecentN most recent finishes
+// overall by recentBefore, plus every pinned game (a `pins.<gameID>` key in
+// the lobby KV — see listPinnedReplays). top reports which of the kept games
+// rank (the rest are kept for recency or by a pin).
+func replayKeepSet(recs []replayRecord, pinned map[string]bool) (keep, top map[string]bool) {
 	buckets := make(map[replayBucket][]replayRecord)
 	for _, r := range recs {
 		k := replayBucket{r.Mode, r.hasAgents()}
@@ -183,7 +187,31 @@ func replayKeepSet(recs []replayRecord) (keep, top map[string]bool) {
 		}
 		keep[r.GameID] = true
 	}
+	for id := range pinned {
+		keep[id] = true
+	}
 	return keep, top
+}
+
+// listPinnedReplays reads the pinned games straight off the lobby KV: every
+// `pins.<gameID>` key (guide §5 step 6). A pin keeps a game's replay for
+// good, whatever its rank or age, until the key is deleted.
+func (a *Agent) listPinnedReplays(ctx context.Context) (map[string]bool, error) {
+	pinned := make(map[string]bool)
+	lister, err := a.kv.ListKeysFiltered(ctx, replayPinPrefix+">")
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return pinned, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = lister.Stop() }()
+	for key := range lister.Keys() {
+		if id := strings.TrimPrefix(key, replayPinPrefix); id != key && id != "" {
+			pinned[id] = true
+		}
+	}
+	return pinned, nil
 }
 
 // maybeArchiveReplay applies the retention policy for the record this agent
@@ -213,7 +241,19 @@ func (a *Agent) maybeArchiveReplay(ctx context.Context, recJSON []byte) {
 	}
 	known[rec.GameID] = true
 	all = append(all, rec) // ours, whether or not the drain caught it yet
-	keep, top := replayKeepSet(all)
+	// A pin bucket that cannot be read keeps every listed replay rather
+	// than risk purging a pinned one — the purge is the irreversible step.
+	pinned, err := a.listPinnedReplays(ctx)
+	if err != nil {
+		log.Printf("replay %s: can't read the pinned replays, purging nothing: %v", rec.GameID, err)
+		if ids, err := a.listReplayGameIDs(ctx); err == nil {
+			pinned = make(map[string]bool, len(ids))
+			for _, id := range ids {
+				pinned[id] = true
+			}
+		}
+	}
+	keep, top := replayKeepSet(all, pinned)
 	if !keep[rec.GameID] {
 		return // impossible while replayRecentN > 0, but the policy rules
 	}
@@ -225,7 +265,7 @@ func (a *Agent) maybeArchiveReplay(ctx context.Context, recJSON []byte) {
 	} else {
 		for _, id := range ids {
 			if known[id] && !keep[id] {
-				log.Printf("replay %s: out of the keep set (top %d per bucket or last %d games), purging its replay", id, replayTopN, replayRecentN)
+				log.Printf("replay %s: out of the keep set (top %d per bucket, last %d games, or pinned), purging its replay", id, replayTopN, replayRecentN)
 				_ = a.purgeReplay(ctx, id)
 			}
 		}
@@ -237,7 +277,10 @@ func (a *Agent) maybeArchiveReplay(ctx context.Context, recJSON []byte) {
 		return
 	}
 	why := "recent"
-	if top[rec.GameID] {
+	switch {
+	case pinned[rec.GameID]:
+		why = "pinned"
+	case top[rec.GameID]:
 		why = "bucket top"
 	}
 	log.Printf("replay %s: archived (%s)", rec.GameID, why)

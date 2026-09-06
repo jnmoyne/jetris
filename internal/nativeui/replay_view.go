@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"image"
 	"sort"
 	"strings"
 	"time"
@@ -436,18 +437,29 @@ func (a *App) layoutReplay(gtx C) D {
 		return D{}
 	}
 	// The way out, by button or by ESC, is taken before the lock: closing the
-	// replay takes it too.
+	// replay takes it too. With the share modal up, ESC closes that instead.
 	if a.replayBackBtn.Clicked(gtx) || a.replayKeys(gtx, rv) {
-		a.closeReplay()
-		return D{}
+		if a.shareOpen {
+			a.shareOpen = false
+		} else {
+			a.closeReplay()
+			return D{}
+		}
 	}
+	// Pin, Share and the share modal's buttons (share.go), and whether the
+	// replay is pinned — the lobby's word, asked before the lock (it takes
+	// the lock too).
+	shareUp := a.handleReplayActions(gtx, rv)
+	pinned := a.replayPinned(rv.rec.GameID)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if rv.tl == nil {
 		return pointerArea(gtx, &a.replayTag, func(gtx C) D { return a.layoutReplayLoading(gtx, rv) })
 	}
-	a.replayTransportEvents(gtx, rv)
+	if !shareUp {
+		a.replayTransportEvents(gtx, rv) // the deck under the modal's scrim takes no press
+	}
 	rv.advance(gtx.Now)
 	rv.seek(rv.head)
 	if rv.playing {
@@ -511,42 +523,67 @@ func (a *App) layoutReplay(gtx C) D {
 	// The whole screen is the transport's key-input area: the tag has to be
 	// in the frame's op tree for its filters to live (pointerArea), and a
 	// click anywhere on the screen hands the keys back to it.
-	return pointerArea(gtx, &a.replayTag, func(gtx C) D {
-		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(a.brandBanner("")),
-				layout.Rigid(spacer(8)),
-				layout.Rigid(a.header("GAME REPLAY")),
-				layout.Rigid(spacer(4)),
-				layout.Rigid(a.spansLine(replaySummary(rv.rec, reveal))),
-				layout.Rigid(spacer(8)),
-				layout.Rigid(statusLine),
-				layout.Rigid(spacer(14)),
-				layout.Flexed(1, func(gtx C) D {
-					// The boards stay centered with or without the countdown
-					// Stack — the same reason the spectator's boards go through
-					// a Center of their own (gameBoardArea): the Flexed slot
-					// hands down tight constraints that would pin the strip to
-					// the top-left the moment the overlay goes away.
-					content := func(gtx C) D {
-						return layout.Center.Layout(gtx, func(gtx C) D {
-							return a.boardsStrip(gtx, &a.replayBoardsList, boards)
-						})
-					}
-					if !counting {
-						return content(gtx)
-					}
-					return layout.Stack{Alignment: layout.Center}.Layout(gtx,
-						layout.Expanded(content),
-						layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, count, rv.shownAt) }),
-					)
-				}),
-				layout.Rigid(spacer(10)),
-				layout.Rigid(func(gtx C) D { return a.replayTransport(gtx, rv) }),
-				layout.Rigid(spacer(8)),
-				layout.Rigid(a.replayKeyHint),
-			)
+	screen := func(gtx C) D {
+		return pointerArea(gtx, &a.replayTag, func(gtx C) D {
+			return a.layoutReplayScreen(gtx, rv, boards, count, counting, statusLine, reveal, pinned)
 		})
+	}
+	if !shareUp {
+		return screen(gtx)
+	}
+	// The share modal over the deck, the way the lobby's modals sit over
+	// the lobby: a scrim dims the screen and the modal is centered on it.
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(screen),
+		layout.Expanded(func(gtx C) D {
+			fillRect(gtx.Ops, image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y), withAlpha(colBg, 0xc0))
+			return D{Size: gtx.Constraints.Max}
+		}),
+		layout.Stacked(func(gtx C) D {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return a.shareOverlay(gtx)
+		}),
+	)
+}
+
+// layoutReplayScreen is the loaded replay screen's column: the banner, the
+// summary and the status line, the boards (under the countdown while it
+// counts), and the deck. Caller holds App.mu.
+func (a *App) layoutReplayScreen(gtx C, rv *replayView, boards []labeledBoard, count int, counting bool, statusLine layout.Widget, reveal, pinned bool) D {
+	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(a.brandBanner("")),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(a.header("GAME REPLAY")),
+			layout.Rigid(spacer(4)),
+			layout.Rigid(a.spansLine(replaySummary(rv.rec, reveal))),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(statusLine),
+			layout.Rigid(spacer(14)),
+			layout.Flexed(1, func(gtx C) D {
+				// The boards stay centered with or without the countdown
+				// Stack — the same reason the spectator's boards go through
+				// a Center of their own (gameBoardArea): the Flexed slot
+				// hands down tight constraints that would pin the strip to
+				// the top-left the moment the overlay goes away.
+				content := func(gtx C) D {
+					return layout.Center.Layout(gtx, func(gtx C) D {
+						return a.boardsStrip(gtx, &a.replayBoardsList, boards)
+					})
+				}
+				if !counting {
+					return content(gtx)
+				}
+				return layout.Stack{Alignment: layout.Center}.Layout(gtx,
+					layout.Expanded(content),
+					layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, count, rv.shownAt) }),
+				)
+			}),
+			layout.Rigid(spacer(10)),
+			layout.Rigid(func(gtx C) D { return a.replayTransport(gtx, rv, pinned) }),
+			layout.Rigid(spacer(8)),
+			layout.Rigid(a.replayKeyHint),
+		)
 	})
 }
 

@@ -228,7 +228,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// displaces. The lobby learns of the copy from its completion marker, so
 	// the record above needn't wait for it. Must run before the stream
 	// deletion below.
-	maybeArchiveReplay(ctx, js, record)
+	maybeArchiveReplay(ctx, js, kv, record)
 
 	// Destructive cleanup waits out the grace period (less the time already
 	// spent above) so every peer has received the final events.

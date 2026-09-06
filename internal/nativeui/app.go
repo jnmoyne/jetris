@@ -343,6 +343,26 @@ type App struct {
 	qrLink    string
 	qrCode    *qr.Code
 
+	// The replay screen's PIN and SHARE (share.go): the pin toggles the
+	// lobby KV entry that keeps the replay for good; Share puts the replay's
+	// link up as a QR code with a Copy link button, up while shareOpen —
+	// shareLink/shareWhy/shareCode are what openShare built for it, and
+	// shareCopiedAt when the link was last copied (the button reads COPIED
+	// for shareCopiedFor after). UI goroutine only. linkedReplay is the
+	// game a share link (or --replay) asked to open on landing in the lobby,
+	// taken once (takeLinkedReplay); guarded by mu.
+	replayPinBtn   widget.Clickable
+	replayShareBtn widget.Clickable
+	shareOKBtn     widget.Clickable
+	shareCopyBtn   widget.Clickable
+	shareOpen      bool
+	shareLink      string
+	shareWhy       string
+	shareCode      *qr.Code
+	shareCopiedAt  time.Time
+	shareCopyOK    bool // whether the last copy reached the clipboard (copyText)
+	linkedReplay   string
+
 	// connPicked: the player clicked a browser row since the page-opening
 	// refresh started, so its result must not move the selection. favOrder
 	// is the favorites' display order — indices into favorites, fastest ping
@@ -806,6 +826,7 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 		a.loginEd.SetText(cfg.PlayerName)
 		a.autoLogin = true
 	}
+	a.linkedReplay = cfg.ReplayGameID
 	a.connContexts = append([]string(nil), contexts...)
 	a.connSelected = selected
 	a.favorites = append([]prefs.Favorite(nil), favorites...)

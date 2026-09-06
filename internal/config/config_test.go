@@ -285,7 +285,7 @@ func TestReplayKeepSet(t *testing.T) {
 	}
 	top := ReplayTopRanked(recs)
 	recent := ReplayRecent(recs)
-	keep := ReplayKeepSet(recs)
+	keep := ReplayKeepSet(recs, nil)
 	if len(top) != ReplayTopN || len(recent) != ReplayRecentN {
 		t.Fatalf("top %d recent %d, want %d/%d", len(top), len(recent), ReplayTopN, ReplayRecentN)
 	}
@@ -314,7 +314,7 @@ func TestReplayKeepSet(t *testing.T) {
 	// recent-only game out of the keep set while the top N are untouched.
 	oldestRecent := "coop-" + strconv.Itoa(total-ReplayRecentN+1)
 	recs = append(recs, mk("coop-low", ModeCooperative, 1, total+1, false))
-	keep = ReplayKeepSet(recs)
+	keep = ReplayKeepSet(recs, nil)
 	if !keep["coop-low"] || ReplayTopRanked(recs)["coop-low"] {
 		t.Error("a fresh low score must be kept for recency only")
 	}
@@ -323,6 +323,20 @@ func TestReplayKeepSet(t *testing.T) {
 	}
 	if !keep["coop-"+strconv.Itoa(total)] {
 		t.Error("the bucket's #1 must stay kept")
+	}
+
+	// A pin keeps a game out of both sets in the keep set all the same —
+	// and only while it is set: a pin map entry of false is no pin.
+	pinned := map[string]bool{oldestRecent: true, "coop-1": true, "coop-2": false}
+	keep = ReplayKeepSet(recs, pinned)
+	if !keep[oldestRecent] || !keep["coop-1"] {
+		t.Error("pinned games must be kept whatever their rank or age")
+	}
+	if keep["coop-2"] {
+		t.Error("a false pin entry must not keep a game")
+	}
+	if ReplayTopRanked(recs)[oldestRecent] || ReplayRecent(recs)[oldestRecent] {
+		t.Error("a pin must not change the ranking or the recent set")
 	}
 
 	// Buckets are per (mode, agents): a low score in a fresh bucket is its

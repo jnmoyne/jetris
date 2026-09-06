@@ -300,8 +300,8 @@ func TestHistoryTableFoldsOnANarrowPanel(t *testing.T) {
 	if !histStacked(narrow) {
 		t.Error("a 340 dp panel ran the table on one line")
 	}
-	oneLine := a.archiveHistoryCells(wide, rec, &view, &replay, false)
-	folded := a.archiveHistoryCells(narrow, rec, &view, &replay, false)
+	oneLine := a.archiveHistoryCells(wide, rec, &view, &replay, false, false)
+	folded := a.archiveHistoryCells(narrow, rec, &view, &replay, false, false)
 	if folded.Size.X > 340 {
 		t.Errorf("the folded row is %d dp wide in a 340 dp panel", folded.Size.X)
 	}

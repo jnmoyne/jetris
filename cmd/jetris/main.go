@@ -118,6 +118,7 @@ func parseFlags() (cfg config.Config, noUpdateCheck bool) {
 	flag.StringVar(&cfg.NATSUser, "user", "", "NATS username (used with --server)")
 	flag.StringVar(&cfg.NATSPassword, "password", "", "NATS password (used with --server)")
 	flag.StringVar(&cfg.PlayerName, "name", "", "player name: given here, the login screen skips itself and joins the selected server's lobby straight away")
+	flag.StringVar(&cfg.ReplayGameID, "replay", "", "game ID whose replay to open on landing in the lobby (what a replay's share link carries)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.BoolVar(&noUpdateCheck, "no-update-check", false, "skip the startup check for a newer release on GitHub")
 	flag.Parse()

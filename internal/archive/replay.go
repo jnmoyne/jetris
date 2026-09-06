@@ -15,12 +15,14 @@ import (
 // maybeArchiveReplay applies the replay retention policy for a game whose
 // archive record rec has JUST been published: the keep set is the union of
 // every bucket's top config.ReplayTopN (mode × with/without agents, ranked by
-// RankBefore) and the config.ReplayRecentN most recent finishes overall
-// (config.ReplayKeepSet) — so a finishing game, always among the most recent,
-// always gets a replay, and only keeps it past the next ReplayRecentN games by
-// ranking. Records are read straight off the archive stream so the decision
-// does not depend on any client's lobby state; a record that hasn't landed
-// yet (another archiver mid-publish) is simply left alone.
+// RankBefore), the config.ReplayRecentN most recent finishes overall, and
+// the PINNED games (config.ReplayKeepSet) — so a finishing game, always among
+// the most recent, always gets a replay, and only keeps it past the next
+// ReplayRecentN games by ranking or by a pin. Records are read straight off
+// the archive stream, and the pins straight off the lobby KV (kv; nil reads
+// as no pins), so the decision does not depend on any client's lobby state;
+// a record that hasn't landed yet (another archiver mid-publish) is simply
+// left alone.
 //
 // Order matters for the lobby, which tracks replays by their copy-complete
 // markers: the replays this game displaces are purged FIRST, then the game's
@@ -29,11 +31,26 @@ import (
 // Runs on the archiver only (the caller already won the archive CAS race)
 // and MUST run before the game stream is deleted. Best-effort: a failed copy
 // is purged again (CopyGameToReplayStream) and the game simply has no replay.
-func maybeArchiveReplay(ctx context.Context, js jetstream.JetStream, rec config.ArchiveRecord) {
+func maybeArchiveReplay(ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue, rec config.ArchiveRecord) {
 	prior, err := fetchArchiveRecords(ctx, js)
 	if err != nil {
 		log.Printf("replay %s: skipping, can't read archive records: %v", rec.GameID, err)
 		return
+	}
+	// The pins: a game someone pinned stays whatever its rank or age. A
+	// bucket that cannot be read keeps every listed replay rather than
+	// risk purging a pinned one — the purge is the irreversible step.
+	var pinned map[string]bool
+	if kv != nil {
+		if pinned, err = natspkg.ListPinnedReplays(ctx, kv); err != nil {
+			log.Printf("replay %s: can't read the pinned replays, purging nothing: %v", rec.GameID, err)
+			if ids, err := natspkg.ListReplayGameIDs(ctx, js); err == nil {
+				pinned = make(map[string]bool, len(ids))
+				for _, id := range ids {
+					pinned[id] = true
+				}
+			}
+		}
 	}
 	all := make([]config.ArchiveRecord, 0, len(prior)+1)
 	known := make(map[string]bool, len(prior)+1)
@@ -46,7 +63,7 @@ func maybeArchiveReplay(ctx context.Context, js jetstream.JetStream, rec config.
 	all = append(all, rec) // ours, as we know it — whether or not the stream drain caught it
 	known[rec.GameID] = true
 
-	keep := config.ReplayKeepSet(all)
+	keep := config.ReplayKeepSet(all, pinned)
 	if !keep[rec.GameID] {
 		// Can't happen while ReplayRecentN > 0 (a finishing game is the most
 		// recent of all), but the policy is the keep set, not this comment.
@@ -62,7 +79,7 @@ func maybeArchiveReplay(ctx context.Context, js jetstream.JetStream, rec config.
 	} else {
 		for _, id := range ids {
 			if known[id] && !keep[id] {
-				log.Printf("replay %s: no longer in the keep set (top %d per bucket or last %d games), purging its replay", id, config.ReplayTopN, config.ReplayRecentN)
+				log.Printf("replay %s: no longer in the keep set (top %d per bucket, last %d games, or pinned), purging its replay", id, config.ReplayTopN, config.ReplayRecentN)
 				_ = natspkg.PurgeReplay(ctx, js, id)
 			}
 		}
@@ -73,7 +90,10 @@ func maybeArchiveReplay(ctx context.Context, js jetstream.JetStream, rec config.
 		return
 	}
 	why := "recent"
-	if config.ReplayTopRanked(all)[rec.GameID] {
+	switch {
+	case pinned[rec.GameID]:
+		why = "pinned"
+	case config.ReplayTopRanked(all)[rec.GameID]:
 		why = "bucket top"
 	}
 	log.Printf("replay %s: archived (%s, %s)", rec.GameID, rec.Mode, why)

@@ -918,7 +918,10 @@ func (a *App) lobbyHistoryTab(gtx C, archives []config.ArchiveRecord) D {
 						// the filter shows — and only once the bucket has
 						// more than ten games).
 						top := a.isTopRanked(lb, archives[i].GameID)
-						return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top)
+						// A pinned replay (share.go) is tagged too: kept for
+						// good, whatever its rank or age.
+						pinned := a.isPinned(lb, archives[i].GameID)
+						return a.archiveHistoryRow(gtx, archives[i], btn, replayBtn, top, pinned)
 					})
 				}),
 			)
@@ -1323,12 +1326,13 @@ func (a *App) archiveHistoryHeader(gtx C) D {
 // all-time top 10 (config.ReplayTopRankedCut): a gold bar down the row's
 // left edge and a TOP 10 tag under its score — a marker, deliberately not a
 // row tint, which would read as a selection — so the showcase games stand
-// out from the merely recent ones in either sort order.
-func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
+// out from the merely recent ones in either sort order. pinned marks a game
+// whose replay is pinned (share.go): a PINNED tag in the same place.
+func (a *App) archiveHistoryRow(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top, pinned bool) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			content := func(gtx C) D {
-				return a.archiveHistoryCells(gtx, rec, btn, replayBtn, top)
+				return a.archiveHistoryCells(gtx, rec, btn, replayBtn, top, pinned)
 			}
 			if !top {
 				return content(gtx)
@@ -1375,13 +1379,13 @@ func (a *App) archiveHistoryActions(mark string, btn, replayBtn *widget.Clickabl
 // column of its own — and under them the roster with the row's actions beside
 // it. Nothing is dropped and nothing is abbreviated; the row is simply two
 // lines tall, which is what a phone has to spend.
-func (a *App) archiveHistoryStackedCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
+func (a *App) archiveHistoryStackedCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top, pinned bool) D {
 	return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
-						return fixedCol(gtx, histScoreNarrowW, layout.E, a.archiveScoreCell(rec, top))
+						return fixedCol(gtx, histScoreNarrowW, layout.E, a.archiveScoreCell(rec, top, pinned))
 					}),
 					layout.Rigid(hSpacer(10)),
 					layout.Rigid(func(gtx C) D {
@@ -1406,13 +1410,13 @@ func (a *App) archiveHistoryStackedCells(gtx C, rec config.ArchiveRecord, btn, r
 // archiveHistoryCells is the history row's inset column flex (see
 // archiveHistoryRow), folded onto two lines where the panel is too narrow to
 // run it as one.
-func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top bool) D {
+func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBtn *widget.Clickable, top, pinned bool) D {
 	if histStacked(gtx) {
-		return a.archiveHistoryStackedCells(gtx, rec, btn, replayBtn, top)
+		return a.archiveHistoryStackedCells(gtx, rec, btn, replayBtn, top, pinned)
 	}
 	return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 		children := []layout.FlexChild{
-			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec, top)) }),
+			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histScoreW, layout.E, a.archiveScoreCell(rec, top, pinned)) }),
 			layout.Rigid(hSpacer(10)),
 			layout.Rigid(func(gtx C) D { return fixedCol(gtx, histTimeW, layout.W, a.archiveTimeCell(rec)) }),
 			layout.Rigid(hSpacer(10)),
@@ -1428,8 +1432,9 @@ func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBt
 
 // archiveScoreCell is the headline SCORE (gold pixel numerals) over a small
 // achieved-level line — the game's most important figure, so the largest —
-// and, for a game in its bucket's top 10, a gold TOP 10 tag beneath.
-func (a *App) archiveScoreCell(r config.ArchiveRecord, top bool) layout.Widget {
+// and, for a game in its bucket's top 10, a gold TOP 10 tag beneath; a game
+// whose replay is pinned gets a green PINNED tag there too.
+func (a *App) archiveScoreCell(r config.ArchiveRecord, top, pinned bool) layout.Widget {
 	return func(gtx C) D {
 		children := []layout.FlexChild{
 			layout.Rigid(a.pixel(unit.Sp(13), strconv.Itoa(r.HeadlineScore()), colGold).Layout),
@@ -1438,6 +1443,11 @@ func (a *App) archiveScoreCell(r config.ArchiveRecord, top bool) layout.Widget {
 		if top {
 			children = append(children, layout.Rigid(func(gtx C) D {
 				return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, a.pixel(unit.Sp(7), "TOP 10", colGold).Layout)
+			}))
+		}
+		if pinned {
+			children = append(children, layout.Rigid(func(gtx C) D {
+				return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, a.pixel(unit.Sp(7), "PINNED", colNATSGreen).Layout)
 			}))
 		}
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx, children...)

@@ -403,7 +403,7 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_history_row_replay", func(gtx C) {
 			layout.Center.Layout(gtx, func(gtx C) D {
 				gtx.Constraints.Max.X = 900
-				return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn, false)
+				return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn, false, false)
 			})
 			scanlines(gtx)
 		})
@@ -422,8 +422,8 @@ func TestScreenSnapshots(t *testing.T) {
 			layout.Center.Layout(gtx, func(gtx C) D {
 				gtx.Constraints.Max.X = 900
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(func(gtx C) D { return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn, true) }),
-					layout.Rigid(func(gtx C) D { return a.archiveHistoryRow(gtx, rec, &viewBtn2, &replayBtn2, false) }),
+					layout.Rigid(func(gtx C) D { return a.archiveHistoryRow(gtx, rec, &viewBtn, &replayBtn, true, true) }),
+					layout.Rigid(func(gtx C) D { return a.archiveHistoryRow(gtx, rec, &viewBtn2, &replayBtn2, false, false) }),
 				)
 			})
 			scanlines(gtx)
@@ -448,6 +448,25 @@ func TestScreenSnapshots(t *testing.T) {
 		rv.playing, rv.speed = true, 8
 		rv.head = rv.tl.dur - 20*time.Second
 		snapshotPNG(t, w, dir, "screen_replay_fast", func(gtx C) { a.layout(gtx) })
+	})
+
+	// The replay's Share: the link as a QR code over the dimmed deck, with
+	// Copy link; and the same modal for a server a browser cannot reach,
+	// which says why instead. (A pinned replay's history row — the PINNED
+	// tag — is the history_row_top10 snapshot's first row.)
+	t.Run("replay_share", func(t *testing.T) {
+		a := newTestApp()
+		rv := loadedReplay(sampleReplayRecord())
+		a.replayView = rv
+		a.screen = screenReplay
+		a.connName, a.connURL = "Jetris EU central", "nats://eu-central.jetris.net:4222"
+		a.favorites = prefs.DefaultFavorites()
+		a.openShare(rv)
+		snapshotPNG(t, w, dir, "screen_replay_share", func(gtx C) { a.layout(gtx) })
+		a.connName, a.connURL = "nats://10.0.0.5:4222", ""
+		a.favorites = nil
+		a.openShare(rv)
+		snapshotPNG(t, w, dir, "screen_replay_share_nolink", func(gtx C) { a.layout(gtx) })
 	})
 
 	// The replay still loading: the copy's own message count as a progress

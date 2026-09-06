@@ -84,7 +84,7 @@ func archiveTestGame(t *testing.T, js jetstream.JetStream, rec config.ArchiveRec
 	t.Helper()
 	ctx := context.Background()
 	publishGameStream(t, js, rec.GameID, 0)
-	maybeArchiveReplay(ctx, js, rec)
+	maybeArchiveReplay(ctx, js, nil, rec)
 	data, _ := json.Marshal(rec)
 	if _, err := js.Publish(ctx, config.ArchiveSubject, data); err != nil {
 		t.Fatal(err)
@@ -220,7 +220,7 @@ func TestReplayCopyPreservesContentAndTiming(t *testing.T) {
 	originMsgs := origin.CachedInfo().State.Msgs
 
 	rec := testRecord(gameID, config.ModeCooperative, 42, false)
-	maybeArchiveReplay(ctx, js, rec)
+	maybeArchiveReplay(ctx, js, nil, rec)
 	if err := natspkg.DeleteGameStream(ctx, js, gameID); err != nil {
 		t.Fatal(err)
 	}
@@ -279,5 +279,73 @@ func TestReplayCopyPreservesContentAndTiming(t *testing.T) {
 	}
 	if ids, err := natspkg.ListReplayGameIDs(ctx, js); err != nil || len(ids) != 0 {
 		t.Fatalf("after purge, listing = %v (err %v), want empty", ids, err)
+	}
+}
+
+// A pinned replay is never displaced: the pin (a lobby KV entry) puts the
+// game in every archiver's keep set whatever its rank or age, and the next
+// archive after the pin is removed purges it like any other game outside
+// the set.
+func TestPinnedReplaySurvivesDisplacement(t *testing.T) {
+	js := setupJS(t)
+	ctx := context.Background()
+	kv, err := natspkg.EnsureLobbyKV(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const topN, recentN = config.ReplayTopN, config.ReplayRecentN
+	coop := func(i int) string { return fmt.Sprintf("coop-%02d", i) }
+
+	// The one game this test is about: the lowest score of all, pinned
+	// right after it is archived (a player pinning a game they just played).
+	archive := func(rec config.ArchiveRecord) {
+		t.Helper()
+		publishGameStream(t, js, rec.GameID, 0)
+		maybeArchiveReplay(ctx, js, kv, rec)
+		data, _ := json.Marshal(rec)
+		if _, err := js.Publish(ctx, config.ArchiveSubject, data); err != nil {
+			t.Fatal(err)
+		}
+		if err := natspkg.DeleteGameStream(ctx, js, rec.GameID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive(testRecord("pinned", config.ModeCooperative, 1, false))
+	archive(testRecord("unpinned", config.ModeCooperative, 1, false))
+	if err := natspkg.PinReplay(ctx, kv, "pinned", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if pins, err := natspkg.ListPinnedReplays(ctx, kv); err != nil || !pins["pinned"] || len(pins) != 1 {
+		t.Fatalf("pinned set = %v (err %v), want just the pinned game", pins, err)
+	}
+
+	// Enough better, newer games to age both out of the recent set and
+	// out of the top N: the unpinned one goes, the pinned one stays.
+	for i := 1; i <= topN+recentN; i++ {
+		archive(testRecord(coop(i), config.ModeCooperative, i*100, false))
+	}
+	if !hasReplay(t, js, "pinned") {
+		t.Fatal("a pinned replay must survive displacement")
+	}
+	if hasReplay(t, js, "unpinned") {
+		t.Fatal("the unpinned game, out of both sets, must lose its replay")
+	}
+
+	// Unpinned, the game is out of the keep set: the next archive purges it.
+	if err := natspkg.UnpinReplay(ctx, kv, "pinned"); err != nil {
+		t.Fatal(err)
+	}
+	if err := natspkg.UnpinReplay(ctx, kv, "pinned"); err != nil {
+		t.Fatalf("unpinning twice must be a no-op, got %v", err)
+	}
+	if pins, err := natspkg.ListPinnedReplays(ctx, kv); err != nil || len(pins) != 0 {
+		t.Fatalf("pinned set after unpin = %v (err %v), want empty", pins, err)
+	}
+	archive(testRecord("one-more", config.ModeCooperative, 5, false))
+	if hasReplay(t, js, "pinned") {
+		t.Fatal("once unpinned, an aged-out replay must be purged by the next archive")
+	}
+	if !hasReplay(t, js, coop(topN+recentN)) {
+		t.Fatal("the bucket's #1 must have its replay")
 	}
 }

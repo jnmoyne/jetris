@@ -2,6 +2,9 @@ package nats
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -41,4 +44,48 @@ func lobbyKVSubject(key string) string {
 func PutLobbyPresence(ctx context.Context, js jetstream.JetStream, key string, data []byte) error {
 	_, err := js.Publish(ctx, lobbyKVSubject(key), data, jetstream.WithMsgTTL(config.PresenceTTL))
 	return err
+}
+
+// Pinned replays. A pin is a lobby KV entry (config.LobbyPinKey) whose
+// existence keeps the game's replay out of every archiver's displacement
+// purge (config.ReplayKeepSet); its value (config.ReplayPin) records who
+// pinned it and when. Unpinning deletes the key. Every lobby's KV watcher
+// sees both, so the history's pin marks follow live.
+
+// PinReplay pins one game's replay on behalf of playerName.
+func PinReplay(ctx context.Context, kv jetstream.KeyValue, gameID, playerName string) error {
+	data, _ := json.Marshal(config.ReplayPin{GameID: gameID, PinnedBy: playerName, PinnedAt: time.Now()})
+	_, err := kv.Put(ctx, config.LobbyPinKey(gameID), data)
+	return err
+}
+
+// UnpinReplay removes one game's pin (a no-op for a game that isn't pinned).
+func UnpinReplay(ctx context.Context, kv jetstream.KeyValue, gameID string) error {
+	err := kv.Delete(ctx, config.LobbyPinKey(gameID))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return nil
+	}
+	return err
+}
+
+// ListPinnedReplays returns the game IDs with a pin in the lobby KV — what
+// an archiver adds to the keep set before it purges displaced replays. Read
+// straight off the bucket, so the decision never depends on any client's
+// lobby state.
+func ListPinnedReplays(ctx context.Context, kv jetstream.KeyValue) (map[string]bool, error) {
+	pinned := make(map[string]bool)
+	lister, err := kv.ListKeysFiltered(ctx, config.LobbyPinPrefix+">")
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return pinned, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = lister.Stop() }()
+	for key := range lister.Keys() {
+		if id := config.GameIDFromPinKey(key); id != "" {
+			pinned[id] = true
+		}
+	}
+	return pinned, nil
 }

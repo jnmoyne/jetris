@@ -42,7 +42,7 @@ import (
 	"jetris/internal/webdist"
 )
 
-const defaultPage = "https://jnmoyne.github.io/jetris/"
+const defaultPage = webdist.DefaultPage
 
 func main() {
 	log.SetFlags(0)

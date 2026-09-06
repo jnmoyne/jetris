@@ -3866,8 +3866,8 @@ live-board rule.
 ## Phase 19 — Guideline Garbage (`guideline_garbage`)
 
 **Goal:** a create-time rule (off by default) for the garbage-raising modes that
-sizes an attack by the Tetris Guideline table instead of one row per cleared
-line: a **single sends nothing**, a double 1 row, a triple 2, a Tetris 4.
+sizes an attack by the Guideline table instead of one row per cleared
+line: a **single sends nothing**, a double 1 row, a triple 2, a Jetris 4.
 Scoring and levels keep counting lines; only the rows owed change.
 
 **Data:** `GameMeta.GuidelineGarbage` (`guideline_garbage`, omitempty — absent

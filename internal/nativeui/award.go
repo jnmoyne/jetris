@@ -37,7 +37,7 @@ func (b awardBanner) visible(now time.Time) bool {
 }
 
 // lines is the banner, top to bottom: a teammate's name (their clear, not
-// ours), the clear's name — "T-SPIN DOUBLE", "TETRIS", "MINI T-SPIN"… — the
+// ours), the clear's name — "T-SPIN DOUBLE", "JETRIS", "MINI T-SPIN"… — the
 // qualifiers that apply ("B2B", "COMBO n", "PERFECT CLEAR"), and the points.
 // Each on its own line, so a narrow board gets a tall banner rather than a
 // wide one.

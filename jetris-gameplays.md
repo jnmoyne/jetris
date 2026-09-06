@@ -34,7 +34,7 @@ Each player has a color associated with it: used for the outline color of the pi
 
 **Every play rule below is chosen on one step of the create-game wizard (step 2,
 GAME RULES) by a single radio.** **Guideline** — the default — plays every rule at
-the setting closest to the Tetris Guideline this game can offer
+the setting closest to the Guideline this game can offer
 (`config.GuidelineRules`): `next_count` 6, the ghost piece, the `hold` queue, the
 standard 7-bag, the hidden rows out of sight and, for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
 sharing their hole column and `guideline_garbage`; the lobby row tags such a game
@@ -124,18 +124,18 @@ as unset.
 **Guideline garbage** is a third attribute on the same step (a checkbox, on by
 default as in the preset): `guideline_garbage` (`GameMeta.GuidelineGarbage`). It sets **how much
 garbage a clear sends**. Unset, every cleared line owes one garbage row (the
-original Jetris rule), whatever the clear was. Set, the attack follows the Tetris
+original Jetris rule), whatever the clear was. Set, the attack follows the
 Guideline table (`game.Clear.AttackRows`; tetris.wiki/Garbage, "General Garbage
 System in Guideline Games"):
 
-| Clear | Rows sent | Back-to-Back bonus |
-|---|---|---|
-| Single / Double / Triple / Tetris | 0 / 1 / 2 / 4 | Tetris +2 |
-| Mini T-Spin Single / Double | 0 / 1 | +1 / +1 |
-| T-Spin Single / Double / Triple | 2 / 4 / 6 | +1 / +2 / +3 |
-| Perfect clear | +10 on top of the clear's rows | |
+| Clear                             | Rows sent | Back-to-Back bonus |
+|-----------------------------------|---|--------------------|
+| Single / Double / Triple / Jetris | 0 / 1 / 2 / 4 | Jetris +2          |
+| Mini T-Spin Single / Double       | 0 / 1 | +1 / +1            |
+| T-Spin Single / Double / Triple   | 2 / 4 / 6 | +1 / +2 / +3       |
+| Perfect clear                     | +10 on top of the clear's rows |                    |
 
-So a plain single attacks nothing, a Tetris is worth twice a triple, and the
+So a plain single attacks nothing, a Jetris is worth twice a triple, and the
 spins and chains the scoring rewards (§2 Scoring) attack hardest. Combos send
 nothing extra (the wiki lists no table for them). Scoring and levels are the
 same under both settings; only the rows owed change. Independent of the hole
@@ -328,22 +328,22 @@ Because the board is shared, a clear must be reflected on **every** player's scr
 
 ### Scoring
 
-Every mode scores by the Tetris Guideline (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — Jetris levels are 0-based (`totalLines / 10`, the gravity curve's index), so the Guideline's multiplier is `level + 1` — plus the piece's drop points, which are never multiplied:
+Every mode scores by the Guideline (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — Jetris levels are 0-based (`totalLines / 10`, the gravity curve's index), so the Guideline's multiplier is `level + 1` — plus the piece's drop points, which are never multiplied:
 
-| Action | Points × (level + 1) | Difficult |
-|---|---|---|
-| Single / Double / Triple / Tetris | 100 / 300 / 500 / 800 | Tetris only |
-| Mini T-Spin, no lines / T-Spin, no lines | 100 / 400 | no |
-| Mini T-Spin Single / Double | 200 / 400 | yes |
-| T-Spin Single / Double / Triple | 800 / 1200 / 1600 | yes |
-| Back-to-Back difficult clear | the action's points × 1.5 | |
-| Combo | + 50 × combo count (0 for the first clear of a run, 1 for the next…) | |
-| Perfect clear (no locked cell left on the board, garbage included) | + 800 / 1200 / 1800 / 2000 for 1 / 2 / 3 / 4 lines, 3200 for a Back-to-Back Tetris | |
-| Soft drop / hard drop | 1 / 2 per cell, not multiplied | |
+| Action                                                             | Points × (level + 1)                                                               | Difficult   |
+|--------------------------------------------------------------------|------------------------------------------------------------------------------------|-------------|
+| Single / Double / Triple / Jetris                                  | 100 / 300 / 500 / 800                                                              | Jetris only |
+| Mini T-Spin, no lines / T-Spin, no lines                           | 100 / 400                                                                          | no          |
+| Mini T-Spin Single / Double                                        | 200 / 400                                                                          | yes         |
+| T-Spin Single / Double / Triple                                    | 800 / 1200 / 1600                                                                  | yes         |
+| Back-to-Back difficult clear                                       | the action's points × 1.5                                                          |             |
+| Combo                                                              | + 50 × combo count (0 for the first clear of a run, 1 for the next…)               |             |
+| Perfect clear (no locked cell left on the board, garbage included) | + 800 / 1200 / 1800 / 2000 for 1 / 2 / 3 / 4 lines, 3200 for a Back-to-Back Jetris |             |
+| Soft drop / hard drop                                              | 1 / 2 per cell, not multiplied                                                     |             |
 
-A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when the rotation used the last SRS kick (the T-spin-triple kick); otherwise a Mini (`game.DetectTSpin`). A hard drop of zero cells is not a move, so a T rotated into its slot and hard-dropped in place is still a T-spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Tetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
+A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when the rotation used the last SRS kick (the T-spin-triple kick); otherwise a Mini (`game.DetectTSpin`). A hard drop of zero cells is not a move, so a T rotated into its slot and hard-dropped in place is still a T-spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Jetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
 
-Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Tetris is 800 × (level + 1) whether one or six play.
+Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Jetris is 800 × (level + 1) whether one or six play.
 
 ### Shared Score
 
@@ -435,7 +435,7 @@ Competitive scores by the same Guideline table (§2 Scoring): each player keeps 
 
 ### Shrink Attack
 
-When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the Guideline table: 0, 1, 2 or 4 rows for a single, double, triple or Tetris, 2/4/6 for a T-Spin single/double/triple, a Back-to-Back bonus and 10 more for a perfect clear (`game.Clear.AttackRows`; a plain single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
+When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the Guideline table: 0, 1, 2 or 4 rows for a single, double, triple or Jetris, 2/4/6 for a T-Spin single/double/triple, a Back-to-Back bonus and 10 more for a perfect clear (`game.Clear.AttackRows`; a plain single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
 
 - **Applying:** the victim applies its deficit (rows owed − rows applied) as one **txn-gated atomic batch** (§9): the locked stack shifts up, adversarial rows fill the bottom — solid in a 0-hole game, otherwise punched with the game's `garbage_holes` empty cells at one random set of columns shared by every row of the raise, or one draw per row in a `random_garbage_holes` game (§1b) — and the applied total recorded in the board's txn register advances — exactly once, regardless of duplicate signals or replays.
 - **Clearing garbage:** a solid garbage row is permanent. A garbage row raised with holes is an ordinary line once its holes are filled: it is detected by the same completed-row scan at the filler's lock-in, collapses with the same clear transform, scores, and owes garbage to the opponents like any other cleared line.

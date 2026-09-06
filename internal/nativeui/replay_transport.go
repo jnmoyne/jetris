@@ -300,7 +300,7 @@ func (a *App) replayTransport(gtx C, rv *replayView, pinned bool) D {
 // The upper band is the game's shape: one marker per line clear, standing on
 // the timeline at the moment it happened, in the color of the board (and so
 // the player) that cleared — the taller the marker, the more lines went at
-// once, so a Tetris reads across the room. The lower band is the slider: a
+// once, so a Jetris reads across the room. The lower band is the slider: a
 // groove with the pre-game countdown dimmed at its head, the played part
 // filled, and a chunky square thumb on the playhead.
 func (a *App) replayScrubber(gtx C, rv *replayView) D {

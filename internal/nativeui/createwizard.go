@@ -545,7 +545,7 @@ func (a *App) wizardBoardWidth(gtx C, mode config.GameMode) D {
 
 // wizardNextStep is step 2: the game's play rules, fixed at creation, one
 // setting for every seat. A single radio picks the Guideline preset — every
-// rule at the setting closest to the Tetris Guideline, listed read-only — or
+// rule at the setting closest to the Guideline, listed read-only — or
 // custom rules: the upcoming-piece preview count, the bag the pieces are
 // dealt from, whether the hard-drop ghost shows, whether the hold queue is
 // on, and (in the modes that raise garbage) how strong an attack is and how
@@ -553,7 +553,7 @@ func (a *App) wizardBoardWidth(gtx C, mode config.GameMode) D {
 func (a *App) wizardNextStep(gtx C) D {
 	custom := a.rulesEnum.Value == "custom"
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.wizardRadio(&a.rulesEnum, "guideline", "Guideline — every rule at its Tetris Guideline setting")),
+		layout.Rigid(a.wizardRadio(&a.rulesEnum, "guideline", "Guideline — every rule at its Guideline setting")),
 		layout.Rigid(a.wizardRadio(&a.rulesEnum, "custom", "Custom — set each rule yourself")),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
@@ -571,7 +571,7 @@ func (a *App) wizardNextStep(gtx C) D {
 func (a *App) wizardGuidelineRules(gtx C) D {
 	mode := a.wizardMode()
 	kids := []layout.FlexChild{
-		layout.Rigid(a.body("The settings closest to the Tetris Guideline this game can offer:", colMuted)),
+		layout.Rigid(a.body("The settings closest to the Guideline this game can offer:", colMuted)),
 		layout.Rigid(spacer(8)),
 	}
 	for _, row := range guidelineSummary(mode) {
@@ -606,7 +606,7 @@ func guidelineSummary(mode config.GameMode) [][2]string {
 	if mode != config.ModeCooperative {
 		rows = append(rows,
 			[2]string{"Garbage", fmt.Sprintf("%d hole per row, the rows of one attack lined up into a well", r.GarbageHoles)},
-			[2]string{"Attacks", "the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4"},
+			[2]string{"Attacks", "the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Jetris 4"},
 		)
 	}
 	return rows
@@ -700,7 +700,7 @@ func (a *App) wizardCustomRules(gtx C) D {
 					return cb.Layout(gtx)
 				}),
 				layout.Rigid(spacer(4)),
-				layout.Rigid(a.body("Off: every cleared line sends one garbage row. On: the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4.", colMuted)),
+				layout.Rigid(a.body("Off: every cleared line sends one garbage row. On: the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Jetris 4.", colMuted)),
 			)
 		}),
 	)

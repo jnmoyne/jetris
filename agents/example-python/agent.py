@@ -1115,7 +1115,7 @@ class Game:
     def attack_rows(self, lines):
         """The garbage a clear owes: one row per line, or — when the meta's
         guideline_garbage is set — the Guideline table: a single sends
-        nothing, a double 1 row, a triple 2, a Tetris 4."""
+        nothing, a double 1 row, a triple 2, a Jetris 4."""
         if not (self.meta or {}).get("guideline_garbage"):
             return lines
         return {1: 0, 2: 1, 3: 2}.get(lines, 4 if lines >= 4 else 0)

@@ -380,9 +380,9 @@ board's GARBAGE register and applied by the victim as a GATED transform:
 
 - **Attacking (you cleared N lines).** The rows you owe are N — or, when the
   meta's `guideline_garbage` is true, the Guideline table: 0 for a single, 1
-  for a double, 2 for a triple, 4 for a Tetris; 0/1 for a Mini T-Spin
+  for a double, 2 for a triple, 4 for a Jetris; 0/1 for a Mini T-Spin
   single/double, 2/4/6 for a T-Spin single/double/triple; +1 when a Mini or a
-  T-Spin single is Back-to-Back, +2 for a T-Spin double or a Tetris, +3 for a
+  T-Spin single is Back-to-Back, +2 for a T-Spin double or a Jetris, +3 for a
   T-Spin triple; +10 for a perfect clear (§4.6 defines those; owing 0 means
   you touch no register at all). For every victim board (competitive:
   each surviving opponent; teams: ONE opposing team's board — see below),
@@ -446,7 +446,7 @@ agree on eliminations and outcomes without a coordinator.
 
 ### 4.6 Scoring: your locks, by the Guideline
 
-Every mode scores by the Tetris Guideline table (gameplays §2 Scoring; the
+Every mode scores by the Guideline table (gameplays §2 Scoring; the
 GUI's `internal/game/scoring.go`, the reference agent's `scoring.go`). Your
 peers never recompute your score — they fold the cumulative
 `total_score`/`total_lines` YOU announce — so an agent that scores its own
@@ -456,14 +456,14 @@ each lock of yours:
 - **Level** — the Guideline's 1-based level BEFORE the clear: the board's
   shared line total `/ 10 + 1` on a shared board, your own lines' in
   competitive (capped at 20).
-- **The clear** — Single 100, Double 300, Triple 500, Tetris 800; a T-spin
+- **The clear** — Single 100, Double 300, Triple 500, Jetris 800; a T-spin
   that cleared nothing 400 (Mini 100); Mini T-Spin Single/Double 200/400;
   T-Spin Single/Double/Triple 800/1200/1600. × 1.5 when it is Back-to-Back
-  (a Tetris or a T-spin clear right after another such clear; only a plain
+  (a Jetris or a T-spin clear right after another such clear; only a plain
   single, double or triple breaks the chain). + 50 × the combo count
   (consecutive clearing locks: 0 for the first, 1 for the next…; a lock that
   clears nothing ends the run). + 800/1200/1800/2000 for a perfect clear of
-  1-4 lines (3200 for a Back-to-Back Tetris) — nothing locked left on the
+  1-4 lines (3200 for a Back-to-Back Jetris) — nothing locked left on the
   board, garbage included. All of that × the level.
 - **Drop points**, unmultiplied — 1 per cell soft-dropped, 2 per cell
   hard-dropped.

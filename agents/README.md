@@ -40,7 +40,7 @@ speaks the protocol and follows the rules.
   some non-garbage cell", not "no garbage cell".
 - **Attack by the game's rule.** A clear owes one garbage row per line, unless the meta's
   `guideline_garbage` is true — then the Guideline table: a single owes nothing (touch no
-  register), a double 1 row, a triple 2, a Tetris 4.
+  register), a double 1 row, a triple 2, a Jetris 4.
 - **Identify as an agent.** Set `agent: true` on your presence and roster entries; honor
   each game's `max_agents` policy and `invite_only` restriction; accept invitations from
   your per-game `invites.<name>.<gameID>` KV mailbox keys (accept = join + delete the

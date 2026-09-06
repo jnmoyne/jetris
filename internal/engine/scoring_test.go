@@ -34,14 +34,14 @@ func TestAccountLockComboAndBackToBack(t *testing.T) {
 	}{
 		{"a lock that clears nothing: its drop points only", 0, lockAward{dropPoints: 10}, stacked, game.Clear{}, 10},
 		{"a single opens a combo run", 1, lockAward{}, stacked, game.Clear{Lines: 1}, 100},
-		{"a tetris right after: combo 1, not b2b (a single came before)", 4, lockAward{dropPoints: 4}, stacked, game.Clear{Lines: 4, Combo: 1}, 854},
-		{"another tetris: combo 2, back-to-back", 4, lockAward{}, stacked, game.Clear{Lines: 4, Combo: 2, BackToBack: true}, 1300},
+		{"a jetris right after: combo 1, not b2b (a single came before)", 4, lockAward{dropPoints: 4}, stacked, game.Clear{Lines: 4, Combo: 1}, 854},
+		{"another jetris: combo 2, back-to-back", 4, lockAward{}, stacked, game.Clear{Lines: 4, Combo: 2, BackToBack: true}, 1300},
 		{"nothing cleared: the combo ends, the chain stays", 0, lockAward{}, stacked, game.Clear{}, 0},
 		{"a t-spin with no lines scores and keeps the chain", 0, lockAward{spin: game.TSpinFull}, stacked, game.Clear{Spin: game.TSpinFull}, 400},
-		{"a t-spin double: back-to-back after the tetris", 2, lockAward{spin: game.TSpinFull}, stacked, game.Clear{Lines: 2, Spin: game.TSpinFull, BackToBack: true}, 1800},
+		{"a t-spin double: back-to-back after the jetris", 2, lockAward{spin: game.TSpinFull}, stacked, game.Clear{Lines: 2, Spin: game.TSpinFull, BackToBack: true}, 1800},
 		{"a plain single breaks the chain (combo 1)", 1, lockAward{}, stacked, game.Clear{Lines: 1, Combo: 1}, 150},
 		{"a mini t-spin single that empties the board: perfect, not b2b", 1, lockAward{spin: game.TSpinMini}, empty, game.Clear{Lines: 1, Spin: game.TSpinMini, Combo: 2, Perfect: true}, 1100},
-		{"a tetris: back-to-back after the mini", 4, lockAward{}, stacked, game.Clear{Lines: 4, Combo: 3, BackToBack: true}, 1350},
+		{"a jetris: back-to-back after the mini", 4, lockAward{}, stacked, game.Clear{Lines: 4, Combo: 3, BackToBack: true}, 1350},
 	}
 	for _, st := range steps {
 		clear, points := e.accountLock(st.lines, st.award, st.after, 1)
@@ -60,15 +60,15 @@ func TestAccountLockComboAndBackToBack(t *testing.T) {
 
 }
 
-// TestTSpinDoubleThenBackToBackTetris plays the Guideline's showpiece on a
+// TestTSpinDoubleThenBackToBackJetris plays the Guideline's showpiece on a
 // competitive board with guideline garbage: seed 0 deals a T then an I. The
 // T is turned vertical, soft-dropped into a T-slot and rotated into it —
 // the last move a rotation, three corners filled, both front corners: a
 // T-Spin Double, 1200 points and four rows of garbage. The I then drops
-// through the four-deep column left beside it: a Tetris right after a
+// through the four-deep column left beside it: a Jetris right after a
 // difficult clear — Back-to-Back (800 × 1.5) plus a combo of one, and the
-// Tetris' four rows of garbage plus the Back-to-Back bonus of two.
-func TestTSpinDoubleThenBackToBackTetris(t *testing.T) {
+// Jetris' four rows of garbage plus the Back-to-Back bonus of two.
+func TestTSpinDoubleThenBackToBackJetris(t *testing.T) {
 	gameID := "tspin-b2b"
 	js, engines := setupCompetitiveGameWith(t, gameID, 2,
 		func(m *config.GameMeta) { m.GuidelineGarbage = true; m.Seed = 0 }, nil)
@@ -140,7 +140,7 @@ func TestTSpinDoubleThenBackToBackTetris(t *testing.T) {
 	waitUntil(t, 5*time.Second, func() bool { return b.Playfield().AdversarialRowCount() == 4 }, "b's board to gain the T-spin double's four rows")
 	afterTSD := a.Score()
 
-	// The I: turned vertical it drops down column 5 — a Tetris, Back-to-Back
+	// The I: turned vertical it drops down column 5 — a Jetris, Back-to-Back
 	// after the T-spin, the second clear of the combo.
 	waitUntil(t, 3*time.Second, func() bool {
 		p := a.Playfield().ActivePieceForPlayer(0)
@@ -154,10 +154,10 @@ func TestTSpinDoubleThenBackToBackTetris(t *testing.T) {
 	vertical := *a.Playfield().ActivePieceForPlayer(0)
 	fell := game.HardDropDestination(vertical, a.Playfield()).Row - vertical.Row
 	a.HardDrop()
-	tetris := game.Clear{Lines: 4, BackToBack: true, Combo: 1}.Points(1) // 1250
-	waitUntil(t, 3*time.Second, func() bool { return a.Score() >= afterTSD+tetris }, "the back-to-back tetris to score")
-	if got, want := a.Score()-afterTSD, tetris+game.DropPoints(0, fell); got < want-4 || got > want {
-		t.Fatalf("the tetris scored %d, want %d (1200 back-to-back + 50 combo + 2 a cell dropped, less a gravity tick or two)", got, want)
+	jetris := game.Clear{Lines: 4, BackToBack: true, Combo: 1}.Points(1) // 1250
+	waitUntil(t, 3*time.Second, func() bool { return a.Score() >= afterTSD+jetris }, "the back-to-back jetris to score")
+	if got, want := a.Score()-afterTSD, jetris+game.DropPoints(0, fell); got < want-4 || got > want {
+		t.Fatalf("the jetris scored %d, want %d (1200 back-to-back + 50 combo + 2 a cell dropped, less a gravity tick or two)", got, want)
 	}
 	if lines := a.OwnLines(); lines != 6 {
 		t.Fatalf("own lines = %d, want 6", lines)
@@ -169,7 +169,7 @@ func TestTSpinDoubleThenBackToBackTetris(t *testing.T) {
 		t.Fatalf("level = %d/%d, want 0 after 6 lines", a.Level(), a.AchievedLevel())
 	}
 
-	waitUntil(t, 5*time.Second, func() bool { return b.Playfield().AdversarialRowCount() == 10 }, "b's board to gain the tetris' four rows and the back-to-back bonus of two")
+	waitUntil(t, 5*time.Second, func() bool { return b.Playfield().AdversarialRowCount() == 10 }, "b's board to gain the jetris' four rows and the back-to-back bonus of two")
 	time.Sleep(300 * time.Millisecond)
 	if got := b.Playfield().AdversarialRowCount(); got != 10 {
 		t.Fatalf("b has %d adversarial rows, want exactly 10 (4 + 4 + 2)", got)

@@ -13,8 +13,7 @@ const (
 	PieceL
 )
 
-// String returns the piece's letter — the name every Tetris player knows it
-// by, and what the HUD shows when a game deals piece types out between
+// String returns the piece's letter and what the HUD shows when a game deals piece types out between
 // teammates (GameMeta.SplitPieces).
 func (p PieceType) String() string {
 	if p < PieceI || p > PieceL {

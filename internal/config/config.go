@@ -136,7 +136,7 @@ func TeamLetter(team int) string {
 }
 
 // Bag is a game's piece randomizer: how its sequence groups the seven piece
-// types. The standard 7-bag — the Tetris Guideline's — deals the seven types
+// types. The standard 7-bag — the Guideline's — deals the seven types
 // once each, shuffled, seven pieces at a time; the double bag deals them
 // twice each, fourteen at a time, so a stretch stays fair over a longer run
 // but two of a kind can come back to back and a drought can last twice as
@@ -202,7 +202,7 @@ type GameMeta struct {
 	Hold               bool       `json:"hold,omitempty"`                 // the Guideline hold queue is on: a player may swap the falling piece for a held one, once per piece, the piece coming out re-entering at the spawn point (see GameRules.Hold). Unset — the default, and every meta written before the field — no hold. One rule for every seat, like NextCount; agents may use it or ignore it
 	GarbageHoles       int        `json:"garbage_holes,omitempty"`        // holes punched in every garbage row a raise lands (0..MaxGarbageHoles; competitive/teams). 0 — the zero value, and every meta written before the field — raises solid rows that never clear; with holes, a garbage row clears like any other line once its holes are filled
 	RandomGarbageHoles bool       `json:"random_garbage_holes,omitempty"` // every garbage row draws its own hole columns ("messy" garbage); unset — the default, and every meta written before the field — every row of one raise shares a single draw, so its holes line up into a well ("clean" garbage). Moot at GarbageHoles 0
-	GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // attack strength follows the Tetris Guideline table — a single sends no garbage, a double 1 row, a triple 2, a Tetris 4 (game.AttackRows); unset — the default, and every meta written before the field — every cleared line sends one row
+	GuidelineGarbage   bool       `json:"guideline_garbage,omitempty"`    // attack strength follows the Guideline table — a single sends no garbage, a double 1 row, a triple 2, a Ketris 4 (game.AttackRows); unset — the default, and every meta written before the field — every cleared line sends one row
 	SplitPieces        bool       `json:"split_pieces,omitempty"`         // teams mode: the seven piece types are dealt out between the teammates (rng.PieceSets), every seat drawing only from its own ration and the whole bag present across the team. Unset — the default, and every meta written before the field — every seat runs the full 7-bag. Structural like TeamSize, not a play rule: the deal follows Seed, so both teams' slot N hold the same ration (see SplitsPieces)
 	Bag                Bag        `json:"bag,omitempty"`                  // the piece randomizer every seat's sequence is drawn with (Bag): "double" for the double bag, "none" for no bag at all; unset — the default, and every meta written before the field — the standard 7-bag. One rule for every seat, like NextCount; in a split-pieces game it shapes each seat's ration the same way (a double bag of the ration, or independent draws from it)
 	ShowHeadroom       bool       `json:"show_headroom,omitempty"`        // the hidden headroom rows above the playfield (HeadroomRows, where a piece spawns) are drawn — behind smoked glass, so they read as the out-of-bounds they are — on every board of the game; unset — the default, and every meta written before the field — the boards start at the visible playfield, the Guideline way. Presentation only: nothing about play changes, and agents may ignore it. One setting for every seat and spectator, like NoGhost
@@ -236,7 +236,7 @@ type GameRules struct {
 }
 
 // GuidelineRules is the create wizard's "Guideline" preset: every rule at the
-// setting closest to the Tetris Guideline this game can offer — the longest
+// setting closest to the Guideline this game can offer — the longest
 // next queue the game reveals (MaxNextCount), the ghost piece, the hold queue,
 // the standard 7-bag (BagSingle, the zero value), the headroom rows hidden
 // (ShowHeadroom off: the Guideline playfield shows twenty rows and no more),

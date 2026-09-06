@@ -52,7 +52,7 @@ type Game struct {
 	// The Guideline scoring's account of our play (scoring.go, scoreLock):
 	// comboRun counts the consecutive locks that cleared lines (0: none
 	// running; the combo count is one less), b2bChain says the last clear
-	// was a difficult one (a Tetris), so the next one is Back-to-Back.
+	// was a difficult one (a Jetris), so the next one is Back-to-Back.
 	comboRun int
 	b2bChain bool
 
@@ -853,7 +853,7 @@ func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 
 // attackRows converts a plain clear of lines rows into the garbage it owes:
 // one row per line, or under the game's guideline_garbage rule the Guideline
-// table — a single sends nothing, a double 1 row, a triple 2, a Tetris 4
+// table — a single sends nothing, a double 1 row, a triple 2, a Jetris 4
 // (gameplays §4). The full rule, with the T-spin rows and the Back-to-Back
 // and perfect-clear bonuses, is clearInfo.attackRows.
 func (g *Game) attackRows(lines int) int {
@@ -874,7 +874,7 @@ func (g *Game) scoreLevel() int {
 
 // scoreLock is the Guideline's account of the lock that just settled
 // (scoring.go; gameplays § Scoring): a clear of lines rows — the run of
-// consecutive clearing locks is the combo, a Tetris extends the Back-to-Back
+// consecutive clearing locks is the combo, a Jetris extends the Back-to-Back
 // chain and a plain clear breaks it, a board left empty is a perfect clear —
 // or no clear at all, which ends the combo and leaves the chain alone. The
 // points are the clear's at the level before it plus the hard drop's two a

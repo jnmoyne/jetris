@@ -2,7 +2,7 @@ package main
 
 import "strconv"
 
-// The Tetris Guideline scoring and garbage tables (tetris.wiki/Scoring,
+// The Guideline scoring and garbage tables (tetris.wiki/Scoring,
 // "Recent guideline compatible games"; tetris.wiki/Garbage, "General Garbage
 // System in Guideline Games") — the same rules the GUI plays by
 // (internal/game/scoring.go), ported rather than imported: this agent is the
@@ -32,7 +32,7 @@ type clearInfo struct {
 	perfect    bool // the clear left no settled cell on the board (garbage included)
 }
 
-// difficult: a Tetris, or any T-spin that cleared lines — the clears that
+// difficult: a Jetris, or any T-spin that cleared lines — the clears that
 // start and extend a Back-to-Back chain. Only a plain single, double or
 // triple breaks the chain; a lock that clears nothing leaves it alone.
 func (c clearInfo) difficult() bool {
@@ -55,10 +55,10 @@ func (c clearInfo) spinKind() tspin {
 
 // points is what the clear scores at level (the Guideline's 1-based level,
 // the level BEFORE the clear): the action's points — Single 100, Double 300,
-// Triple 500, Tetris 800; Mini T-Spin 100/200/400 for none/1/2 lines; T-Spin
+// Triple 500, Jetris 800; Mini T-Spin 100/200/400 for none/1/2 lines; T-Spin
 // 400/800/1200/1600 for none/1/2/3 — one and a half times for a Back-to-Back
 // difficult clear, plus 50 per combo count, plus the perfect-clear bonus
-// (800/1200/1800/2000 for 1-4 lines, 3200 for a Back-to-Back Tetris), all
+// (800/1200/1800/2000 for 1-4 lines, 3200 for a Back-to-Back Jetris), all
 // multiplied by the level. Drop points are not part of it (dropPoints).
 func (c clearInfo) points(level int) int {
 	level = max(level, 1)
@@ -90,10 +90,10 @@ func (c clearInfo) points(level int) int {
 
 // attackRows is the garbage the clear owes the opponents: one row per
 // cleared line, or under the guideline_garbage rule the Guideline table — a
-// single sends nothing, a double 1, a triple 2, a Tetris 4; a Mini T-Spin
+// single sends nothing, a double 1, a triple 2, a Jetris 4; a Mini T-Spin
 // single nothing and a Mini double 1; a T-Spin single 2, double 4, triple 6;
 // a Back-to-Back difficult clear adds 1 (Mini single/double, T-Spin single),
-// 2 (T-Spin double, Tetris) or 3 (T-Spin triple); a perfect clear adds 10.
+// 2 (T-Spin double, Jetris) or 3 (T-Spin triple); a perfect clear adds 10.
 func (c clearInfo) attackRows(guideline bool) int {
 	if c.lines <= 0 {
 		return 0
@@ -126,7 +126,7 @@ func (c clearInfo) attackRows(guideline bool) int {
 // name is the Guideline's name for the clear, for the log.
 func (c clearInfo) name() string {
 	n := c.n()
-	name := [5]string{"nothing", "single", "double", "triple", "tetris"}[n]
+	name := [5]string{"nothing", "single", "double", "triple", "jetris"}[n]
 	switch c.spinKind() {
 	case spinFull:
 		name = "t-spin " + name

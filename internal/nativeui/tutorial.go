@@ -11,7 +11,7 @@ package nativeui
 // Guideline rules, by invitation), the invitation picker over a made-up
 // roster in which the player is Player 1, and ends on the game screen of
 // that game: the playfield and what flanks it, the bar's buttons, and every
-// section of the menu column down to Back to Lobby.
+// section of the menu column down to the NATS messages switch.
 //
 // Nothing the tour shows is real, and nothing it does reaches the server.
 // The lobby screen is the real one, with the tour's OWN lists in place of
@@ -1160,11 +1160,9 @@ func tutorialSteps() []tutStep {
 			"The menu column opens with the roster in its board colors, then SCORE and LEVEL — one shared pair in co-op, one per team in teams — and Batch RTT: the round trip from publishing a move to seeing it come back from the server, colored as it grows. "+
 				"LINK LOST shows here if the connection drops; the moves you make meanwhile land once it is back.",
 			tutHUDStats),
-		hudStep("SHOW NATS MESSAGES",
-			"Ticked, a panel opens along the bottom of the screen with the raw stream traffic: every cell written, as it happens. Let's turn it on.",
-			tutHUDMsgs),
-		{scene: tutSceneGame, title: "THE NATS MESSAGES", targets: []string{tutNatsPanel}, prep: gameOn(true),
-			body: "Each line is one message on the game's stream: its time, its subject and its JSON payload. The rows of one color are one atomic batch — a move, published and committed as a whole. This is the blackboard everyone plays on. Drag the bar over the panel to resize it."},
+		hudStep("BACK TO LOBBY",
+			"Leaves the game screen. In the middle of a game you are asked to confirm: the seat is kept, the board plays on, and the lobby's row offers Rejoin. Once a game is over, the lobby's history has its result.",
+			tutHUDBack),
 		hudStep("MOVE PUBLISHING",
 			"Two ways to play the round trip. Pessimistic sync ☹ shows a move only once the server has committed it and sent it back. Optimistic async ☺, the default, draws the piece where you steer it at once and pipelines the publishing; a lost race snaps it back and replays the moves behind it. Flip between them to feel what each costs.",
 			tutHUDLab),
@@ -1180,9 +1178,11 @@ func tutorialSteps() []tutStep {
 		hudStep("GUARD",
 			"The accidental-drop guard: after a piece locks on its own, hard drop is refused for this long, so a Space meant for the last piece does not drop the next one. OFF at 0.",
 			tutHUDGuard),
-		hudStep("BACK TO LOBBY",
-			"Leaves the game screen. In the middle of a game you are asked to confirm: the seat is kept, the board plays on, and the lobby's row offers Rejoin. Once a game is over, the lobby's history has its result.",
-			tutHUDBack),
+		hudStep("SHOW NATS MESSAGES",
+			"Ticked, a panel opens along the bottom of the screen with the raw stream traffic: every cell written, as it happens. Let's turn it on.",
+			tutHUDMsgs),
+		{scene: tutSceneGame, title: "THE NATS MESSAGES", targets: []string{tutNatsPanel}, prep: gameOn(true),
+			body: "Each line is one message on the game's stream: its time, its subject and its JSON payload. The rows of one color are one atomic batch — a move, published and committed as a whole. This is the blackboard everyone plays on. Drag the bar over the panel to resize it."},
 		gameStep("THAT'S THE TOUR",
 			"Create a game, invite a friend or an agent, and play. The lobby's menu column keeps the controls legend, and every setting you saw is one tap away. Have fun!"),
 	}

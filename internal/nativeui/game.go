@@ -620,9 +620,10 @@ func (a *App) sessionLine(gtx C) D {
 }
 
 // gameHUD is the menu column's content, top to bottom: the game's name and
-// the session, the players, the stats, the ready list before the start, the
-// switches and the knobs, Back to Lobby, the controls legend, and the NATS tag
-// last. It is laid out at its own height — the column it is in scrolls it
+// the session, the players, the stats, the ready list before the start, Back
+// to Lobby, the voice chat, the switches and the knobs, the controls legend,
+// the NATS messages switch, and the NATS tag last. It is laid out at its own
+// height — the column it is in scrolls it
 // (hudColumn) — and slotY is the height that column shows at once, which is
 // where the tag is pinned while the rest leaves it the room.
 func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, slotY int) D {
@@ -717,15 +718,14 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 
 	children = append(children,
-		layout.Rigid(spacer(14)),
-		layout.Rigid(a.tutMarked(tutHUDMsgs, func(gtx C) D {
-			cb := material.CheckBox(a.th, &a.showMsgs, "Show NATS messages")
-			cb.Color = colFg
-			cb.IconColor = colAccent
-			return cb.Layout(gtx)
+		// Back to Lobby right under the stats: the column's one action,
+		// before its settings, where it is found without a scroll.
+		layout.Rigid(spacer(18)),
+		layout.Rigid(a.tutMarked(tutHUDBack, func(gtx C) D {
+			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
 		})),
 		// The voice chat (voice.go): a player's and a spectator's alike.
-		layout.Rigid(spacer(12)),
+		layout.Rigid(spacer(14)),
 		layout.Rigid(func(gtx C) D { return a.voiceSection(gtx, view.voice, a.voiceRoomName(eng, view.voice)) }),
 	)
 	if mode == engine.ModePlayer {
@@ -739,17 +739,9 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			layout.Rigid(spacer(12)),
 			layout.Rigid(a.handlingKnobs),
 		)
-	}
-	children = append(children,
-		layout.Rigid(spacer(18)),
-		layout.Rigid(a.tutMarked(tutHUDBack, func(gtx C) D {
-			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
-		})),
-	)
-	if mode == engine.ModePlayer {
-		// Under it all, for a player, the controls legend: the keys and the
-		// touch gestures, this screen's own scheme first, each section a
-		// header over rows of a key (or gesture) beside the move it makes
+		// Then, for a player, the controls legend: the keys and the touch
+		// gestures, this screen's own scheme first, each section a header
+		// over rows of a key (or gesture) beside the move it makes
 		// (controlsSections). The whole of it, every time — the column
 		// scrolls (hudColumn), so a short screen scrolls to it rather than
 		// losing it.
@@ -767,6 +759,17 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			)
 		}
 	}
+	// Under it all, the NATS messages switch: the one setting that opens a
+	// panel rather than changing the play, last in the column.
+	children = append(children,
+		layout.Rigid(spacer(16)),
+		layout.Rigid(a.tutMarked(tutHUDMsgs, func(gtx C) D {
+			cb := material.CheckBox(a.th, &a.showMsgs, "Show NATS messages")
+			cb.Color = colFg
+			cb.IconColor = colAccent
+			return cb.Layout(gtx)
+		})),
+	)
 
 	// The column's parts at their own heights (the button and the checkbox
 	// still span the width), and the NATS tag under them: at the column's

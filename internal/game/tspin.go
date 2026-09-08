@@ -26,16 +26,20 @@ func (s TSpin) String() string {
 // SpinState is how the falling piece reached where it rests: whether its
 // last successful step was a rotation — a shift, a soft drop, a gravity
 // step or a hard drop that actually moved the piece all forget it — and, if
-// so, the SRS kick that rotation used (0 = in place … LastKick).
+// so, which kick of the turn's own table it used (0 = in place … LastKick
+// for a quarter turn, further for a half turn) and whether the turn was a
+// half turn (Turn180). The half turn's table has no T-spin-triple kick, so
+// its Kick is never the LastKick exception, whatever its index.
 type SpinState struct {
 	Rotated bool
 	Kick    int
+	Half    bool
 }
 
-// LastKick is the index of the final entry of every SRS kick table — the
-// kick that drops a T into a T-spin-triple slot as it turns. A T that got
-// there by it is a full T-spin even when only one of its front corners is
-// filled (the Guideline's exception to the Mini rule).
+// LastKick is the index of the final entry of every SRS quarter-turn kick
+// table — the kick that drops a T into a T-spin-triple slot as it turns. A T
+// that got there by it is a full T-spin even when only one of its front
+// corners is filled (the Guideline's exception to the Mini rule).
 const LastKick = 4
 
 // DetectTSpin judges the T resting at p: a T-spin needs the piece to be a T
@@ -43,7 +47,7 @@ const LastKick = 4
 // corners of its 3×3 box filled — a locked cell, or the floor or a wall
 // (another player's still-falling piece is not a corner: it may move away).
 // It is a full T-spin when both corners on the side the T points to are
-// filled, or when the rotation used the last kick; otherwise a Mini.
+// filled, or when a quarter turn used the last kick; otherwise a Mini.
 func DetectTSpin(p Piece, pf *Playfield, s SpinState) TSpin {
 	if p.Type != PieceT || !s.Rotated {
 		return TSpinNone
@@ -80,7 +84,7 @@ func DetectTSpin(p Piece, pf *Playfield, s SpinState) TSpin {
 	case 3:
 		front = tl && bl
 	}
-	if front || s.Kick == LastKick {
+	if front || (!s.Half && s.Kick == LastKick) {
 		return TSpinFull
 	}
 	return TSpinMini

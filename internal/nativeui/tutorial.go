@@ -1110,7 +1110,7 @@ func tutorialSteps() []tutStep {
 		{scene: tutSceneLobby, title: "SERVER LOG", targets: []string{tutLobbyTabLog}, prep: lobbyOn(lobbyTabLog),
 			body: "The journal every client writes to: who connected, disconnected or came back, and which games were created and started — newest first."},
 		{scene: tutSceneLobby, title: "KEYS AND TOUCH", targets: []string{tutControls}, prep: lobbyOn(lobbyTabGames), scroll: menuScroll,
-			body: "How the piece is played. Keys: ← → (or A D) move it, ↓ (S) soft-drops, ↑ (W or X) rotates it clockwise, Z or Ctrl counter-clockwise, Space hard-drops, C or Shift holds, and Tab moves the keys between the board and the chat. " +
+			body: "How the piece is played. Keys: ← → (or A D) move it, ↓ (S) soft-drops, ↑ (or W) rotates it clockwise, X or Ctrl counter-clockwise, Z turns it half way round, Space hard-drops, C or Shift holds, and Tab moves the keys between the board and the chat. " +
 				"Those are the defaults: click a line of the KEYS legend to swap any of its keys for another — one no other move has — and the game keeps your keys from then on. " +
 				"Touch: swipe left or right to move, tap the left or right half of the board to rotate, drag down to soft-drop, flick down to hard-drop, swipe up to hold. The gestures cannot be changed."},
 		lobbyStep("CREATE A NEW GAME",
@@ -1155,7 +1155,7 @@ func tutorialSteps() []tutStep {
 			"Every move is a transaction on the game's stream, and the moves you make while one is in flight queue up here. On a far-away server the strip fills; each color is one batch that goes out together. The bar's readout shows the round trip.",
 			tutGameStrip),
 		gameStep("THE ON-SCREEN PAD",
-			"The whole keyboard scheme as buttons: the D-pad moves (its ▲ rotates clockwise), the face buttons rotate either way, DROP hard-drops and HOLD holds. On a touch screen it grows to thumb size — and the swipes work on the playfield with or without it.",
+			"The whole keyboard scheme as buttons: the D-pad moves (its ▲ rotates clockwise), the face buttons rotate either way or half round, DROP hard-drops and HOLD holds. On a touch screen it grows to thumb size — and the swipes work on the playfield with or without it.",
 			tutGamePad, tutGamePadFace),
 		hudStep("PLAYERS AND STATS",
 			"The menu column opens with the roster in its board colors, then SCORE and LEVEL — one shared pair in co-op, one per team in teams — and Batch RTT: the round trip from publishing a move to seeing it come back from the server, colored as it grows. "+

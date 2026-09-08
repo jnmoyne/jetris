@@ -443,8 +443,8 @@ func TestModifierKeysRotateAndHold(t *testing.T) {
 		{Name: key.NameShift, Modifiers: key.ModShift, State: key.Press},
 		// Held Shift, and the rest of the scheme still answering: a rotate,
 		// a shift and a hard drop, each carrying the bit Shift puts on it.
-		{Name: "X", Modifiers: key.ModShift, State: key.Press},
-		{Name: "X", Modifiers: key.ModShift, State: key.Release},
+		{Name: "Z", Modifiers: key.ModShift, State: key.Press},
+		{Name: "Z", Modifiers: key.ModShift, State: key.Release},
 		{Name: key.NameLeftArrow, Modifiers: key.ModShift, State: key.Press},
 		{Name: key.NameLeftArrow, Modifiers: key.ModShift, State: key.Release},
 		{Name: key.NameSpace, Modifiers: key.ModShift, State: key.Press},
@@ -459,7 +459,7 @@ func TestModifierKeysRotateAndHold(t *testing.T) {
 	// while it was down.
 	want := []engine.MoveType{
 		engine.RotateCCW,
-		engine.RotateCW, engine.MoveLeft, engine.MoveHardDrop,
+		engine.Rotate180, engine.MoveLeft, engine.MoveHardDrop,
 		engine.MoveHold,
 	}
 	if got := a.eng.BufferedMoves(); !reflect.DeepEqual(got, want) {

@@ -182,7 +182,7 @@ func TestRotateSRS(t *testing.T) {
 	pf := NewPlayfield(config.StandardWidth)
 	// T piece at center, rotate CW
 	p := Piece{Type: PieceT, Orientation: 0, Row: 10, Col: 4}
-	rotated, ok := Rotate(p, true, pf)
+	rotated, ok := Rotate(p, TurnCW, pf)
 	if !ok {
 		t.Fatal("T piece should rotate CW in open field")
 	}
@@ -192,14 +192,14 @@ func TestRotateSRS(t *testing.T) {
 
 	// O piece should not rotate
 	p = Piece{Type: PieceO, Orientation: 0, Row: 10, Col: 4}
-	_, ok = Rotate(p, true, pf)
+	_, ok = Rotate(p, TurnCW, pf)
 	if ok {
 		t.Error("O piece should not rotate")
 	}
 
 	// Test wall kick: I piece against left wall
 	p = Piece{Type: PieceI, Orientation: 0, Row: 10, Col: 0}
-	rotated, ok = Rotate(p, true, pf)
+	rotated, ok = Rotate(p, TurnCW, pf)
 	if !ok {
 		t.Fatal("I piece against left wall should wall-kick")
 	}

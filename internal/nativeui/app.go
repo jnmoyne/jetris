@@ -552,13 +552,13 @@ type App struct {
 
 	// On-screen arcade control pad (mouse and touch play, controls.go): the
 	// D-pad's four arms (padUp rotates clockwise, like the ↑ key), the face
-	// buttons — rotate CCW/CW, hard drop, and in games with the hold rule
-	// hold, which the HOLD box beside the playfield also triggers when
-	// tapped (holdBoxBtn). Clicks are dispatched by handlePadClicks — bar
+	// buttons — rotate CCW, the half turn, rotate CW, hard drop, and in
+	// games with the hold rule hold, which the HOLD box beside the playfield
+	// also triggers when tapped (holdBoxBtn). Clicks are dispatched by handlePadClicks — bar
 	// the ← → ↓ arms', which move on the press and repeat when held
 	// (handlePadShift).
-	padUp, padLeft, padDown, padRight, padCCW, padCW, padDrop, padHold widget.Clickable
-	holdBoxBtn                                                         widget.Clickable
+	padUp, padLeft, padDown, padRight, padCCW, pad180, padCW, padDrop, padHold widget.Clickable
+	holdBoxBtn                                                                 widget.Clickable
 	// touchUI: the player is on a touch screen, so the pad is laid out at
 	// thumb size (padTouch). Set by the browser build from the page's media
 	// queries (view_js.go) and, everywhere, by the first touch press on the

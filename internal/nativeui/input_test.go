@@ -74,6 +74,7 @@ func TestMoveForAction(t *testing.T) {
 		{prefs.KeySoftDrop, (*engine.Engine).MoveDown},
 		{prefs.KeyRotateCW, (*engine.Engine).RotateCW},
 		{prefs.KeyRotateCCW, (*engine.Engine).RotateCCW},
+		{prefs.KeyRotate180, (*engine.Engine).Rotate180},
 		{prefs.KeyHardDrop, (*engine.Engine).HardDrop},
 		{prefs.KeyHold, (*engine.Engine).Hold},
 	}
@@ -104,8 +105,9 @@ func TestDefaultKeysActions(t *testing.T) {
 		{key.NameLeftArrow, prefs.KeyMoveLeft}, {"A", prefs.KeyMoveLeft},
 		{key.NameRightArrow, prefs.KeyMoveRight}, {"D", prefs.KeyMoveRight},
 		{key.NameDownArrow, prefs.KeySoftDrop}, {"S", prefs.KeySoftDrop},
-		{key.NameUpArrow, prefs.KeyRotateCW}, {"W", prefs.KeyRotateCW}, {"X", prefs.KeyRotateCW},
-		{"Z", prefs.KeyRotateCCW}, {key.NameCtrl, prefs.KeyRotateCCW},
+		{key.NameUpArrow, prefs.KeyRotateCW}, {"W", prefs.KeyRotateCW},
+		{"X", prefs.KeyRotateCCW}, {key.NameCtrl, prefs.KeyRotateCCW},
+		{"Z", prefs.KeyRotate180},
 		{key.NameSpace, prefs.KeyHardDrop},
 		{"C", prefs.KeyHold}, {key.NameShift, prefs.KeyHold},
 	} {

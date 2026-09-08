@@ -22,7 +22,7 @@ Seven standard tetrominoes, each with 4 orientations (0-3):
 | J     | Blue    | J-hook |
 | L     | Orange  | L-hook |
 
-**Rotation:** Super Rotation System (SRS) with standard wall kick tables. Up to 5 kick offsets are tried per rotation attempt. The I-piece has its own kick table; the O-piece does not rotate.
+**Rotation:** Super Rotation System (SRS) with standard wall kick tables. Up to 5 kick offsets are tried per rotation attempt. The I-piece has its own kick table; the O-piece does not rotate. A **half turn** (180°, the Z key, `Rotate180`) uses SRS-X's 180 kicks — the rotation system the 180° twists of [harddrop.com/wiki/List_of_twists](https://harddrop.com/wiki/List_of_twists) are drawn for — up to 12 offsets, three cells sideways or up and down at the most, so a piece can twist into a slot or pass through a one-cell wall; the I has its own 180 table too (`internal/game/rotation.go`, every one of the wiki's 180 twists in `Test180Twists`).
 
 **Piece sequence:** 7-bag randomizer — within each group of 7 pieces, all 7 types appear exactly once in a random order. The bag is shuffled using a seedable PCG RNG so the sequence is deterministic and seekable. (Two exceptions, by choice: a game's **bag** rule (§1b) can deal a **double bag** — two of each type in every fourteen — or **no bag** at all, every piece an independent draw; and a teams game created with **split pieces** deals the seven types out between the teammates and gives each seat a bag of its own ration — §5.)
 
@@ -275,8 +275,9 @@ over NATS — each move is a local intent that publishes the changed cells with 
 |-----|--------|---------------|
 | ← / → or A / D | move left / right | `MoveLeft` / `MoveRight` |
 | ↓ or S | soft drop (one row) | `MoveDown` |
-| ↑ or W or X | rotate clockwise | `RotateCW` |
-| Ctrl or Z | rotate counter-clockwise | `RotateCCW` |
+| ↑ or W | rotate clockwise | `RotateCW` |
+| Ctrl or X | rotate counter-clockwise | `RotateCCW` |
+| Z | rotate 180° — a half turn, on the SRS-X kicks | `Rotate180` |
 | Space | hard drop | `HardDrop` |
 | Shift or C | hold (games with the hold rule, §1b); Shift acts on its **release** | `Hold` |
 | Tab | switch the keys between the piece and the chat (a shifted Tab too) | — |
@@ -367,7 +368,7 @@ Every mode scores by the Guideline (tetris.wiki/Scoring, "Recent guideline compa
 | Perfect clear (no locked cell left on the board, garbage included) | + 800 / 1200 / 1800 / 2000 for 1 / 2 / 3 / 4 lines, 3200 for a Back-to-Back Jetris |             |
 | Soft drop / hard drop                                              | 1 / 2 per cell, not multiplied                                                     |             |
 
-A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when the rotation used the last SRS kick (the T-spin-triple kick); otherwise a Mini (`game.DetectTSpin`). A hard drop of zero cells is not a move, so a T rotated into its slot and hard-dropped in place is still a T-spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Jetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
+A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when a quarter turn used the last SRS kick (the T-spin-triple kick — a half turn counts as a rotation but has no such kick, however far it went); otherwise a Mini (`game.DetectTSpin`). A hard drop of zero cells is not a move, so a T rotated into its slot and hard-dropped in place is still a T-spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Jetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
 
 Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Jetris is 800 × (level + 1) whether one or six play.
 
@@ -1275,7 +1276,7 @@ which running copy, and how strong.
 
 Jetris ships one reference agent, **`golang-mk1`** (`agents/golang-mk1/`), written in Go,
 that plays **all three modes** — cooperative, competitive, and teams. It is deliberately an ordinary peer — the same lobby
-join handshake, the same move vocabulary a human has (left, right, down, rotate CW/CCW,
+join handshake, the same move vocabulary a human has (left, right, down, rotate CW/CCW/180,
 hard drop), the same consumers and CAS discipline — with a planner where the GUI has a
 keyboard. Nothing in the blackboard needed to change to admit a software agent: the agent
 demonstrates that a NATS-coordinated peer-to-peer game is equally playable by humans and

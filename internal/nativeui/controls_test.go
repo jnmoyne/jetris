@@ -31,7 +31,7 @@ func testCtx(w, h int) C {
 func TestGlyphBitmaps(t *testing.T) {
 	for name, bm := range map[string][]string{
 		"left": glyphLeft, "right": glyphRight, "down": glyphDown, "drop": glyphDrop,
-		"cw": glyphCW, "ccw": glyphCCW, "hold": glyphHold,
+		"cw": glyphCW, "ccw": glyphCCW, "half": glyph180, "hold": glyphHold,
 		"menu": glyphMenu, "chat": glyphChat, "pad": glyphPad,
 		"boards": glyphBoards, "trophy": glyphTrophy,
 		"mic": glyphMic, "micoff": glyphMicOff, "speaker": glyphSpeaker,
@@ -112,7 +112,7 @@ func TestMoveGlyphAllMoves(t *testing.T) {
 	a := newTestApp()
 	for _, m := range []engine.MoveType{
 		engine.MoveLeft, engine.MoveRight, engine.MoveDown,
-		engine.RotateCW, engine.RotateCCW, engine.MoveHardDrop, engine.MoveHold,
+		engine.RotateCW, engine.RotateCCW, engine.Rotate180, engine.MoveHardDrop, engine.MoveHold,
 		engine.MoveType(99),
 	} {
 		if d := a.moveGlyph(m, 24, colFg)(looseCtx(64, 64)); d.Size.X == 0 || d.Size.Y == 0 {

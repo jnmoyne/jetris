@@ -245,7 +245,7 @@ func (e *Engine) coalescing() bool {
 // and a hold are barriers.
 func isStep(m MoveType) bool {
 	switch m {
-	case MoveLeft, MoveRight, MoveDown, RotateCW, RotateCCW:
+	case MoveLeft, MoveRight, MoveDown, RotateCW, RotateCCW, Rotate180:
 		return true
 	}
 	return false
@@ -978,11 +978,11 @@ func stepPieceKick(p game.Piece, m MoveType, pf *game.Playfield, shared bool, pl
 		}
 		return game.CanPlace(q, pf)
 	}
-	rotate := func(q game.Piece, cw bool) (game.Piece, int, bool) {
+	rotate := func(q game.Piece, t game.Turn) (game.Piece, int, bool) {
 		if shared {
-			return game.RotateCoopKick(q, cw, pf, playerIdx)
+			return game.RotateCoopKick(q, t, pf, playerIdx)
 		}
-		return game.RotateKick(q, cw, pf)
+		return game.RotateKick(q, t, pf)
 	}
 	switch m {
 	case MoveLeft:
@@ -997,8 +997,8 @@ func stepPieceKick(p game.Piece, m MoveType, pf *game.Playfield, shared bool, pl
 		next = p
 		next.Row++
 		return next, 0, canPlace(next), false
-	case RotateCW, RotateCCW:
-		next, kick, ok = rotate(p, m == RotateCW)
+	case RotateCW, RotateCCW, Rotate180:
+		next, kick, ok = rotate(p, turnOf(m))
 		return next, kick, ok, false
 	case MoveHardDrop:
 		// The piece is going to be dropped from HERE: it stays put for the

@@ -282,7 +282,7 @@ func TestIntentPieceAppliesQueuedMoves(t *testing.T) {
 	want := p
 	want.Col--
 	want.Row++
-	want, _ = game.RotateCoop(want, true, e.playfield, 0)
+	want, _ = game.RotateCoop(want, game.TurnCW, e.playfield, 0)
 	got, ok := e.IntentPiece()
 	if !ok || got != want {
 		t.Fatalf("IntentPiece = %+v, %v; want %+v", got, ok, want)
@@ -572,9 +572,9 @@ func TestOptimisticMispredictionRepairs(t *testing.T) {
 // TestSplitBatches: coalescing groups runs of steps and keeps the barriers
 // (a hard drop, a hold) alone; without it every move is its own batch.
 func TestSplitBatches(t *testing.T) {
-	queue := []MoveType{MoveLeft, MoveRight, MoveHardDrop, MoveDown, RotateCW, MoveHold, MoveDown}
+	queue := []MoveType{MoveLeft, MoveRight, MoveHardDrop, MoveDown, RotateCW, Rotate180, MoveHold, MoveDown}
 	got := splitBatches(queue, true)
-	want := [][]MoveType{{MoveLeft, MoveRight}, {MoveHardDrop}, {MoveDown, RotateCW}, {MoveHold}, {MoveDown}}
+	want := [][]MoveType{{MoveLeft, MoveRight}, {MoveHardDrop}, {MoveDown, RotateCW, Rotate180}, {MoveHold}, {MoveDown}}
 	if len(got) != len(want) {
 		t.Fatalf("splitBatches = %v, want %v", got, want)
 	}

@@ -359,7 +359,7 @@ func (a *App) handlePadShift(gtx C, eng *engine.Engine, active bool) {
 func (a *App) padFocused(gtx C) bool {
 	for _, b := range []*widget.Clickable{
 		&a.padUp, &a.padLeft, &a.padDown, &a.padRight,
-		&a.padCCW, &a.padCW, &a.padDrop, &a.padHold, &a.holdBoxBtn,
+		&a.padCCW, &a.pad180, &a.padCW, &a.padDrop, &a.padHold, &a.holdBoxBtn,
 	} {
 		if gtx.Source.Focused(b) {
 			return true

@@ -90,6 +90,21 @@ var (
 		"..XXXXX..",
 	}
 	glyphCCW = mirrored(glyphCW)
+	// glyph180 is the half-turn icon: two curved arrows chasing each other
+	// round a ring — the top one running right and diving at its end, the
+	// bottom one the same through the middle — so the bitmap is itself
+	// turned half way round, which is what the button does.
+	glyph180 = []string{
+		"..XXXX...",
+		".X..XXXXX",
+		"X....XXX.",
+		"X.....X..",
+		".........",
+		"..X.....X",
+		".XXX....X",
+		"XXXXX..X.",
+		"...XXXX..",
+	}
 	// glyphHold is the hold icon: two arrows trading places (⇄) — the swap
 	// symbol the phone versions of the game put on their hold button — as a
 	// blocky 9-row bitmap so it scales like the 8-row arrows.
@@ -288,6 +303,8 @@ func (a *App) moveGlyph(m engine.MoveType, size unit.Dp, col colorN) layout.Widg
 		return glyphWidget(glyphCW, size, col)
 	case engine.RotateCCW:
 		return glyphWidget(glyphCCW, size, col)
+	case engine.Rotate180:
+		return glyphWidget(glyph180, size, col)
 	case engine.MoveHold:
 		return glyphWidget(glyphHold, size, col)
 	}
@@ -562,15 +579,15 @@ func (p padSizer) px(gtx C, v int) int { return gtx.Dp(p.dp(v)) }
 // middle.
 func (p padSizer) dpadSize(gtx C) int { return 3 * p.px(gtx, p.m.btn) }
 
-// faceSize is the face cluster's size in px: the two rotation squares over
-// the DROP bar and, with the hold rule, the HOLD bar; the bars span the pair.
+// faceSize is the face cluster's size in px: the three rotation squares over
+// the DROP bar and, with the hold rule, the HOLD bar; the bars span the row.
 func (p padSizer) faceSize(gtx C, hold bool) image.Point {
 	btn, gap := p.px(gtx, p.m.btn), p.px(gtx, p.m.gap)
 	rows := 2
 	if hold {
 		rows = 3
 	}
-	return image.Pt(2*btn+gap, rows*btn+(rows-1)*gap)
+	return image.Pt(3*btn+2*gap, rows*btn+(rows-1)*gap)
 }
 
 // padSize is the whole pad's footprint in px laid out in one row — D-pad,
@@ -905,12 +922,13 @@ func (a *App) dpadPlate(gtx C, p padSizer, enabled bool) D {
 	return D{Size: image.Pt(size, size)}
 }
 
-// faceButtons draws the face cluster: ↺ ↻ side by side, the DROP bar under
-// them and, with the hold rule, the HOLD bar under that — the bars as wide as
-// the pair, each a labelled button with its glyph beside its pixel-face word.
+// faceButtons draws the face cluster: ↺, the half turn and ↻ in a row, the
+// DROP bar under them and, with the hold rule, the HOLD bar under that —
+// the bars as wide as the row, each a labelled button with its glyph beside
+// its pixel-face word.
 func (a *App) faceButtons(gtx C, p padSizer, enabled, hold bool) D {
 	btn, gap := p.px(gtx, p.m.btn), p.px(gtx, p.m.gap)
-	barW := 2*btn + gap
+	barW := 3*btn + 2*gap
 	glyphCol := colAccent
 	if !enabled {
 		glyphCol = colMuted
@@ -941,6 +959,8 @@ func (a *App) faceButtons(gtx C, p padSizer, enabled, hold bool) D {
 		layout.Rigid(func(gtx C) D {
 			return layout.Flex{}.Layout(gtx,
 				layout.Rigid(sq(&a.padCCW, glyphCCW)),
+				layout.Rigid(hgap),
+				layout.Rigid(sq(&a.pad180, glyph180)),
 				layout.Rigid(hgap),
 				layout.Rigid(sq(&a.padCW, glyphCW)),
 			)
@@ -998,6 +1018,7 @@ func (a *App) handlePadClicks(gtx C, eng *engine.Engine, active bool) {
 	}{
 		{&a.padUp, (*engine.Engine).RotateCW},
 		{&a.padCCW, (*engine.Engine).RotateCCW},
+		{&a.pad180, (*engine.Engine).Rotate180},
 		{&a.padCW, (*engine.Engine).RotateCW},
 		// The drop arm goes through the guard like the space bar and the
 		// flick do (dropguard.go), and never straight to the engine.

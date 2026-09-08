@@ -54,7 +54,7 @@ func TestKeyLines(t *testing.T) {
 // plain, and carry the hold line only for a game with the hold queue.
 func TestLegendFollowsTheScheme(t *testing.T) {
 	a := newTestApp()
-	want := []string{"← → A D", "↓ S", "↑ W X", "Z CTRL", "SPACE", "C SHIFT"}
+	want := []string{"← → A D", "↓ S", "↑ W", "X CTRL", "Z", "SPACE", "C SHIFT"}
 	for i, w := range want {
 		if got := a.keys.lineKeys(i); got != w {
 			t.Errorf("default line %d reads %q, want %q", i, got, w)
@@ -67,7 +67,7 @@ func TestLegendFollowsTheScheme(t *testing.T) {
 	if got := a.keys.lineKeys(0); got != "J → A D" {
 		t.Errorf("rebound move line reads %q, want %q", got, "J → A D")
 	}
-	if got := a.keys.lineKeys(4); got != "⏎" {
+	if got := a.keys.lineKeys(5); got != "⏎" {
 		t.Errorf("rebound hard drop line reads %q, want %q", got, "⏎")
 	}
 
@@ -82,7 +82,7 @@ func TestLegendFollowsTheScheme(t *testing.T) {
 		}
 		return ms
 	}
-	if got := moves(lobbyKeys.rows); !reflect.DeepEqual(got, []string{"move · hold slides", "soft drop · hold falls", "rotate CW", "rotate CCW", "hard drop", "chat / board"}) {
+	if got := moves(lobbyKeys.rows); !reflect.DeepEqual(got, []string{"move · hold slides", "soft drop · hold falls", "rotate CW", "rotate CCW", "rotate 180", "hard drop", "chat / board"}) {
 		t.Errorf("the lobby's KEYS rows: %v (no hold line, Tab last)", got)
 	}
 	for _, r := range lobbyKeys.rows {
@@ -94,7 +94,7 @@ func TestLegendFollowsTheScheme(t *testing.T) {
 	if gameKeys.note != "" {
 		t.Errorf("the game's KEYS section carries the lobby's note %q", gameKeys.note)
 	}
-	if got := moves(gameKeys.rows); got[5] != "hold" || len(got) != 7 {
+	if got := moves(gameKeys.rows); got[6] != "hold" || len(got) != 8 {
 		t.Errorf("the game's KEYS rows: %v (hold before Tab)", got)
 	}
 	for _, r := range gameKeys.rows {
@@ -204,13 +204,13 @@ func TestResetLineKeysLeavesOthersKeys(t *testing.T) {
 	a := newTestApp()
 	km := prefs.DefaultKeymap()
 	km[prefs.KeyMoveLeft] = []string{"J", "K"}
-	km[prefs.KeyRotateCW] = []string{"A", "W", "X"} // rotate CW took move left's A
+	km[prefs.KeyRotateCW] = []string{"A", "W"} // rotate CW took move left's A
 	a.SetKeymap(km)
 	a.resetLineKeys(0)
 	if got := a.keys.km[prefs.KeyMoveLeft]; !reflect.DeepEqual(got, []string{"←", "K"}) {
 		t.Errorf("after the move line's reset: move left = %v, want [← K] (A is rotate CW's)", got)
 	}
-	if got := a.keys.km[prefs.KeyRotateCW]; !reflect.DeepEqual(got, []string{"A", "W", "X"}) {
+	if got := a.keys.km[prefs.KeyRotateCW]; !reflect.DeepEqual(got, []string{"A", "W"}) {
 		t.Errorf("the move line's reset touched rotate CW: %v", got)
 	}
 }
@@ -223,7 +223,7 @@ func TestReboundKeyDrivesThePiece(t *testing.T) {
 	a := newTestApp()
 	a.SetHandling(60, 0, defaultSDF, defaultDropGuardMs)
 	km := prefs.DefaultKeymap()
-	km[prefs.KeyRotateCW] = []string{"↑", "Q", "X"}
+	km[prefs.KeyRotateCW] = []string{"↑", "Q"}
 	km[prefs.KeyMoveLeft] = []string{"←", "J"}
 	a.SetKeymap(km)
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)

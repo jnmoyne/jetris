@@ -470,7 +470,7 @@ each lock of yours:
 - **T-spins** — only if your agent rotates a T into place as its LAST move
   (`golang-mk1` never does: it turns at the spawn, shifts, drops): three of
   the T's 3×3 box corners filled by locked cells or the walls; full when both
-  corners on the pointing side are, or the rotation used the fifth SRS kick;
+  corners on the pointing side are, or a quarter turn used the fifth SRS kick;
   Mini otherwise.
 - **Announce it** (§4.2) — a `line_clear` with `score` (the lock's points),
   `lines_cleared`, `cleared_rows`, the names (`t_spin`, `back_to_back`,

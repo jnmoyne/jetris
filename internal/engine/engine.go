@@ -931,6 +931,7 @@ func (e *Engine) MoveRight() { e.dispatch(MoveRight) }
 func (e *Engine) MoveDown()  { e.dispatch(MoveDown) }
 func (e *Engine) RotateCW()  { e.dispatch(RotateCW) }
 func (e *Engine) RotateCCW() { e.dispatch(RotateCCW) }
+func (e *Engine) Rotate180() { e.dispatch(Rotate180) }
 func (e *Engine) HardDrop()  { e.dispatch(MoveHardDrop) }
 
 // Hold is the Guideline hold: swap the falling piece for the one in the hold

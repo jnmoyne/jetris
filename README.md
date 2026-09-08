@@ -523,7 +523,7 @@ internal/
   nats/                the JetStream layer — streams, KV, CAS publish, atomic batches,
                        ordered consumers, multi-subject direct get  ← start here
   config/              subjects, stream/KV names, game metadata types
-  game/                pure guideline-style rules: pieces, rotation (SRS), collision, line clears
+  game/                pure guideline-style rules: pieces, rotation (SRS, SRS-X half turns), collision, line clears
   engine/              per-player game loop: publishes moves as CAS batches, consumes
                        everyone's writes, drives gravity, detects lock-in / line clears
   lobby/               lobby over KV: presence (heartbeat), game listings, join/ready (CAS)

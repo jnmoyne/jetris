@@ -421,6 +421,8 @@ func moveFor(m engine.MoveType) func(*engine.Engine) {
 		return (*engine.Engine).RotateCW
 	case engine.RotateCCW:
 		return (*engine.Engine).RotateCCW
+	case engine.Rotate180:
+		return (*engine.Engine).Rotate180
 	case engine.MoveHardDrop:
 		return (*engine.Engine).HardDrop
 	case engine.MoveHold:

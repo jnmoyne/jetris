@@ -15,6 +15,7 @@ const (
 	KeySoftDrop  KeyAction = "soft_drop"
 	KeyRotateCW  KeyAction = "rotate_cw"
 	KeyRotateCCW KeyAction = "rotate_ccw"
+	KeyRotate180 KeyAction = "rotate_180"
 	KeyHardDrop  KeyAction = "hard_drop"
 	KeyHold      KeyAction = "hold"
 )
@@ -22,23 +23,25 @@ const (
 // KeyActions is every action, in the order the legend lists them — and the
 // order a conflict is settled in when a saved file names one key twice: the
 // earlier action keeps it.
-var KeyActions = []KeyAction{KeyMoveLeft, KeyMoveRight, KeySoftDrop, KeyRotateCW, KeyRotateCCW, KeyHardDrop, KeyHold}
+var KeyActions = []KeyAction{KeyMoveLeft, KeyMoveRight, KeySoftDrop, KeyRotateCW, KeyRotateCCW, KeyRotate180, KeyHardDrop, KeyHold}
 
 // Keymap is the bindings: for each action the keys that make it, by Gio's
 // key names ("A", "←", "Space", "Shift", …), in the order the legend shows
 // them. Every action has at least one key and no key makes two moves.
 type Keymap map[KeyAction][]string
 
-// DefaultKeymap is the Guideline's scheme with the WASD twins: ← → (A D)
-// move, ↓ (S) soft-drops, ↑ (W X) rotates clockwise, Z or Ctrl counter-
-// clockwise, Space hard-drops, C or Shift holds.
+// DefaultKeymap is the Guideline's scheme with the WASD twins and the half
+// turn: ← → (A D) move, ↓ (S) soft-drops, ↑ (W) rotates clockwise, X or
+// Ctrl counter-clockwise, Z turns the piece half way round, Space
+// hard-drops, C or Shift holds.
 func DefaultKeymap() Keymap {
 	return Keymap{
 		KeyMoveLeft:  {"←", "A"},
 		KeyMoveRight: {"→", "D"},
 		KeySoftDrop:  {"↓", "S"},
-		KeyRotateCW:  {"↑", "W", "X"},
-		KeyRotateCCW: {"Z", "Ctrl"},
+		KeyRotateCW:  {"↑", "W"},
+		KeyRotateCCW: {"X", "Ctrl"},
+		KeyRotate180: {"Z"},
 		KeyHardDrop:  {"Space"},
 		KeyHold:      {"C", "Shift"},
 	}
@@ -103,19 +106,33 @@ func SaveKeymap(k Keymap) error {
 }
 
 // Normalize is k made whole, for a file written by hand or by an earlier
-// release: every action has the slots its default has — a slot the file
-// does not fill, or fills with a reserved key or one an earlier action
-// already holds, takes the default key when that one is free and is dropped
-// otherwise — and an action the file does not name at all keeps its
-// defaults. A file that leaves some action with no key at all (its keys
-// handed out to other actions, defaults included) is no scheme: the defaults
-// come back whole.
+// release. An action the file does not name at all — one newer than the
+// file — takes its default keys first, ahead of every action the file
+// names: a file from before the half turn had a key, with Z still on rotate
+// CCW, gives Z up to it. Then every named action has the slots its default
+// has — a slot the file does not fill, or fills with a reserved key or one
+// another action already holds, takes the default key when that one is free
+// and is dropped otherwise. A file that leaves some named action with no
+// key at all (its keys handed out to other actions, defaults included) is
+// no scheme: the defaults come back whole.
 func (k Keymap) Normalize() Keymap {
 	def := DefaultKeymap()
 	out := make(Keymap, len(def))
 	used := map[string]bool{}
 	for _, act := range KeyActions {
-		saved := k[act]
+		if _, named := k[act]; named {
+			continue
+		}
+		out[act] = append([]string(nil), def[act]...)
+		for _, name := range def[act] {
+			used[name] = true
+		}
+	}
+	for _, act := range KeyActions {
+		saved, named := k[act]
+		if !named {
+			continue
+		}
 		var keys []string
 		for i, dflt := range def[act] {
 			name := ""

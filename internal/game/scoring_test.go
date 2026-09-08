@@ -245,6 +245,15 @@ func TestDetectTSpin(t *testing.T) {
 	if got := DetectTSpin(up, mini, SpinState{Rotated: true, Kick: LastKick}); got != TSpinFull {
 		t.Errorf("the same Mini via the last kick: %v, want full", got)
 	}
+	// A half turn is a rotation for the corner rule…
+	if got := DetectTSpin(down, slot, SpinState{Rotated: true, Half: true}); got != TSpinFull {
+		t.Errorf("T half-turned into the slot: %v, want full", got)
+	}
+	// …but its table has no triple kick: the Mini stays a Mini whatever the
+	// kick's index.
+	if got := DetectTSpin(up, mini, SpinState{Rotated: true, Kick: LastKick, Half: true}); got != TSpinMini {
+		t.Errorf("the Mini via a half turn's kick %d: %v, want mini", LastKick, got)
+	}
 	// A T pointing left (orientation 3): its front corners are the left
 	// pair.
 	left := Piece{Type: PieceT, Orientation: 3, Row: 2, Col: 0}
@@ -283,16 +292,16 @@ func TestDetectTSpin(t *testing.T) {
 func TestRotateKickReportsTheKick(t *testing.T) {
 	pf := NewPlayfieldWithHeight(10, 6)
 	p := Piece{Type: PieceT, Orientation: 0, Row: 1, Col: 3}
-	if _, kick, ok := RotateKick(p, true, pf); !ok || kick != 0 {
+	if _, kick, ok := RotateKick(p, TurnCW, pf); !ok || kick != 0 {
 		t.Fatalf("free rotation: kick %d ok %v, want kick 0 ok true", kick, ok)
 	}
 	// Against the left wall a vertical T rotating CCW (1 → 0) needs kick 1
 	// (0, +1) — the in-place rotation would put its bar cell at col -1.
 	wall := Piece{Type: PieceT, Orientation: 1, Row: 1, Col: -1}
-	if _, kick, ok := RotateKick(wall, false, pf); !ok || kick != 1 {
+	if _, kick, ok := RotateKick(wall, TurnCCW, pf); !ok || kick != 1 {
 		t.Fatalf("wall kick: kick %d ok %v, want kick 1 ok true", kick, ok)
 	}
-	if _, _, ok := RotateKick(Piece{Type: PieceO, Row: 1, Col: 1}, true, pf); ok {
+	if _, _, ok := RotateKick(Piece{Type: PieceO, Row: 1, Col: 1}, TurnCW, pf); ok {
 		t.Fatal("the O never rotates")
 	}
 }

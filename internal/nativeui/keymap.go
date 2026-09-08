@@ -33,6 +33,7 @@ var keyLines = []keyLine{
 	{"SOFT DROP", "soft drop · hold falls", []prefs.KeyAction{prefs.KeySoftDrop}},
 	{"ROTATE CW", "rotate CW", []prefs.KeyAction{prefs.KeyRotateCW}},
 	{"ROTATE CCW", "rotate CCW", []prefs.KeyAction{prefs.KeyRotateCCW}},
+	{"ROTATE 180", "rotate 180", []prefs.KeyAction{prefs.KeyRotate180}},
 	{"HARD DROP", "hard drop", []prefs.KeyAction{prefs.KeyHardDrop}},
 	{"HOLD", "hold", []prefs.KeyAction{prefs.KeyHold}},
 }
@@ -42,15 +43,15 @@ var keyLines = []keyLine{
 // left out of a legend for a game without the hold queue (controlsSections).
 // Both are pinned to keyLines by TestKeyLines.
 const (
-	keyLineCount = 6
-	keyHoldLine  = 5
+	keyLineCount = 7
+	keyHoldLine  = 6
 )
 
-// keySlotsMax is the most keys one action has (rotate CW's ↑ W X), and
-// keyLineActionsMax the most actions one line has (move's two halves):
-// together they size the dialog's slot buttons (keysSlotBtns).
+// keySlotsMax is the most keys one action has (rotate CW's ↑ W, hold's C
+// Shift), and keyLineActionsMax the most actions one line has (move's two
+// halves): together they size the dialog's slot buttons (keysSlotBtns).
 const (
-	keySlotsMax        = 3
+	keySlotsMax        = 2
 	keyLineActionsMax  = 2
 	keySlotButtonCount = keySlotsMax * keyLineActionsMax
 )
@@ -63,6 +64,7 @@ var keyActionLabels = map[prefs.KeyAction]string{
 	prefs.KeySoftDrop:  "soft drop",
 	prefs.KeyRotateCW:  "rotate CW",
 	prefs.KeyRotateCCW: "rotate CCW",
+	prefs.KeyRotate180: "rotate 180",
 	prefs.KeyHardDrop:  "hard drop",
 	prefs.KeyHold:      "hold",
 }
@@ -137,6 +139,8 @@ func moveForAction(act prefs.KeyAction) (func(*engine.Engine), bool) {
 		return (*engine.Engine).RotateCW, true
 	case prefs.KeyRotateCCW:
 		return (*engine.Engine).RotateCCW, true
+	case prefs.KeyRotate180:
+		return (*engine.Engine).Rotate180, true
 	case prefs.KeyHardDrop:
 		return (*engine.Engine).HardDrop, true
 	case prefs.KeyHold:

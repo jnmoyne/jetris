@@ -17,14 +17,17 @@ type lockAward struct {
 }
 
 // noteStep records a successful step of the falling piece: a rotation is
-// remembered with the SRS kick that placed it (what a T-spin is judged by),
-// any shift or downward step forgets it, and a player's soft drop — a
-// MoveDown that is not a gravity tick — earns the piece a cell of drop
-// points. Call with e.mu held.
+// remembered with the kick that placed it (what a T-spin is judged by) — a
+// half turn as such, its kicks being no quarter turn's — any shift or
+// downward step forgets it, and a player's soft drop — a MoveDown that is
+// not a gravity tick — earns the piece a cell of drop points. Call with e.mu
+// held.
 func (e *Engine) noteStep(move MoveType, internal bool, kick int) {
 	switch move {
 	case RotateCW, RotateCCW:
 		e.spin = game.SpinState{Rotated: true, Kick: kick}
+	case Rotate180:
+		e.spin = game.SpinState{Rotated: true, Kick: kick, Half: true}
 	case MoveDown:
 		e.spin.Rotated = false
 		if !internal {

@@ -26,7 +26,7 @@ func TestKeymapRoundTrip(t *testing.T) {
 	}
 
 	want := DefaultKeymap()
-	want[KeyRotateCW] = []string{"↑", "K", "X"}
+	want[KeyRotateCW] = []string{"↑", "K"}
 	want[KeyHold] = []string{"H", "Shift"}
 	if err := SaveKeymap(want); err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestKeymapNormalize(t *testing.T) {
 		KeyMoveLeft:  {"Tab", "A"},            // Tab is reserved: the slot takes ←
 		KeyMoveRight: {"→", "D", "E"},         // the extra slot goes
 		KeySoftDrop:  {"A"},                   // A is move left's: ↓, and S comes back
-		KeyRotateCCW: {"↑"},                   // ↑ is rotate CW's (absent, so at its defaults, and earlier): Z
+		KeyRotateCCW: {"↑"},                   // ↑ is rotate CW's (absent, so it claimed its defaults first): X
 		KeyHardDrop:  {""},                    // empty: Space
 		KeyHold:      {"Space", "Shift", "Q"}, // Space is hard drop's: C
 	}
@@ -58,8 +58,9 @@ func TestKeymapNormalize(t *testing.T) {
 		KeyMoveLeft:  {"←", "A"},
 		KeyMoveRight: {"→", "D"},
 		KeySoftDrop:  {"↓", "S"},
-		KeyRotateCW:  {"↑", "W", "X"},
-		KeyRotateCCW: {"Z", "Ctrl"},
+		KeyRotateCW:  {"↑", "W"},
+		KeyRotateCCW: {"X", "Ctrl"},
+		KeyRotate180: {"Z"},
 		KeyHardDrop:  {"Space"},
 		KeyHold:      {"C", "Shift"},
 	}
@@ -69,9 +70,53 @@ func TestKeymapNormalize(t *testing.T) {
 
 	// Every key of rotate CCW handed to move left, defaults included: no
 	// scheme at all.
-	k = Keymap{KeyMoveLeft: {"Z", "Ctrl"}, KeyRotateCCW: {"Z", "Ctrl"}}
+	k = Keymap{KeyMoveLeft: {"X", "Ctrl"}, KeyRotateCCW: {"X", "Ctrl"}}
 	if got := k.Normalize(); !reflect.DeepEqual(got, DefaultKeymap()) {
 		t.Fatalf("a starved action: Normalize = %v, want the defaults", got)
+	}
+}
+
+// A file from before the half turn had a key: rotate_180 is not in it, and
+// its Z is still rotate CCW's, X rotate CW's third. The new action claims
+// its default first, so the old defaults load as the new ones — and any
+// other key the player chose stays.
+func TestKeymapMigratesOldFile(t *testing.T) {
+	old := func() Keymap {
+		return Keymap{
+			KeyMoveLeft:  {"←", "A"},
+			KeyMoveRight: {"→", "D"},
+			KeySoftDrop:  {"↓", "S"},
+			KeyRotateCW:  {"↑", "W", "X"},
+			KeyRotateCCW: {"Z", "Ctrl"},
+			KeyHardDrop:  {"Space"},
+			KeyHold:      {"C", "Shift"},
+		}
+	}
+	if got := old().Normalize(); !reflect.DeepEqual(got, DefaultKeymap()) {
+		t.Fatalf("the old defaults: Normalize = %v, want the new defaults", got)
+	}
+	k := old()
+	k[KeyHold] = []string{"H", "Shift"}
+	want := DefaultKeymap()
+	want[KeyHold] = []string{"H", "Shift"}
+	if got := k.Normalize(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the old defaults with H to hold: Normalize = %v, want %v", got, want)
+	}
+	// Z on some other move gives way to the half turn, whose default it is
+	// now; a rotate CCW key of the player's own stays.
+	k = old()
+	k[KeyHold] = []string{"Z", "Shift"}
+	k[KeyRotateCCW] = []string{"Q", "Ctrl"}
+	want = DefaultKeymap()
+	want[KeyRotateCCW] = []string{"Q", "Ctrl"}
+	if got := k.Normalize(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Z on hold, Q on rotate CCW: Normalize = %v, want %v", got, want)
+	}
+	// Rotate CW's third slot is gone: a key in it is dropped.
+	k = old()
+	k[KeyRotateCW] = []string{"↑", "W", "K"}
+	if got := k.Normalize(); !reflect.DeepEqual(got, DefaultKeymap()) {
+		t.Fatalf("a third rotate CW key: Normalize = %v, want the new defaults", got)
 	}
 }
 
@@ -102,6 +147,9 @@ func TestKeymapActionOf(t *testing.T) {
 	}
 	if got := k.ActionOf("Shift"); got != KeyHold {
 		t.Errorf("ActionOf(Shift) = %q, want hold", got)
+	}
+	if got := k.ActionOf("Z"); got != KeyRotate180 {
+		t.Errorf("ActionOf(Z) = %q, want rotate_180", got)
 	}
 	if got := k.ActionOf("Q"); got != "" {
 		t.Errorf("ActionOf(Q) = %q, want none", got)

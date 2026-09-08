@@ -287,10 +287,8 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 		newPiece = *p
 		newPiece.Row++
 		valid = game.CanPlace(newPiece, base)
-	case RotateCW:
-		newPiece, kick, valid = game.RotateKick(*p, true, base)
-	case RotateCCW:
-		newPiece, kick, valid = game.RotateKick(*p, false, base)
+	case RotateCW, RotateCCW, Rotate180:
+		newPiece, kick, valid = game.RotateKick(*p, turnOf(move), base)
 	}
 
 	if !valid {
@@ -349,10 +347,8 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 		newPiece = *p
 		newPiece.Row++
 		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
-	case RotateCW:
-		newPiece, kick, valid = game.RotateCoopKick(*p, true, base, e.playerIdx)
-	case RotateCCW:
-		newPiece, kick, valid = game.RotateCoopKick(*p, false, base, e.playerIdx)
+	case RotateCW, RotateCCW, Rotate180:
+		newPiece, kick, valid = game.RotateCoopKick(*p, turnOf(move), base, e.playerIdx)
 	}
 
 	if !valid {
@@ -466,4 +462,16 @@ func playerMoves(m MoveType, internal bool) []MoveType {
 		return nil
 	}
 	return []MoveType{m}
+}
+
+// turnOf is the turn a rotation move makes: the quarter turn either way, or
+// the half turn (Rotate180). Only meaningful for the three rotations.
+func turnOf(m MoveType) game.Turn {
+	switch m {
+	case RotateCCW:
+		return game.TurnCCW
+	case Rotate180:
+		return game.Turn180
+	}
+	return game.TurnCW
 }

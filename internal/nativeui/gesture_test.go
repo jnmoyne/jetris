@@ -360,7 +360,7 @@ func TestGestureFieldChangeResets(t *testing.T) {
 // transport-less engine: dispatched moves queue in its buffer in order.
 func TestMoveForDispatches(t *testing.T) {
 	eng := engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
-	all := []engine.MoveType{engine.MoveLeft, engine.MoveRight, engine.MoveDown, engine.RotateCW, engine.RotateCCW, engine.MoveHardDrop, engine.MoveHold}
+	all := []engine.MoveType{engine.MoveLeft, engine.MoveRight, engine.MoveDown, engine.RotateCW, engine.RotateCCW, engine.Rotate180, engine.MoveHardDrop, engine.MoveHold}
 	for _, m := range all {
 		moveFor(m)(eng)
 	}

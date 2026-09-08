@@ -1091,12 +1091,18 @@ const (
 // Abandoned-game detection: every client re-checks the lobby's games on a
 // timer. A started (in-progress) game is abandoned once its stream has seen no
 // messages for AbandonedIdleTimeout; a game that was created but never started
-// is abandoned AbandonedUnstartedTimeout after creation. Abandoned games grow
-// a Delete button in the lobby.
+// is abandoned AbandonedUnstartedTimeout after creation. An OPEN game — anyone
+// may join or leave at any time, mid-game included — is a standing invitation
+// rather than a party that failed to gather, so neither rule applies to it:
+// it is abandoned only after AbandonedOpenTimeout with no activity at all —
+// no one joining, leaving, readying or playing (lobby.isAbandoned). The
+// login-time cleanup pass (internal/cleanup) leaves an open game alone on the
+// same terms. Abandoned games grow a Delete button in the lobby.
 const (
 	AbandonedCheckInterval    = 1 * time.Minute
 	AbandonedIdleTimeout      = 1 * time.Minute
 	AbandonedUnstartedTimeout = 15 * time.Minute
+	AbandonedOpenTimeout      = 14 * 24 * time.Hour
 )
 
 // ExtraColumnsPerPlayer clamps a game's extra-columns setting to its legal

@@ -590,7 +590,7 @@ created → starting → [countdown] → in_progress → finished → archived
 | [countdown] | in_progress | 5-second countdown completes |
 | in_progress | finished | Game over (top-out) |
 | finished | archived | Archive record published, game stream deleted (5s delay) |
-| created/starting | cancelled | Creator absent, all players absent, or cleanup |
+| created/starting | cancelled | Creator absent, all players absent, or cleanup (an open game only after two weeks without activity) |
 | any | (deleted) | A player deletes an **abandoned** game from the lobby (see below) |
 
 ### Abandoned Games
@@ -599,6 +599,8 @@ Some games go nowhere: the creator never joins, the players never click READY, o
 
 - **Never started** — the game is still `created` or `starting` more than **15 minutes** after creation (`AbandonedUnstartedTimeout`).
 - **Started, then deserted** — the game is `in_progress` but its game stream has seen **no messages for one minute** (`AbandonedIdleTimeout`; a live game publishes constantly, so a silent stream means every player is gone). An `in_progress` listing whose stream no longer exists is flagged immediately — it can never make progress.
+
+Neither rule applies to an **open** game (§ Creating a Game below): its seats come and go, mid-game included, so an empty table or a quiet stream means nothing. An open game is abandoned only when **nothing has happened to it for two weeks** (`AbandonedOpenTimeout`) — no change to its listing (a join, a leave, a ready; the lobby KV revision's time, which every client's watcher keeps) and no message on its stream. A started open game whose stream is gone is still flagged at once. The login-time cleanup pass (`internal/cleanup`) leaves an open game alone on the same terms: it cancels or finishes one only once the lobby calls it abandoned.
 
 The check rebuilds the flag set from scratch each pass, so a game where activity resumes (e.g. a player reconnects) is un-flagged again.
 

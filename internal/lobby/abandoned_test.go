@@ -14,14 +14,14 @@ import (
 )
 
 // TestAbandonedRules exercises the per-game abandonment rules by injecting a
-// future "now" into isAbandoned: an unstarted game is abandoned 15 minutes
-// after creation, a started game after one minute without stream activity, and
-// a started game whose stream is already gone immediately.
+// future "now" into isAbandoned: an unstarted invite game is abandoned 15
+// minutes after creation, a started one after one minute without stream
+// activity, and a started game whose stream is already gone immediately.
 func TestAbandonedRules(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.GameRules{Ghost: true}})
+	gameID, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, InviteOnly: true, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +66,71 @@ func TestAbandonedRules(t *testing.T) {
 	lb.checkAbandoned(ctx)
 	if !lb.AbandonedGames()[gameID] {
 		t.Error("checker pass did not flag the abandoned game")
+	}
+}
+
+// TestOpenGameAbandonedAfterTwoWeeks: an open game is a standing invitation —
+// neither the 15-minute unstarted rule nor the one-minute silence rule
+// touches it. It is abandoned only once nothing has happened to it for two
+// weeks: no change to its listing (a join, a leave, a ready) and no move on
+// its stream. A started open game whose stream is gone is still abandoned at
+// once.
+func TestOpenGameAbandonedAfterTwoWeeks(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	gameID, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.GameRules{Ghost: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the KV watcher deliver the listing
+	g, ok := lb.Games()[gameID]
+	if !ok {
+		t.Fatal("game not in listing")
+	}
+	if g.InviteOnly {
+		t.Fatal("setup: the game must be open")
+	}
+
+	now := time.Now()
+	week, twoWeeks := 7*24*time.Hour, config.AbandonedOpenTimeout+time.Second
+	if lb.isAbandoned(ctx, g, now.Add(config.AbandonedUnstartedTimeout+time.Second)) {
+		t.Error("open game flagged by the unstarted timeout")
+	}
+	if lb.isAbandoned(ctx, g, now.Add(week)) {
+		t.Error("open game a week old flagged")
+	}
+	if !lb.isAbandoned(ctx, g, now.Add(twoWeeks)) {
+		t.Error("open game untouched for two weeks not flagged")
+	}
+	// A change to the listing — someone joining, say — is activity: the
+	// clock restarts from the listing's last revision.
+	lb.mu.Lock()
+	lb.touched[gameID] = now.Add(week)
+	lb.mu.Unlock()
+	if lb.isAbandoned(ctx, g, now.Add(twoWeeks)) {
+		t.Error("open game whose listing changed a week ago flagged")
+	}
+	if !lb.isAbandoned(ctx, g, now.Add(week+twoWeeks)) {
+		t.Error("open game untouched for two weeks after its last change not flagged")
+	}
+
+	// Started: a silent stream is not desertion in an open game.
+	g.Status = config.GameStatusInProgress
+	if lb.isAbandoned(ctx, g, now.Add(config.AbandonedIdleTimeout+time.Second)) {
+		t.Error("started open game flagged by the idle timeout")
+	}
+	if lb.isAbandoned(ctx, g, now.Add(week)) {
+		t.Error("started open game quiet for a week flagged")
+	}
+	if !lb.isAbandoned(ctx, g, now.Add(week+twoWeeks)) {
+		t.Error("started open game quiet for two weeks not flagged")
+	}
+	if err := natspkg.DeleteGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+	if !lb.isAbandoned(ctx, g, now) {
+		t.Error("started open game with a deleted stream not flagged")
 	}
 }
 

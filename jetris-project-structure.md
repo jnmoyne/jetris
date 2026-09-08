@@ -309,6 +309,7 @@ const (
     AbandonedCheckInterval    = 1 * time.Minute   // how often each client re-checks
     AbandonedIdleTimeout      = 1 * time.Minute   // in_progress: max stream silence
     AbandonedUnstartedTimeout = 15 * time.Minute  // created/starting: max age since CreatedAt
+    AbandonedOpenTimeout      = 14 * 24 * time.Hour // an OPEN game: max time since anything happened to it (a listing change, a stream message)
 )
 
 // ExtraColumnsPerPlayer clamps a game's extra-columns setting to its legal
@@ -2333,7 +2334,12 @@ func (l *Lobby) checkAbandoned(ctx context.Context)
 // isAbandoned applies the rules to one listing: created/starting games are
 // abandoned config.AbandonedUnstartedTimeout (15 min) after CreatedAt;
 // in_progress games once the game stream's State.LastTime is older than
-// config.AbandonedIdleTimeout (1 min) — or immediately if the stream is gone
+// config.AbandonedIdleTimeout (1 min) — or immediately if the stream is gone.
+// An OPEN game answers to neither: it is abandoned only after
+// config.AbandonedOpenTimeout (two weeks) with no activity — lastActivity,
+// the latest of the listing's last KV revision (touched, kept by the
+// watcher) and the stream's last message. IsAbandoned is the exported
+// as-of-now form the cleanup pass asks about open games
 // (ErrStreamNotFound); other errors don't flag (can't tell). `now` is a
 // parameter so tests inject a future time instead of waiting.
 func (l *Lobby) isAbandoned(ctx context.Context, g GameListing, now time.Time) bool
@@ -2505,6 +2511,7 @@ Orphaned-stream detection relies solely on the JetStream `StreamNames` listing c
 | Condition | Action (`cleanup.go`) |
 |-----------|--------|
 | Status `finished` (orphaned — not yet archived) | `archiveGame`: CAS-transition meta `→ archived`, `SealGameStream`, and update the KV listing to `archived` (this is the only place a stream is sealed) |
+| Any status, an OPEN game the lobby does not call abandoned (`lb.IsAbandoned`: two weeks without activity) | left alone — its seats come and go, an empty roster means nothing |
 | Status `created`, creator absent from KV | `cancelGame`: CAS-transition `→ cancelled`, delete stream, remove KV entry |
 | Status `starting`, all rostered players absent from KV | `cancelGame`: CAS-transition `→ cancelled`, delete stream, remove KV entry |
 | Status `in_progress`, all players absent from KV | `finishAbandonedGame`: CAS-transition `→ finished` with `abandoned: true` and `FinishedAt` (a later pass then archives it) |

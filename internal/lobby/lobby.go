@@ -29,7 +29,8 @@ type Lobby struct {
 	mu              sync.RWMutex
 	players         map[string]PlayerPresence
 	games           map[string]GameListing
-	abandoned       map[string]bool // games the periodic checker flagged as abandoned
+	abandoned       map[string]bool      // games the periodic checker flagged as abandoned
+	touched         map[string]time.Time // when each game's listing last changed — the KV revision's time (see lastActivity)
 	archives        []config.ArchiveRecord
 	topRanked       map[string]bool             // archived game IDs the history marks TOP 10 (see config.ReplayTopRankedCut)
 	replays         map[string]bool             // archived game IDs that have a replay (see runReplayMarkerConsumer)
@@ -68,6 +69,7 @@ func New(
 		players:         make(map[string]PlayerPresence),
 		games:           make(map[string]GameListing),
 		abandoned:       make(map[string]bool),
+		touched:         make(map[string]time.Time),
 		topRanked:       make(map[string]bool),
 		replays:         make(map[string]bool),
 		pins:            make(map[string]config.ReplayPin),
@@ -429,6 +431,7 @@ func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
 	case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
 		delete(l.games, gameID)
 		delete(l.abandoned, gameID)
+		delete(l.touched, gameID)
 		dead = true
 	default:
 		var g GameListing
@@ -437,6 +440,7 @@ func (l *Lobby) handleGameUpdate(entry jetstream.KeyValueEntry) {
 			return
 		}
 		l.games[gameID] = g
+		l.touched[gameID] = entry.Created()
 		switch g.Status {
 		case config.GameStatusFinished, config.GameStatusArchived, config.GameStatusCancelled:
 			dead = true
@@ -730,9 +734,16 @@ func (l *Lobby) checkAbandoned(ctx context.Context) {
 // isAbandoned applies the abandonment rules to one listing: a game that never
 // started is abandoned AbandonedUnstartedTimeout after creation; a started game
 // is abandoned once its stream has seen no messages for AbandonedIdleTimeout.
+// An OPEN game answers to neither: its seats come and go, so it is abandoned
+// only when nothing at all has happened to it — no join, leave, ready or
+// move (lastActivity) — for AbandonedOpenTimeout. A started game whose stream
+// is gone can never make progress and is abandoned at once, open or not.
 func (l *Lobby) isAbandoned(ctx context.Context, g GameListing, now time.Time) bool {
 	switch g.Status {
 	case config.GameStatusCreated, config.GameStatusStarting:
+		if !g.InviteOnly {
+			return now.Sub(l.lastActivity(g, time.Time{})) > config.AbandonedOpenTimeout
+		}
 		return now.Sub(g.CreatedAt) > config.AbandonedUnstartedTimeout
 	case config.GameStatusInProgress:
 		s, err := l.js.Stream(ctx, config.GameStream(g.GameID))
@@ -744,9 +755,37 @@ func (l *Lobby) isAbandoned(ctx context.Context, g GameListing, now time.Time) b
 		if err != nil {
 			return false // can't tell (e.g. transient network error) — don't flag
 		}
-		return now.Sub(s.CachedInfo().State.LastTime) > config.AbandonedIdleTimeout
+		played := s.CachedInfo().State.LastTime
+		if !g.InviteOnly {
+			return now.Sub(l.lastActivity(g, played)) > config.AbandonedOpenTimeout
+		}
+		return now.Sub(played) > config.AbandonedIdleTimeout
 	}
 	return false
+}
+
+// IsAbandoned is isAbandoned as of now: the login cleanup's question
+// (internal/cleanup) about an open game, whose seats being empty means
+// nothing by itself.
+func (l *Lobby) IsAbandoned(ctx context.Context, g GameListing) bool {
+	return l.isAbandoned(ctx, g, time.Now())
+}
+
+// lastActivity is the last time anything happened to the game: the latest of
+// its listing's last change — a join, a leave, a ready, whose KV revision
+// time the watcher keeps (touched) — its creation, and played, the game
+// stream's last message (zero for a game not started).
+func (l *Lobby) lastActivity(g GameListing, played time.Time) time.Time {
+	last := g.CreatedAt
+	l.mu.RLock()
+	if t, ok := l.touched[g.GameID]; ok && t.After(last) {
+		last = t
+	}
+	l.mu.RUnlock()
+	if played.After(last) {
+		last = played
+	}
+	return last
 }
 
 // DeleteGame tears down an abandoned game entirely: the per-game stream, the

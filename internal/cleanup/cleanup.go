@@ -77,6 +77,13 @@ func Run(ctx context.Context, js jetstream.JetStream, kv jetstream.KeyValue, lb 
 		if time.Since(listing.CreatedAt) < creationGracePeriod {
 			continue // just created; the roster may legitimately still be empty
 		}
+		if !listing.InviteOnly && !lb.IsAbandoned(ctx, listing) {
+			// An open game's seats come and go, mid-game included: nobody at
+			// the table means nothing. It is abandoned — and cancelled or
+			// finished below like any other — only after
+			// config.AbandonedOpenTimeout with no activity at all.
+			continue
+		}
 
 		switch listing.Status {
 		case config.GameStatusFinished:

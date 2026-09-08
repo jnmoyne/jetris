@@ -254,14 +254,16 @@ func TestGestureFingersAreIndependent(t *testing.T) {
 	r.want(t)
 	r.wantFingers(t, 0)
 
-	// Two taps, the second finger down and up while the first is down.
+	// Two taps, the second finger down and up while the first is down —
+	// pressed further apart than chordWindow, so two taps and not the
+	// two-finger one (TestGestureTwoFingerTapTurnsHalf).
 	r = newGestureRig()
 	r.feed(pointer.Press, 1, 220, 300, 0)
-	r.feed(pointer.Press, 2, 80, 300, 10*ms)
+	r.feed(pointer.Press, 2, 80, 300, 150*ms)
 	r.wantFingers(t, 2)
-	r.feed(pointer.Release, 2, 80, 300, 50*ms)
+	r.feed(pointer.Release, 2, 80, 300, 200*ms)
 	r.want(t, engine.RotateCCW)
-	r.feed(pointer.Release, 1, 220, 300, 100*ms)
+	r.feed(pointer.Release, 1, 220, 300, 250*ms)
 	r.want(t, engine.RotateCCW, engine.RotateCW)
 	r.wantFingers(t, 0)
 
@@ -312,6 +314,164 @@ func TestGestureFingersAreIndependent(t *testing.T) {
 	if r.g.finger(10) != nil {
 		t.Fatal("the oldest finger was not forgotten past maxFingers")
 	}
+}
+
+// TestGestureTwoFingerTapTurnsHalf: two fingers tapping together are one
+// half turn, from the first of them to lift — wherever they land, the other's
+// release moot, and so is whatever it does before lifting — and three
+// fingers are no more; fingers pressed further apart than chordWindow, or a
+// finger that has already begun a drag, are the taps and drags they always
+// were.
+func TestGestureTwoFingerTapTurnsHalf(t *testing.T) {
+	r := newGestureRig()
+	r.feed(pointer.Press, 1, 220, 300, 0)
+	r.feed(pointer.Press, 2, 250, 300, 30*ms)
+	r.feed(pointer.Release, 1, 220, 300, 60*ms)
+	r.want(t, engine.Rotate180)
+	r.feed(pointer.Release, 2, 250, 300, 80*ms)
+	r.want(t, engine.Rotate180)
+	r.wantFingers(t, 0)
+
+	// The second finger lifting first, on the other half of the board.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 220, 300, 0)
+	r.feed(pointer.Press, 2, 80, 300, 30*ms)
+	r.feed(pointer.Release, 2, 80, 300, 60*ms)
+	r.want(t, engine.Rotate180)
+	r.feed(pointer.Release, 1, 220, 300, 80*ms)
+	r.want(t, engine.Rotate180)
+	r.wantFingers(t, 0)
+
+	// A wobble inside the slop is still the pair's; and a partner that
+	// goes on to move once the turn has fired does nothing more.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 220, 300, 0)
+	r.feed(pointer.Press, 2, 250, 300, 20*ms)
+	r.feed(pointer.Drag, 2, 255, 304, 40*ms)
+	r.feed(pointer.Release, 1, 220, 300, 60*ms)
+	r.want(t, engine.Rotate180)
+	r.feed(pointer.Drag, 2, 250, 400, 200*ms)
+	r.step(220*ms, 100)
+	r.feed(pointer.Release, 2, 250, 400, 300*ms)
+	r.want(t, engine.Rotate180)
+	r.wantFingers(t, 0)
+
+	// Three fingers: one half turn, nothing more.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 100, 300, 0)
+	r.feed(pointer.Press, 2, 150, 300, 20*ms)
+	r.feed(pointer.Press, 3, 200, 300, 40*ms)
+	r.feed(pointer.Release, 2, 150, 300, 70*ms)
+	r.feed(pointer.Release, 1, 100, 300, 80*ms)
+	r.feed(pointer.Release, 3, 200, 300, 90*ms)
+	r.want(t, engine.Rotate180)
+	r.wantFingers(t, 0)
+
+	// Pressed further apart than chordWindow: two taps, two rotates.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 220, 300, 0)
+	r.feed(pointer.Press, 2, 80, 300, 150*ms)
+	r.feed(pointer.Release, 1, 220, 300, 200*ms)
+	r.want(t, engine.RotateCW)
+	r.feed(pointer.Release, 2, 80, 300, 220*ms)
+	r.want(t, engine.RotateCW, engine.RotateCCW)
+	r.wantFingers(t, 0)
+
+	// A finger already dragging when the other lands is no partner: the
+	// other's tap is its own rotate, and the drag goes on.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 100, 300, 0)
+	r.feed(pointer.Drag, 1, 140, 300, 15*ms)
+	r.want(t, engine.MoveRight)
+	r.feed(pointer.Press, 2, 250, 300, 20*ms)
+	r.feed(pointer.Release, 2, 250, 300, 60*ms)
+	r.want(t, engine.MoveRight, engine.RotateCW)
+	r.feed(pointer.Drag, 1, 160, 300, 80*ms)
+	r.feed(pointer.Release, 1, 160, 300, 100*ms)
+	r.want(t, engine.MoveRight, engine.RotateCW, engine.MoveRight)
+	r.wantFingers(t, 0)
+}
+
+// TestGestureTwoFingerSwipeDoesNothing: the tap is a two-finger press's only
+// move. The moment either finger moves past the slop the chord is over — no
+// hard drop (two fingers flicking down were two of them), no shift, no hold,
+// and no rotate from the finger that stayed still — and so is a chord held
+// past tapMaxDur. Nothing lingers: the next finger gestures as ever, and a
+// thumb resting since before chordWindow is no chord.
+func TestGestureTwoFingerSwipeDoesNothing(t *testing.T) {
+	// Two fingers flicking down together.
+	r := newGestureRig()
+	r.feed(pointer.Press, 1, 120, 100, 0)
+	r.feed(pointer.Press, 2, 180, 100, 10*ms)
+	r.feed(pointer.Drag, 1, 120, 140, 20*ms)
+	r.feed(pointer.Drag, 2, 180, 140, 22*ms)
+	r.feed(pointer.Drag, 1, 120, 200, 35*ms)
+	r.feed(pointer.Drag, 2, 180, 200, 37*ms)
+	r.feed(pointer.Drag, 1, 122, 240, 50*ms)
+	r.feed(pointer.Drag, 2, 182, 240, 52*ms)
+	r.feed(pointer.Release, 1, 122, 240, 55*ms)
+	r.feed(pointer.Release, 2, 182, 240, 57*ms)
+	r.step(200*ms, 100)
+	r.want(t)
+	r.wantFingers(t, 0)
+
+	// One finger of the pair swipes, the other lifts where it was: nothing
+	// — not the still finger's rotate either.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 100, 300, 0)
+	r.feed(pointer.Press, 2, 250, 300, 20*ms)
+	r.feed(pointer.Drag, 1, 160, 300, 40*ms)
+	r.feed(pointer.Release, 2, 250, 300, 60*ms)
+	r.feed(pointer.Drag, 1, 220, 300, 80*ms)
+	r.feed(pointer.Release, 1, 220, 300, 100*ms)
+	r.want(t)
+	r.wantFingers(t, 0)
+
+	// Two fingers swiping up: no hold.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 120, 300, 0)
+	r.feed(pointer.Press, 2, 180, 300, 10*ms)
+	r.feed(pointer.Drag, 1, 120, 230, 40*ms)
+	r.feed(pointer.Drag, 2, 180, 230, 42*ms)
+	r.feed(pointer.Release, 1, 120, 230, 60*ms)
+	r.feed(pointer.Release, 2, 180, 230, 62*ms)
+	r.want(t)
+	r.wantFingers(t, 0)
+
+	// Held past tapMaxDur and lifted: no tap from either finger.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 120, 300, 0)
+	r.feed(pointer.Press, 2, 180, 300, 10*ms)
+	r.feed(pointer.Release, 1, 120, 300, 400*ms)
+	r.feed(pointer.Release, 2, 180, 300, 420*ms)
+	r.want(t)
+	r.wantFingers(t, 0)
+
+	// A chord that died leaves nothing behind: the next finger's flick drops.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 120, 100, 0)
+	r.feed(pointer.Press, 2, 180, 100, 10*ms)
+	r.feed(pointer.Drag, 1, 120, 200, 30*ms)
+	r.feed(pointer.Release, 1, 120, 200, 40*ms)
+	r.feed(pointer.Release, 2, 180, 100, 45*ms)
+	r.want(t)
+	r.feed(pointer.Press, 3, 150, 100, 500*ms)
+	r.feed(pointer.Drag, 3, 150, 140, 510*ms)
+	r.feed(pointer.Drag, 3, 150, 200, 525*ms)
+	r.feed(pointer.Drag, 3, 152, 240, 540*ms)
+	r.feed(pointer.Release, 3, 152, 240, 545*ms)
+	r.want(t, engine.MoveHardDrop)
+	r.wantFingers(t, 0)
+
+	// A thumb resting on the edge is no chord: a flick beside it drops.
+	r = newGestureRig()
+	r.feed(pointer.Press, 1, 5, 300, 0)
+	r.feed(pointer.Press, 2, 150, 100, 500*ms)
+	r.feed(pointer.Drag, 2, 150, 140, 510*ms)
+	r.feed(pointer.Drag, 2, 150, 200, 525*ms)
+	r.feed(pointer.Drag, 2, 152, 240, 540*ms)
+	r.feed(pointer.Release, 2, 152, 240, 545*ms)
+	r.want(t, engine.MoveHardDrop)
 }
 
 func TestGestureRoomBoundsSteps(t *testing.T) {
@@ -479,6 +639,34 @@ func TestPlayfieldGesturesDriveThePiece(t *testing.T) {
 		touch(g.r, pointer.Release, 1, cx-g.cell, cy, 80*ms)
 		gameFrame(g.a, g.r)
 		want(t, g, engine.RotateCCW)
+	})
+	t.Run("two-finger tap turns half", func(t *testing.T) {
+		g := newGame(t, config.GameStatusInProgress)
+		cx, cy := center(g)
+		touch(g.r, pointer.Press, 1, cx-g.cell, cy, 0)
+		touch(g.r, pointer.Press, 2, cx+g.cell, cy, 20*ms)
+		touch(g.r, pointer.Release, 1, cx-g.cell, cy, 70*ms)
+		touch(g.r, pointer.Release, 2, cx+g.cell, cy, 90*ms)
+		gameFrame(g.a, g.r)
+		want(t, g, engine.Rotate180)
+	})
+	t.Run("two-finger flick drops nothing", func(t *testing.T) {
+		g := newGame(t, config.GameStatusInProgress)
+		cx, cy := center(g)
+		y0 := cy - 2*g.cell
+		touch(g.r, pointer.Press, 1, cx-g.cell, y0, 0)
+		touch(g.r, pointer.Press, 2, cx+g.cell, y0, 5*ms)
+		gameFrame(g.a, g.r)
+		touch(g.r, pointer.Move, 1, cx-g.cell, y0+2*g.cell, 16*ms)
+		touch(g.r, pointer.Move, 2, cx+g.cell, y0+2*g.cell, 18*ms)
+		gameFrame(g.a, g.r)
+		touch(g.r, pointer.Move, 1, cx-g.cell, y0+4*g.cell, 32*ms)
+		touch(g.r, pointer.Move, 2, cx+g.cell, y0+4*g.cell, 34*ms)
+		touch(g.r, pointer.Release, 1, cx-g.cell, y0+4*g.cell, 40*ms)
+		touch(g.r, pointer.Release, 2, cx+g.cell, y0+4*g.cell, 42*ms)
+		gameFrame(g.a, g.r)
+		gameFrame(g.a, g.r)
+		want(t, g)
 	})
 	t.Run("swipe shifts", func(t *testing.T) {
 		g := newGame(t, config.GameStatusInProgress)

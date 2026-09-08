@@ -850,7 +850,7 @@ func (a *App) controlsSections(hold, editable bool) []controlsSection {
 		keys = append(keys, row)
 	}
 	keys = append(keys, controlsRow{key: "TAB", move: "chat / board"})
-	touch := []controlsRow{{key: "swipe ← →", move: "move"}, {key: "tap ◀", move: "rotate CCW"}, {key: "tap ▶", move: "rotate CW"}, {key: "drag ↓", move: "soft drop"}, {key: "flick ↓", move: "hard drop"}}
+	touch := []controlsRow{{key: "swipe ← →", move: "move"}, {key: "tap ◀", move: "rotate CCW"}, {key: "tap ▶", move: "rotate CW"}, {key: "2-finger tap", move: "rotate 180"}, {key: "drag ↓", move: "soft drop"}, {key: "flick ↓", move: "hard drop"}}
 	if hold {
 		touch = append(touch, controlsRow{key: "swipe ↑", move: "hold"})
 	}

@@ -1097,6 +1097,7 @@ a thumb on the pad. The pad stays; both dispatch exactly the same engine moves:
 | swipe left / right | shift the piece — a column per cell of travel, so the piece follows the finger | `MoveLeft` / `MoveRight` |
 | tap the left half of the playfield | rotate counter-clockwise | `RotateCCW` |
 | tap the right half | rotate clockwise | `RotateCW` |
+| tap with two fingers | half turn (180°), on the SRS-X kicks | `Rotate180` |
 | press and drag down | soft drop — a row per cell of travel, the piece still steerable sideways; the drag itself never locks it (the lock delay decides, as for ↓) | `MoveDown` |
 | flick down | hard drop | `HardDrop` |
 | swipe up | hold (games with the hold rule; the HOLD box is tappable too) | `Hold` |
@@ -1130,7 +1131,14 @@ for 120 ms the rows it covered step after all, and the release soft-drops whatev
 left. Drift is filtered by axis: a drag that began sideways shifts a column
 at half a cell of travel (responsive) but soft-drops only after a whole cell of droop;
 one that began downward shifts only after a whole cell of wobble. A tap is a press
-released within 300 ms and 12 dp; a held, still finger does nothing. Gestures fire only
+released within 300 ms and 12 dp; a held, still finger does nothing. Two fingers tapping
+together — pressed within 100 ms of each other, neither past the slop — are one half
+turn, fired by whichever of them lifts first (the other's release is then moot); a thumb
+that was already resting on the board is no partner, so it still blocks nothing, and a
+finger that has begun a drag is no partner either. That tap is the only thing two fingers
+pressed together do: the moment either moves past the slop both are inert until they
+lift — two fingers swiping down are no hard drop (they were two, once), no shift, no
+hold — and so is a pair held past 300 ms. Gestures fire only
 while the game is playable (as the pad's clicks do) and are dropped, not queued, before
 the start, after elimination, and under the leave-game modal; a board re-planned under
 the finger (the first touch switching the pad to thumb size, a resize) drops the gesture

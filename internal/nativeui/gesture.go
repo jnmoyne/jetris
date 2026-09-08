@@ -6,6 +6,7 @@ package nativeui
 //	swipe left / right  shift the piece, a column per cell of travel
 //	tap the left half   rotate counter-clockwise
 //	tap the right half  rotate clockwise
+//	tap, two fingers    half turn (180°)
 //	drag down           soft drop, a row per cell of travel (still steerable)
 //	flick down          hard drop
 //	swipe up            hold (games with the hold rule)
@@ -18,7 +19,14 @@ package nativeui
 // presses gesture — a mouse click on the board is the "keys back to the
 // board" click (handleGameFocus) and must not rotate. Every finger is its own
 // gesture: a thumb resting on the board's edge blocks nothing, and a finger
-// dragging the piece down while another taps a rotation does both. (The
+// dragging the piece down while another taps a rotation does both. Two
+// fingers tapping together — pressed within chordWindow of each other,
+// neither past the slop — are the one exception, one gesture: the half turn,
+// fired by whichever of them lifts first; a thumb that was already resting
+// there is no partner. That is the only thing two fingers pressed together
+// do: the moment either moves past the slop both are inert until they lift —
+// two fingers swiping down are no hard drop (they were two, once), no shift,
+// no hold — and so is a pair held past tapMaxDur. (The
 // browser build never reuses a finger's pointer id on iOS — Gio's JS backend
 // only forgets touch identifiers on a touchcancel — so nothing here relies on
 // seeing the same id twice.)
@@ -64,6 +72,11 @@ const (
 	// longer, a still finger does nothing (the spec's "tap, hold, and drag"
 	// is a soft drop, not a rotate).
 	tapMaxDur = 300 * time.Millisecond
+	// chordWindow is the longest gap between two presses that make one
+	// two-finger tap (the half turn): both fingers of a real one land
+	// within a few tens of ms, and a thumb pressed on the board's edge half
+	// a second earlier is no partner — it still blocks nothing.
+	chordWindow = 100 * time.Millisecond
 	// flickVelocity (dp/ms) is the downward speed, over velocityWindow, that
 	// makes a drag a flick, and flickMinTravel the downward travel a flick
 	// must also cover — a hard drop is irreversible, so both must agree.
@@ -105,7 +118,7 @@ const (
 	gestureUndecided gesturePhase = iota // down, within the slop: a tap unless it moves
 	gestureDrag                          // moved sideways or down: the piece follows the finger
 	gestureUp                            // moved up: a hold once it reaches holdSwipe, a drag if it turns
-	gestureDone                          // the gesture fired its one move (hold); nothing more until release
+	gestureDone                          // the gesture fired its one move (hold, or the half turn a partner fired); nothing more until release
 )
 
 type gestureSample struct {
@@ -172,6 +185,25 @@ func (g *boardGesture) finger(id pointer.ID) *fingerGesture {
 
 func (g *boardGesture) forget(id pointer.ID) {
 	g.fingers = slices.DeleteFunc(g.fingers, func(f *fingerGesture) bool { return f.id == id })
+}
+
+// partners are the other fingers pressed together with f — its chord, whose
+// one move is the two-finger tap, from whichever finger lifts first, and
+// which is over the moment any of them moves: pressed within chordWindow of
+// f and still undecided, which is to say still within the slop (drag decides
+// a finger the moment it leaves it, and a chord's finger it retires).
+func (g *boardGesture) partners(f *fingerGesture) []*fingerGesture {
+	var ps []*fingerGesture
+	for _, p := range g.fingers {
+		if p == f || p.phase != gestureUndecided {
+			continue
+		}
+		if gap := p.t0 - f.t0; gap > chordWindow || gap < -chordWindow {
+			continue
+		}
+		ps = append(ps, p)
+	}
+	return ps
 }
 
 // feed advances the recognizer by one pointer event of the playfield's area,
@@ -349,6 +381,17 @@ func (f *fingerGesture) drag(g *boardGesture, ev pointer.Event, m unit.Metric, n
 		if slop := float32(m.Dp(gestureSlop)); d.X*d.X+d.Y*d.Y <= slop*slop {
 			return room
 		}
+		if ps := g.partners(f); len(ps) > 0 {
+			// A finger of a two-finger press leaving the slop: two fingers
+			// swiping are no gesture — the tap is a chord's only move — so
+			// the chord is over, every finger of it inert until it lifts.
+			// (Two fingers flicking down were two hard drops otherwise.)
+			f.phase = gestureDone
+			for _, p := range ps {
+				p.phase = gestureDone
+			}
+			return room
+		}
 		if -d.Y > absf(d.X) {
 			f.phase = gestureUp
 		} else {
@@ -381,11 +424,26 @@ func (f *fingerGesture) release(g *boardGesture, ev pointer.Event, m unit.Metric
 	case gestureUndecided:
 		d := ev.Position.Sub(f.start)
 		slop := float32(m.Dp(gestureSlop))
+		ps := g.partners(f)
 		if ev.Time-f.t0 <= tapMaxDur && d.X*d.X+d.Y*d.Y <= slop*slop {
-			if f.start.X < float32(g.fieldW)/2 {
+			if len(ps) > 0 {
+				// A two-finger tap: one half turn, from the first finger
+				// to lift; the others' releases are moot, and so is
+				// anything else they do before lifting.
+				emit(engine.Rotate180)
+				for _, p := range ps {
+					p.phase = gestureDone
+				}
+			} else if f.start.X < float32(g.fieldW)/2 {
 				emit(engine.RotateCCW)
 			} else {
 				emit(engine.RotateCW)
+			}
+		} else {
+			// Held too long, or lifted off the tap: no tap — and none from
+			// the fingers pressed with it either; the chord is over.
+			for _, p := range ps {
+				p.phase = gestureDone
 			}
 		}
 	case gestureDrag:

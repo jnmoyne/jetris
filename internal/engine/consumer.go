@@ -473,6 +473,15 @@ func (e *Engine) runEventsConsumer(ctx context.Context) {
 				return
 			}
 			e.tapMsg(msg)
+			// The join draws a line through the stream (joinSeq): events
+			// at or before it are the game's history, replayed to converge
+			// the totals; the first one past it ends the replay, and it and
+			// everything after are news.
+			if e.eventReplay.Load() {
+				if md, err := msg.Metadata(); err == nil && md.Sequence.Stream > e.joinSeq {
+					e.eventReplay.Store(false)
+				}
+			}
 			var ev GameEvent
 			if err := json.Unmarshal(msg.Data(), &ev); err != nil {
 				continue
@@ -491,6 +500,40 @@ func (e *Engine) emitTeammateClear(ev GameEvent) {
 		return
 	}
 	e.emitUpdate(EngineUpdate{Kind: UpdateRowsCleared, ChangedRows: ev.ClearedRows})
+}
+
+// restoreOwnTotals seeds this player's cumulative totals from the last
+// line_clear they published to this game — the totals they had when they
+// last played it, before leaving and coming back. A player's ID is their
+// name, so the rejoined player is the same sender to every other engine,
+// and those fold the DELTA between the totals they last saw from a sender
+// and the ones its next event carries (foldTotals): the totals the next
+// clear announces must continue from where they were, or the whole crew
+// drops it as a stale replay. The points and lines are folded into the
+// shown totals as their locks folded them (handleLockIn): the shared score
+// and level on a shared board, this player's own on a private one, and the
+// team's scoreboard. The events consumer's replay of the same history then
+// finds these totals already seen. Runs from Start before any consumer or
+// the input loop, so nothing else touches the totals: no lock.
+func (e *Engine) restoreOwnTotals(payload []byte) {
+	var ev GameEvent
+	if err := json.Unmarshal(payload, &ev); err != nil || ev.PlayerID != e.playerID {
+		return
+	}
+	e.ownScore.Store(int64(ev.TotalScore))
+	e.ownClearLines.Store(int64(ev.TotalLines))
+	e.eventTotals[e.playerID] = struct{ score, lines, team int }{ev.TotalScore, ev.TotalLines, e.teamIdx}
+	e.score.Add(int64(ev.TotalScore))
+	e.totalLines.Add(int64(ev.TotalLines))
+	e.refreshLevel()
+	if ev.TotalScore > 0 {
+		e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
+	}
+	if e.gameMode == config.ModeTeams {
+		e.teamScores[e.teamIdx].Add(int64(ev.TotalScore))
+		e.teamLines[e.teamIdx].Add(int64(ev.TotalLines))
+		e.emitTeamStats()
+	}
 }
 
 // foldTotals folds another player's cumulative own totals — a line_clear
@@ -568,6 +611,16 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 		if e.gameMode == config.ModeCooperative || (e.gameMode == config.ModeTeams && ev.Team == e.teamIdx) {
 			if ev.LinesCleared > 0 {
 				e.emitFullBoardRerender()
+			}
+			// A clear from before this engine joined is history, not news:
+			// its rows are long gone from the board and its points are
+			// folded above. Flashing it, or naming it on the banner, would
+			// tell a player who just (re)joined that a teammate scored
+			// this instant.
+			if e.eventReplay.Load() {
+				return
+			}
+			if ev.LinesCleared > 0 {
 				e.emitTeammateClear(ev)
 			}
 			if ev.LinesCleared > 0 || ev.TSpin != 0 {

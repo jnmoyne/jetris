@@ -786,6 +786,12 @@ bucket but are written without a TTL, so they persist until explicitly removed.)
   the seat: your falling piece is taken off the board first (a CAS with retry
   — it is yours, nothing else moves it), then your seat is removed from the
   roster for anyone to take; the lobby lists the game to **Join** again.
+  Either way the board you return to is the game as it stands now: the
+  replayed history brings the scoreboard up to date silently — a clear made
+  before you came back is neither flashed nor named on the award banner,
+  only the next one is — and your own share of it is picked back up from
+  the last clear you announced, so the totals your next clear carries
+  continue from where they were and the crew counts it.
 - Presence-wise you stay marked **In Game** while you hold a live seat (so you
   can't be invited elsewhere); the seat is only released when the game ends, or
   when you free it explicitly (deselecting yourself in the invite picker, or an

@@ -195,6 +195,18 @@ type Engine struct {
 	pieceIdx atomic.Uint64
 	metaSeq  uint64
 
+	// joinSeq is the stream's last sequence when this engine started — the
+	// point it joined the game at. The events consumer replays the whole
+	// retained history (that is how the scoreboards converge, foldTotals),
+	// and eventReplay is true while it is still behind that point: the
+	// events it delivers then are history, not news — their lines are on
+	// the board already, so nothing is flashed or named on the award
+	// banner for them. The consumer clears it on the first event past the
+	// join. An engine that never started (the UI tests' transport-less
+	// ones) is never replaying.
+	joinSeq     uint64
+	eventReplay atomic.Bool
+
 	// The piece split (GameMeta.SplitsPieces, read at Start): the seven
 	// types dealt out between the seats sharing this engine's playfield.
 	// pieceSets is the deal — one ration per slot of the playfield (a coop
@@ -419,12 +431,15 @@ func (e *Engine) Start() error {
 	e.cancelFn = cancel
 	e.started.Store(true)
 
-	// 1. Fetch meta
-	meta, metaSeq, err := natspkg.FetchGameMeta(ctx, e.js, e.gameID)
+	// 1. Fetch meta — and the stream position this engine joins at, which
+	// the events consumer replays up to silently (eventReplay).
+	meta, metaSeq, joinSeq, err := natspkg.FetchGameMetaAndLastSeq(ctx, e.js, e.gameID)
 	if err != nil {
 		cancel()
 		return err
 	}
+	e.joinSeq = joinSeq
+	e.eventReplay.Store(joinSeq > 0)
 	e.playerCount = meta.PlayerCount
 	e.teamCount = meta.Teams()
 	e.teamSize = meta.TeamSize
@@ -497,13 +512,21 @@ func (e *Engine) Start() error {
 	// rendering only.
 	var startSeq uint64
 	if e.initialMode != ModeSpectator {
-		cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, e.snapshotSubjects())
+		// The snapshot: every cell and register of the board — and the last
+		// line_clear this player published, which carries the cumulative
+		// totals they had when they last played this game (a rejoin).
+		ownClears := config.EventKindSubject(e.gameID, string(EventLineClear), e.playerID)
+		cells, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, append(e.snapshotSubjects(), ownClears))
 		if err != nil {
 			cancel()
 			return err
 		}
 		var maxSeq uint64
 		for _, c := range cells {
+			if c.Subject == ownClears {
+				e.restoreOwnTotals(c.Payload)
+				continue
+			}
 			if c.Seq > maxSeq {
 				maxSeq = c.Seq
 			}

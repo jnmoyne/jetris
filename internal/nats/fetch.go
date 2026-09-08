@@ -89,25 +89,37 @@ func FetchPlayfieldState(
 	return result, nil
 }
 
-// FetchGameMeta retrieves the latest game metadata message.
+// FetchGameMeta retrieves the latest game metadata message and its sequence.
 func FetchGameMeta(
 	ctx context.Context,
 	js jetstream.JetStream,
 	gameID string,
 ) (config.GameMeta, uint64, error) {
+	meta, metaSeq, _, err := FetchGameMetaAndLastSeq(ctx, js, gameID)
+	return meta, metaSeq, err
+}
+
+// FetchGameMetaAndLastSeq is FetchGameMeta that also reports the stream's
+// last sequence as of the fetch — the point in the game's history an engine
+// starting now has joined at: everything at or before it already happened.
+// The stream lookup the fetch makes carries it, so it costs no round trip.
+func FetchGameMetaAndLastSeq(
+	ctx context.Context,
+	js jetstream.JetStream,
+	gameID string,
+) (meta config.GameMeta, metaSeq, lastSeq uint64, err error) {
 	stream, err := js.Stream(ctx, config.GameStream(gameID))
 	if err != nil {
-		return config.GameMeta{}, 0, err
+		return config.GameMeta{}, 0, 0, err
 	}
 	msg, err := stream.GetLastMsgForSubject(ctx, config.MetaSubject(gameID))
 	if err != nil {
-		return config.GameMeta{}, 0, err
+		return config.GameMeta{}, 0, 0, err
 	}
-	var meta config.GameMeta
 	if err := json.Unmarshal(msg.Data, &meta); err != nil {
-		return config.GameMeta{}, 0, err
+		return config.GameMeta{}, 0, 0, err
 	}
-	return meta, msg.Sequence, nil
+	return meta, msg.Sequence, stream.CachedInfo().State.LastSeq, nil
 }
 
 // ParseCellFromSubject extracts the (row, col) position from a cell subject

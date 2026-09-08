@@ -70,10 +70,13 @@ func (a *App) layoutLobby(gtx C) D {
 	pickerOpen := a.handleInvitePicker(gtx)
 	pendingInvite, inviteOpen := a.handleIncomingInvite(gtx)
 	qrOpen := a.handleQRModal(gtx, wizOpen || pickerOpen || inviteOpen)
+	// The key bindings dialog (keymap.go), opened from the menu's KEYS
+	// legend.
+	keysOpen := a.handleKeysModal(gtx, wizOpen || pickerOpen || inviteOpen || qrOpen)
 	// The How to play tour (tutorial.go) is a modal of its own over the
 	// whole screen: while it is up nothing under it takes a press.
 	tour := a.tutorialUp()
-	modal := wizOpen || pickerOpen || inviteOpen || qrOpen || tour
+	modal := wizOpen || pickerOpen || inviteOpen || qrOpen || keysOpen || tour
 	// The bar's switches and the panel's tabs, drained before anything is
 	// laid out so a column shown or hidden this frame is already in the
 	// layout that measures it — and answered only while no modal is up, since
@@ -289,7 +292,7 @@ func (a *App) layoutLobby(gtx C) D {
 		}),
 		layout.Flexed(1, body),
 	)
-	if !pickerOpen && !inviteOpen && !wizOpen && !qrOpen {
+	if !pickerOpen && !inviteOpen && !wizOpen && !qrOpen && !keysOpen {
 		return base
 	}
 	return layout.Stack{}.Layout(gtx,
@@ -308,6 +311,8 @@ func (a *App) layoutLobby(gtx C) D {
 				return a.invitePickerOverlay(gtx)
 			case qrOpen:
 				return a.qrOverlay(gtx)
+			case keysOpen:
+				return a.keysOverlay(gtx)
 			default:
 				return a.createWizardOverlay(gtx)
 			}
@@ -620,8 +625,9 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 	// The controls, on the screen where a player is deciding whether to play
 	// rather than in the middle of playing. Hold is left out of it: whether
 	// there is a hold queue is the GAME's rule and no game has been chosen
-	// yet (controlsSections).
-	for _, sec := range a.controlsSections(false) {
+	// yet (controlsSections). This is the legend whose KEYS lines open the
+	// key bindings dialog (keymap.go) — here, where there is time for it.
+	for _, sec := range a.controlsSections(false, true) {
 		children = append(children,
 			layout.Rigid(spacer(16)),
 			layout.Rigid(a.tutMarked(tutControls, func(gtx C) D {
@@ -629,7 +635,7 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 				// key label handed the column's width as its minimum reports
 				// it, and controlsHint lines the moves up past the widest key.
 				gtx.Constraints.Min = image.Point{}
-				return a.controlsHint(gtx, sec.header, sec.rows)
+				return a.controlsHint(gtx, sec)
 			})),
 		)
 	}

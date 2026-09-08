@@ -17,6 +17,7 @@ import (
 	"jetris/internal/config"
 	"jetris/internal/engine"
 	"jetris/internal/lobby"
+	"jetris/internal/prefs"
 )
 
 // TestBoardKeyFiltersIncludeFocusFilter guards the exact regression that broke
@@ -25,7 +26,7 @@ import (
 // delivered.
 func TestBoardKeyFiltersIncludeFocusFilter(t *testing.T) {
 	var tag int
-	fs := boardKeyFilters(&tag)
+	fs := boardKeyFilters(&tag, newKeyBinds(prefs.DefaultKeymap()).names())
 
 	hasFocus := false
 	names := map[key.Name]bool{}
@@ -61,60 +62,59 @@ func TestBoardKeyFiltersIncludeFocusFilter(t *testing.T) {
 	}
 }
 
-// TestMoveForKey locks the control scheme: each key maps to the right engine
-// action, and unmapped keys return false.
-func TestMoveForKey(t *testing.T) {
+// TestMoveForAction locks the moves: each action maps to the right engine
+// call.
+func TestMoveForAction(t *testing.T) {
 	cases := []struct {
-		name key.Name
+		act  prefs.KeyAction
 		want func(*engine.Engine)
 	}{
-		{key.NameLeftArrow, (*engine.Engine).MoveLeft},
-		{key.NameRightArrow, (*engine.Engine).MoveRight},
-		{key.NameDownArrow, (*engine.Engine).MoveDown},
-		{key.NameUpArrow, (*engine.Engine).RotateCW},
-		{key.NameSpace, (*engine.Engine).HardDrop},
-		{"Z", (*engine.Engine).RotateCCW},
-		{"X", (*engine.Engine).RotateCW},
-		{"C", (*engine.Engine).Hold},
-		// The Guideline's modifier controls, delivered as keys of their own.
-		{key.NameCtrl, (*engine.Engine).RotateCCW},
-		{key.NameShift, (*engine.Engine).Hold},
+		{prefs.KeyMoveLeft, (*engine.Engine).MoveLeft},
+		{prefs.KeyMoveRight, (*engine.Engine).MoveRight},
+		{prefs.KeySoftDrop, (*engine.Engine).MoveDown},
+		{prefs.KeyRotateCW, (*engine.Engine).RotateCW},
+		{prefs.KeyRotateCCW, (*engine.Engine).RotateCCW},
+		{prefs.KeyHardDrop, (*engine.Engine).HardDrop},
+		{prefs.KeyHold, (*engine.Engine).Hold},
 	}
 	for _, c := range cases {
-		got, ok := moveForKey(c.name)
+		got, ok := moveForAction(c.act)
 		if !ok {
-			t.Errorf("moveForKey(%q): ok=false, want true", c.name)
+			t.Errorf("moveForAction(%q): ok=false, want true", c.act)
 			continue
 		}
 		if reflect.ValueOf(got).Pointer() != reflect.ValueOf(c.want).Pointer() {
-			t.Errorf("moveForKey(%q): mapped to the wrong action", c.name)
+			t.Errorf("moveForAction(%q): mapped to the wrong action", c.act)
 		}
 	}
-	if _, ok := moveForKey("Q"); ok {
-		t.Error("moveForKey(\"Q\"): ok=true, want false for an unmapped key")
+	if _, ok := moveForAction("jump"); ok {
+		t.Error("moveForAction(\"jump\"): ok=true, want false for an unknown action")
 	}
 }
 
-// TestArrowForKey locks the WASD fold: the cluster becomes the arrows it
-// stands in for, and no other key is touched — moveForKey's own table stays
-// in arrow names, so the fold is the only place the letters exist.
-func TestArrowForKey(t *testing.T) {
-	for _, c := range []struct{ in, want key.Name }{
-		{"W", key.NameUpArrow},
-		{"A", key.NameLeftArrow},
-		{"S", key.NameDownArrow},
-		{"D", key.NameRightArrow},
-		{"Z", "Z"},
-		{"X", "X"},
-		{"C", "C"},
-		{key.NameCtrl, key.NameCtrl},
-		{key.NameShift, key.NameShift},
-		{key.NameSpace, key.NameSpace},
-		{key.NameLeftArrow, key.NameLeftArrow},
+// TestDefaultKeysActions locks the default scheme — the Guideline's keys
+// and their WASD twins, each on the move it makes — and that an unbound key
+// makes none.
+func TestDefaultKeysActions(t *testing.T) {
+	b := newKeyBinds(prefs.DefaultKeymap())
+	for _, c := range []struct {
+		in   key.Name
+		want prefs.KeyAction
+	}{
+		{key.NameLeftArrow, prefs.KeyMoveLeft}, {"A", prefs.KeyMoveLeft},
+		{key.NameRightArrow, prefs.KeyMoveRight}, {"D", prefs.KeyMoveRight},
+		{key.NameDownArrow, prefs.KeySoftDrop}, {"S", prefs.KeySoftDrop},
+		{key.NameUpArrow, prefs.KeyRotateCW}, {"W", prefs.KeyRotateCW}, {"X", prefs.KeyRotateCW},
+		{"Z", prefs.KeyRotateCCW}, {key.NameCtrl, prefs.KeyRotateCCW},
+		{key.NameSpace, prefs.KeyHardDrop},
+		{"C", prefs.KeyHold}, {key.NameShift, prefs.KeyHold},
 	} {
-		if got := arrowForKey(c.in); got != c.want {
-			t.Errorf("arrowForKey(%q) = %q, want %q", c.in, got, c.want)
+		if got, ok := b.actionFor(c.in); !ok || got != c.want {
+			t.Errorf("actionFor(%q) = %q, %v; want %q", c.in, got, ok, c.want)
 		}
+	}
+	if _, ok := b.actionFor("Q"); ok {
+		t.Error("actionFor(\"Q\"): ok=true, want false for an unbound key")
 	}
 }
 
@@ -127,7 +127,8 @@ func TestBoardKeysDeliverWhenFocused(t *testing.T) {
 	var tag int
 	// register re-declares the filters each frame (as the real frame loop does)
 	// and drains pending events.
-	register := func() []event.Event { return drainEvents(&r, boardKeyFilters(&tag)...) }
+	names := newKeyBinds(prefs.DefaultKeymap()).names()
+	register := func() []event.Event { return drainEvents(&r, boardKeyFilters(&tag, names)...) }
 	// frame commits ops that register the board tag as a key-input handler —
 	// focus-gated key events only route to a tag present in the frame's ops
 	// (mirrors event.Op(gtx.Ops, &a.boardTag) in layoutGame).

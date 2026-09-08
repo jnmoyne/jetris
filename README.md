@@ -533,7 +533,7 @@ internal/
   nativeui/            native Gio desktop UI (board, lobby, live NATS-message panel)
   voice/               in-game voice chat over core NATS: IMA ADPCM frames, the noise gate,
                        jitter buffers and mixing, the desktop (miniaudio) and browser (Web Audio) devices
-  prefs/               local preferences: favorites, handling knobs, panel switches, voice settings
+  prefs/               local preferences: favorites, handling knobs, key bindings, panel switches, voice settings
 ```
 
 For the full design, see the companion documents:

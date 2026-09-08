@@ -281,9 +281,15 @@ over NATS — each move is a local intent that publishes the changed cells with 
 | Shift or C | hold (games with the hold rule, §1b); Shift acts on its **release** | `Hold` |
 | Tab | switch the keys between the piece and the chat (a shifted Tab too) | — |
 
-The WASD cluster is the arrow keys' left-hand twin: `arrowForKey` folds W A S D onto
-↑ ← ↓ → *before* any dispatch, so the two sets share one entry in the mapping table and
-one DAS/ARR machine per axis — A and ← are the same key held, not two keys racing.
+Those are the defaults. The scheme is the player's: every line of the lobby menu's KEYS
+legend opens a small dialog on the keys it lists, and any of them can be swapped for
+another key — one no other move has (Tab, Escape, ⌘, Alt and Super are reserved). The
+bindings are kept across launches (`prefs.Keymap`: `keys.json` beside `handling.json`, or
+a localStorage key in the browser); the touch gestures are fixed. Every key is turned into
+the *move* it makes (`keyBinds.actionFor`, `internal/nativeui/keymap.go`) *before* any
+dispatch, so two keys bound to one move share one DAS/ARR machine per axis — A and ← are
+the same key held, not two keys racing — and what is fixed in the dispatch is what each
+move does, whatever key makes it.
 
 Ctrl and Shift are the Guideline's two modifier controls, and Gio delivers a modifier's
 own press *and release* as a `key.Event` named for it, so they are filtered as keys like
@@ -292,10 +298,11 @@ naming no modifier matches only an *unmodified* event, so without it holding Shi
 kill every other control, and the modifiers' own presses (which carry their bit) would
 never arrive at all. ⌘ and Alt are deliberately left unmapped: they are the platform's.
 
-Shift is the one key that acts on its **release**, because a shifted Tab is still the
-board/chat switch and a player reaching for the chat did not mean to spend the hold: the
-press arms it, the release spends it, and a Tab in between — or losing the keys, whose
-release the board would never see — disarms it unspent. C holds on the press as ever.
+Shift, as the hold key, is the one key that acts on its **release**, because a shifted Tab
+is still the board/chat switch and a player reaching for the chat did not mean to spend
+the hold: the press arms it, the release spends it, and a Tab in between — or losing the
+keys, whose release the board would never see — disarms it unspent. Every other hold key
+holds on the press as ever.
 
 These are dispatched from `internal/nativeui/input.go` (the board tag is kept focused
 with Gio's `key.FocusFilter` + `key.FocusCmd`). The on-screen control pad and, on a touch

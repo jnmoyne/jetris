@@ -1111,7 +1111,8 @@ func tutorialSteps() []tutStep {
 			body: "The journal every client writes to: who connected, disconnected or came back, and which games were created and started — newest first."},
 		{scene: tutSceneLobby, title: "KEYS AND TOUCH", targets: []string{tutControls}, prep: lobbyOn(lobbyTabGames), scroll: menuScroll,
 			body: "How the piece is played. Keys: ← → (or A D) move it, ↓ (S) soft-drops, ↑ (W or X) rotates it clockwise, Z or Ctrl counter-clockwise, Space hard-drops, C or Shift holds, and Tab moves the keys between the board and the chat. " +
-				"Touch: swipe left or right to move, tap the left or right half of the board to rotate, drag down to soft-drop, flick down to hard-drop, swipe up to hold."},
+				"Those are the defaults: click a line of the KEYS legend to swap any of its keys for another — one no other move has — and the game keeps your keys from then on. " +
+				"Touch: swipe left or right to move, tap the left or right half of the board to rotate, drag down to soft-drop, flick down to hard-drop, swipe up to hold. The gestures cannot be changed."},
 		lobbyStep("CREATE A NEW GAME",
 			"This button opens the wizard that sets a game up, one choice at a time. Let's create one: a co-op game for a crew of one, on Guideline rules, by invitation.",
 			tutCreateBtn),

@@ -123,6 +123,7 @@ type App struct {
 	connCfg      config.Config
 	favSave      func([]prefs.Favorite) error
 	handlingSave func(prefs.Handling) error
+	keymapSave   func(prefs.Keymap) error
 	panelsSave   func(prefs.Panels) error
 	voiceSave    func(prefs.Voice) error
 	// autoLogin: the player's name came with the connection (--name, or the
@@ -343,6 +344,20 @@ type App struct {
 	qrOpen    bool
 	qrLink    string
 	qrCode    *qr.Code
+
+	// The key bindings (keymap.go): the scheme in play, and the lobby's
+	// dialog on one line of the KEYS legend — up while keysLine is a line's
+	// index, waiting on a key while keysSlot is a slot button's, keysErr the
+	// word on the last press it refused. keysTag is the dialog's key target.
+	keys         keyBinds
+	keysLineBtns [keyLineCount]widget.Clickable
+	keysSlotBtns [keySlotButtonCount]widget.Clickable
+	keysDoneBtn  widget.Clickable
+	keysResetBtn widget.Clickable
+	keysLine     int
+	keysSlot     int
+	keysErr      string
+	keysTag      int
 
 	// The replay screen's PIN and SHARE (share.go): the pin toggles the
 	// lobby KV entry that keeps the replay for good; Share puts the replay's
@@ -754,6 +769,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.splitPiecesCb.Value = true // the pieces are dealt out between the players of a playfield unless the creator says otherwise
 	a.labEnum.Value = labAsync   // Optimistic async, the default
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF, defaultDropGuardMs)
+	a.SetKeymap(prefs.DefaultKeymap())
+	a.keysLine, a.keysSlot = -1, -1
 	a.setDefaultPanels() // every panel on until a saved set says otherwise
 	a.SetVoice(prefs.DefaultVoice())
 	a.voiceDevice = voice.NewDevice
@@ -868,6 +885,7 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 	a.favorites = append([]prefs.Favorite(nil), favorites...)
 	a.favSave = prefs.SaveFavorites
 	a.handlingSave = prefs.SaveHandling
+	a.keymapSave = prefs.SaveKeymap
 	a.panelsSave = prefs.SavePanels
 	a.voiceSave = prefs.SaveVoice
 	a.connProbes = map[string]probeResult{}

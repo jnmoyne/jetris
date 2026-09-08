@@ -11,107 +11,37 @@ import (
 	"gioui.org/op/clip"
 
 	"jetris/internal/engine"
+	"jetris/internal/prefs"
 )
 
-// boardKeyFilters returns the event filters for the game board. The leading
-// key.FocusFilter is REQUIRED: in Gio a tag only becomes a focusable key target
-// when a key.FocusFilter is registered for it that frame (io/input/router.go:
-// "case key.FocusFilter: f.focusable = true"). Without it, key.FocusCmd has
-// nothing to focus and the Focus-conditional key.Filters below never match —
-// which is exactly why the controls did nothing. The remaining filters capture
-// the movement keys only while tag is focused.
-func boardKeyFilters(tag event.Tag) []event.Filter {
-	// Every game key tolerates Shift and Ctrl, because both are themselves
-	// game keys now (hold and rotate CCW): a key pressed while one of them
-	// is down arrives carrying its bit, and a filter that names no modifier
-	// matches only an unmodified event (io/input/key.go: "e.Modifiers &^
-	// (Required|Optional) != 0" is a miss). Without this, holding Shift
-	// would silently kill every other control — and the presses of Shift
-	// and Ctrl themselves, which carry their own bit, would never arrive at
-	// all. ⌘ and Alt are deliberately left out: they are the platform's, and
-	// a game key is not what ⌘W should mean.
+// boardKeyFilters returns the event filters for the game board: the keys the
+// scheme binds (keyBinds.names). The leading key.FocusFilter is REQUIRED: in
+// Gio a tag only becomes a focusable key target when a key.FocusFilter is
+// registered for it that frame (io/input/router.go: "case key.FocusFilter:
+// f.focusable = true"). Without it, key.FocusCmd has nothing to focus and
+// the Focus-conditional key.Filters below never match — which is exactly why
+// the controls did nothing. The remaining filters capture the bound keys
+// only while tag is focused.
+func boardKeyFilters(tag event.Tag, names []key.Name) []event.Filter {
+	// Every game key tolerates Shift and Ctrl, because both can themselves
+	// be game keys (the defaults make them hold and rotate CCW): a key
+	// pressed while one of them is down arrives carrying its bit, and a
+	// filter that names no modifier matches only an unmodified event
+	// (io/input/key.go: "e.Modifiers &^ (Required|Optional) != 0" is a
+	// miss). Without this, holding Shift would silently kill every other
+	// control — and the presses of Shift and Ctrl themselves, which carry
+	// their own bit, would never arrive at all. ⌘ and Alt are deliberately
+	// left out: they are the platform's, and a game key is not what ⌘W
+	// should mean. Gio delivers a modifier's own press as a key of its own
+	// — press AND release, on every backend — so Shift and Ctrl are
+	// filtered as keys like any other; Shift needs both edges, since as the
+	// hold key it holds on the release (handleKeys).
 	const mods = key.ModShift | key.ModCtrl
 	fs := []event.Filter{key.FocusFilter{Target: tag}}
-	for _, n := range []key.Name{
-		key.NameLeftArrow, key.NameRightArrow, key.NameDownArrow, key.NameUpArrow,
-		key.NameSpace,
-		"Z", "X", "C",
-		// WASD, the arrows' left-hand twins (see arrowForKey).
-		"W", "A", "S", "D",
-		// The Guideline's two modifier controls: Ctrl rotates counter-
-		// clockwise (Z's twin) and Shift holds (C's). Gio delivers both as
-		// keys of their own — press AND release, on every backend — so they
-		// are filtered as keys of their own; Shift needs both edges, since
-		// it holds on the release (handleKeys).
-		key.NameCtrl, key.NameShift,
-	} {
+	for _, n := range names {
 		fs = append(fs, key.Filter{Focus: tag, Name: n, Optional: mods})
 	}
 	return fs
-}
-
-// arrowForKey folds the WASD cluster onto the arrow keys — W↑ A← S↓ D→ — and
-// returns every other key unchanged. The left hand's arrows: a player whose
-// right hand is on Z/X/C/Space (or on a mouse) steers with the same fingers
-// every other game puts there, and the two sets are one control, not two —
-// everything downstream (the mapping table, the DAS/ARR machines, the legend)
-// sees only the arrow name, so A and ← are the same key held.
-//
-// The letters reach the board only while it holds the keyboard; a player
-// typing in the chat has the editor's focus, so "was" still types "was".
-func arrowForKey(name key.Name) key.Name {
-	switch name {
-	case "W":
-		return key.NameUpArrow
-	case "A":
-		return key.NameLeftArrow
-	case "S":
-		return key.NameDownArrow
-	case "D":
-		return key.NameRightArrow
-	}
-	return name
-}
-
-// moveForKey maps a key name to the engine action it triggers. Pure function so
-// the control scheme can be unit-tested. ok is false for unmapped keys.
-//
-// The Guideline's scheme, whole: ← / → move, ↓ soft drop, ↑ / X rotate
-// clockwise, Ctrl / Z rotate counter-clockwise, Space hard drop, Shift / C
-// hold (a no-op in a game without the hold rule). Ctrl and Shift are keys
-// here like any other — Gio delivers a modifier's own press as a key.Event
-// named for it.
-//
-// The table is in arrow names alone: WASD is folded onto them upstream
-// (arrowForKey), so A and ← are one entry here, not two.
-//
-// It is the scheme's table, and no longer its whole dispatch: handleKeys
-// sends Z X C and Ctrl straight through it, but runs ← → ↓, Space and Shift
-// itself (the DAS/ARR machines, the one-drop-per-press rule, and Shift's
-// hold-on-release). Shift and Space stay in the table all the same: it is
-// what the scheme IS, and the tests read it as such.
-func moveForKey(name key.Name) (func(*engine.Engine), bool) {
-	switch name {
-	case key.NameLeftArrow:
-		return (*engine.Engine).MoveLeft, true
-	case key.NameRightArrow:
-		return (*engine.Engine).MoveRight, true
-	case key.NameDownArrow:
-		return (*engine.Engine).MoveDown, true
-	case key.NameUpArrow:
-		return (*engine.Engine).RotateCW, true
-	case key.NameSpace:
-		return (*engine.Engine).HardDrop, true
-	case "Z":
-		return (*engine.Engine).RotateCCW, true
-	case "X":
-		return (*engine.Engine).RotateCW, true
-	case "C", key.NameShift:
-		return (*engine.Engine).Hold, true
-	case key.NameCtrl:
-		return (*engine.Engine).RotateCCW, true
-	}
-	return nil, false
 }
 
 // handleKeys dispatches movement keys directly to the engine while the board
@@ -136,17 +66,20 @@ func moveForKey(name key.Name) (func(*engine.Engine), bool) {
 // the modal, a window blur — resets both machines and the held space, so a
 // Release the board never saw cannot leave a repeat running.
 //
-// WASD is folded onto the arrows (arrowForKey) before any of that, so the
-// left hand drives the very same machines: A and ← share the shift axis's
-// charge, S and ↓ the soft drop's, and a key held on one set repeats exactly
-// as it does on the other.
+// Every key is turned into the move it makes (keyBinds.actionFor) before any
+// of that, so two keys bound to one move drive the very same machine: A and
+// ← share the shift axis's charge, S and ↓ the soft drop's, and a key held
+// on one repeats exactly as it does on the other. The scheme is the
+// player's (keymap.go): what is fixed here is what each MOVE does, whatever
+// key makes it.
 //
-// Shift is the one key that acts on its RELEASE. A shifted Tab is still the
+// Shift, as the hold key, is the one key that acts on its RELEASE. A shifted Tab is still the
 // board/chat switch, and holding the piece is not what a player reaching for
 // the chat meant: so the press only arms the hold, the release spends it,
 // and a Tab in between (handleGameFocus, which runs first in the frame and
 // is where Tab is drained) disarms it unspent — as does losing the keys,
-// whose release the board would never see. C holds on the press as ever.
+// whose release the board would never see. Every other hold key holds on
+// the press as ever.
 func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 	tag := &a.boardTag
 	if !gtx.Source.Focused(tag) && !gtx.Source.Focused(&a.gameChatEd) {
@@ -156,7 +89,7 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 	das := time.Duration(a.dasMs) * time.Millisecond
 	arr := time.Duration(a.arrMs) * time.Millisecond
 	sarr := a.softARR(eng) // the soft drop's rate: SDF times gravity
-	filters := boardKeyFilters(tag)
+	filters := boardKeyFilters(tag, a.keys.names())
 	for {
 		ev, ok := gtx.Source.Event(filters...)
 		if !ok {
@@ -173,13 +106,18 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 				a.holdArmed = false // its release will land elsewhere
 			}
 		case key.Event:
-			// WASD first: from here down a press of A is a press of ←, so
-			// the two sets share one DAS machine and one dispatch.
-			name := arrowForKey(e.Name)
-			switch name {
-			case key.NameLeftArrow, key.NameRightArrow:
+			// The scheme first (keymap.go): from here down a press of A is
+			// a press of move left, as ← is, so the two share one DAS
+			// machine and one dispatch — and a key the scheme does not
+			// bind is not in the filters, so it never arrives.
+			act, ok := a.keys.actionFor(e.Name)
+			if !ok {
+				continue
+			}
+			switch {
+			case act == prefs.KeyMoveLeft || act == prefs.KeyMoveRight:
 				dir := -1
-				if name == key.NameRightArrow {
+				if act == prefs.KeyMoveRight {
 					dir = 1
 				}
 				if e.State == key.Press {
@@ -187,7 +125,7 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 				} else {
 					a.shift.release(dir, gtx.Now, das, arr, shiftEmit)
 				}
-			case key.NameDownArrow:
+			case act == prefs.KeySoftDrop:
 				// The soft drop's own axis: +1 is one row down, no DAS
 				// (softDAS), and its own rate — one row on the press, the
 				// next one softARR behind it.
@@ -196,12 +134,13 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 				} else {
 					a.soft.release(1, gtx.Now, softDAS, sarr, softEmit)
 				}
-			case key.NameShift:
-				// The hold on the RELEASE, and only while the press is still
-				// armed: a Tab disarms it (handleGameFocus), so the shifted
-				// Tab moves the keys to the chat and leaves the hold
-				// unspent. Arming is idempotent — the browser repeats a held
-				// modifier's keydown, macOS does not.
+			case act == prefs.KeyHold && e.Name == key.NameShift:
+				// Shift holds on the RELEASE, and only while the press is
+				// still armed: a Tab disarms it (handleGameFocus), so the
+				// shifted Tab moves the keys to the chat and leaves the
+				// hold unspent. Arming is idempotent — the browser repeats
+				// a held modifier's keydown, macOS does not. Any other
+				// hold key holds on the press, below.
 				if e.State == key.Press {
 					a.holdArmed = true
 					continue
@@ -211,7 +150,7 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 				}
 				a.holdArmed = false
 				eng.Hold()
-			case key.NameSpace:
+			case act == prefs.KeyHardDrop:
 				// One drop per press, however long it is held: a Press with
 				// no Release since the last one is the OS auto-repeat. The
 				// press is spent either way — a drop the guard refuses
@@ -230,7 +169,7 @@ func (a *App) handleKeys(gtx C, eng *engine.Engine) {
 				if e.State != key.Press {
 					continue
 				}
-				if move, ok := moveForKey(name); ok {
+				if move, ok := moveForAction(act); ok {
 					move(eng)
 				}
 			}

@@ -745,7 +745,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 		// (controlsSections). The whole of it, every time — the column
 		// scrolls (hudColumn), so a short screen scrolls to it rather than
 		// losing it.
-		for _, s := range a.controlsSections(eng.HoldEnabled()) {
+		for _, s := range a.controlsSections(eng.HoldEnabled(), false) {
 			children = append(children,
 				layout.Rigid(spacer(16)),
 				layout.Rigid(a.tutMarked(tutControls, func(gtx C) D {
@@ -754,7 +754,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 					// reports it, and controlsHint lines the moves up past
 					// the widest key.
 					gtx.Constraints.Min = image.Point{}
-					return a.controlsHint(gtx, s.header, s.rows)
+					return a.controlsHint(gtx, s)
 				})),
 			)
 		}
@@ -808,11 +808,21 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	return D{Size: image.Pt(gtx.Constraints.Max.X, tagY+tagD.Size.Y)}
 }
 
-// controlsSection is one block of the legend: a heading and the mappings
-// under it, each a key (or gesture) and the move it makes.
+// controlsSection is one block of the legend: a heading, a note under it
+// when there is one, and the mappings under that, each a key (or gesture)
+// and the move it makes.
 type controlsSection struct {
 	header string
-	rows   [][2]string
+	note   string
+	rows   []controlsRow
+}
+
+// controlsRow is one mapping. btn is the row's button where the legend is
+// the lobby's, whose KEYS rows open the key bindings dialog (keymap.go),
+// and nil where the row is plain: the game's legend, the gestures, Tab.
+type controlsRow struct {
+	key, move string
+	btn       *widget.Clickable
 }
 
 // controlsSections is what the legend says, wherever it is drawn — the game's
@@ -821,61 +831,89 @@ type controlsSection struct {
 // the keys as the footnote, and a player with a keyboard the other way round.
 // hold adds the hold key and its gesture, and only a game whose rules carry
 // the hold queue can promise it — the lobby, which has no game yet, says
-// nothing about it rather than teaching a key that may do nothing.
-func (a *App) controlsSections(hold bool) []controlsSection {
+// nothing about it rather than teaching a key that may do nothing. editable
+// is the lobby's legend: its KEYS rows are buttons that open the dialog on
+// their keys, and the header says so.
+func (a *App) controlsSections(hold, editable bool) []controlsSection {
 	// Every key that makes a move, on the row of the move it makes — the
-	// arrows and their WASD twins (arrowForKey) together, and the
-	// Guideline's modifier controls beside the letters they double.
-	keys := [][2]string{
-		{"← → A D", "move · hold slides"},
-		{"↓ S", "soft drop · hold falls"},
-		{"↑ W X", "rotate CW"},
-		{"Z CTRL", "rotate CCW"},
-		{"SPACE", "hard drop"},
+	// player's scheme (keymap.go), a line per move, the keys of one move
+	// together — and under them Tab, which is no move and not for turning.
+	var keys []controlsRow
+	for i, line := range keyLines {
+		if i == keyHoldLine && !hold {
+			continue
+		}
+		row := controlsRow{key: a.keys.lineKeys(i), move: line.move}
+		if editable {
+			row.btn = &a.keysLineBtns[i]
+		}
+		keys = append(keys, row)
 	}
-	touch := [][2]string{{"swipe ← →", "move"}, {"tap ◀", "rotate CCW"}, {"tap ▶", "rotate CW"}, {"drag ↓", "soft drop"}, {"flick ↓", "hard drop"}}
+	keys = append(keys, controlsRow{key: "TAB", move: "chat / board"})
+	touch := []controlsRow{{key: "swipe ← →", move: "move"}, {key: "tap ◀", move: "rotate CCW"}, {key: "tap ▶", move: "rotate CW"}, {key: "drag ↓", move: "soft drop"}, {key: "flick ↓", move: "hard drop"}}
 	if hold {
-		keys = append(keys, [2]string{"C SHIFT", "hold"})
-		touch = append(touch, [2]string{"swipe ↑", "hold"})
+		touch = append(touch, controlsRow{key: "swipe ↑", move: "hold"})
 	}
-	keys = append(keys, [2]string{"TAB", "chat / board"})
-	sections := []controlsSection{{"KEYS", keys}, {"TOUCH", touch}}
+	sections := []controlsSection{{header: "KEYS", rows: keys}, {header: "TOUCH", rows: touch}}
+	if editable {
+		sections[0].note = "(click a line to change its keys)"
+	}
 	if a.touchUI {
 		sections[0], sections[1] = sections[1], sections[0]
 	}
 	return sections
 }
 
-// controlsHint is one section of the controls legend: the header, then a
-// row per mapping — the key or gesture in the foreground color, the move in
-// the muted one — in the small pixel face, the moves lined up in a column
-// past the widest key.
-func (a *App) controlsHint(gtx C, header string, rows [][2]string) D {
+// controlsHint is one section of the controls legend: the header, the note
+// under it if there is one, then a row per mapping — the key or gesture in
+// the foreground color, the move in the muted one — in the small pixel
+// face, the moves lined up in a column past the widest key. A row with a
+// button is laid out as one, across the column's width, so a press anywhere
+// on its line is the row's.
+func (a *App) controlsHint(gtx C, sec controlsSection) D {
 	const size = unit.Sp(8)
 	keyW := 0
-	for _, r := range rows {
+	for _, r := range sec.rows {
 		macro := op.Record(gtx.Ops)
-		keyW = max(keyW, a.pixel(size, r[0], colFg).Layout(gtx).Size.X)
+		keyW = max(keyW, a.pixel(size, r.key, colFg).Layout(gtx).Size.X)
 		macro.Stop()
 	}
 	keyW += gtx.Sp(size) // a glyph's worth of air before the move
 	kids := []layout.FlexChild{
-		layout.Rigid(a.pixel(unit.Sp(9), header, colAccent).Layout),
+		layout.Rigid(a.pixel(unit.Sp(9), sec.header, colAccent).Layout),
 		layout.Rigid(spacer(2)),
 	}
-	for _, r := range rows {
-		key, move := r[0], r[1]
+	if sec.note != "" {
 		kids = append(kids, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+				return a.pixelLabelFit(gtx, unit.Sp(8), sec.note, colMuted)
+			})
+		}))
+	}
+	for _, r := range sec.rows {
+		r := r
+		row := func(gtx C) D {
 			return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
 						gtx.Constraints.Min.X = keyW
-						return a.pixel(size, key, colFg).Layout(gtx)
+						return a.pixel(size, r.key, colFg).Layout(gtx)
 					}),
-					layout.Rigid(a.pixel(size, move, colMuted).Layout),
+					layout.Rigid(a.pixel(size, r.move, colMuted).Layout),
 				)
 			})
-		}))
+		}
+		if r.btn != nil {
+			plain := row
+			row = func(gtx C) D {
+				return material.Clickable(gtx, r.btn, func(gtx C) D {
+					d := plain(gtx)
+					d.Size.X = max(d.Size.X, gtx.Constraints.Max.X)
+					return d
+				})
+			}
+		}
+		kids = append(kids, layout.Rigid(row))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 }

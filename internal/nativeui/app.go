@@ -436,8 +436,9 @@ type App struct {
 	// splitPiecesCb is wizard step 2's "distribute the pieces" checkbox
 	// (custom rules), drawn for a playfield with company: the seven piece
 	// types are dealt out between the players of a playfield, every seat
-	// playing only its own ration (config.GameMeta.SplitPieces). On by
-	// default, and on in the Guideline preset.
+	// playing only its own ration (config.GameMeta.SplitPieces). Off by
+	// default, and off in the Guideline preset: every player plays the
+	// same full bag unless the creator says otherwise.
 	splitPiecesCb widget.Bool
 	allowAgentsCb widget.Bool   // wizard agents step: allow idle agents to take seats
 	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take
@@ -766,8 +767,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.setExtraColumns(config.DefaultExtraColumns)
 	a.setExtraRows(config.DefaultExtraRows)
 	a.setPlayfieldCount(config.DefaultTeamCount)
-	a.splitPiecesCb.Value = true // the pieces are dealt out between the players of a playfield unless the creator says otherwise
-	a.labEnum.Value = labAsync   // Optimistic async, the default
+	a.splitPiecesCb.Value = false // every player plays the full bag unless the creator has the pieces dealt out
+	a.labEnum.Value = labAsync    // Optimistic async, the default
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF, defaultDropGuardMs)
 	a.SetKeymap(prefs.DefaultKeymap())
 	a.keysLine, a.keysSlot = -1, -1

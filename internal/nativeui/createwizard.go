@@ -173,7 +173,7 @@ func (a *App) wizardSpec() config.GameSpec {
 		spec.ExtraColumns, spec.ExtraRows, spec.SplitPieces = a.extraCols, a.extraRows, a.splitPiecesCb.Value
 	} else {
 		spec.Rules = config.GuidelineRules()
-		spec.ExtraColumns, spec.ExtraRows, spec.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, true
+		spec.ExtraColumns, spec.ExtraRows, spec.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, false
 	}
 	// Agent policy (open games): how many seats idle agent players may take.
 	// Unchecked = 0 = agents may not join; clamped to the seat count by the
@@ -616,7 +616,7 @@ func guidelineSummary(spec config.GameSpec) [][2]string {
 			[2]string{"Board", fmt.Sprintf("%d columns +%d per player, %d rows — %d×%d for %d players",
 				config.StandardWidth, config.DefaultExtraColumns, config.VisibleRows,
 				config.SharedBoardWidth(seats, config.DefaultExtraColumns), config.VisibleRows, seats)},
-			[2]string{"Pieces", fmt.Sprintf("dealt out between the %d players of a playfield — each plays only their own", seats)},
+			[2]string{"Pieces", fmt.Sprintf("the full bag for each of the %d players of a playfield — not dealt out between them", seats)},
 		)
 	}
 	if spec.Playfields() > 1 {

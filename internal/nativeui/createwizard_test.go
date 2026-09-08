@@ -113,7 +113,7 @@ func TestWizardSpecMapping(t *testing.T) {
 		want := tc.want
 		want.InviteOnly = true // the wizard's default
 		want.Rules = config.GuidelineRules()
-		want.ExtraColumns, want.ExtraRows, want.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, true
+		want.ExtraColumns, want.ExtraRows, want.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, false
 		want = want.Normalized()
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: wizardSpec() = %+v, want %+v", tc.name, got, want)
@@ -224,16 +224,17 @@ func TestWizardPlayfieldCount(t *testing.T) {
 	}
 }
 
-// TestWizardSplitPieces pins the distribute-the-pieces box: on by default,
-// honoured on every playfield with company — a crew of two, a team of two
-// — and ignored where nobody shares a playfield, so no solo or
+// TestWizardSplitPieces pins the distribute-the-pieces box: off by default,
+// honoured once checked on every playfield with company — a crew of two, a
+// team of two — and ignored where nobody shares a playfield, so no solo or
 // board-each game is ever created advertising a split that cannot happen.
-// The Guideline preset deals the pieces out whatever the box says.
+// The Guideline preset never deals the pieces out, whatever the box says.
 func TestWizardSplitPieces(t *testing.T) {
 	a := newTestApp()
-	if !a.splitPiecesCb.Value {
-		t.Fatal("a fresh wizard does not distribute the pieces")
+	if a.splitPiecesCb.Value {
+		t.Fatal("a fresh wizard distributes the pieces")
 	}
+	a.splitPiecesCb.Value = true
 	a.rulesEnum.Value = "custom"
 	a.boardsEnum.Value = "multiple"
 	a.countEd.SetText("2")
@@ -258,9 +259,10 @@ func TestWizardSplitPieces(t *testing.T) {
 	if a.wizardSpec().SplitsPieces() {
 		t.Error("an unchecked box split the pieces")
 	}
+	a.splitPiecesCb.Value = true
 	a.rulesEnum.Value = "guideline"
-	if !a.wizardSpec().SplitsPieces() {
-		t.Error("the Guideline preset does not deal the pieces out")
+	if a.wizardSpec().SplitsPieces() {
+		t.Error("the Guideline preset dealt the pieces out")
 	}
 }
 

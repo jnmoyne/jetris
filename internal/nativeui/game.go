@@ -40,7 +40,7 @@ type gameView struct {
 	pinned               bool   // the lobby's word on whether that replay is pinned (gameOverActions)
 	gameOverNote         string // under the game-over box's buttons: a refused pin
 	myReady              bool
-	readyNote            string // under the ready bar: what an open game still waits for (a playfield with nobody on it), or how many seats an invite game has to fill
+	readyNote            string // under the ready bar: what an open game still waits for (a playfield with no ready player yet), or how many seats an invite game has to fill once everyone present is ready
 	players, readyPlayer []lobby.PlayerSummary
 	flash                map[[2]int]time.Time
 	casWant              map[[2]int]time.Time         // own board: the outline blinking where a rejected step wanted the piece

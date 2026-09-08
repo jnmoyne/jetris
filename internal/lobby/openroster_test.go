@@ -82,10 +82,10 @@ func TestTeamsSeatIsGlobal(t *testing.T) {
 	}
 }
 
-// An open game starts on readiness — every playfield with a ready player —
-// whatever seats stay free; an invite game on a full, ready table. The one
-// toggle that moves the listing to starting is elected to run the
-// countdown; a later toggle is not.
+// An open game starts on readiness — every playfield with a ready player,
+// whoever else is seated and not ready yet — whatever seats stay free; an
+// invite game on a full, ready table. The one toggle that moves the listing
+// to starting is elected to run the countdown; a later toggle is not.
 func TestReadyToStartOpen(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -93,22 +93,45 @@ func TestReadyToStartOpen(t *testing.T) {
 		want bool
 	}{
 		{"open coop, one ready of three seats", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, Players: []PlayerSummary{{PlayerID: "a", Ready: true}}}, true},
-		{"open coop, one not ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, Players: []PlayerSummary{{PlayerID: "a", Ready: true}, {PlayerID: "b"}}}, false},
+		{"open coop, one ready and one not", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, Players: []PlayerSummary{{PlayerID: "a", Ready: true}, {PlayerID: "b", Seat: 1}}}, true},
+		{"open coop, seated but nobody ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, Players: []PlayerSummary{{PlayerID: "a"}, {PlayerID: "b", Seat: 1}}}, false},
 		{"open coop, nobody", GameListing{Mode: config.ModeCooperative, PlayerCount: 3}, false},
 		{"open teams, a team empty", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}}}, false},
+		{"open teams, a team seated but not ready", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}, {PlayerID: "b", Team: 1, Seat: 2}}}, false},
 		{"open teams, one ready per team", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}, {PlayerID: "b", Ready: true, Team: 1, Seat: 2}}}, true},
+		{"open teams, one ready per team and a teammate not", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}, {PlayerID: "c", Team: 0, Seat: 1, TeamSlot: 1}, {PlayerID: "b", Ready: true, Team: 1, Seat: 2}}}, true},
 		{"open competitive, a board empty", GameListing{Mode: config.ModeCompetitive, PlayerCount: 3, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Seat: 0}, {PlayerID: "b", Ready: true, Seat: 1}}}, false},
+		{"open competitive, a board seated but not ready", GameListing{Mode: config.ModeCompetitive, PlayerCount: 2, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Seat: 0}, {PlayerID: "b", Seat: 1}}}, false},
 		{"open competitive, every board", GameListing{Mode: config.ModeCompetitive, PlayerCount: 2, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Seat: 0}, {PlayerID: "b", Ready: true, Seat: 1}}}, true},
 		{"invite coop, ready but short", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, InviteOnly: true, Players: []PlayerSummary{{PlayerID: "a", Ready: true}}}, false},
+		{"invite coop, full, one not ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 2, InviteOnly: true, Players: []PlayerSummary{{PlayerID: "a", Ready: true}, {PlayerID: "b", Seat: 1}}}, false},
 		{"invite coop, full and ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 2, InviteOnly: true, Players: []PlayerSummary{{PlayerID: "a", Ready: true}, {PlayerID: "b", Ready: true, Seat: 1}}}, true},
 	} {
 		if got := tc.g.ReadyToStart(); got != tc.want {
 			t.Errorf("%s: ReadyToStart() = %v, want %v", tc.name, got, tc.want)
 		}
 	}
-	teams := GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}}}
-	if got := teams.ReadyBlocker(); got != "waiting for a player on Team B" {
-		t.Errorf("ReadyBlocker() = %q", got)
+	// The bar's note: an open game's playfield with no ready player yet
+	// (seated or not), nothing on a single playfield (the click is all it
+	// waits for), an invite game's missing seats once everyone present is
+	// ready — and nothing while its present players are not.
+	for _, tc := range []struct {
+		name string
+		g    GameListing
+		want string
+	}{
+		{"open teams, a team empty", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}}}, "waiting for a ready player on Team B"},
+		{"open teams, a team seated but not ready", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}, {PlayerID: "b", Team: 1, Seat: 2}}}, "waiting for a ready player on Team B"},
+		{"open teams, only the second team ready", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Team: 0}, {PlayerID: "b", Ready: true, Team: 1, Seat: 2}}}, "waiting for a ready player on Team A"},
+		{"open teams, one ready per team", GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}, {PlayerID: "b", Ready: true, Team: 1, Seat: 2}}}, ""},
+		{"open competitive, a board not ready", GameListing{Mode: config.ModeCompetitive, PlayerCount: 2, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Seat: 0}, {PlayerID: "b", Seat: 1}}}, "waiting for a ready player on every board"},
+		{"open coop, nobody ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, Players: []PlayerSummary{{PlayerID: "a"}, {PlayerID: "b", Seat: 1}}}, ""},
+		{"invite coop, short, one not ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, InviteOnly: true, Players: []PlayerSummary{{PlayerID: "a", Ready: true}, {PlayerID: "b", Seat: 1}}}, ""},
+		{"invite coop, short, everyone ready", GameListing{Mode: config.ModeCooperative, PlayerCount: 3, InviteOnly: true, Players: []PlayerSummary{{PlayerID: "a", Ready: true}}}, "waiting for 2 more"},
+	} {
+		if got := tc.g.ReadyBlocker(); got != tc.want {
+			t.Errorf("%s: ReadyBlocker() = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 
 	// On the wire: a two-seat open co-op game starts on its first ready
@@ -136,6 +159,32 @@ func TestReadyToStartOpen(t *testing.T) {
 	}
 	if res, err := b.ToggleReady(ctx, gameID); err != nil || res.AllReady {
 		t.Fatalf("a joiner readying up during the countdown was elected too (err %v)", err)
+	}
+
+	// The other seat taken but not ready: the first ready player still
+	// starts the game — the seated player who never clicked plays from the
+	// start — and that player's own toggle, during the countdown, is not
+	// elected.
+	gameID, err = a.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.GameRules{Ghost: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.JoinGame(ctx, gameID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.JoinGame(ctx, gameID, 0); err != nil {
+		t.Fatal(err)
+	}
+	res, err = a.ToggleReady(ctx, gameID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.AllReady {
+		t.Fatal("the first ready player of an open game, the other seat taken and not ready, was not elected to start it")
+	}
+	waitListing(t, b, gameID, "starting", func(g GameListing) bool { return g.Status == config.GameStatusStarting })
+	if res, err := b.ToggleReady(ctx, gameID); err != nil || res.AllReady {
+		t.Fatalf("the other seat's player readying up during the countdown was elected too (err %v)", err)
 	}
 }
 
@@ -230,7 +279,7 @@ func TestTeamNamesOnTheWire(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	open := GameListing{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, PlayerCount: 4, TeamNames: []string{"Sharks", "Jets"}, Players: []PlayerSummary{{PlayerID: "a", Ready: true, Team: 0}}}
-	if got := open.ReadyBlocker(); got != "waiting for a player on Team Jets" {
+	if got := open.ReadyBlocker(); got != "waiting for a ready player on Team Jets" {
 		t.Errorf("ReadyBlocker() = %q", got)
 	}
 }

@@ -198,8 +198,8 @@ func TestTeamsThreeWayJoin(t *testing.T) {
 		}
 	}
 
-	// Every team seated: an open game starts once everyone present is ready
-	// — here, once the last of the three toggles.
+	// Every team seated: an open game starts once every team has a ready
+	// player — here, one player each, once the last of the three toggles.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		g, ok := lbs[0].Games()[gameID]

@@ -577,8 +577,8 @@ created → starting → [countdown] → in_progress → finished → archived
 | From | To | Trigger |
 |------|----|---------|
 | — | created | Player finishes the create-game wizard (open, or invite-only per its who-can-join step) |
-| created | starting | All player slots filled (roster full; in teams mode, every team full). A join into an already-full game is refused |
-| starting | [countdown] | All players click READY |
+| created | starting | The table is ready: an invite game once every seat is filled and every player has clicked READY (a join into an already-full game is refused); an open game once every playfield has a player who clicked READY — its first ready player on a single playfield, one per team or board with several — whatever seats stay free |
+| starting | [countdown] | The ready toggle that completed the table runs the countdown |
 | [countdown] | in_progress | 5-second countdown completes |
 | in_progress | finished | Game over (top-out) |
 | finished | archived | Archive record published, game stream deleted (5s delay) |
@@ -797,7 +797,7 @@ bucket but are written without a TTL, so they persist until explicitly removed.)
 2. Each player's ready state is shown as a filled pill badge next to their name: green "READY" / red "NOT READY"
 3. Players toggle their own state by clicking the button, which reads "CLICK WHEN READY TO PLAY" (when not yet ready — drawn with the shiny "attract" treatment: an embossed bevel and a glint that sweeps across it every few seconds) / "CLICK IF NOT READY ANYMORE" (when ready, i.e. click to stand down; plain button, no glint)
 4. Ready state is stored in the KV game listing with CAS (prevents lost updates)
-5. When the table is ready — an invite game: every seat filled and ALL players ready; an open game: everyone seated ready and every playfield with at least one player, whatever seats stay free (the bar names what it still waits for: `WAITING FOR A PLAYER ON TEAM B`) — the countdown begins and the ready toggle is locked. In an open game the one ready toggle that moves the listing from `created` to `starting` elects its client to run the countdown, so a player joining during the countdown never starts a second one; a player joining a running game gets no ready step at all
+5. When the table is ready — an invite game: every seat filled and ALL players ready; an open game: every playfield with at least one READY player — a single playfield starts on its first ready player, a multi-playfield game once every team (board) has one — whatever seats stay free and whoever else is seated without having clicked (they play from the start, like a later joiner; the bar names what it still waits for: `WAITING FOR A READY PLAYER ON TEAM B`) — the countdown begins and the ready toggle is locked. In an open game the one ready toggle that moves the listing from `created` to `starting` elects its client to run the countdown, so a player joining during the countdown never starts a second one; a player joining a running game gets no ready step at all
 6. **Countdown:** 5...4...3...2...1...GO! (published to NATS countdown subject, consumed by all engines), drawn as a big numeral centered over your own playfield
 7. After "GO!": game meta transitions to `in_progress`, pieces spawn
 

@@ -588,40 +588,47 @@ func freeSeat(g obj, team int) (seat, slot int, ok bool) {
 
 // readyToStart is the start rule (guide §5.3): an invite game's table is
 // ready when every seat is filled and everyone is ready; an open game's as
-// soon as everyone seated is ready and every playfield has a player — the
-// crew's one board, every team's, every competitive board.
+// soon as every playfield has a ready player — the crew's one board, every
+// team's, every competitive board — whoever else is seated and not ready.
 func readyToStart(g obj) bool {
 	players := g.players()
 	if len(players) == 0 {
 		return false
 	}
-	for _, p := range players {
-		if !p.Ready {
-			return false
-		}
-	}
 	if g.boolv("invite_only") {
+		for _, p := range players {
+			if !p.Ready {
+				return false
+			}
+		}
 		return len(players) >= g.int("player_count")
 	}
 	switch g.int("mode") {
 	case modeTeams:
 		for t := 0; t < normalizeTeamCount(g.int("team_count")); t++ {
-			if pickTeamMembers(players, t) == 0 {
+			if readyOn(players, func(p playerSummary) bool { return p.Team == t }) == 0 {
 				return false
 			}
 		}
 		return true
 	case modeCompetitive:
-		return len(players) >= g.int("player_count")
-	default:
+		for seat := 0; seat < g.int("player_count"); seat++ {
+			if readyOn(players, func(p playerSummary) bool { return p.Seat == seat }) == 0 {
+				return false
+			}
+		}
 		return true
+	default:
+		return readyOn(players, func(playerSummary) bool { return true }) > 0
 	}
 }
 
-func pickTeamMembers(players []playerSummary, team int) int {
+// readyOn counts the ready players among those on a playfield (on: the
+// team's members, a competitive board's one seat, everyone on the crew's).
+func readyOn(players []playerSummary, on func(playerSummary) bool) int {
 	n := 0
 	for _, p := range players {
-		if p.Team == team {
+		if p.Ready && on(p) {
 			n++
 		}
 	}

@@ -499,9 +499,11 @@ each lock of yours:
    game's roster is frozen once it starts.
 3. **Ready → countdown**: toggle your `ready` flag via CAS. The table is ready
    when — invite game — every seat is filled and everyone is ready, or —
-   open game — everyone seated is ready and EVERY PLAYFIELD has a player
-   (the crew's one board, every team, every competitive board), whatever
-   seats stay free. **If your toggle is the one that completes it, YOU run
+   open game — EVERY PLAYFIELD has a READY player (the crew's one board:
+   its first ready player; every team; every competitive board), whatever
+   seats stay free and whoever else is seated without having readied up
+   (they play from the start, like a later joiner). **If your toggle is the
+   one that completes it, YOU run
    the countdown**: in an open game that is the one CAS write that moves the
    listing from `created` to `starting` (write the status in the same
    update; a toggle that finds it `starting` already is not elected), in an

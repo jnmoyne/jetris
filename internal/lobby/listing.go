@@ -128,10 +128,10 @@ func (g GameListing) IndividualScoring() bool {
 }
 
 // Dynamic reports whether the game's roster can change at any time: an OPEN
-// game — one not restricted to invited players — starts as soon as its
-// present players are ready and lets anyone take a free seat or leave, before
-// the start and mid-game alike. An invite-only game's roster is the invited
-// set, frozen once the game starts.
+// game — one not restricted to invited players — starts as soon as every
+// playfield has a ready player and lets anyone take a free seat or leave,
+// before the start and mid-game alike. An invite-only game's roster is the
+// invited set, frozen once the game starts.
 func (g GameListing) Dynamic() bool {
 	return !g.InviteOnly
 }
@@ -247,23 +247,44 @@ func (g GameListing) SeatOf(playerID string) (PlayerSummary, bool) {
 	return PlayerSummary{}, false
 }
 
+// onPlayfield reports whether a seat (seat filled in — see NormalizedSeats)
+// is on the given playfield: on the one shared board (playfield 0) every
+// seat is, on a team's board its members', on a competitive board
+// (playfield = seat) its one.
+func (g GameListing) onPlayfield(p PlayerSummary, playfield int) bool {
+	switch g.Mode {
+	case config.ModeTeams:
+		return p.Team == playfield
+	case config.ModeCompetitive:
+		return p.Seat == playfield
+	default:
+		return true
+	}
+}
+
 // SeatedOn is how many players hold a seat on the given playfield: on the
 // one shared board (playfield 0) everyone, on a team's board its members,
 // on a competitive board (playfield = seat) its one player or nobody.
 func (g GameListing) SeatedOn(playfield int) int {
-	switch g.Mode {
-	case config.ModeTeams:
-		return g.TeamMemberCount(playfield)
-	case config.ModeCompetitive:
-		for _, p := range g.NormalizedSeats() {
-			if p.Seat == playfield {
-				return 1
-			}
+	n := 0
+	for _, p := range g.NormalizedSeats() {
+		if g.onPlayfield(p, playfield) {
+			n++
 		}
-		return 0
-	default:
-		return len(g.Players)
 	}
+	return n
+}
+
+// ReadyOn is how many of the players seated on the given playfield (see
+// SeatedOn) have clicked ready.
+func (g GameListing) ReadyOn(playfield int) int {
+	n := 0
+	for _, p := range g.NormalizedSeats() {
+		if p.Ready && g.onPlayfield(p, playfield) {
+			n++
+		}
+	}
+	return n
 }
 
 // Started reports whether the listing says the game has left the waiting
@@ -278,45 +299,59 @@ func (g GameListing) Started() bool {
 
 // ReadyToStart reports whether the table is ready for the countdown: for an
 // invite game every seat filled and everyone ready — the roster is the
-// invited set; for an open game everyone seated ready and every playfield
-// with at least one player — the crew's one board trivially, every team's,
-// every competitive board (one player each: the full roster) — the seats
-// still free being anyone's to take, before the start and after it.
+// invited set; for an open game a ready player on every playfield — the
+// crew's one board (its first ready player starts the game), every team's,
+// every competitive board (one player each: the full roster, everyone
+// ready) — whoever else is seated and has not readied up: the seats still
+// free are anyone's to take, before the start and after it, and a seated
+// player who never clicked ready plays from the start like a later joiner
+// would.
 func (g GameListing) ReadyToStart() bool {
 	if len(g.Players) == 0 {
 		return false
 	}
-	for _, p := range g.Players {
-		if !p.Ready {
-			return false
-		}
-	}
 	if !g.Dynamic() {
+		for _, p := range g.Players {
+			if !p.Ready {
+				return false
+			}
+		}
 		return len(g.Players) >= g.PlayerCount
 	}
 	for pf := 0; pf < g.Playfields(); pf++ {
-		if g.SeatedOn(pf) == 0 {
+		if g.ReadyOn(pf) == 0 {
 			return false
 		}
 	}
 	return true
 }
 
-// ReadyBlocker names what keeps an open game from starting once everyone
-// present is ready: a playfield with nobody on it. Empty when nothing does.
+// ReadyBlocker names what keeps the table from starting beyond what the
+// ready tally shows: for an open game with several playfields, one without
+// a ready player yet; for an invite game — once everyone present is ready —
+// the seats still to fill. Empty when nothing does (a single-playfield open
+// game starts on its first ready player, so nothing but the click).
 func (g GameListing) ReadyBlocker() string {
 	if !g.Dynamic() {
+		for _, p := range g.Players {
+			if !p.Ready {
+				return ""
+			}
+		}
 		if n := g.PlayerCount - len(g.Players); n > 0 {
 			return fmt.Sprintf("waiting for %d more", n)
 		}
 		return ""
 	}
+	if g.Playfields() < 2 {
+		return ""
+	}
 	for pf := 0; pf < g.Playfields(); pf++ {
-		if g.SeatedOn(pf) == 0 {
+		if g.ReadyOn(pf) == 0 {
 			if g.Mode == config.ModeTeams {
-				return "waiting for a player on Team " + g.TeamName(pf)
+				return "waiting for a ready player on Team " + g.TeamName(pf)
 			}
-			return "waiting for a player on every board"
+			return "waiting for a ready player on every board"
 		}
 	}
 	return ""

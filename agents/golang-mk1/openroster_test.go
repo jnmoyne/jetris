@@ -64,10 +64,21 @@ func TestJoinableInProgress(t *testing.T) {
 	if readyToStart(listing("created", false, []playerSummary{ready("a", 0, 0)})) {
 		t.Error("an open competitive game with a board empty is ready")
 	}
+	if readyToStart(listing("created", false, []playerSummary{ready("a", 0, 0), ready("b", 1, 0), {PlayerID: "c", Seat: 2}})) {
+		t.Error("an open competitive game with a board seated but not ready is ready")
+	}
 	coop := listing("created", false, []playerSummary{ready("a", 0, 0)})
 	coop.set("mode", modeCooperative)
 	if !readyToStart(coop) {
 		t.Error("an open co-op game with one ready player is not ready")
+	}
+	coop.set("players", []playerSummary{ready("a", 0, 0), {PlayerID: "b", Seat: 1}})
+	if !readyToStart(coop) {
+		t.Error("an open co-op game with one ready player and one not is not ready")
+	}
+	coop.set("players", []playerSummary{{PlayerID: "a"}, {PlayerID: "b", Seat: 1}})
+	if readyToStart(coop) {
+		t.Error("an open co-op game with nobody ready is ready")
 	}
 	invite := listing("created", true, []playerSummary{ready("a", 0, 0)})
 	invite.set("mode", modeCooperative)
@@ -78,9 +89,17 @@ func TestJoinableInProgress(t *testing.T) {
 	if readyToStart(teams) {
 		t.Error("an open teams game with team A empty is ready")
 	}
+	teams.set("players", []playerSummary{ready("a", 2, 1), {PlayerID: "b", Seat: 0, Team: 0}})
+	if readyToStart(teams) {
+		t.Error("an open teams game with team A seated but not ready is ready")
+	}
 	teams.set("players", []playerSummary{ready("a", 2, 1), ready("b", 0, 0)})
 	if !readyToStart(teams) {
 		t.Error("an open teams game with a ready player per team is not ready")
+	}
+	teams.set("players", []playerSummary{ready("a", 2, 1), ready("b", 0, 0), {PlayerID: "c", Seat: 1, Team: 0, TeamSlot: 1}})
+	if !readyToStart(teams) {
+		t.Error("an open teams game with a ready player per team and a teammate not ready is not ready")
 	}
 
 	// A roster down to us alone after rivals played is a win.

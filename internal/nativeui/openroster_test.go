@@ -34,13 +34,14 @@ func TestCanJoinOpenInProgress(t *testing.T) {
 	}
 }
 
-// The ready bar names what an open game still waits for once everyone
-// present is ready, and lays out with the note in the narrowest window.
+// The ready bar names what an open game still waits for — a playfield with
+// no ready player yet, whoever is seated there — and lays out with the note
+// in the narrowest window.
 func TestReadyBarOpen(t *testing.T) {
 	a := newTestApp()
 	view := gameView{
-		readyPlayer: []lobby.PlayerSummary{{PlayerID: "me", Ready: true}},
-		readyNote:   "waiting for a player on Team B",
+		readyPlayer: []lobby.PlayerSummary{{PlayerID: "me", Ready: true}, {PlayerID: "them", Team: 1, Seat: 2}},
+		readyNote:   "waiting for a ready player on Team B",
 		myReady:     true,
 	}
 	for _, size := range [][2]int{{360, 640}, {1200, 800}} {

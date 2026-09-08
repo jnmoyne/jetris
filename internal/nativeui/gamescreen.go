@@ -570,10 +570,12 @@ func (a *App) readyBar(gtx C, view gameView) D {
 			layout.Rigid(hSpacer(10)),
 			layout.Flexed(1, func(gtx C) D {
 				gtx.Constraints.Min.Y = 0
-				// The tally over the players present — and, when everyone
-				// present is ready but the table is not, what it waits for.
+				// The tally over the players present — and what else the
+				// table waits for (lobby.GameListing.ReadyBlocker): an open
+				// game's playfield with no ready player yet, an invite
+				// game's seats still to fill once everyone present is ready.
 				txt := fmt.Sprintf("%d/%d READY", ready, len(view.readyPlayer))
-				if view.readyNote != "" && ready == len(view.readyPlayer) {
+				if view.readyNote != "" {
 					txt += " · " + strings.ToUpper(view.readyNote)
 				}
 				return a.pixelLabelFit(gtx, unit.Sp(10), txt, colMuted)

@@ -305,3 +305,92 @@ func TestRotateKickReportsTheKick(t *testing.T) {
 		t.Fatal("the O never rotates")
 	}
 }
+
+// A 180 spin is scored, named and valued for garbage as a full T-spin, and
+// is as difficult for the Back-to-Back chain; four lines are a Jetris
+// whatever turned the piece.
+func TestClear180Spin(t *testing.T) {
+	for _, c := range []struct {
+		clear  Clear
+		points int
+		name   string
+		rows   int
+	}{
+		{Clear{Spin: TSpin180}, 400, "180 SPIN", 0},
+		{Clear{Lines: 1, Spin: TSpin180}, 800, "180 SPIN SINGLE", 2},
+		{Clear{Lines: 2, Spin: TSpin180}, 1200, "180 SPIN DOUBLE", 4},
+		{Clear{Lines: 3, Spin: TSpin180}, 1600, "180 SPIN TRIPLE", 6},
+		{Clear{Lines: 2, Spin: TSpin180, BackToBack: true}, 1800, "180 SPIN DOUBLE", 6},
+		{Clear{Lines: 4, Spin: TSpin180}, 800, "JETRIS", 4},
+	} {
+		if got := c.clear.Points(1); got != c.points {
+			t.Errorf("%+v: Points = %d, want %d", c.clear, got, c.points)
+		}
+		if got := c.clear.Name(); got != c.name {
+			t.Errorf("%+v: Name = %q, want %q", c.clear, got, c.name)
+		}
+		if got := c.clear.AttackRows(true); got != c.rows {
+			t.Errorf("%+v: AttackRows = %d, want %d", c.clear, got, c.rows)
+		}
+	}
+	if !(Clear{Lines: 1, Spin: TSpin180}).Difficult() || (Clear{Spin: TSpin180}).Difficult() {
+		t.Error("a 180 spin that cleared lines is difficult; one that cleared nothing is not")
+	}
+}
+
+// DetectSpin: after a half turn any piece that cannot shift left, right or
+// up is a 180 spin — an S wedged in a slot, or a T the corner rule would
+// call full even where it could still shift; a half-turned piece with room
+// beside it is no spin, and after a quarter turn the T rules stand alone.
+func TestDetectSpin(t *testing.T) {
+	half := SpinState{Rotated: true, Half: true}
+	// An S lying in a slot shaped for it: nothing to the left of its lower
+	// bar, nothing to the right of the upper one, an overhang over the left.
+	wedged := tBoard(t,
+		"......",
+		"##....",
+		"#..###",
+		"#..###",
+		"######",
+	)
+	s := Piece{Type: PieceS, Orientation: 0, Row: 1, Col: 1} // cells (1,2),(1,3),(2,1),(2,2)
+	if !CanPlace(s, wedged) {
+		t.Fatal("setup: the S must fit its slot")
+	}
+	if got := DetectSpin(s, wedged, half); got != TSpin180 {
+		t.Errorf("S wedged after a half turn: %v, want a 180 spin", got)
+	}
+	if got := DetectSpin(s, wedged, SpinState{Rotated: true}); got != TSpinNone {
+		t.Errorf("the same S after a quarter turn: %v, want none (only a T spins by the corner rule)", got)
+	}
+	if got := DetectSpin(s, wedged, SpinState{}); got != TSpinNone {
+		t.Errorf("the same S shifted into place: %v, want none", got)
+	}
+	// Room beside it: no spin.
+	open := tBoard(t,
+		"......",
+		"......",
+		"......",
+		"#..###",
+		"######",
+	)
+	if got := DetectSpin(s, open, half); got != TSpinNone {
+		t.Errorf("S with room beside it after a half turn: %v, want none", got)
+	}
+	// A T pointing down into its slot, three corners filled: a T-spin by the
+	// corner rule after a quarter turn, a 180 spin after a half turn.
+	slot := tBoard(t,
+		"......",
+		".#....",
+		"......",
+		".#.#..",
+		"######",
+	)
+	down := Piece{Type: PieceT, Orientation: 2, Row: 1, Col: 1}
+	if got := DetectSpin(down, slot, SpinState{Rotated: true}); got != TSpinFull {
+		t.Errorf("T in its slot after a quarter turn: %v, want full", got)
+	}
+	if got := DetectSpin(down, slot, half); got != TSpin180 {
+		t.Errorf("T in its slot after a half turn: %v, want a 180 spin", got)
+	}
+}

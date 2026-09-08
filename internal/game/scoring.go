@@ -6,10 +6,11 @@ package game
 // garbage table applies to games created with the guideline-garbage rule.
 
 // Clear is one lock's line clear — or the lack of one — with everything the
-// Guideline values it by: how many lines, the T-spin that made it, whether
-// it extends a Back-to-Back chain, its place in a combo, and whether it left
-// the board empty. A lock that cleared nothing is a Clear with Lines 0: a
-// T-spin that clears nothing still scores (and keeps a Back-to-Back chain).
+// Guideline values it by: how many lines, the spin that made it (a T-spin,
+// or a 180 spin, which scores as a full T-spin), whether it extends a
+// Back-to-Back chain, its place in a combo, and whether it left the board
+// empty. A lock that cleared nothing is a Clear with Lines 0: a spin that
+// clears nothing still scores (and keeps a Back-to-Back chain).
 type Clear struct {
 	Lines      int
 	Spin       TSpin
@@ -31,8 +32,9 @@ func (c Clear) lines() int {
 	return min(max(c.Lines, 0), 4)
 }
 
-// spin is the T-spin the tables know: a T cannot clear four lines, and a
-// three-line T-spin is always a full T-spin triple (there is no Mini one).
+// spin is the spin the tables know: a spin's table stops at three lines (a
+// four-line clear is a Jetris, whatever turned the piece), and a three-line
+// T-spin is always a full T-spin triple (there is no Mini one).
 func (c Clear) spin() TSpin {
 	if c.Spin == TSpinMini && c.Lines >= 3 {
 		return TSpinFull
@@ -48,8 +50,8 @@ func (c Clear) spin() TSpin {
 func (c Clear) basePoints() int {
 	n := c.lines()
 	switch c.spin() {
-	case TSpinFull:
-		return [4]int{400, 800, 1200, 1600}[n] // T-Spin no lines, Single, Double, Triple
+	case TSpinFull, TSpin180:
+		return [4]int{400, 800, 1200, 1600}[n] // T-Spin no lines, Single, Double, Triple; a 180 spin the same
 	case TSpinMini:
 		return [3]int{100, 200, 400}[n] // Mini T-Spin no lines, Single, Double
 	}
@@ -103,7 +105,7 @@ func (c Clear) AttackRows(guideline bool) int {
 	n := c.lines()
 	var rows, b2b int
 	switch c.spin() {
-	case TSpinFull:
+	case TSpinFull, TSpin180:
 		rows, b2b = [4]int{0, 2, 4, 6}[n], [4]int{0, 1, 2, 3}[n]
 	case TSpinMini:
 		rows, b2b = [3]int{0, 0, 1}[n], 1
@@ -123,8 +125,8 @@ func (c Clear) AttackRows(guideline bool) int {
 }
 
 // Name is the Guideline's name for the clear — "JETRIS", "T-SPIN DOUBLE",
-// "MINI T-SPIN SINGLE", "T-SPIN" for a T-spin that cleared nothing — and
-// "" for a lock that neither cleared nor spun.
+// "MINI T-SPIN SINGLE", "180 SPIN TRIPLE", "T-SPIN" for a T-spin that
+// cleared nothing — and "" for a lock that neither cleared nor spun.
 func (c Clear) Name() string {
 	n := c.lines()
 	spin := c.spin().String()

@@ -6,7 +6,7 @@ import "jetris/internal/game"
 // game.DetectTSpin). Every field here is guarded by e.mu.
 //
 // lockAward is what the lock this engine published is worth beyond its
-// lines: the T-spin the piece made where it came to rest — judged from how
+// lines: the spin the piece made where it came to rest — judged from how
 // it got there (Engine.spin) — and the drop points it earned on the way
 // down. Armed by the publish that locks the piece (a hard drop, the lock
 // delay's expiry) and consumed once by handleLockIn when the lock echoes
@@ -53,7 +53,7 @@ func (e *Engine) noteHardDrop(from, dest game.Piece, locks bool) {
 	}
 	if locks {
 		e.lockAward = lockAward{
-			spin:       game.DetectTSpin(dest, e.playfield, e.spin),
+			spin:       game.DetectSpin(dest, e.playfield, e.spin),
 			dropPoints: game.DropPoints(e.softDropCells, fell),
 		}
 	}
@@ -63,7 +63,7 @@ func (e *Engine) noteHardDrop(from, dest game.Piece, locks bool) {
 // expiry. Call with e.mu held.
 func (e *Engine) armLockAward(p game.Piece) {
 	e.lockAward = lockAward{
-		spin:       game.DetectTSpin(p, e.playfield, e.spin),
+		spin:       game.DetectSpin(p, e.playfield, e.spin),
 		dropPoints: game.DropPoints(e.softDropCells, 0),
 	}
 }

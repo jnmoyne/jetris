@@ -203,7 +203,7 @@ func twistBoard(t *testing.T, rows ...string) *Playfield {
 // each the board as the wiki draws it before the turn — the letters the
 // piece — with the piece's placement after the half turn and the kick that
 // found it. All of them are SRS-X twists: the table is what makes them, and
-// the T ones are full T-spins by the corner rule.
+// every one lands as a 180 spin (DetectSpin).
 func Test180Twists(t *testing.T) {
 	at := func(typ PieceType, o, row, col int) Piece {
 		return Piece{Type: typ, Orientation: o, Row: row, Col: col}
@@ -378,10 +378,10 @@ func Test180Twists(t *testing.T) {
 			t.Errorf("%s: RotateKick(180) = %+v, kick %d, %v; want %+v, kick %d, true", c.name, got, kick, ok, c.want, c.kick)
 			continue
 		}
-		if c.p.Type == PieceT {
-			if spin := DetectTSpin(got, pf, SpinState{Rotated: true, Kick: kick, Half: true}); spin != TSpinFull {
-				t.Errorf("%s: DetectTSpin = %v, want a full T-spin", c.name, spin)
-			}
+		// Every one of them is a 180 spin where it lands — and a plain
+		// twist for the scoring, were it a T that got there by a quarter turn.
+		if spin := DetectSpin(got, pf, SpinState{Rotated: true, Kick: kick, Half: true}); spin != TSpin180 {
+			t.Errorf("%s: DetectSpin = %v, want a 180 spin", c.name, spin)
 		}
 	}
 }

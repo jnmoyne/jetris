@@ -1,24 +1,30 @@
 package game
 
-// TSpin classifies how a T came to rest: not a T-spin at all, a Mini T-Spin,
-// or a full T-Spin. Jetris plays the Guideline's 3-corner rule with the
-// pointing-side Mini distinction — the rules the scoring table at
-// tetris.wiki/Scoring ("Recent guideline compatible games") assumes.
+// TSpin classifies how a piece spun into where it rests: not a spin at all,
+// a Mini T-Spin, a full T-Spin — the Guideline's 3-corner rule with the
+// pointing-side Mini distinction, the rules the scoring table at
+// tetris.wiki/Scoring ("Recent guideline compatible games") assumes — or a
+// 180 spin: any piece half-turned (Turn180) into a spot it cannot shift out
+// of, scored like a full T-spin and named for the turn (DetectSpin). The
+// value travels on the wire (GameEvent.TSpin), so new kinds are appended.
 type TSpin int
 
 const (
 	TSpinNone TSpin = iota
 	TSpinMini
 	TSpinFull
+	TSpin180
 )
 
-// String is the Guideline's name for the spin ("" for none).
+// String is the name for the spin ("" for none).
 func (s TSpin) String() string {
 	switch s {
 	case TSpinMini:
 		return "MINI T-SPIN"
 	case TSpinFull:
 		return "T-SPIN"
+	case TSpin180:
+		return "180 SPIN"
 	}
 	return ""
 }
@@ -41,6 +47,56 @@ type SpinState struct {
 // that got there by it is a full T-spin even when only one of its front
 // corners is filled (the Guideline's exception to the Mini rule).
 const LastKick = 4
+
+// DetectSpin judges how the piece resting at p spun in, if it did. After a
+// half turn (s.Half) any piece is a 180 spin when it rests immobile — unable
+// to shift left, right or up, the walls and the locked cells blocking it
+// (the wiki's "immobile" twist rule, harddrop.com/wiki/List_of_twists,
+// "Rewards for twists"; another player's falling piece blocks nothing, it
+// may move away) — and so is a T the 3-corner rule calls a full T-spin. After
+// a quarter turn a T is judged by that rule alone (DetectTSpin) and any other
+// piece is no spin at all.
+func DetectSpin(p Piece, pf *Playfield, s SpinState) TSpin {
+	if !s.Rotated {
+		return TSpinNone
+	}
+	if !s.Half {
+		return DetectTSpin(p, pf, s)
+	}
+	if immobile(p, pf) || DetectTSpin(p, pf, s) == TSpinFull {
+		return TSpin180
+	}
+	return TSpinNone
+}
+
+// immobile reports whether p can shift neither left, right nor up: every
+// such move puts a cell off the board or onto a locked one.
+func immobile(p Piece, pf *Playfield) bool {
+	for _, d := range [3][2]int{{0, -1}, {0, 1}, {-1, 0}} {
+		q := p
+		q.Row += d[0]
+		q.Col += d[1]
+		if fitsLocked(q, pf) {
+			return false
+		}
+	}
+	return true
+}
+
+// fitsLocked reports whether every cell of q is on the board and not locked
+// (an active cell — a falling piece's — does not count as in the way).
+func fitsLocked(q Piece, pf *Playfield) bool {
+	for _, c := range q.Cells() {
+		r, col := c[0], c[1]
+		if r < 0 || r >= pf.Height || col < 0 || col >= pf.Width {
+			return false
+		}
+		if cell := pf.Rows[r].Cells[col]; cell.Occupied && !cell.Active {
+			return false
+		}
+	}
+	return true
+}
 
 // DetectTSpin judges the T resting at p: a T-spin needs the piece to be a T
 // whose last move was a rotation (s), with at least three of the four

@@ -285,7 +285,7 @@ and the real-time push fabric.
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery); its `seat` is the STABLE seat the player holds — the index every cell they write carries (`pi`), their colour and their spawn section — assigned by the join as the lowest free one (in teams `team × team_size + team_slot`), never renumbered when someone leaves; a listing written before the field carries zeros, read by roster position |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
-| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. `line_clear` is published in EVERY mode — competitive too, where nobody folds your points but the line goal and the archive read your totals. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's Guideline names (`t_spin` 0/1/2, `back_to_back`, `combo`, `perfect`; §4.6) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
+| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. `line_clear` is published in EVERY mode — competitive too, where nobody folds your points but the line goal and the archive read your totals. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's Guideline names (`t_spin` 0/1/2/3 — none, Mini, T-spin, 180 spin — `back_to_back`, `combo`, `perfect`; §4.6) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
 | `jetris.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
 | `jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
 | `jetris.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
@@ -381,7 +381,8 @@ board's GARBAGE register and applied by the victim as a GATED transform:
 - **Attacking (you cleared N lines).** The rows you owe are N — or, when the
   meta's `guideline_garbage` is true, the Guideline table: 0 for a single, 1
   for a double, 2 for a triple, 4 for a Jetris; 0/1 for a Mini T-Spin
-  single/double, 2/4/6 for a T-Spin single/double/triple; +1 when a Mini or a
+  single/double, 2/4/6 for a T-Spin single/double/triple (a 180 spin the
+  same); +1 when a Mini or a
   T-Spin single is Back-to-Back, +2 for a T-Spin double or a Jetris, +3 for a
   T-Spin triple; +10 for a perfect clear (§4.6 defines those; owing 0 means
   you touch no register at all). For every victim board (competitive:
@@ -458,7 +459,8 @@ each lock of yours:
   competitive (capped at 20).
 - **The clear** — Single 100, Double 300, Triple 500, Jetris 800; a T-spin
   that cleared nothing 400 (Mini 100); Mini T-Spin Single/Double 200/400;
-  T-Spin Single/Double/Triple 800/1200/1600. × 1.5 when it is Back-to-Back
+  T-Spin Single/Double/Triple 800/1200/1600; a 180 spin scores as a T-spin
+  (400, then 800/1200/1600). × 1.5 when it is Back-to-Back
   (a Jetris or a T-spin clear right after another such clear; only a plain
   single, double or triple breaks the chain). + 50 × the combo count
   (consecutive clearing locks: 0 for the first, 1 for the next…; a lock that
@@ -472,6 +474,10 @@ each lock of yours:
   the T's 3×3 box corners filled by locked cells or the walls; full when both
   corners on the pointing side are, or a quarter turn used the fifth SRS kick;
   Mini otherwise.
+- **180 spins** — any piece half-turned (`Rotate180`, the SRS-X kicks) into
+  a spot as its LAST move where it can shift neither left, right nor up
+  (walls and locked cells blocking it), or a T the corner rule calls full:
+  scored as a full T-spin, `t_spin` 3, the banner says `180 SPIN`.
 - **Announce it** (§4.2) — a `line_clear` with `score` (the lock's points),
   `lines_cleared`, `cleared_rows`, the names (`t_spin`, `back_to_back`,
   `combo`, `perfect`) and your cumulative totals: for every clear, and on a

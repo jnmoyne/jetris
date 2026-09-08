@@ -31,7 +31,8 @@ type Invitation struct {
 	FromID    string          `json:"from_id"`
 	FromName  string          `json:"from_name"`
 	Mode      config.GameMode `json:"mode"`
-	Team      int             `json:"team"` // teams mode: which team the invitee is asked to join
+	Team      int             `json:"team"`                // teams mode: which team the invitee is asked to join
+	TeamName  string          `json:"team_name,omitempty"` // teams mode: what that team is called (the listing's TeamName at the time; absent = its letter)
 	Declined  bool            `json:"declined,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 }
@@ -72,6 +73,9 @@ func (l *Lobby) Invite(ctx context.Context, toPlayerID, gameID string, team int)
 		Mode:      g.Mode,
 		Team:      team,
 		CreatedAt: time.Now(),
+	}
+	if g.Mode == config.ModeTeams {
+		inv.TeamName = g.TeamName(team)
 	}
 	data, err := json.Marshal(inv)
 	if err != nil {

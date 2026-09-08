@@ -37,6 +37,9 @@ func main() {
 	extraCols := flag.Int("extra-cols", config.DefaultExtraColumns, "shared-board width: columns every seat beyond the first adds to the standard 10")
 	splitPieces := flag.Bool("split-pieces", false, "teams: deal the seven piece types out between the teammates, each seat playing only its own ration")
 	bag := flag.String("bag", "", "piece randomizer: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
+	extraRows := flag.Int("extra-rows", config.DefaultExtraRows, "shared-board height: rows every seat beyond the first adds below the standard 20 (0-10)")
+	lineGoal := flag.Int("line-goal", 0, "the game's length in lines: the first playfield to clear this many wins (0 = until top out)")
+	individual := flag.Bool("individual", false, "cooperative: score every seat on its own (the top score wins) instead of the crew together")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -86,7 +89,23 @@ func main() {
 	if *mode == "cooperative" {
 		gameMode, playerCount, teamCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 0, 1
 	}
-	gameID, err := lb.CreateGame(ctx, gameMode, playerCount, teamCount, teamSize, *extraCols, maxAgents, *splitPieces, config.GameRules{NextCount: config.MaxNextCount, Ghost: true, Bag: config.Bag(*bag)}, false)
+	scoring := config.ScoringShared
+	if *individual {
+		scoring = config.ScoringIndividual
+	}
+	gameID, err := lb.CreateGame(ctx, config.GameSpec{
+		Mode:         gameMode,
+		PlayerCount:  playerCount,
+		TeamCount:    teamCount,
+		TeamSize:     teamSize,
+		ExtraColumns: *extraCols,
+		ExtraRows:    *extraRows,
+		LineGoal:     *lineGoal,
+		Scoring:      scoring,
+		MaxAgents:    maxAgents,
+		SplitPieces:  *splitPieces,
+		Rules:        config.GameRules{NextCount: config.MaxNextCount, Ghost: true, Bag: config.Bag(*bag)},
+	})
 	if err != nil {
 		log.Fatal(err)
 	}

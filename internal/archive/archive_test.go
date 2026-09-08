@@ -114,6 +114,14 @@ func TestArchiveAndCleanupRecordFirstThenGrace(t *testing.T) {
 	if len(record.Boards) != 2 {
 		t.Errorf("record has %d boards, want 2 (one per competitive player)", len(record.Boards))
 	}
+	// The record says how tall the boards were — a competitive board is the
+	// standard one — and carries the game's length and scoring (absent here).
+	if record.BoardRows != config.StandardHeight || record.BoardHeight() != config.StandardHeight {
+		t.Errorf("record board_rows = %d, want %d", record.BoardRows, config.StandardHeight)
+	}
+	if record.ExtraRows != 0 || record.LineGoal != 0 || record.Scoring != config.ScoringShared {
+		t.Errorf("record carries settings the meta never had: %+v", record)
+	}
 	// At record time the game is still fully there for every other peer.
 	if _, err := js.Stream(ctx, config.GameStream(gameID)); err != nil {
 		t.Errorf("game stream already gone when the record was published: %v", err)
@@ -151,5 +159,117 @@ func TestArchiveAndCleanupRecordFirstThenGrace(t *testing.T) {
 	}
 	if _, err := kv.Get(ctx, config.LobbyGameKey(gameID)); !errors.Is(err, jetstream.ErrKeyNotFound) {
 		t.Errorf("lobby listing should be deleted after the grace, got %v", err)
+	}
+}
+
+// A board scored per seat archives its verdict: the top scorer wins, every
+// seat carries its own totals — a survivor's from the line_clear events the
+// archiving engine folded — and the record carries the scoring and no
+// shared total, so it ranks in its own bucket.
+func TestArchiveIndividualWinner(t *testing.T) {
+	url, _ := testutil.StartServer(t)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := natspkg.EnsureArchiveStream(ctx, js); err != nil {
+		t.Fatal(err)
+	}
+	kv, err := natspkg.EnsureLobbyKV(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A two-seat board scored per seat, in progress: the rival announced
+	// 500 points, then topped out with them; we never announced a thing.
+	const gameID = "archive-individual"
+	if err := natspkg.EnsureGameStream(ctx, js, gameID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	meta := config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Scoring: config.ScoringIndividual, Rules: config.GameRules{Ghost: true}}.
+		Normalized().Meta(gameID, "me", 7, now.Add(-time.Minute))
+	meta.Status, meta.StartedAt = config.GameStatusInProgress, now.Add(-time.Minute)
+	metaData, _ := json.Marshal(meta)
+	if _, err := js.Publish(ctx, config.MetaSubject(gameID), metaData); err != nil {
+		t.Fatal(err)
+	}
+	clear, _ := json.Marshal(engine.GameEvent{Kind: engine.EventLineClear, PlayerID: "rival", Score: 500, LinesCleared: 2, TotalScore: 500, TotalLines: 2})
+	if _, err := js.Publish(ctx, config.EventKindSubject(gameID, string(engine.EventLineClear), "rival"), clear); err != nil {
+		t.Fatal(err)
+	}
+	over, _ := json.Marshal(engine.GameEvent{Kind: engine.EventGameOver, PlayerID: "rival", Score: 500, Level: 0, PieceCount: 9, TotalScore: 500, TotalLines: 2})
+	if _, err := js.Publish(ctx, config.EventKindSubject(gameID, string(engine.EventGameOver), "rival"), over); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kv.Put(ctx, config.LobbyGameKey(gameID), []byte(`{"game_id":"archive-individual"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Our engine lives through it: it folds the rival's events and decides
+	// the verdict from them.
+	eng := engine.New(js, gameID, "me", "", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Stop)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, _, decided := eng.Winners(); decided {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the engine never decided the game from the rival's game over")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var record config.ArchiveRecord
+	got := make(chan struct{}, 1)
+	sub, err := nc.Subscribe(config.ArchiveSubject, func(m *nats.Msg) {
+		_ = json.Unmarshal(m.Data, &record)
+		select {
+		case got <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	// The finish the topper would have made.
+	meta.Status, meta.FinishedAt = config.GameStatusFinished, now
+	metaData, _ = json.Marshal(meta)
+	if _, err := js.Publish(ctx, config.MetaSubject(gameID), metaData); err != nil {
+		t.Fatal(err)
+	}
+	go ArchiveAndCleanup(ctx, js, kv, eng, nil, []lobby.PlayerSummary{{PlayerID: "me"}, {PlayerID: "rival"}})
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no archive record within 5s")
+	}
+
+	if record.Scoring != config.ScoringIndividual || !record.IndividualScoring() || record.TotalScore != 0 {
+		t.Errorf("record scoring = %q, total %d; want individual and no shared total", record.Scoring, record.TotalScore)
+	}
+	results := map[string]config.PlayerResult{}
+	for _, p := range record.Players {
+		results[p.PlayerID] = p
+	}
+	if r := results["rival"]; !r.Winner || r.Score != 500 || r.Lines != 2 {
+		t.Errorf("rival = %+v, want the winner with 500 points and 2 lines", r)
+	}
+	if r := results["me"]; r.Winner || r.Score != 0 {
+		t.Errorf("me = %+v, want beaten at 0", r)
+	}
+	if record.HeadlineScore() != 500 {
+		t.Errorf("headline = %d, want the best seat's 500", record.HeadlineScore())
 	}
 }

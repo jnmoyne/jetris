@@ -39,14 +39,15 @@ func TestSplitPiecesSnapshots(t *testing.T) {
 	}
 	defer w.Release()
 
-	// Step 1 of the create wizard for a 2v2, the split box checked: the seat
-	// count, the board-width slider and the split under them.
+	// Step 2 of the create wizard for a 2v2 on custom rules: the board's
+	// growth sliders and the distribute-the-pieces box, checked, at the top.
 	t.Run("wizard", func(t *testing.T) {
 		a := newTestApp()
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
-		a.createWizStep = wizStepMode
-		a.modeEnum.Value = "teams"
+		a.createWizStep = wizStepRules
+		a.rulesEnum.Value = "custom"
+		a.boardsEnum.Value = "multiple"
 		a.countEd.SetText("2")
 		a.splitPiecesCb.Value = true
 		snapshotPNGSized(t, w, dir, "wizard_split_pieces", size, func(gtx C) { a.layout(gtx) })

@@ -285,7 +285,7 @@ func speakerColor(sp voice.Speaker) colorN {
 // status line.
 func (a *App) voiceRoomName(eng *engine.Engine, v voice.Snapshot) string {
 	if v.HasTeam && v.Channel == voice.ChannelTeam {
-		return "TEAM " + teamName(eng.TeamIdx())
+		return "TEAM " + eng.TeamName(eng.TeamIdx())
 	}
 	return "ALL"
 }

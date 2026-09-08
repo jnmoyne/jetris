@@ -94,12 +94,12 @@ func TestLiveVerdictAndBanner(t *testing.T) {
 		{config.ModeCooperative, nil, -1, 5200, "FINAL SCORE 5200"},
 	}
 	for _, tc := range cases {
-		if got := liveVerdict(tc.gmode, duo, tc.winners, tc.team, tc.score); got != tc.want {
+		if got := liveVerdict(tc.gmode, false, nil, duo, tc.winners, tc.team, tc.score); got != tc.want {
 			t.Errorf("liveVerdict(%v, %v, %d, %d) = %q, want %q", tc.gmode, tc.winners, tc.team, tc.score, got, tc.want)
 		}
 	}
 	for gmode, want := range map[config.GameMode]string{config.ModeCompetitive: "WINNER", config.ModeTeams: "WINNERS", config.ModeCooperative: "GAME OVER"} {
-		if got := liveBanner(gmode); got != want {
+		if got := liveBanner(gmode, false); got != want {
 			t.Errorf("liveBanner(%v) = %q, want %q", gmode, got, want)
 		}
 	}
@@ -342,5 +342,74 @@ func TestTeamScoreLine(t *testing.T) {
 	// Before the first stats update the slices are empty: no line, no panic.
 	if got := teamScoreLine(gameView{}, 0); got != "" {
 		t.Errorf("teamScoreLine with no totals = %q, want empty", got)
+	}
+}
+
+// The engine's own verdict (engine.Winners — a board scored per seat, a
+// line goal, an emptied roster) settles the reveal: on a spectator's screen
+// outright, on a player's only once they have won (a beaten player's screen
+// still reveals nothing), and the verdict names the winners like a
+// competitive game's.
+func TestVerdictFromEngineWinners(t *testing.T) {
+	a := newTestApp()
+	now := time.Now()
+	roster := []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob"}}
+
+	spec := engine.New(nil, "g1", "watcher", "", config.ModeCooperative, engine.ModeSpectator, 0, 0, 0)
+	if oc := a.resolveOutcome(spec, gameView{players: roster}, config.ModeCooperative, now); oc.decided {
+		t.Fatal("an undecided game revealed an outcome")
+	}
+	spec.SetIndividualScoringForTest(true)
+	spec.DecideOutcomeForTest(map[string]bool{"bob": true}, -1)
+	oc := a.resolveOutcome(spec, gameView{players: roster, gameOver: true}, config.ModeCooperative, now)
+	if !oc.decided || !oc.winners["bob"] || oc.winners["alice"] || oc.winTeam != -1 {
+		t.Fatalf("spectator outcome = %+v, want bob alone", oc)
+	}
+	if oc.verdict != "BOB WINS!" || oc.banner != "WINNER" {
+		t.Errorf("verdict %q banner %q, want BOB WINS! / WINNER", oc.verdict, oc.banner)
+	}
+
+	// A beaten player's screen: nothing; a winner's: the same verdict.
+	a = newTestApp()
+	alice := engine.New(nil, "g1", "alice", "", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	alice.SetIndividualScoringForTest(true)
+	alice.DecideOutcomeForTest(map[string]bool{"bob": true}, -1)
+	if oc := a.resolveOutcome(alice, gameView{players: roster, gameOver: true, won: false}, config.ModeCooperative, now); oc.decided {
+		t.Fatalf("a beaten player's screen revealed %+v", oc)
+	}
+	bob := engine.New(nil, "g1", "bob", "", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	bob.SetIndividualScoringForTest(true)
+	bob.DecideOutcomeForTest(map[string]bool{"bob": true}, -1)
+	if oc := a.resolveOutcome(bob, gameView{players: roster, gameOver: true, won: true}, config.ModeCooperative, now); !oc.decided || !oc.winners["bob"] {
+		t.Fatalf("the winner's screen revealed %+v", oc)
+	}
+
+	// The provisional record of a board scored per seat carries the scoring
+	// and no shared total, so it ranks in its own bucket.
+	rec := liveRecord(bob, gameView{players: roster, score: 900}, liveOutcome{decided: true, winTeam: -1, winners: map[string]bool{"bob": true}, scores: map[string]int{"bob": 900, "alice": 400}}, config.ModeCooperative, now)
+	if rec.Scoring != config.ScoringIndividual || rec.TotalScore != 0 || rec.HeadlineScore() != 900 {
+		t.Errorf("individual provisional record = %+v", rec)
+	}
+	if rec.SameReplayBucket(config.ArchiveRecord{Mode: config.ModeCooperative}) {
+		t.Error("an individual record ranks against shared co-op runs")
+	}
+}
+
+// The legend ranks a board scored per seat best first, the swatch colour
+// still keyed by the seat.
+func TestLegendOrderBySeatScore(t *testing.T) {
+	roster := []lobby.PlayerSummary{{PlayerID: "a", Name: "a"}, {PlayerID: "b", Name: "b"}, {PlayerID: "c", Name: "c"}}
+	rows := legendOrder(roster, nil)
+	for i, r := range rows {
+		if r.idx != i {
+			t.Fatalf("roster order broken: %+v", rows)
+		}
+	}
+	rows = legendOrder(roster, map[string]int{"a": 10, "b": 30, "c": 30})
+	if rows[0].p.PlayerID != "b" || rows[0].idx != 1 || rows[1].p.PlayerID != "c" || rows[2].p.PlayerID != "a" {
+		t.Fatalf("ranked order = %+v, want b, c, a with their seats", rows)
+	}
+	if got := rankingLine(roster, map[string]int{"b": 30, "c": 30}, "a", 50); got != "a 50 · b 30 · c 30" {
+		t.Errorf("rankingLine = %q", got)
 	}
 }

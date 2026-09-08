@@ -133,13 +133,23 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		evtCancel()
 	}
 	// Also add players from the game listing who might not have topped out
-	// (and take their team assignment — and agent flag — as authoritative)
+	// (and take their team assignment — and agent flag — as authoritative).
+	// A player who never announced a game over — a co-op survivor, a member
+	// of the winning team, everyone in a game a line goal ended — archives
+	// with the totals their line_clear events carried, as the archiving
+	// engine folded them.
 	agentSeats := make(map[string]bool, len(gamePlayers))
+	scores, lines := eng.PlayerScores(), eng.PlayerLines()
 	for _, p := range gamePlayers {
 		playerTeams[p.PlayerID] = p.Team
 		agentSeats[p.PlayerID] = p.Agent
 		if _, exists := playerResults[p.PlayerID]; !exists {
-			playerResults[p.PlayerID] = config.PlayerResult{PlayerID: p.PlayerID}
+			playerResults[p.PlayerID] = config.PlayerResult{
+				PlayerID: p.PlayerID,
+				Score:    scores[p.PlayerID],
+				Lines:    lines[p.PlayerID],
+				Level:    engine.PlayerLevel(lines[p.PlayerID]),
+			}
 		}
 	}
 	for id, pr := range playerResults {
@@ -150,7 +160,8 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// elimination record (it processed every EventGameOver as it happened):
 	// any player it never saw eliminated survived to the end and wins. On a
 	// simultaneous top-out draw everyone is eliminated — no winner.
-	if meta.Mode == config.ModeCompetitive {
+	winners, winTeam, decided := eng.Winners()
+	if meta.Mode == config.ModeCompetitive && !decided {
 		for id, pr := range playerResults {
 			if !eng.IsEliminated(id) {
 				pr.Winner = true
@@ -166,13 +177,27 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// (or draw participants) run this archive. A won verdict names the
 	// archiver's team; a lost verdict here means a draw — no winning team.
 	winningTeam := -1
-	if meta.Mode == config.ModeTeams {
+	if meta.Mode == config.ModeTeams && !decided {
 		if won, over := eng.GameOutcome(); over && won {
 			winningTeam = eng.TeamIdx()
 		}
 		for id, pr := range playerResults {
 			pr.Team = playerTeams[id]
 			pr.Winner = winningTeam >= 0 && pr.Team == winningTeam
+			playerResults[id] = pr
+		}
+	}
+	// A verdict the engine recorded outright (engine.Winners: a board scored
+	// per seat, a line goal reached, a roster that emptied every board but
+	// one) names the winners for every mode — the same names every engine
+	// reached from the ordered event stream.
+	if decided {
+		winningTeam = winTeam
+		for id, pr := range playerResults {
+			if meta.Mode == config.ModeTeams {
+				pr.Team = playerTeams[id]
+			}
+			pr.Winner = winners[id]
 			playerResults[id] = pr
 		}
 	}
@@ -191,12 +216,16 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		Players:      results,
 		TeamCount:    meta.Teams(),
 		TeamSize:     meta.TeamSize,
+		TeamNames:    meta.TeamNames,
 		ExtraColumns: meta.ExtraColumns,
-		BoardRows:    config.TotalRows,
+		ExtraRows:    meta.ExtraRows,
+		LineGoal:     meta.LineGoal,
+		Scoring:      meta.Scoring,
+		BoardRows:    meta.BoardHeight(),
 		WinningTeam:  winningTeam,
 		Chat:         gameChatHistory(lb, eng.GameID()),
 	}
-	if meta.Mode == config.ModeCooperative {
+	if meta.Mode == config.ModeCooperative && !meta.IndividualScoring() {
 		record.TotalScore = eng.Score()
 		record.FinalLevel = eng.AchievedLevel()
 	}
@@ -292,7 +321,7 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 	switch meta.Mode {
 	case config.ModeCooperative:
 		pic, ok := capturePicture(ctx, js, gameID,
-			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns), config.TotalRows, config.VisibleRowStart,
+			meta.BoardWidth(), meta.BoardHeight(), config.VisibleRowStart,
 			"", -1, func(r, c int) string { return config.CoopCellSubject(gameID, r, c) })
 		if !ok {
 			return nil
@@ -300,11 +329,11 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 		return []config.BoardPicture{pic}
 
 	case config.ModeTeams:
-		w := config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns)
+		w, h := meta.BoardWidth(), meta.BoardHeight()
 		var out []config.BoardPicture
 		for t := 0; t < meta.Teams(); t++ {
 			t := t
-			if pic, ok := capturePicture(ctx, js, gameID, w, config.TotalRows, config.VisibleRowStart, teamLabel(t), t,
+			if pic, ok := capturePicture(ctx, js, gameID, w, h, config.VisibleRowStart, "Team "+meta.TeamName(t), t,
 				func(r, c int) string { return config.TeamCellSubject(gameID, t, r, c) }); ok {
 				out = append(out, pic)
 			}
@@ -320,7 +349,7 @@ func buildBoardPictures(ctx context.Context, js jetstream.JetStream, meta config
 		var out []config.BoardPicture
 		for i, id := range ids {
 			id := id
-			if pic, ok := capturePicture(ctx, js, gameID, config.StandardWidth, config.TotalRows, config.VisibleRowStart, id, i,
+			if pic, ok := capturePicture(ctx, js, gameID, config.StandardWidth, config.StandardHeight, config.VisibleRowStart, id, i,
 				func(r, c int) string { return config.CompetitiveCellSubject(gameID, id, r, c) }); ok {
 				out = append(out, pic)
 			}
@@ -363,9 +392,4 @@ func capturePicture(ctx context.Context, js jetstream.JetStream, gameID string, 
 // cell is published as an empty "{}" message).
 func isBlankCell(c game.Cell) bool {
 	return !c.Occupied && !c.Active && !c.Adversarial
-}
-
-// teamLabel is the human label stored for a team board ("Team A", "Team B", …).
-func teamLabel(team int) string {
-	return "Team " + config.TeamLetter(team)
 }

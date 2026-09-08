@@ -488,7 +488,7 @@ func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.Game
 		// room the bar has.
 		parts := make([]string, 0, len(view.teamScores))
 		for t := range view.teamScores {
-			parts = append(parts, fmt.Sprintf("%s %d", teamName(t), view.teamScore(t)))
+			parts = append(parts, fmt.Sprintf("%s %d", view.teamName(t), view.teamScore(t)))
 		}
 		line = fmt.Sprintf("%s  LV%d", strings.Join(parts, " · "), view.level)
 	}
@@ -570,8 +570,13 @@ func (a *App) readyBar(gtx C, view gameView) D {
 			layout.Rigid(hSpacer(10)),
 			layout.Flexed(1, func(gtx C) D {
 				gtx.Constraints.Min.Y = 0
-				return a.pixelLabelFit(gtx, unit.Sp(10),
-					fmt.Sprintf("%d/%d READY", ready, len(view.readyPlayer)), colMuted)
+				// The tally over the players present — and, when everyone
+				// present is ready but the table is not, what it waits for.
+				txt := fmt.Sprintf("%d/%d READY", ready, len(view.readyPlayer))
+				if view.readyNote != "" && ready == len(view.readyPlayer) {
+					txt += " · " + strings.ToUpper(view.readyNote)
+				}
+				return a.pixelLabelFit(gtx, unit.Sp(10), txt, colMuted)
 			}),
 		)
 	})

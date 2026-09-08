@@ -38,6 +38,7 @@ type Game struct {
 	teamCount int // teams: how many teams the game is played between (meta team_count; 2 unless the creator asked for more)
 	teamSlot  int // teams: section index on the team board
 	w         int // board width (competitive 10; a shared board 10 + extra_columns per seat beyond the first — sharedWidth)
+	h         int // board height, headroom included (competitive 24; a shared board 24 + extra_rows per seat beyond the first — sharedHeight)
 	spawnC    int // our spawn column (section-centered on shared boards)
 	runCtx    context.Context
 
@@ -58,14 +59,20 @@ type Game struct {
 	b2bChain bool
 
 	sharedScore  int               // coop: the one shared score (all senders folded)
+	individual   bool              // coop: every seat scored on its own (meta scoring "individual"): the shared score is nobody's, the top score wins at the end
 	totalLines   int               // coop: all cleared lines (level source)
 	teamScores   []int             // teams: per-team scoreboard, one entry per team
 	teamLines    []int             // teams: per-team line totals (level source), one entry per team
 	senderTotals map[string][2]int // last cumulative {score,lines} folded per sender
+	senderTeams  map[string]int    // the team each sender announced, for the line goal's per-playfield count
+	lineGoal     int               // meta line_goal: the game ends when a playfield has cleared this many lines (0 = until top out)
+	goalDecided  bool              // the goal was reached (the verdict is in goalWon)
+	goalWon      bool              // we are on the playfield that reached it (or the top scorer of a board scored per seat)
 
 	eliminated map[string]bool
 	results    map[string]event
 	roster     []playerSummary
+	hadRivals  bool // the roster once held someone besides us: a roster down to us alone is a win, not a game never joined
 
 	// attackRotor picks which opposing team our next attack lands on: past
 	// two teams a clear cannot go to "the other" team, so targets rotate
@@ -83,7 +90,10 @@ type Game struct {
 	holes       int    // holes punched in every garbage row this board raises (meta garbage_holes, 0..maxGarbageHoles; 0 = solid, permanent rows)
 	randomHoles bool   // every garbage row draws its own hole columns (meta random_garbage_holes; off = one draw per raise)
 	guideline   bool   // attacks follow the Guideline table, 0/1/2/4 rows for 1/2/3/4 lines (meta guideline_garbage; off = one row per line)
-	ration      []int  // teams with meta split_pieces: the piece types THIS seat draws from, ascending (rng.go pieceSetFor); nil = the full 7-bag every other game runs
+	ration      []int  // meta split_pieces: the piece types THIS seat draws from, ascending (rng.go pieceSetFor); nil = the full 7-bag every other game runs
+	split       bool   // meta split_pieces on a playfield with seatmates: the deal follows the seats present (redeal)
+	seatsOnPF   int    // seats sharing our playfield (coop: player_count; teams: the team size)
+	presentPF   []int  // the slots the last deal was made among (sorted); nil = every slot
 	bag         string // meta bag: how this seat's set — the seven types, or its ration — is dealt (rng.go pieceAtBag): "" the 7-bag, "double" the double bag, "none" no bag
 	dead        bool
 
@@ -136,9 +146,16 @@ func (g *Game) isEnded() bool {
 	}
 }
 
-// height: 4 headroom + 20 visible. Every board is the same height, in every
-// mode and whatever the player count.
-func (g *Game) height() int { return 24 }
+// height: 4 headroom + 20 visible for one seat, and the game's extra_rows
+// more for every seat beyond the first on a shared board (sharedHeight, set
+// in run). The headroom is the top `headroom` rows of every board whatever
+// its height: a taller board grows downwards.
+func (g *Game) height() int {
+	if g.h <= 0 {
+		return standardHeight
+	}
+	return g.h
+}
 
 // teams is how many teams this game is played between (2 unless the meta says
 // otherwise), and teamSize how many seats each of them holds.
@@ -1225,6 +1242,7 @@ func (g *Game) startConsumers(ctx context.Context) error {
 		switch ev.Kind {
 		case "line_clear":
 			g.foldLineClear(ev)
+			g.checkLineGoal(ev)
 		case "game_over":
 			g.foldLineClear(ev) // its totals: the ending player's last points, like a line_clear's
 			g.mu.Lock()
@@ -1335,6 +1353,14 @@ func (g *Game) run(ctx context.Context) bool {
 	g.metaSeed = meta.u64("seed")
 	g.mode = meta.int("mode")
 	g.playerCount = meta.int("player_count")
+	g.individual = g.mode == modeCooperative && g.playerCount > 1 && meta.str("scoring") == "individual"
+	g.lineGoal = max(meta.int("line_goal"), 0)
+	if g.lineGoal > 0 {
+		log.Printf("line goal: the first playfield to clear %d lines wins", g.lineGoal)
+	}
+	if g.individual {
+		log.Printf("scoring: every seat on its own — the top score wins")
+	}
 	g.teamCount = normalizeTeamCount(meta.int("team_count")) // absent (pre-field meta) = the historical two
 	g.nextCount = meta.int("next_count")
 	g.holes = min(max(meta.int("garbage_holes"), 0), maxGarbageHoles) // absent (pre-field meta) = 0: solid rows
@@ -1351,11 +1377,22 @@ func (g *Game) run(ctx context.Context) bool {
 	// tracks its own piece index on shared boards; competitive keeps the
 	// legacy meta counter.
 	extra := extraColumns(meta.int("extra_columns"))
-	g.w, g.spawnC = width, spawnCol
+	extraR := extraRows(meta.int("extra_rows"))
+	g.w, g.h, g.spawnC = width, standardHeight, spawnCol
 	switch g.mode {
 	case modeCooperative:
 		g.w = sharedWidth(g.playerCount, extra)
+		g.h = sharedHeight(g.playerCount, extraR)
 		g.spawnC = g.idx*extra + spawnCol
+		// The piece split (gameplays §5) on the crew's board: the seven
+		// types dealt out between the seats off the game's seed, this seat
+		// playing only its own ration. A crew of one is dealt the whole bag.
+		g.seatsOnPF = g.playerCount
+		if meta.boolv("split_pieces") && g.playerCount > 1 {
+			g.split = true
+			g.ration = pieceSetFor(g.metaSeed, g.playerCount, g.idx)
+			log.Printf("split pieces: seat %d holds %s", g.idx, rationNames(g.ration))
+		}
 	case modeTeams:
 		g.teamScores, g.teamLines = make([]int, g.teams()), make([]int, g.teams())
 		for _, p := range g.roster {
@@ -1365,12 +1402,15 @@ func (g *Game) run(ctx context.Context) bool {
 		}
 		teamSize := g.teamSize()
 		g.w = sharedWidth(teamSize, extra)
+		g.h = sharedHeight(teamSize, extraR)
 		g.spawnC = g.teamSlot*extra + spawnCol
 		// The piece split (gameplays §5): the seven types dealt out between
 		// the teammates off the game's seed, this seat playing only its own
 		// ration. A team of one has nobody to split with and is dealt the
 		// whole bag, so the deal is only read past that.
+		g.seatsOnPF = teamSize
 		if meta.boolv("split_pieces") && teamSize > 1 {
+			g.split = true
 			g.ration = pieceSetFor(g.metaSeed, teamSize, g.teamSlot)
 			log.Printf("split pieces: slot %d holds %s", g.teamSlot, rationNames(g.ration))
 		}
@@ -1418,7 +1458,13 @@ func (g *Game) run(ctx context.Context) bool {
 	log.Printf("game started with %s", g.opponentNames())
 
 	won := g.playPieces(ctx)
-	if won {
+	g.mu.Lock()
+	byGoal := g.goalDecided
+	g.mu.Unlock()
+	if won || byGoal {
+		// A winner finishes the game (the CAS makes it idempotent — every
+		// winner may). A goal-ended game is finished by every player alike,
+		// so the finish never waits on a winner that does not know the rule.
 		g.transitionFinishedAndArchive(ctx)
 	} else {
 		g.waitForEnd(ctx)
@@ -1671,9 +1717,15 @@ func (g *Game) walk(p active, plan placement) (to active, transient bool) {
 func (g *Game) winCheck() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.goalDecided {
+		return g.goalWon
+	}
 	switch g.mode {
 	case modeCooperative:
-		return false // no winner: the game ends when anyone tops out
+		// The crew's shared run has no winner: the game ends when anyone
+		// tops out. A board scored per seat crowns its top scorer(s) once
+		// the game has ended — the topper too, if their score is the best.
+		return g.individual && g.isEnded() && g.individualWinnerLocked()
 	case modeTeams:
 		return g.othersDead() && !g.dead
 	}
@@ -1687,8 +1739,62 @@ func (g *Game) winCheck() bool {
 			return false
 		}
 	}
-	return others > 0 && !g.dead
+	// Every other board out — or, in an open game, gone: a roster down to
+	// us alone after others played is the last board standing (guide §5).
+	return (others > 0 || g.hadRivals) && !g.dead
 }
+
+// onRoster takes the listing's roster as it changes — an open game's seats
+// come and go — for the deal (redeal) and the verdict (winCheck, teamDead:
+// a team, or a board, nobody holds any more is out).
+func (g *Game) onRoster(players []playerSummary) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.roster = players
+	for _, p := range players {
+		if p.PlayerID != g.a.name {
+			g.hadRivals = true
+		}
+	}
+	if g.redealLocked(g.presentSlots(players)) {
+		log.Printf("re-dealt among the seats present: we hold %s", rationNames(g.ration))
+	}
+}
+
+// scoreOfLocked is a player's score as this agent knows it: our own, a
+// topped-out player's game_over figure, or the last line_clear total folded
+// from them. mu held.
+func (g *Game) scoreOfLocked(id string) int {
+	if id == g.a.name {
+		return g.score
+	}
+	if ev, ok := g.results[id]; ok {
+		return ev.TotalScore
+	}
+	return g.senderTotals[id][0]
+}
+
+// topScorersLocked names the roster's top scorer(s) — everyone tied at the
+// best score — on a board scored per seat. mu held.
+func (g *Game) topScorersLocked() map[string]bool {
+	winners := map[string]bool{}
+	best, found := 0, false
+	for _, p := range g.roster {
+		s := g.scoreOfLocked(p.PlayerID)
+		switch {
+		case !found || s > best:
+			best, found = s, true
+			winners = map[string]bool{p.PlayerID: true}
+		case s == best:
+			winners[p.PlayerID] = true
+		}
+	}
+	return winners
+}
+
+// individualWinnerLocked reports whether we are among the top scorers of a
+// board scored per seat. mu held.
+func (g *Game) individualWinnerLocked() bool { return g.topScorersLocked()[g.a.name] }
 
 func (g *Game) topOut(ctx context.Context) bool {
 	switch g.mode {
@@ -1700,9 +1806,15 @@ func (g *Game) topOut(ctx context.Context) bool {
 		g.eliminated[g.a.name] = true
 		g.mu.Unlock()
 		g.publishGameOver(ctx)
-		log.Printf("topped out — cooperative game over (shared score %d)", g.sharedScore)
+		if g.individual {
+			log.Printf("topped out — game over (own score %d)", g.score)
+		} else {
+			log.Printf("topped out — cooperative game over (shared score %d)", g.sharedScore)
+		}
 		g.transitionFinishedAndArchive(ctx)
-		return false
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return g.individual && g.individualWinnerLocked()
 	case modeTeams:
 		// A player out is not a team out: vacate our dead piece (gated, so a
 		// racing garbage cascade can't resurrect it), announce, and stay for
@@ -1809,11 +1921,21 @@ func (g *Game) archive(ctx context.Context) {
 	if extra := meta.int("extra_columns"); extra > 0 && g.mode != modeCompetitive {
 		record["extra_columns"] = extra
 	}
+	if extra := meta.int("extra_rows"); extra > 0 && g.mode != modeCompetitive {
+		record["extra_rows"] = extra
+	}
+	if goal := meta.int("line_goal"); goal > 0 {
+		record["line_goal"] = goal
+	}
 	switch g.mode {
 	case modeCooperative:
 		g.mu.Lock()
-		record["total_score"] = g.sharedScore
-		record["final_level"] = min(g.totalLines/10, 19)
+		if g.individual {
+			record["scoring"] = "individual"
+		} else {
+			record["total_score"] = g.sharedScore
+			record["final_level"] = min(g.totalLines/10, 19)
+		}
 		g.mu.Unlock()
 	case modeTeams:
 		g.mu.Lock()
@@ -1866,6 +1988,10 @@ func (g *Game) playerResults() []map[string]any {
 	if g.mode == modeTeams {
 		winningTeam = g.winningTeam()
 	}
+	var winners map[string]bool
+	if g.individual {
+		winners = g.topScorersLocked()
+	}
 	out := make([]map[string]any, 0, len(g.roster))
 	for _, p := range g.roster {
 		var score, level, lines, pieces int
@@ -1887,7 +2013,11 @@ func (g *Game) playerResults() []map[string]any {
 		}
 		switch g.mode {
 		case modeCooperative:
-			// no winners in coop
+			// The crew's shared run has no winners; a board scored per seat
+			// crowns its top scorer(s).
+			if g.individual && winners[p.PlayerID] {
+				r["winner"] = true
+			}
 		case modeTeams:
 			r["team"] = p.Team
 			if p.Team == winningTeam {

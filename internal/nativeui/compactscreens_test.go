@@ -93,17 +93,23 @@ func TestPhoneOverlaysLayout(t *testing.T) {
 		name string
 		draw func(*App) layout.Widget
 	}{
-		{"wizard-mode", func(a *App) layout.Widget { a.createWizStep = wizStepMode; return a.createWizardOverlay }},
+		{"wizard-type", func(a *App) layout.Widget { a.createWizStep = wizStepType; return a.createWizardOverlay }},
+		{"wizard-type-multiple", func(a *App) layout.Widget {
+			a.createWizStep, a.boardsEnum.Value = wizStepType, "multiple"
+			a.countEd.SetText("2")
+			return a.createWizardOverlay
+		}},
 		{"wizard-rules", func(a *App) layout.Widget {
-			a.createWizStep, a.rulesEnum.Value, a.modeEnum.Value = wizStepNext, "custom", "competitive"
+			a.createWizStep, a.rulesEnum.Value, a.boardsEnum.Value, a.lengthEnum.Value = wizStepRules, "custom", "multiple", "lines"
+			a.countEd.SetText("2")
 			return a.createWizardOverlay
 		}},
-		{"wizard-join-invite", func(a *App) layout.Widget {
-			a.createWizStep, a.createJoinEnum.Value = wizStepJoin, "invite"
+		{"wizard-players-invite", func(a *App) layout.Widget {
+			a.createWizStep, a.createJoinEnum.Value = wizStepPlayers, "invite"
 			return a.createWizardOverlay
 		}},
-		{"wizard-agents", func(a *App) layout.Widget {
-			a.createWizStep, a.allowAgentsCb.Value = wizStepAgents, true
+		{"wizard-players-open-agents", func(a *App) layout.Widget {
+			a.createWizStep, a.createJoinEnum.Value, a.allowAgentsCb.Value = wizStepPlayers, "open", true
 			return a.createWizardOverlay
 		}},
 		{"invite-picker-teams", func(a *App) layout.Widget {

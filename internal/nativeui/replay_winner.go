@@ -218,7 +218,7 @@ func replayVerdict(r config.ArchiveRecord) string {
 	switch r.Mode {
 	case config.ModeTeams:
 		if r.WinningTeam >= 0 && r.WinningTeam < r.Teams() {
-			return "TEAM " + teamName(r.WinningTeam) + " WINS!"
+			return "TEAM " + r.TeamName(r.WinningTeam) + " WINS!"
 		}
 		return "DRAW"
 	case config.ModeCooperative:
@@ -633,7 +633,7 @@ func replaySummary(r config.ArchiveRecord, reveal bool) []span {
 			}
 			col := render.PlayerColorRGBA(t)
 			won := reveal && r.WinningTeam == t
-			name := "TEAM " + teamName(t)
+			name := "TEAM " + r.TeamName(t)
 			if won {
 				name, col = winnerMark+name, colGold
 			}

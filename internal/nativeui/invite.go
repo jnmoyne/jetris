@@ -113,8 +113,12 @@ func inviteSeatUsage(g lobby.GameListing, invites []lobby.Invitation, teams bool
 // they'll spectate once the game fills; select yourself to also take a seat.
 // No seat is taken at creation. Runs off the UI goroutine (create does a NATS
 // round trip).
-func (a *App) openInvitePicker(mode config.GameMode, count, teamCount, extraCols int, splitPieces bool, rules config.GameRules) {
-	gameID := a.createGame(mode, count, teamCount, extraCols, 0, splitPieces, rules, true) // invite-only: agent policy is per-invite
+func (a *App) openInvitePicker(spec config.GameSpec) {
+	// Invite-only: the agent policy is per-invite (an invitation is explicit
+	// permission), so the listing's cap is moot.
+	spec.InviteOnly, spec.MaxAgents = true, 0
+	spec = spec.Normalized()
+	gameID := a.createGame(spec)
 	if gameID == "" {
 		return
 	}
@@ -122,16 +126,9 @@ func (a *App) openInvitePicker(mode config.GameMode, count, teamCount, extraCols
 	if lb == nil {
 		return
 	}
-	// Derive capacity from the same count the create used (teams count is
-	// per-team, like createGame): playerCount and teamSize.
-	playerCount, teamSize := count, 0
-	if mode == config.ModeTeams {
-		teamCount = config.NormalizeTeamCount(teamCount)
-		teamSize = count
-		playerCount = teamCount * count
-	} else {
-		teamCount = 0
-	}
+	// The picker's capacity is the spec's (normalized like the create, so a
+	// listing that has not landed yet still tallies right).
+	mode, playerCount, teamSize, teamCount := spec.Mode, spec.PlayerCount, spec.TeamSize, spec.TeamCount
 	picker := make(map[string]*inviteChoice)
 	reconcileInvitePicker(picker, lb.Players(), lb.PlayerID(), nil)
 
@@ -144,6 +141,7 @@ func (a *App) openInvitePicker(mode config.GameMode, count, teamCount, extraCols
 	a.invitePickerPC = playerCount
 	a.invitePickerTS = teamSize
 	a.invitePickerTC = teamCount
+	a.invitePickerNames = spec.TeamNames
 	a.invitePickerErr = ""
 	a.inviteSelfSel.Value = false
 	a.inviteSelfLastSel = false
@@ -218,6 +216,7 @@ func (a *App) reopenInvitePicker(g lobby.GameListing) {
 	a.invitePickerPC = playerCount
 	a.invitePickerTS = teamSize
 	a.invitePickerTC = g.Teams()
+	a.invitePickerNames = g.TeamNames
 	a.invitePickerErr = ""
 	a.inviteSelfSel.Value = selfTeam != ""
 	a.inviteSelfLastSel = selfTeam != ""
@@ -357,7 +356,7 @@ func (a *App) handleInvitePicker(gtx C) bool {
 			t, _ := strconv.Atoi(v)
 			if v != "" && !seatFree(t) {
 				a.inviteSelfTeam.Value = a.inviteSelfLastTeam // refused: seat spoken for
-				setErr(fmt.Sprintf("Team %s is full (joined + invited).", teamName(t)))
+				setErr(fmt.Sprintf("Team %s is full (joined + invited).", config.TeamName(a.invitePickerNames, t)))
 			} else {
 				a.inviteSelfLastTeam = v
 				setErr("")
@@ -415,7 +414,7 @@ func (a *App) handleInvitePicker(gtx C) bool {
 			t, _ := strconv.Atoi(v)
 			if !seatFree(t) {
 				c.team.Value = c.lastTeam
-				setErr(fmt.Sprintf("Team %s is full (joined + invited).", teamName(t)))
+				setErr(fmt.Sprintf("Team %s is full (joined + invited).", config.TeamName(a.invitePickerNames, t)))
 				continue
 			}
 			c.lastTeam = v
@@ -489,6 +488,7 @@ func (a *App) closeInvitePicker() {
 	a.invitePicker = nil
 	a.invitePickerErr = ""
 	a.invitePickerPC, a.invitePickerTS, a.invitePickerTC = 0, 0, 0
+	a.invitePickerNames = nil
 	a.inviteSelfSel.Value, a.inviteSelfLastSel = false, false
 	a.inviteSelfTeam.Value, a.inviteSelfLastTeam = "", ""
 	a.mu.Unlock()
@@ -567,7 +567,7 @@ func (a *App) drawInvitePicker(gtx C, pv pickerView) D {
 	if teams {
 		for t := 0; t < len(usage); t++ {
 			capLines = append(capLines, fmt.Sprintf("Team %s  %d/%d seats — %d joined · %d invited · %d open",
-				teamName(t), usage[t], ts, joined[t], usage[t]-joined[t], ts-usage[t]))
+				config.TeamName(a.invitePickerNames, t), usage[t], ts, joined[t], usage[t]-joined[t], ts-usage[t]))
 		}
 	} else {
 		capLines = append(capLines, fmt.Sprintf("%d/%d seats filled — %d joined · %d invited · %d open",
@@ -846,7 +846,7 @@ func (a *App) teamRadioRow(gtx C, enum *widget.Enum, teamCount int) D {
 	for t := 0; t < teamCount; t++ {
 		kids = append(kids,
 			layout.Rigid(hSpacer(6)),
-			layout.Rigid(a.teamRadio(enum, strconv.Itoa(t), config.TeamLetter(t))))
+			layout.Rigid(a.teamRadio(enum, strconv.Itoa(t), config.TeamName(a.invitePickerNames, t))))
 	}
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 }
@@ -873,7 +873,7 @@ func (a *App) incomingInviteOverlay(gtx C, inv *lobby.Invitation) D {
 			for _, p := range g.Players {
 				line := "• " + agentName(p.Name, p.Agent)
 				if g.Mode == config.ModeTeams {
-					line += " — team " + teamName(p.Team)
+					line += " — team " + g.TeamName(p.Team)
 				}
 				if p.Ready {
 					line += " (ready ✓)"
@@ -930,7 +930,11 @@ func (a *App) incomingInviteOverlay(gtx C, inv *lobby.Invitation) D {
 func inviteMessage(inv *lobby.Invitation) string {
 	switch inv.Mode {
 	case config.ModeTeams:
-		return fmt.Sprintf("%s invited you to a teams game — Team %s.", inv.FromName, teamName(inv.Team))
+		name := inv.TeamName
+		if name == "" {
+			name = teamName(inv.Team)
+		}
+		return fmt.Sprintf("%s invited you to a teams game — Team %s.", inv.FromName, name)
 	case config.ModeCooperative:
 		return fmt.Sprintf("%s invited you to a co-op game.", inv.FromName)
 	default:

@@ -27,7 +27,7 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 			// taking a.mu — beatsCoopBest reads the lobby via getLobby, which
 			// locks a.mu itself.
 			coopRecord := u.Kind == engine.UpdateGameOver &&
-				e.GameMode() == config.ModeCooperative && a.beatsCoopBest(e)
+				e.GameMode() == config.ModeCooperative && !e.IndividualScoring() && a.beatsCoopBest(e)
 			a.mu.Lock()
 			switch u.Kind {
 			case engine.UpdateScore:
@@ -56,7 +56,7 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				// crew celebrates a high score instead: every member's engine
 				// emits the shared game over, so all their screens light up.
 				if u.Won {
-					if gm := e.GameMode(); gm == config.ModeCompetitive || gm == config.ModeTeams {
+					if gm := e.GameMode(); gm == config.ModeCompetitive || gm == config.ModeTeams || e.IndividualScoring() {
 						a.fireworks = newFireworksShow(time.Now())
 					}
 				}
@@ -134,8 +134,8 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 // is a new record against the lobby's archived history.
 func (a *App) beatsCoopBest(e *engine.Engine) bool {
 	lb := a.getLobby()
-	if lb == nil {
-		return false
+	if lb == nil || e.IndividualScoring() {
+		return false // a board scored per seat has no shared score to beat
 	}
 	return coopScoreIsRecord(lb.Archives(), e.Score(), e.PlayerCount(), e.GameID())
 }
@@ -191,8 +191,14 @@ func (a *App) pumpLobby(ctx context.Context, lb *lobby.Lobby) {
 			case lobby.LobbyUpdateGames:
 				if a.eng != nil {
 					if g, ok := games[a.eng.GameID()]; ok {
-						a.gamePlayers = g.Players
-						a.readyPlayers = g.Players
+						// The roster as it stands — seats and all — for the
+						// legend, the ready list, and the engine (the deal
+						// and the game-end counting follow the seats present).
+						seats := g.NormalizedSeats()
+						a.gamePlayers = seats
+						a.readyPlayers = seats
+						a.readyNote = g.ReadyBlocker()
+						a.eng.SetRoster(engineSeats(seats))
 					}
 				}
 			}

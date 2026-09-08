@@ -83,7 +83,7 @@ func (a *App) layoutLobby(gtx C) D {
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
 	if a.createBtn.Clicked(gtx) && !modal {
-		a.createWizStep = wizStepMode
+		a.createWizStep = wizStepType
 		a.mu.Lock()
 		a.lobbyErr = "" // a fresh attempt clears the previous failure strip
 		a.mu.Unlock()
@@ -1636,7 +1636,7 @@ func teamRosterLines(r config.ArchiveRecord) []rosterLine {
 				stats += fmt.Sprintf(" (lvl %d)", r.TeamLevels[t])
 			}
 		}
-		label := fmt.Sprintf("TEAM %s%s — %s", teamName(t), stats, strings.Join(members, ", "))
+		label := fmt.Sprintf("TEAM %s%s — %s", r.TeamName(t), stats, strings.Join(members, ", "))
 		col := colMuted
 		if r.WinningTeam == t {
 			label, col = winnerMark+label, colGold
@@ -1689,7 +1689,7 @@ func archiveModeLine(r config.ArchiveRecord) string {
 					stats += fmt.Sprintf(" (lvl %d)", r.TeamLevels[t])
 				}
 			}
-			parts = append(parts, fmt.Sprintf("%s%s %s", teamName(t), stats, strings.Join(members, ", ")))
+			parts = append(parts, fmt.Sprintf("%s%s %s", r.TeamName(t), stats, strings.Join(members, ", ")))
 		}
 		return fmt.Sprintf("teams · %s", strings.Join(parts, " · "))
 	}
@@ -1751,8 +1751,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		me = lb.PlayerID()
 	}
 	joined := rosterHas(g, me)
-	joinable := g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting
-	canJoin := joinable && len(g.Players) < g.PlayerCount
+	joinable, canJoin := joinGating(g)
 	// Invite-only games are joined via the pop-up (or by the creator): don't
 	// offer a Join button to random browsers. The creator, and anyone holding
 	// a pending invitation to this game, keep theirs.
@@ -1798,7 +1797,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 				}
 				team = append(team, nameOf(p))
 			}
-			names = append(names, fmt.Sprintf("%s: %s", teamName(t), strings.Join(team, ", ")))
+			names = append(names, fmt.Sprintf("%s: %s", g.TeamName(t), strings.Join(team, ", ")))
 		}
 	} else {
 		for _, p := range g.Players {
@@ -1816,7 +1815,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 			statusTxt = " · joined"
 		}
 	}
-	info := fmt.Sprintf("%s · %s · %d/%d", shortID(g.GameID), g.Mode.String(), len(g.Players), g.PlayerCount)
+	info := fmt.Sprintf("%s · %s · %d/%d", shortID(g.GameID), gameShape(g), len(g.Players), g.PlayerCount)
 	var extra string
 	// The shape of a teams game: "2v2", and "2v2v2" past the usual two teams.
 	if teams {
@@ -1826,19 +1825,26 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		}
 		extra += " · " + strings.Join(shape, "v")
 	}
-	// Shared boards are as wide as their seat count and the creator's
-	// board-width setting make them (config.SharedBoardWidth) — the one
-	// number that says what a joiner is walking onto.
-	if g.Mode != config.ModeCompetitive {
-		extra += fmt.Sprintf(" · board %d wide", g.BoardWidth())
+	// The game's length in lines, when it has one (config.GameMeta.LineGoal).
+	if g.LineGoal > 0 {
+		extra += fmt.Sprintf(" · %d lines", g.LineGoal)
 	}
-	// The teams-mode piece split: the seven types dealt out between the
-	// teammates, one ration each (config.GameMeta.SplitPieces).
+	// Shared boards are as big as their seat count and the creator's
+	// board-growth settings make them (config.SharedBoardWidth and
+	// SharedBoardHeight) — the numbers that say what a joiner is walking
+	// onto.
+	if g.Mode != config.ModeCompetitive {
+		extra += fmt.Sprintf(" · board %d×%d", g.BoardWidth(), g.BoardHeight()-config.HeadroomRows)
+	}
+	// The piece split: the seven types dealt out between the players of a
+	// playfield, one ration each (config.GameMeta.SplitPieces).
 	if g.SplitsPieces() {
 		extra += " · split pieces"
 	}
 	if g.InviteOnly {
 		extra += " · invite only"
+	} else {
+		extra += " · open"
 	}
 	if g.MaxAgents > 0 {
 		extra += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
@@ -2015,7 +2021,7 @@ func (a *App) inviteStatusRows(gtx C, g lobby.GameListing, invites []lobby.Invit
 		} else {
 			label = fmt.Sprintf("✉ %s invited — waiting…", inv.InviteeID)
 			if teams {
-				label = fmt.Sprintf("✉ %s invited to team %s — waiting…", inv.InviteeID, teamName(inv.Team))
+				label = fmt.Sprintf("✉ %s invited to team %s — waiting…", inv.InviteeID, g.TeamName(inv.Team))
 			}
 		}
 		rows = append(rows, layout.Rigid(func(gtx C) D {
@@ -2063,11 +2069,13 @@ func (a *App) teamJoinButton(gtx C, btn *widget.Clickable, g lobby.GameListing, 
 	if n >= g.TeamSize {
 		return D{}
 	}
-	label := fmt.Sprintf("Join %s (%d/%d)", teamName(team), n, g.TeamSize)
+	label := fmt.Sprintf("Join %s (%d/%d)", g.TeamName(team), n, g.TeamSize)
 	return a.primaryButton(gtx, btn, label)
 }
 
-// teamName renders a team index as its display letter (A, B, C, …).
+// teamName renders a team index as its display letter (A, B, C, …) — the
+// name of a team across MANY games (the history's overall tally), where
+// each game's own names do not carry.
 func teamName(team int) string { return config.TeamLetter(team) }
 
 func (a *App) handleChatSubmit(gtx C) {
@@ -2439,4 +2447,34 @@ func sortedPlayers(m map[string]lobby.PlayerPresence) []lobby.PlayerPresence {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// gameShape names a listing's game type the way the wizard offers it:
+// "co-op" for the crew's shared board, "competitive · one board" for a
+// shared board scored per seat, "competitive" for a board each, "teams" for
+// several shared boards.
+func gameShape(g lobby.GameListing) string {
+	switch {
+	case g.Mode == config.ModeCooperative && g.IndividualScoring():
+		return "competitive · one board"
+	case g.Mode == config.ModeCooperative:
+		return "co-op"
+	default:
+		return g.Mode.String()
+	}
+}
+
+// joinGating is the lobby row's word on a game's seats: joinable while the
+// game takes joiners — before it starts, and, for an OPEN game, while it
+// runs too (a free seat of a running open game is anyone's, played on the
+// live board; the countdown is the one moment it is not) — and canJoin
+// when a seat is free as well.
+func joinGating(g lobby.GameListing) (joinable, canJoin bool) {
+	joinable = g.Status == config.GameStatusCreated || g.Status == config.GameStatusStarting ||
+		(g.Dynamic() && g.Status == config.GameStatusInProgress)
+	_, _, free := g.FreeSeat(0)
+	if g.Mode == config.ModeTeams {
+		free = len(g.Players) < g.PlayerCount
+	}
+	return joinable, joinable && free
 }

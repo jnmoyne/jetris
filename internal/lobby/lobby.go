@@ -775,83 +775,36 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 	}
 }
 
-// CreateGame creates a new game. For teams mode, teamCount is how many teams
-// play each other (config.MinTeamCount..MaxTeamCount; 0 reads as the usual
-// two), teamSize is the number of players per team and playerCount must be
-// the total (teamCount*teamSize); other modes pass 0 for both. extraCols is the board-width setting of the
-// modes that share a board (cooperative, teams): the columns every seat
-// beyond the first adds to the standard 10 — see config.SharedBoardWidth;
-// competitive passes 0, and so may any caller that wants the historical
-// full-section-per-player board. splitPieces deals the seven piece types out
-// between teammates (teams mode, two or more per team: config.GameMeta's
-// SplitPieces / SplitsPieces); every other game passes false.
-// CreateGame creates a game and its stream and writes the lobby listing.
-// maxAgents is the creator's agent policy: how many roster seats agent players
-// may take (0 = agents may not join); enforced atomically by JoinGame's CAS
-// loop. inviteOnly restricts joining to invited players (and the creator) —
-// see Invite/JoinGame; invited agents are exempt from the maxAgents policy,
-// the invitation being explicit permission. rules are the game's play rules
-// (config.GameRules — the piece preview, ghost, hold, bag and garbage
-// settings), clamped to their legal ranges for the mode
-// (GameRules.Normalized: a cooperative game stores no garbage rules) and
-// stored on BOTH records: the meta is the rule book every peer — human UI and
-// agent alike — reads at Start, the listing tags the lobby row (next N, holes
-// N, guideline garbage, hold, double bag / no bag — or plain "guideline" when
-// the rules are the Guideline preset). The ghost rule is stored inverted as
-// GameMeta.NoGhost so pre-field metas keep the ghost shown.
-func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCount, teamCount, teamSize, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) (string, error) {
+// CreateGame creates a game — its stream, its meta and its lobby listing —
+// from a config.GameSpec: the game's shape (mode, seats, playfields and the
+// seats sharing one, how the shared boards grow per seat, the scoring, the
+// deal), its length in lines, the lobby's agent policy and invitation
+// setting, and the play rules. The spec is normalized first
+// (config.GameSpec.Normalized), so every setting lands legal for its mode.
+// Everything but MaxAgents and InviteOnly is stored on BOTH records: the meta
+// is the rule book every peer — human UI and agent alike — reads at Start,
+// the listing tags the lobby row (next N, holes N, guideline garbage, hold,
+// double bag / no bag, N lines, board W×H — or plain "guideline" when the
+// rules are the Guideline preset). MaxAgents — how many roster seats agent
+// players may take (0 = agents may not join) — is enforced atomically by
+// JoinGame's CAS loop; InviteOnly restricts joining to invited players (and
+// the creator) — see Invite/JoinGame; invited agents are exempt from the
+// agent policy, the invitation being explicit permission. An open game (the
+// default) lets players join and leave at any time. The ghost rule is stored
+// inverted as GameMeta.NoGhost so pre-field metas keep the ghost shown.
+func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, error) {
 	gameID := uuid.New().String()
-	// Only a teams game has teams; elsewhere the count is not recorded at all
-	// (and a teams game normalizes it, so a caller passing 0 gets the usual
-	// Team A vs Team B).
-	if mode == config.ModeTeams {
-		teamCount = config.NormalizeTeamCount(teamCount)
-	} else {
-		teamCount = 0
-	}
-	if maxAgents < 0 {
-		maxAgents = 0
-	}
-	if maxAgents > playerCount {
-		maxAgents = playerCount
-	}
-	rules = rules.Normalized(mode)
-	// Only a shared board has a width to set; competitive boards are always
-	// the standard 10 columns, so its meta records no setting at all.
-	if mode == config.ModeCompetitive {
-		extraCols = 0
-	} else if extraCols > 0 {
-		extraCols = config.ExtraColumnsPerPlayer(extraCols)
-	}
-	// Only a team with teammates has pieces to split; anywhere else the
-	// setting would deal the whole bag to everybody, so it is not recorded.
-	splitPieces = splitPieces && mode == config.ModeTeams && teamSize > 1
+	// The one place a game's settings are made legal for its mode
+	// (config.GameSpec.Normalized): teams only in teams mode, the agent
+	// policy within the seat count, the shared-board growth, the deal and the
+	// scoring only where a shared board has seats to share, the rules clamped.
+	spec = spec.Normalized()
 
 	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
 	}
 
-	meta := config.GameMeta{
-		GameID:             gameID,
-		Mode:               mode,
-		PlayerCount:        playerCount,
-		TeamCount:          teamCount,
-		TeamSize:           teamSize,
-		ExtraColumns:       extraCols,
-		NextCount:          rules.NextCount,
-		NoGhost:            !rules.Ghost,
-		Hold:               rules.Hold,
-		GarbageHoles:       rules.GarbageHoles,
-		RandomGarbageHoles: rules.RandomGarbageHoles,
-		GuidelineGarbage:   rules.GuidelineGarbage,
-		SplitPieces:        splitPieces,
-		Bag:                rules.Bag,
-		ShowHeadroom:       rules.ShowHeadroom,
-		Seed:               uint64(time.Now().UnixNano()),
-		Status:             config.GameStatusCreated,
-		CreatorID:          l.playerID,
-		CreatedAt:          time.Now(),
-	}
+	meta := spec.Meta(gameID, l.playerID, uint64(time.Now().UnixNano()), time.Now())
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return "", err
@@ -863,23 +816,27 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 	// Update game listing in KV (no players yet — they must click Join)
 	listing := GameListing{
 		GameID:             gameID,
-		Mode:               mode,
+		Mode:               spec.Mode,
 		Status:             config.GameStatusCreated,
-		PlayerCount:        playerCount,
-		TeamCount:          teamCount,
-		TeamSize:           teamSize,
-		ExtraColumns:       extraCols,
-		MaxAgents:          maxAgents,
-		NextCount:          rules.NextCount,
-		NoGhost:            !rules.Ghost,
-		Hold:               rules.Hold,
-		GarbageHoles:       rules.GarbageHoles,
-		RandomGarbageHoles: rules.RandomGarbageHoles,
-		GuidelineGarbage:   rules.GuidelineGarbage,
-		SplitPieces:        splitPieces,
-		Bag:                rules.Bag,
-		ShowHeadroom:       rules.ShowHeadroom,
-		InviteOnly:         inviteOnly,
+		PlayerCount:        spec.PlayerCount,
+		TeamCount:          spec.TeamCount,
+		TeamSize:           spec.TeamSize,
+		TeamNames:          spec.TeamNames,
+		ExtraColumns:       spec.ExtraColumns,
+		MaxAgents:          spec.MaxAgents,
+		NextCount:          spec.Rules.NextCount,
+		NoGhost:            !spec.Rules.Ghost,
+		Hold:               spec.Rules.Hold,
+		GarbageHoles:       spec.Rules.GarbageHoles,
+		RandomGarbageHoles: spec.Rules.RandomGarbageHoles,
+		GuidelineGarbage:   spec.Rules.GuidelineGarbage,
+		SplitPieces:        spec.SplitPieces,
+		Bag:                spec.Rules.Bag,
+		ShowHeadroom:       spec.Rules.ShowHeadroom,
+		ExtraRows:          spec.ExtraRows,
+		LineGoal:           spec.LineGoal,
+		Scoring:            spec.Scoring,
+		InviteOnly:         spec.InviteOnly,
 		CreatorID:          l.playerID,
 		Players:            nil,
 		CreatedAt:          meta.CreatedAt,
@@ -889,7 +846,7 @@ func (l *Lobby) CreateGame(ctx context.Context, mode config.GameMode, playerCoun
 
 	l.publishEvent(EventGameCreated, gameID, "", 0)
 	e := l.selfEntry(config.LogKindGameCreated)
-	e.GameID, e.Mode, e.PlayerCount = gameID, mode, playerCount
+	e.GameID, e.Mode, e.PlayerCount = gameID, spec.Mode, spec.PlayerCount
 	l.journal(ctx, e, "")
 	return gameID, nil
 }
@@ -978,32 +935,44 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 			}
 		}
 
-		// Overall roster cap — every mode. Without this a join could overfill
-		// a game (e.g. a 5th player into a 4-player game): the GUI hides Join
-		// on a full game and the agent pre-checks joinable(), but neither is
-		// atomic with the roster, so the authoritative guard lives here in the
-		// CAS loop. (Teams additionally caps each team below.)
-		if len(g.Players) >= g.PlayerCount {
-			return JoinResult{}, ErrGameFull
+		// A game that is over takes nobody; an invite game's roster is frozen
+		// once it starts (a departed player rejoins their kept seat above);
+		// an open game's seats are anyone's at any time, mid-game included.
+		if g.Started() && (!g.Dynamic() || g.Status != config.GameStatusInProgress) {
+			return JoinResult{}, ErrGameStarted
 		}
 
-		summary = PlayerSummary{PlayerID: l.playerID, Name: l.name, Agent: l.isAgent}
-		if g.Mode == config.ModeTeams {
-			if team < 0 || team >= g.Teams() {
-				return JoinResult{}, fmt.Errorf("invalid team %d", team)
-			}
-			if g.TeamMemberCount(team) >= g.TeamSize {
+		// The seat — every mode. The lowest free one, so a seat freed by a
+		// departure is the next one taken and nobody's moves (FreeSeat): the
+		// index every cell the player writes carries, and what their colour
+		// and spawn column follow. Without this a join could overfill a game
+		// (e.g. a 5th player into a 4-player game): the GUI hides Join on a
+		// full game and the agent pre-checks joinable(), but neither is
+		// atomic with the roster, so the authoritative guard lives here in
+		// the CAS loop. Teams: the lowest free slot of the wanted team.
+		if g.Mode == config.ModeTeams && (team < 0 || team >= g.Teams()) {
+			return JoinResult{}, fmt.Errorf("invalid team %d", team)
+		}
+		seat, slot, ok := g.FreeSeat(team)
+		if !ok {
+			if g.Mode == config.ModeTeams && len(g.Players) < g.PlayerCount {
 				return JoinResult{}, ErrTeamFull
 			}
-			summary.Team = team
-			summary.TeamSlot = g.TeamMemberCount(team)
+			return JoinResult{}, ErrGameFull
+		}
+		g.Players = g.NormalizedSeats() // a listing from before the seat field: seats by position, made explicit now
+		summary = PlayerSummary{PlayerID: l.playerID, Name: l.name, Agent: l.isAgent, Seat: seat}
+		if g.Mode == config.ModeTeams {
+			summary.Team, summary.TeamSlot = team, slot
 		}
 		g.Players = append(g.Players, summary)
-		res = JoinResult{PlayerIdx: len(g.Players) - 1, Team: summary.Team, TeamSlot: summary.TeamSlot}
+		res = JoinResult{PlayerIdx: seat, Team: summary.Team, TeamSlot: summary.TeamSlot}
 
-		// Game full → transition to starting (for teams this is exactly
-		// "both teams full", since per-team capacity is enforced above).
-		full := len(g.Players) >= g.PlayerCount
+		// An invite game full → transition to starting (for teams this is
+		// exactly "every team full", since per-team capacity is enforced
+		// above). An open game starts on its players' readiness instead
+		// (ToggleReady elects the countdown), whatever seats stay free.
+		full := len(g.Players) >= g.PlayerCount && !g.Dynamic() && g.Status == config.GameStatusCreated
 		if full {
 			g.Status = config.GameStatusStarting
 		}
@@ -1057,14 +1026,17 @@ func (l *Lobby) LeaveGame(ctx context.Context, gameID string) error {
 // created/starting states — the roster is frozen once play begins.
 var ErrGameStarted = errors.New("game has already started")
 
-// UnjoinGame removes the local player from a game that has NOT started yet
-// (a CAS loop like JoinGame, so it can never race another join into a
-// corrupted roster). If the departure makes a full "starting" roster
-// not-full again, the status reverts to created. The player's roster
-// announcement is purged from the game stream so late joiners don't discover
-// a ghost opponent. Used by the GUI's pre-start leave flow — and, over the
-// wire, by resident agents that give up on a game that never starts; unlike
-// LeaveGame it frees the seat for someone else.
+// UnjoinGame removes the local player from a game — before it starts in
+// any game, and at any time in an OPEN game, whose seats come and go (a CAS
+// loop like JoinGame, so it can never race another join into a corrupted
+// roster; the seat freed is the next one taken, nobody else's moves). If
+// the departure leaves a "starting" roster short of the start rule, the
+// status reverts to created. The player's roster announcement is purged
+// from the game stream so late joiners don't discover a ghost opponent.
+// Used by the GUI's leave flows — and, over the wire, by resident agents
+// that give up on a game that never starts; unlike LeaveGame it frees the
+// seat for someone else. A player leaving a running game vacates their
+// falling piece first (engine.VacateOwnPiece), before the seat is freed.
 func (l *Lobby) UnjoinGame(ctx context.Context, gameID string) error {
 	for {
 		entry, err := l.kv.Get(ctx, config.LobbyGameKey(gameID))
@@ -1075,19 +1047,25 @@ func (l *Lobby) UnjoinGame(ctx context.Context, gameID string) error {
 		if err := json.Unmarshal(entry.Value(), &g); err != nil {
 			return err
 		}
-		// The listing only ever reads created/starting pre-archive; the META is
-		// what StartGame transitions, so it is the authoritative started check.
-		// (Meta check and listing CAS are not atomic — an unjoin racing the
-		// exact start instant can still slip through, but the agent only unjoins
-		// after a long start-timeout, the same accepted-risk class as the
-		// documented join-fullness race.)
-		if g.Status != config.GameStatusCreated && g.Status != config.GameStatusStarting {
-			return ErrGameStarted
-		}
-		if meta, _, err := natspkg.FetchGameMeta(ctx, l.js, gameID); err == nil {
-			if meta.Status != config.GameStatusCreated && meta.Status != config.GameStatusStarting {
+		// An invite game's roster is frozen once play begins: the listing
+		// reads in_progress from the start transition's mirror, and the
+		// META is what StartGame transitions, so it is the authoritative
+		// started check. (Meta check and listing CAS are not atomic — an
+		// unjoin racing the exact start instant can still slip through, but
+		// the agent only unjoins after a long start-timeout, the same
+		// accepted-risk class as the documented join-fullness race.) A game
+		// that is over takes no departures either.
+		if !g.Dynamic() {
+			if g.Started() {
 				return ErrGameStarted
 			}
+			if meta, _, err := natspkg.FetchGameMeta(ctx, l.js, gameID); err == nil {
+				if meta.Status != config.GameStatusCreated && meta.Status != config.GameStatusStarting {
+					return ErrGameStarted
+				}
+			}
+		} else if g.Started() && g.Status != config.GameStatusInProgress {
+			return ErrGameStarted
 		}
 		idx := -1
 		for i, p := range g.Players {
@@ -1099,8 +1077,9 @@ func (l *Lobby) UnjoinGame(ctx context.Context, gameID string) error {
 		if idx < 0 {
 			break // not in the roster; nothing to remove
 		}
+		g.Players = g.NormalizedSeats()
 		g.Players = append(g.Players[:idx], g.Players[idx+1:]...)
-		if g.Status == config.GameStatusStarting && len(g.Players) < g.PlayerCount {
+		if g.Status == config.GameStatusStarting && !g.ReadyToStart() {
 			g.Status = config.GameStatusCreated
 		}
 		listingData, _ := json.Marshal(g)
@@ -1152,13 +1131,18 @@ func (l *Lobby) ToggleReady(ctx context.Context, gameID string) (ToggleReadyResu
 			}
 		}
 
-		// Check if all players ready
-		allReady := true
-		for _, p := range g.Players {
-			if !p.Ready {
-				allReady = false
-				break
-			}
+		// The start rule (ReadyToStart). An invite game's table is ready
+		// when every seat is filled and ready — the client whose toggle
+		// completed the set runs the countdown, as always. An open game's
+		// is ready as soon as every playfield has a ready player: the one
+		// write that moves the listing from created to starting elects its
+		// client to run the countdown, so a joiner readying up during the
+		// countdown never starts a second one.
+		ready := g.ReadyToStart()
+		elected := ready && !g.Dynamic()
+		if ready && g.Dynamic() && g.Status == config.GameStatusCreated {
+			g.Status = config.GameStatusStarting
+			elected = true
 		}
 
 		// CAS write
@@ -1173,7 +1157,7 @@ func (l *Lobby) ToggleReady(ctx context.Context, gameID string) (ToggleReadyResu
 		copy(playersCopy, g.Players)
 
 		return ToggleReadyResult{
-			AllReady: allReady && len(g.Players) >= g.PlayerCount,
+			AllReady: elected,
 			Players:  playersCopy,
 			MyReady:  myReady,
 		}, nil
@@ -1278,10 +1262,13 @@ func (l *Lobby) transitionGameStatus(ctx context.Context, gameID string, status 
 		if err := natspkg.PublishMeta(ctx, l.js, gameID, data, metaSeq); err == nil {
 			if status == config.GameStatusInProgress {
 				// The countdown ran out and the game is on: the one peer
-				// whose transition landed journals it.
+				// whose transition landed journals it, and mirrors the
+				// status onto the listing — the lobby row, the join rules
+				// and the agents read the game's state there.
 				e := l.selfEntry(config.LogKindGameStarted)
 				e.GameID, e.Mode, e.PlayerCount = gameID, meta.Mode, meta.PlayerCount
 				l.journal(ctx, e, "")
+				l.setListingStatus(ctx, gameID, status)
 			}
 			return
 		}
@@ -1302,4 +1289,31 @@ func (l *Lobby) PlayerName() string {
 // GetJS returns the JetStream handle.
 func (l *Lobby) GetJS() jetstream.JetStream {
 	return l.js
+}
+
+// setListingStatus mirrors a status the meta reached onto the lobby listing
+// (a CAS loop; a listing already there, or further along, is left alone).
+// The listing used to read created/starting only, the meta carrying the live
+// status; an open game's join rules and the lobby row's "playing" state
+// want it on the listing too.
+func (l *Lobby) setListingStatus(ctx context.Context, gameID string, status config.GameStatus) {
+	for attempt := 0; attempt < 5; attempt++ {
+		entry, err := l.kv.Get(ctx, config.LobbyGameKey(gameID))
+		if err != nil {
+			return
+		}
+		var g GameListing
+		if err := json.Unmarshal(entry.Value(), &g); err != nil {
+			return
+		}
+		if g.Status == status || g.Started() {
+			return
+		}
+		g.Status = status
+		listingData, _ := json.Marshal(g)
+		if _, err := l.kv.Update(ctx, config.LobbyGameKey(gameID), listingData, entry.Revision()); err == nil {
+			l.emitUpdate(LobbyUpdate{Kind: LobbyUpdateGames})
+			return
+		}
+	}
 }

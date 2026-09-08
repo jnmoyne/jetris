@@ -222,6 +222,7 @@ type App struct {
 	won          bool
 	myReady      bool
 	readyPlayers []lobby.PlayerSummary
+	readyNote    string // what the table still waits for (lobby.GameListing.ReadyBlocker), for the ready bar
 	flash        map[[2]int]time.Time
 	// casWant is the own board's blinking outline where a rejected step
 	// wanted the piece — the move the CAS failure took away — keyed like
@@ -386,34 +387,42 @@ type App struct {
 	// is the current step, 0 while the wizard is closed.
 	createBtn      widget.Clickable
 	createWizStep  int
-	createJoinEnum widget.Enum      // wizard step 3: "open" or "invite"
-	wizBackBtn     widget.Clickable // wizard: back one step
-	wizNextBtn     widget.Clickable // wizard: Next / Choose players… / Create game
-	wizCancelBtn   widget.Clickable // wizard: close without creating
-	wizList        widget.List      // wizard: the step's body, scrolling when the step is taller than the window leaves it (the custom rules step in a garbage mode at the minimum window height)
-	modeEnum       widget.Enum
-	countEd        widget.Editor
-	// The board-width slider of wizard step 1, shown for the modes that
-	// share a board (cooperative and teams): extraCols is how many columns
-	// every seat beyond the first adds to the board's standard 10
-	// (config.MinExtraColumns..config.MaxExtraColumns), extraColsFloat the
-	// slider's position, snapped to the whole-column detents.
+	createJoinEnum widget.Enum                        // wizard step 3: "open" or "invite"
+	boardsEnum     widget.Enum                        // wizard step 1: "single" (one shared playfield) or "multiple" (a team on each of several)
+	singleKindEnum widget.Enum                        // wizard step 1, single playfield: "coop" (scored together) or "competitive" (each seat on its own — config.ScoringIndividual)
+	lengthEnum     widget.Enum                        // wizard step 2: "topout" (until someone tops out) or "lines" (the lineGoalEd number of lines — config.GameSpec.LineGoal)
+	lineGoalEd     widget.Editor                      // wizard step 2: the line goal (blank = config.DefaultLineGoal)
+	wizBackBtn     widget.Clickable                   // wizard: back one step
+	wizNextBtn     widget.Clickable                   // wizard: Next / Choose players… / Create game
+	wizCancelBtn   widget.Clickable                   // wizard: close without creating
+	wizList        widget.List                        // wizard: the step's body, scrolling when the step is taller than the window leaves it (the custom rules step in a garbage mode at the minimum window height)
+	countEd        widget.Editor                      // wizard step 1: the players (per playfield, when there are several)
+	teamNameEds    [config.MaxTeamCount]widget.Editor // wizard step 3, teams: what each playfield's team is called (the piece colours unless renamed — config.DefaultTeamNames)
+	// The board-growth sliders of wizard step 2's custom rules, shown for a
+	// playfield with company: extraCols is how many columns every seat
+	// beyond the first adds to the board's standard 10
+	// (config.MinExtraColumns..config.MaxExtraColumns), extraRows how many
+	// rows it adds below the standard 20
+	// (config.MinExtraRows..config.MaxExtraRows); the Floats are the
+	// sliders' positions, snapped to the whole-number detents. The Guideline
+	// preset keeps both at their defaults.
 	extraColsFloat widget.Float
 	extraCols      int
-	// The team-count slider of wizard step 1, shown for teams mode: teamCount
-	// is how many teams play each other
-	// (config.MinTeamCount..config.MaxTeamCount, default two — Team A vs Team
-	// B), teamCountFloat the slider's position, snapped to the whole-team
-	// detents. The seat editor beside it stays per-team, so the game's total
-	// is teamCount × that.
-	teamCountFloat widget.Float
-	teamCount      int
-	// splitPiecesCb is wizard step 1's "split the pieces" checkbox, drawn for
-	// a teams game of two or more per team: the seven piece types are dealt
-	// out between the teammates, every seat playing only its own ration
-	// (config.GameMeta.SplitPieces). Structural like the seat count and the
-	// board width, not one of step 2's play rules — a Guideline game may
-	// split its pieces too.
+	extraRowsFloat widget.Float
+	extraRows      int
+	// The playfield-count slider of wizard step 1, shown for a
+	// multi-playfield game: playfieldCount is how many boards the game is
+	// played on (config.MinTeamCount..config.MaxTeamCount, default two —
+	// Team A vs Team B), playfieldsFloat the slider's position, snapped to
+	// the whole-number detents. The seat editor beside it is per playfield,
+	// so the game's total is playfieldCount × that.
+	playfieldsFloat widget.Float
+	playfieldCount  int
+	// splitPiecesCb is wizard step 2's "distribute the pieces" checkbox
+	// (custom rules), drawn for a playfield with company: the seven piece
+	// types are dealt out between the players of a playfield, every seat
+	// playing only its own ration (config.GameMeta.SplitPieces). On by
+	// default, and on in the Guideline preset.
 	splitPiecesCb widget.Bool
 	allowAgentsCb widget.Bool   // wizard agents step: allow idle agents to take seats
 	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take
@@ -449,9 +458,10 @@ type App struct {
 	// confirmLeave is true while the game screen asks "Are you sure you want
 	// to leave?" (leaving an in-progress game needs confirmation; the seat is
 	// kept and the lobby offers Rejoin).
-	confirmLeave bool
-	leaveYesBtn  widget.Clickable
-	leaveNoBtn   widget.Clickable
+	confirmLeave   bool
+	leaveFreesSeat bool // the leave being confirmed is out of a running open game: the piece is vacated and the seat freed
+	leaveYesBtn    widget.Clickable
+	leaveNoBtn     widget.Clickable
 
 	// lobbyErr surfaces a failed game creation as a red strip under the lobby
 	// banner (guarded by a.mu — createGame runs off the UI goroutine).
@@ -476,6 +486,7 @@ type App struct {
 	invitePickerPC     int             // playerCount of the game being invited to
 	invitePickerTS     int             // teamSize (teams mode)
 	invitePickerTC     int             // teamCount (teams mode)
+	invitePickerNames  []string        // the teams' names (teams mode; nil = the letters)
 	inviteSelfSel      widget.Bool     // the pinned "You" row (non-teams): checked = playing
 	inviteSelfTeam     widget.Enum     // the pinned "You" row (teams): "" or the team index as a string
 	inviteSelfLastSel  bool            // last self intent applied (non-teams)
@@ -738,8 +749,10 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	// starting point and not a step back to the classic game.
 	a.setCustomRules(config.GuidelineRules())
 	a.setExtraColumns(config.DefaultExtraColumns)
-	a.setTeamCount(config.DefaultTeamCount)
-	a.labEnum.Value = labAsync // Optimistic async, the default
+	a.setExtraRows(config.DefaultExtraRows)
+	a.setPlayfieldCount(config.DefaultTeamCount)
+	a.splitPiecesCb.Value = true // the pieces are dealt out between the players of a playfield unless the creator says otherwise
+	a.labEnum.Value = labAsync   // Optimistic async, the default
 	a.SetHandling(defaultDASMs, defaultARRMs, defaultSDF, defaultDropGuardMs)
 	a.setDefaultPanels() // every panel on until a saved set says otherwise
 	a.SetVoice(prefs.DefaultVoice())
@@ -757,6 +770,15 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.countEd.SingleLine = true
 	a.countEd.InputHint = key.HintNumeric
 	a.countEd.SetText("2") // the wizard opens on co-op: a crew of two unless the creator changes it
+	a.lineGoalEd.SingleLine = true
+	a.lineGoalEd.Filter = "0123456789"
+	a.lineGoalEd.InputHint = key.HintNumeric
+	a.lineGoalEd.SetText(strconv.Itoa(config.DefaultLineGoal))
+	for t, name := range config.DefaultTeamNames(config.MaxTeamCount) {
+		a.teamNameEds[t].SingleLine = true
+		a.teamNameEds[t].InputHint = hintPlain
+		a.teamNameEds[t].SetText(name)
+	}
 	a.maxAgentsEd.SingleLine = true
 	a.maxAgentsEd.Filter = "0123456789"
 	a.maxAgentsEd.InputHint = key.HintNumeric
@@ -767,7 +789,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.holesEd.SingleLine = true
 	a.holesEd.Filter = "0123456789"
 	a.holesEd.InputHint = key.HintNumeric
-	a.modeEnum.Value = "cooperative"
+	a.boardsEnum.Value = "single" // one shared playfield, scored together, until the creator says otherwise
+	a.singleKindEnum.Value = "coop"
+	a.lengthEnum.Value = "topout"     // until someone tops out
 	a.rulesEnum.Value = "guideline"   // the Guideline preset until the creator asks for custom rules
 	a.createJoinEnum.Value = "invite" // invite-only by default; open games are the opt-in
 	a.histSortEnum.Value = "score"

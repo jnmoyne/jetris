@@ -52,9 +52,28 @@ type playerSummary struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
 	Ready    bool   `json:"ready"`
+	Seat     int    `json:"seat"` // the stable seat (the index the player's cells carry); listings written before the field carry zeros — normalizeSeats reads those by position
 	Team     int    `json:"team"`
 	TeamSlot int    `json:"team_slot"`
 	Agent    bool   `json:"agent"`
+}
+
+// normalizeSeats fills every seat in: the recorded seats when they are
+// unique (every listing written since the field), the roster positions
+// otherwise — the assignment every game used before the field.
+func normalizeSeats(ps []playerSummary) []playerSummary {
+	out := append([]playerSummary(nil), ps...)
+	seen := map[int]bool{}
+	for _, p := range out {
+		if seen[p.Seat] {
+			for i := range out {
+				out[i].Seat = i
+			}
+			return out
+		}
+		seen[p.Seat] = true
+	}
+	return out
 }
 
 // players decodes a listing's players array.
@@ -63,7 +82,7 @@ func (o obj) players() []playerSummary {
 	if raw, ok := o["players"]; ok {
 		_ = json.Unmarshal(raw, &ps)
 	}
-	return ps
+	return normalizeSeats(ps)
 }
 
 // wireCell is one playfield cell payload. Every field is omitempty, so an empty

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,9 +56,11 @@ func TestTeamDimensions(t *testing.T) {
 	}
 }
 
-// Height is fixed: 20 visible rows over 4 of headroom, whatever the mode, the
-// player count or the number of opponents that can send garbage.
-func TestBoardHeightIsFixed(t *testing.T) {
+// The headroom is fixed — 4 rows over the 20-row Guideline playfield — and
+// so is a competitive board's height; only a SHARED board grows, by the
+// game's extra-rows setting per seat beyond the first, and it grows
+// downwards: the visible playfield still starts right below the headroom.
+func TestBoardHeightPerSeat(t *testing.T) {
 	if VisibleRows != 20 {
 		t.Errorf("VisibleRows = %d, want 20", VisibleRows)
 	}
@@ -66,6 +69,24 @@ func TestBoardHeightIsFixed(t *testing.T) {
 	}
 	if VisibleRowStart != HeadroomRows {
 		t.Errorf("VisibleRowStart = %d, want %d", VisibleRowStart, HeadroomRows)
+	}
+	if SharedBoardHeight(1, MaxExtraRows) != TotalRows {
+		t.Errorf("a lone seat's board = %d rows, want %d", SharedBoardHeight(1, MaxExtraRows), TotalRows)
+	}
+	if got := SharedBoardHeight(3, 5); got != 34 {
+		t.Errorf("SharedBoardHeight(3, 5) = %d, want 34", got)
+	}
+	for _, m := range []GameMeta{
+		{Mode: ModeCompetitive, PlayerCount: 4, ExtraRows: 10},
+		{Mode: ModeCooperative, PlayerCount: 4},
+		{Mode: ModeTeams, TeamCount: 2, TeamSize: 3, PlayerCount: 6},
+	} {
+		if got := m.BoardHeight(); got != TotalRows {
+			t.Errorf("%+v: BoardHeight() = %d, want the standard %d", m, got, TotalRows)
+		}
+	}
+	if got := (GameMeta{Mode: ModeTeams, TeamCount: 2, TeamSize: 3, PlayerCount: 6, ExtraRows: 2}).BoardHeight(); got != 28 {
+		t.Errorf("a 3-seat team board at 2 extra rows = %d, want 28", got)
 	}
 }
 
@@ -463,5 +484,243 @@ func TestRulesShowHeadroom(t *testing.T) {
 	r.ShowHeadroom = true
 	if r.IsGuideline(ModeCompetitive) || r.IsGuideline(ModeCooperative) {
 		t.Error("the preset with the hidden rows shown still reads as the Guideline preset")
+	}
+}
+
+// The creation spec is normalized once, for every create path: teams only
+// in teams mode (and the total is teams × size), the agent policy within the
+// seat count, the shared-board growth, the deal and the scoring only where a
+// shared board has seats to share it, the line goal and the rules clamped.
+func TestGameSpecNormalized(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   GameSpec
+		want GameSpec
+	}{
+		{"competitive drops the shared-board settings",
+			GameSpec{Mode: ModeCompetitive, PlayerCount: 3, ExtraColumns: 6, ExtraRows: 4, Scoring: ScoringIndividual, SplitPieces: true, TeamCount: 2, TeamSize: 1, Rules: GameRules{GarbageHoles: 2}},
+			GameSpec{Mode: ModeCompetitive, PlayerCount: 3, Rules: GameRules{GarbageHoles: 2}}},
+		{"solo co-op has nobody to split with or rank against",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 1, ExtraColumns: 4, ExtraRows: 3, Scoring: ScoringIndividual, SplitPieces: true},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 1, ExtraColumns: 4, ExtraRows: 3}},
+		{"a co-op crew keeps the split and the scoring, garbage zeroed",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 3, ExtraColumns: 5, ExtraRows: 2, Scoring: ScoringIndividual, SplitPieces: true, LineGoal: 40, Rules: GameRules{GarbageHoles: 2, GuidelineGarbage: true}},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 3, ExtraColumns: 5, ExtraRows: 2, Scoring: ScoringIndividual, SplitPieces: true, LineGoal: 40}},
+		{"teams: the total follows teams × size, a team of one cannot split, the teams are named",
+			GameSpec{Mode: ModeTeams, PlayerCount: 99, TeamCount: 3, TeamSize: 1, SplitPieces: true, Scoring: ScoringIndividual, ExtraRows: 11},
+			GameSpec{Mode: ModeTeams, PlayerCount: 3, TeamCount: 3, TeamSize: 1, ExtraRows: MaxExtraRows, TeamNames: []string{"Cyan", "Yellow", "Purple"}}},
+		{"teams of two split, the team count is normalized, a renamed team keeps its name",
+			GameSpec{Mode: ModeTeams, TeamCount: 0, TeamSize: 2, SplitPieces: true, TeamNames: []string{"  Sharks ", "", "Ignored"}},
+			GameSpec{Mode: ModeTeams, PlayerCount: 4, TeamCount: DefaultTeamCount, TeamSize: 2, SplitPieces: true, TeamNames: []string{"Sharks", "Yellow"}}},
+		{"no teams, no team names",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, TeamNames: []string{"Sharks"}},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2}},
+		{"the agent policy is clamped to the seats, the line goal to its cap",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 7, LineGoal: 5000, Scoring: "bogus"},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 2, LineGoal: MaxLineGoal}},
+		{"a negative line goal is until top out, a negative agent cap none",
+			GameSpec{Mode: ModeCompetitive, PlayerCount: 2, MaxAgents: -1, LineGoal: -40},
+			GameSpec{Mode: ModeCompetitive, PlayerCount: 2}},
+	} {
+		if got := tc.in.Normalized(); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: Normalized() = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Team names: the piece colours by default, in piece order; a recorded name
+// stands, a blank or a missing one is the colour, an overlong one is cut;
+// and every screen that has no names — an old game, the history's tally
+// across games — falls back to the letters.
+func TestTeamNames(t *testing.T) {
+	if got := DefaultTeamNames(MaxTeamCount); !reflect.DeepEqual(got, []string{"Cyan", "Yellow", "Purple", "Green", "Red", "Blue"}) {
+		t.Errorf("DefaultTeamNames(6) = %v", got)
+	}
+	if got := DefaultTeamNames(0); len(got) != 0 {
+		t.Errorf("DefaultTeamNames(0) = %v", got)
+	}
+	for _, tc := range []struct {
+		names []string
+		t     int
+		want  string
+	}{
+		{nil, 0, "A"}, {nil, 2, "C"}, {[]string{"Sharks", "Jets"}, 1, "Jets"}, {[]string{"Sharks", "Jets"}, 2, "C"},
+		{[]string{"", "Jets"}, 0, "A"}, {[]string{" Sharks "}, 0, "Sharks"}, {nil, -1, "-1"},
+	} {
+		if got := TeamName(tc.names, tc.t); got != tc.want {
+			t.Errorf("TeamName(%v, %d) = %q, want %q", tc.names, tc.t, got, tc.want)
+		}
+	}
+	long := strings.Repeat("x", MaxTeamNameLen+5)
+	got := NormalizeTeamNames([]string{"", long, "Jets"}, 4)
+	want := []string{"Cyan", strings.Repeat("x", MaxTeamNameLen), "Jets", "Green"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("NormalizeTeamNames = %v, want %v", got, want)
+	}
+	if NormalizeTeamNames([]string{"Jets"}, 0) != nil {
+		t.Error("no teams, but names")
+	}
+	meta := GameSpec{Mode: ModeTeams, TeamCount: 2, TeamSize: 1, TeamNames: []string{"Sharks"}}.Normalized().Meta("g", "c", 1, time.Time{})
+	if meta.TeamName(0) != "Sharks" || meta.TeamName(1) != "Yellow" {
+		t.Errorf("meta names = %q / %q", meta.TeamName(0), meta.TeamName(1))
+	}
+	if rec := (ArchiveRecord{Mode: ModeTeams, TeamNames: []string{"Sharks", "Jets"}}); rec.TeamName(1) != "Jets" || (ArchiveRecord{}).TeamName(1) != "B" {
+		t.Error("archive names")
+	}
+}
+
+// The game's shape as the spec and the meta both derive it: how many boards,
+// and how many seats share one.
+func TestGameSpecShape(t *testing.T) {
+	for _, tc := range []struct {
+		spec              GameSpec
+		playfields, seats int
+	}{
+		{GameSpec{Mode: ModeCooperative, PlayerCount: 3}, 1, 3},
+		{GameSpec{Mode: ModeCooperative, PlayerCount: 1}, 1, 1},
+		{GameSpec{Mode: ModeCompetitive, PlayerCount: 4}, 4, 1},
+		{GameSpec{Mode: ModeTeams, TeamCount: 3, TeamSize: 2, PlayerCount: 6}, 3, 2},
+		{GameSpec{Mode: ModeTeams, TeamCount: 0, TeamSize: 1, PlayerCount: 2}, DefaultTeamCount, 1},
+	} {
+		if got := tc.spec.Playfields(); got != tc.playfields {
+			t.Errorf("%+v: Playfields() = %d, want %d", tc.spec, got, tc.playfields)
+		}
+		if got := tc.spec.SeatsPerPlayfield(); got != tc.seats {
+			t.Errorf("%+v: SeatsPerPlayfield() = %d, want %d", tc.spec, got, tc.seats)
+		}
+		meta := tc.spec.Meta("g", "c", 1, time.Time{})
+		if got := meta.Playfields(); got != tc.playfields {
+			t.Errorf("%+v: meta Playfields() = %d, want %d", tc.spec, got, tc.playfields)
+		}
+		if got := meta.SeatsPerPlayfield(); got != tc.seats {
+			t.Errorf("%+v: meta SeatsPerPlayfield() = %d, want %d", tc.spec, got, tc.seats)
+		}
+	}
+}
+
+// The meta a spec writes carries every setting, and reads back as the spec
+// it was written from (less the lobby-only agent policy and invitation).
+func TestGameSpecMetaRoundTrip(t *testing.T) {
+	spec := GameSpec{
+		Mode: ModeCooperative, PlayerCount: 3, ExtraColumns: 6, ExtraRows: 5, LineGoal: 40,
+		Scoring: ScoringIndividual, SplitPieces: true, MaxAgents: 2, InviteOnly: true,
+		Rules: GameRules{NextCount: 3, Ghost: false, Hold: true, Bag: BagDouble, ShowHeadroom: true},
+	}.Normalized()
+	meta := spec.Meta("game", "creator", 42, time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
+	if meta.Status != GameStatusCreated || meta.Seed != 42 || meta.CreatorID != "creator" || meta.GameID != "game" {
+		t.Errorf("meta header = %+v", meta)
+	}
+	if !meta.IndividualScoring() || !meta.SplitsPieces() || meta.LineGoal != 40 || meta.ExtraRows != 5 {
+		t.Errorf("meta lost a setting: %+v", meta)
+	}
+	if got, want := meta.BoardWidth(), SharedBoardWidth(3, 6); got != want {
+		t.Errorf("BoardWidth() = %d, want %d", got, want)
+	}
+	if got, want := meta.BoardHeight(), SharedBoardHeight(3, 5); got != want {
+		t.Errorf("BoardHeight() = %d, want %d", got, want)
+	}
+	back := meta.Spec()
+	spec.MaxAgents, spec.InviteOnly = 0, false
+	if !reflect.DeepEqual(back, spec) {
+		t.Errorf("meta.Spec() = %+v, want %+v", back, spec)
+	}
+	// A competitive meta answers the standard board whatever it recorded.
+	comp := GameSpec{Mode: ModeCompetitive, PlayerCount: 2}.Normalized().Meta("g", "c", 1, time.Time{})
+	if comp.BoardWidth() != StandardWidth || comp.BoardHeight() != StandardHeight {
+		t.Errorf("competitive board = %d×%d, want %d×%d", comp.BoardWidth(), comp.BoardHeight(), StandardWidth, StandardHeight)
+	}
+}
+
+// Individual scoring is a single shared playfield's choice: only a
+// cooperative-mode board with company honours it, however the record reads.
+func TestScoringNormalized(t *testing.T) {
+	if got := Scoring("bogus").Normalized(); got != ScoringShared {
+		t.Errorf("bogus scoring reads as %q, want shared", got)
+	}
+	if got := ScoringIndividual.Normalized(); got != ScoringIndividual {
+		t.Errorf("individual reads as %q", got)
+	}
+	for _, tc := range []struct {
+		meta GameMeta
+		want bool
+	}{
+		{GameMeta{Mode: ModeCooperative, PlayerCount: 2, Scoring: ScoringIndividual}, true},
+		{GameMeta{Mode: ModeCooperative, PlayerCount: 1, Scoring: ScoringIndividual}, false},
+		{GameMeta{Mode: ModeCooperative, PlayerCount: 2}, false},
+		{GameMeta{Mode: ModeCompetitive, PlayerCount: 2, Scoring: ScoringIndividual}, false},
+		{GameMeta{Mode: ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2, Scoring: ScoringIndividual}, false},
+	} {
+		if got := tc.meta.IndividualScoring(); got != tc.want {
+			t.Errorf("%+v: IndividualScoring() = %v, want %v", tc.meta, got, tc.want)
+		}
+	}
+}
+
+// The extra-rows setting: a shared board is the standard height for its
+// first seat and extraRows more for every seat after it; zero — the default,
+// and every meta written before the field — adds nothing, unlike the columns.
+func TestSharedBoardHeight(t *testing.T) {
+	for _, tc := range []struct{ players, extra, want int }{
+		{1, 0, 24}, {2, 0, 24}, {5, 0, 24}, // the default: the Guideline board whatever the crew
+		{1, 10, 24}, {2, 5, 29}, {3, 5, 34}, {4, 4, 36},
+		{2, 10, 34}, {3, 10, 44},
+		{2, -3, 24}, {2, 99, 34}, {0, 5, 24}, // out of range: clamped
+	} {
+		if got := SharedBoardHeight(tc.players, tc.extra); got != tc.want {
+			t.Errorf("SharedBoardHeight(%d, %d) = %d, want %d", tc.players, tc.extra, got, tc.want)
+		}
+	}
+	if TeamBoardHeight(2, 6) != SharedBoardHeight(2, 6) {
+		t.Error("a team board grows like the cooperative one")
+	}
+	if StandardHeight != TotalRows {
+		t.Errorf("StandardHeight = %d, want %d", StandardHeight, TotalRows)
+	}
+}
+
+func TestExtraRowsPerPlayer(t *testing.T) {
+	for in, want := range map[int]int{0: 0, -1: 0, 1: 1, 4: 4, 10: 10, 11: MaxExtraRows} {
+		if got := ExtraRowsPerPlayer(in); got != want {
+			t.Errorf("ExtraRowsPerPlayer(%d) = %d, want %d", in, got, want)
+		}
+	}
+	if DefaultExtraRows != MinExtraRows || MinExtraRows != 0 {
+		t.Errorf("DefaultExtraRows = %d, MinExtraRows = %d, want both 0", DefaultExtraRows, MinExtraRows)
+	}
+}
+
+func TestNormalizeLineGoal(t *testing.T) {
+	for in, want := range map[int]int{0: 0, -5: 0, 1: 1, 40: 40, MaxLineGoal: MaxLineGoal, MaxLineGoal + 1: MaxLineGoal} {
+		if got := NormalizeLineGoal(in); got != want {
+			t.Errorf("NormalizeLineGoal(%d) = %d, want %d", in, got, want)
+		}
+	}
+	if DefaultLineGoal != 40 {
+		t.Errorf("DefaultLineGoal = %d, want the sprint's 40", DefaultLineGoal)
+	}
+}
+
+// A shared board whose seats were scored on their own ranks by its best
+// player, like a competitive game, and never in the same replay bucket as a
+// crew's shared total.
+func TestArchiveIndividualScoring(t *testing.T) {
+	shared := ArchiveRecord{Mode: ModeCooperative, TotalScore: 40, Players: []PlayerResult{{PlayerID: "a", Score: 99}, {PlayerID: "b", Score: 12}}}
+	individual := shared
+	individual.Scoring = ScoringIndividual
+	if got := shared.HeadlineScore(); got != 40 {
+		t.Errorf("shared headline = %d, want 40", got)
+	}
+	if got := individual.HeadlineScore(); got != 99 {
+		t.Errorf("individual headline = %d, want 99", got)
+	}
+	if shared.SameReplayBucket(individual) || !individual.SameReplayBucket(individual) {
+		t.Error("individual and shared co-op must not share a replay bucket")
+	}
+	if !shared.IndividualScoring() == false || individual.IndividualScoring() != true {
+		t.Error("IndividualScoring() misreads the record")
+	}
+	comp := ArchiveRecord{Mode: ModeCompetitive, Scoring: ScoringIndividual}
+	if comp.IndividualScoring() {
+		t.Error("only a cooperative-mode board scores individually")
 	}
 }

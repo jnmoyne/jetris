@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"jetris/internal/config"
 	"jetris/internal/game"
@@ -78,6 +79,9 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				// The echo-only replica (EchoSnapshot): what the stream has
 				// delivered, and nothing the engine wrote through ahead of it.
 				e.echoField.Apply(rowIdx, colIdx, cell, seq)
+				// A peer's piece seen somewhere new restarts its idle clock
+				// (roster.go: a piece left behind is vacated a threshold on).
+				e.notePeerCellLocked(cell, time.Now())
 			}
 
 			if isOpponent {
@@ -260,13 +264,15 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 
 	// Cooperative: notify other players of the score change. Teams: notify
 	// everyone of the score AND line-count change (lines keep every
-	// teammate's level/gravity in sync). Every lock that scored is announced
-	// — one that cleared nothing but earned drop points or a T-spin too,
-	// with lines_cleared 0 — so the shared score converges on every point.
-	// The event goes to the sender's per-kind subject and carries the
-	// sender's cumulative own totals — receivers fold deltas, so retention
-	// trimming an older event of ours is harmless.
-	if (e.gameMode == config.ModeCooperative || e.gameMode == config.ModeTeams) && (clearedLines > 0 || points > 0) {
+	// teammate's level/gravity in sync). Competitive: the board is private,
+	// but the totals still tell every peer where the player stands — the
+	// line goal (goal.go) and the archive read them. Every lock that scored
+	// is announced — one that cleared nothing but earned drop points or a
+	// T-spin too, with lines_cleared 0 — so the shared score converges on
+	// every point. The event goes to the sender's per-kind subject and
+	// carries the sender's cumulative own totals — receivers fold deltas, so
+	// retention trimming an older event of ours is harmless.
+	if clearedLines > 0 || points > 0 {
 		ev := GameEvent{
 			Kind:         EventLineClear,
 			PlayerID:     e.playerID,
@@ -379,6 +385,14 @@ func (e *Engine) runMetaConsumer(ctx context.Context) {
 			if meta.Status == config.GameStatusInProgress {
 				e.gameStarted.Store(true)
 			}
+			if (meta.Status == config.GameStatusFinished || meta.Status == config.GameStatusArchived) && e.getMode() == ModePlayer {
+				// The game is over and this engine has not heard why yet — a
+				// peer decided it (a line goal reached, a roster that emptied
+				// every other board) before our events consumer caught up.
+				// Play stops now; the events still to come flip the verdict
+				// to won if we won (decideOutcome), like a teams win does.
+				e.transitionToSpectator(false)
+			}
 			// Status reaches EVERY engine — spectators included. Gating this
 			// on ModePlayer left a spectator's view stuck pre-start ("GO!"
 			// never cleared: countdownVisible waits for in_progress), and the
@@ -469,7 +483,7 @@ func (e *Engine) foldTotals(ev GameEvent) bool {
 		e.mu.Unlock()
 		return false // stale replay of an older total: already folded
 	}
-	e.eventTotals[ev.PlayerID] = struct{ score, lines int }{ev.TotalScore, ev.TotalLines}
+	e.eventTotals[ev.PlayerID] = struct{ score, lines, team int }{ev.TotalScore, ev.TotalLines, ev.Team}
 	e.mu.Unlock()
 	if ev.PlayerID == e.playerID {
 		return false
@@ -484,10 +498,15 @@ func (e *Engine) foldTotals(ev GameEvent) bool {
 		own = ev.Team == e.teamIdx
 	}
 	if own {
-		e.score.Add(int64(deltaScore))
+		// A shared board whose seats are scored on their own folds the
+		// crew's LINES (the shared level and gravity) but never their points:
+		// the shown score stays this player's alone.
+		if !e.individual {
+			e.score.Add(int64(deltaScore))
+		}
 		e.totalLines.Add(int64(deltaLines))
 		e.refreshLevel()
-		if deltaScore > 0 {
+		if deltaScore > 0 && !e.individual {
 			e.emitUpdate(EngineUpdate{Kind: UpdateScore, Score: int(e.score.Load())})
 		}
 	}
@@ -497,6 +516,10 @@ func (e *Engine) foldTotals(ev GameEvent) bool {
 func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 	switch ev.Kind {
 	case EventLineClear:
+		// The line goal is checked on every line_clear consumed — before the
+		// fold's verdict on whether the event was news, since our own echo
+		// is the one that carries our own crossing.
+		defer e.checkLineGoal(ctx, ev)
 		if !e.foldTotals(ev) {
 			return
 		}
@@ -529,6 +552,14 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			e.handleTeamGameOverEvent(ctx, ev)
 			return
 		}
+		if e.gameMode == config.ModeCooperative && e.individual {
+			// A shared board scored per seat: the top-out ends the game for
+			// everyone, and the ranking is decided here — from the totals the
+			// ordered stream carried up to this very event, the topper's own
+			// echo included, so every engine crowns the same top scorer(s).
+			e.decideOutcome(e.topScorers(), -1)
+			return
+		}
 		if ev.PlayerID != e.playerID {
 			if e.gameMode == config.ModeCooperative {
 				// Cooperative: any player's game over ends the game for all
@@ -538,6 +569,7 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 				e.mu.Lock()
 				e.eliminatedPlayers[ev.PlayerID] = true
 				eliminated := len(e.eliminatedPlayers)
+				rostered := e.roster != nil
 				e.mu.Unlock()
 
 				e.emitUpdate(EngineUpdate{
@@ -545,6 +577,12 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 					EliminatedPlayerID: ev.PlayerID,
 				})
 
+				if rostered {
+					// An open game's boards come and go: the count follows
+					// the seats held (roster.go).
+					e.evaluateRosterOutcome(ctx)
+					return
+				}
 				// If we're the last player standing, we win
 				if eliminated >= e.playerCount-1 && e.getMode() == ModePlayer {
 					e.transitionToSpectator(true) // we won!
@@ -562,11 +600,16 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			e.mu.Lock()
 			e.eliminatedPlayers[e.playerID] = true
 			eliminated := len(e.eliminatedPlayers)
+			rostered := e.roster != nil
 			e.mu.Unlock()
 			e.emitUpdate(EngineUpdate{
 				Kind:               UpdatePlayerEliminated,
 				EliminatedPlayerID: e.playerID,
 			})
+			if rostered {
+				e.evaluateRosterOutcome(ctx)
+				return
+			}
 			// Draw case: our own event completes the set of eliminations.
 			if eliminated >= e.playerCount {
 				go e.transitionGameToFinished(ctx)
@@ -592,25 +635,35 @@ func (e *Engine) handleTeamGameOverEvent(ctx context.Context, ev GameEvent) {
 	e.mu.Lock()
 	e.eliminatedPlayers[ev.PlayerID] = true
 	e.eliminatedTeam[ev.PlayerID] = ev.Team
-	elim := make([]int, n)
-	for pid := range e.eliminatedPlayers {
-		if t := e.eliminatedTeam[pid]; t >= 0 && t < n {
-			elim[t]++
+	// The teams still standing: with a roster pushed, the ones with a seated
+	// member not eliminated (an open game's teams come and go); without one,
+	// the ones with fewer eliminations than seats.
+	alive, lastAlive := e.alivePlayfieldsLocked()
+	myTeamDead := e.teamIdx >= 0 && e.teamIdx < n
+	if myTeamDead {
+		if e.roster == nil {
+			dead := 0
+			for pid := range e.eliminatedPlayers {
+				if e.eliminatedTeam[pid] == e.teamIdx {
+					dead++
+				}
+			}
+			myTeamDead = dead >= e.teamSize
+		} else {
+			standing := 0
+			for _, s := range e.roster {
+				if s.Team == e.teamIdx && !e.eliminatedPlayers[s.PlayerID] {
+					standing++
+				}
+			}
+			myTeamDead = standing == 0
 		}
 	}
-	alive, lastAlive := 0, -1
-	for t := 0; t < n; t++ {
-		if elim[t] < e.teamSize {
-			alive++
-			lastAlive = t
-		}
-	}
-	myTeamDead := e.teamIdx >= 0 && e.teamIdx < n && elim[e.teamIdx] >= e.teamSize
 	winTeam := -1
 	if alive == 1 {
 		winTeam = lastAlive
 	}
-	decide := alive <= 1 && !e.teamOutcomeDone
+	decide := alive <= 1 && !e.teamOutcomeDone && !e.outcomeDecided
 	if decide {
 		e.teamOutcomeDone = true
 	}

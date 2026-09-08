@@ -65,8 +65,11 @@ type hosting struct {
 	random    bool   // every garbage row draws its own hole columns (off = one draw per raise)
 	guideline bool   // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
 	hold      bool   // the Guideline hold queue (this agent never holds; humans in the game may)
-	split     bool   // teams: deal the seven piece types out between the teammates, each seat playing only its ration (meta split_pieces)
+	split     bool   // shared playfields with company: deal the seven piece types out between the seats of a playfield, each playing only its ration (meta split_pieces)
 	bag       string // the piece randomizer (meta bag): "" the 7-bag, "double" the double bag, "none" no bag
+	extraRows int    // shared boards: rows every seat beyond the first adds below the standard 20 (clamped 0..10; meta extra_rows)
+	lineGoal  int    // the game's length in lines (meta line_goal; 0 = until top out)
+	single    bool   // cooperative: score every seat on its own, the top score wins (meta scoring "individual")
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
@@ -98,6 +101,7 @@ type Agent struct {
 	stateMu        sync.Mutex
 	presenceStatus int
 	currentGame    string
+	game           *Game // the game being played, for the lobby watch's roster pushes (nil between games)
 
 	rng      *mrand.Rand
 	stopCh   chan struct{}
@@ -427,6 +431,15 @@ func (a *Agent) watchLobby(ctx context.Context, report bool) error {
 					delete(listings, gid)
 				} else {
 					listings[gid] = toObj(e.Value())
+					// The game being played: its roster follows the
+					// listing (an open game's seats come and go), for the
+					// deal and the verdict (game.go onRoster).
+					a.stateMu.Lock()
+					g := a.game
+					a.stateMu.Unlock()
+					if g != nil && g.id == gid {
+						g.onRoster(listings[gid].players())
+					}
 				}
 			case len(key) > len(invitePrefix) && key[:len(invitePrefix)] == invitePrefix:
 				gid := key[len(invitePrefix):]
@@ -526,14 +539,93 @@ func joinable(g obj) bool {
 			agents++
 		}
 	}
-	if g.str("status") != "created" || g.boolv("invite_only") ||
-		len(players) >= g.int("player_count") || g.int("max_agents") <= agents {
+	// An open game takes joiners before it starts and while it runs (its
+	// seats are anyone's at any time); the countdown is the one moment it
+	// does not (guide §5). An invite game takes nobody uninvited.
+	switch g.str("status") {
+	case "created", "in_progress":
+	default:
+		return false
+	}
+	if g.boolv("invite_only") || len(players) >= g.int("player_count") || g.int("max_agents") <= agents {
 		return false
 	}
 	if g.int("mode") == modeTeams {
 		return pickTeam(g, -1) >= 0
 	}
 	return true
+}
+
+// freeSeat is the lowest free seat of a listing — and, in teams, the lowest
+// free slot of the given team, the seat being team × size + slot — as the
+// GUI's lobby assigns them (guide §5.2): a seat a departed player freed is
+// the next one taken, and nobody else's seat moves. ok is false when full.
+func freeSeat(g obj, team int) (seat, slot int, ok bool) {
+	taken := map[int]bool{}
+	for _, p := range g.players() {
+		taken[p.Seat] = true
+	}
+	if g.int("mode") == modeTeams {
+		size := g.int("team_size")
+		if size <= 0 {
+			size = g.int("player_count") / normalizeTeamCount(g.int("team_count"))
+		}
+		size = max(size, 1)
+		for slot := 0; slot < size; slot++ {
+			if seat := team*size + slot; !taken[seat] {
+				return seat, slot, true
+			}
+		}
+		return 0, 0, false
+	}
+	for seat := 0; seat < g.int("player_count"); seat++ {
+		if !taken[seat] {
+			return seat, 0, true
+		}
+	}
+	return 0, 0, false
+}
+
+// readyToStart is the start rule (guide §5.3): an invite game's table is
+// ready when every seat is filled and everyone is ready; an open game's as
+// soon as everyone seated is ready and every playfield has a player — the
+// crew's one board, every team's, every competitive board.
+func readyToStart(g obj) bool {
+	players := g.players()
+	if len(players) == 0 {
+		return false
+	}
+	for _, p := range players {
+		if !p.Ready {
+			return false
+		}
+	}
+	if g.boolv("invite_only") {
+		return len(players) >= g.int("player_count")
+	}
+	switch g.int("mode") {
+	case modeTeams:
+		for t := 0; t < normalizeTeamCount(g.int("team_count")); t++ {
+			if pickTeamMembers(players, t) == 0 {
+				return false
+			}
+		}
+		return true
+	case modeCompetitive:
+		return len(players) >= g.int("player_count")
+	default:
+		return true
+	}
+}
+
+func pickTeamMembers(players []playerSummary, team int) int {
+	n := 0
+	for _, p := range players {
+		if p.Team == team {
+			n++
+		}
+	}
+	return n
 }
 
 // pickTeam returns the team an agent should join: the invited team when the
@@ -652,12 +744,24 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 		}
 		g := toObj(entry.Value())
 		players := g.players()
-		for i, p := range players {
+		for _, p := range players {
 			if p.PlayerID == a.name {
-				return i // already joined
+				return p.Seat // already joined: our seat
 			}
 		}
 		if g.boolv("invite_only") && !invited && g.str("creator_id") != a.name {
+			return -1
+		}
+		// A game that is over takes nobody; an invite game's roster is
+		// frozen once it starts; an open game's seats are anyone's while it
+		// runs (not during the countdown).
+		switch g.str("status") {
+		case "created", "starting":
+		case "in_progress":
+			if g.boolv("invite_only") {
+				return -1
+			}
+		default:
 			return -1
 		}
 		if !invited { // an invitation IS the permission (bypasses the policy)
@@ -674,27 +778,31 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 		if len(players) >= g.int("player_count") {
 			return -1
 		}
-		summary := playerSummary{PlayerID: a.name, Name: a.name, Agent: true}
+		team := 0
 		if g.int("mode") == modeTeams {
 			want := -1
 			if invited {
 				want = a.inviteTeam
 			}
-			team := pickTeam(g, want)
-			if team < 0 {
+			if team = pickTeam(g, want); team < 0 {
 				return -1 // the invited (or every) team is full
 			}
-			slot := 0
-			for _, p := range players {
-				if p.Team == team {
-					slot++
-				}
-			}
+		}
+		// The seat: the lowest free one (freeSeat) — stable, so a cell's
+		// player index names one seat for the whole game.
+		seat, slot, ok := freeSeat(g, team)
+		if !ok {
+			return -1
+		}
+		summary := playerSummary{PlayerID: a.name, Name: a.name, Agent: true, Seat: seat}
+		if g.int("mode") == modeTeams {
 			summary.Team, summary.TeamSlot = team, slot
 		}
 		players = append(players, summary)
 		g.set("players", players)
-		full := len(players) >= g.int("player_count")
+		// An invite game full → starting; an open game starts on readiness
+		// (toggleReady elects the countdown) whatever seats stay free.
+		full := len(players) >= g.int("player_count") && g.boolv("invite_only") && g.str("status") == "created"
 		if full {
 			g.set("status", "starting")
 		}
@@ -714,7 +822,7 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 		if invited {
 			a.consumeInvite(ctx, gameID)
 		}
-		return len(players) - 1
+		return seat
 	}
 }
 
@@ -786,6 +894,7 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if teamSize > 0 {
 		meta.set("team_count", teamCount)
 		meta.set("team_size", teamSize)
+		meta.set("team_names", teamNames(teamCount)) // the piece colours, as the GUI names them by default (guide §4.2)
 	}
 	if extra > 0 {
 		meta.set("extra_columns", extra)
@@ -803,11 +912,32 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.hold {
 		meta.set("hold", true)
 	}
-	if h.split && teamSize > 1 {
-		meta.set("split_pieces", true) // only a team with teammates has pieces to split
+	seatsOnPF := players
+	if teamSize > 0 {
+		seatsOnPF = teamSize
+	} else if h.mode == modeCompetitive {
+		seatsOnPF = 1
+	}
+	if h.split && seatsOnPF > 1 {
+		meta.set("split_pieces", true) // only a playfield with company has pieces to split
 	}
 	if bag := normalizeBag(h.bag); bag != bagSingle {
 		meta.set("bag", bag) // omitted for the 7-bag like the GUI's omitempty field
+	}
+	rows := 0
+	if h.mode != modeCompetitive {
+		rows = extraRows(h.extraRows)
+	}
+	if rows > 0 {
+		meta.set("extra_rows", rows)
+	}
+	goal := max(h.lineGoal, 0)
+	if goal > 0 {
+		meta.set("line_goal", goal)
+	}
+	single := h.single && h.mode == modeCooperative && players > 1
+	if single {
+		meta.set("scoring", "individual")
 	}
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
@@ -828,6 +958,7 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if teamSize > 0 {
 		listing.set("team_count", teamCount)
 		listing.set("team_size", teamSize)
+		listing.set("team_names", teamNames(teamCount))
 	}
 	if extra > 0 {
 		listing.set("extra_columns", extra)
@@ -846,11 +977,20 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if h.hold {
 		listing.set("hold", true)
 	}
-	if h.split && teamSize > 1 {
+	if h.split && seatsOnPF > 1 {
 		listing.set("split_pieces", true)
 	}
 	if bag := normalizeBag(h.bag); bag != bagSingle {
 		listing.set("bag", bag)
+	}
+	if rows > 0 {
+		listing.set("extra_rows", rows)
+	}
+	if goal > 0 {
+		listing.set("line_goal", goal)
+	}
+	if single {
+		listing.set("scoring", "individual")
 	}
 	listing.set("creator_id", a.name)
 	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included
@@ -898,12 +1038,15 @@ func (a *Agent) unjoinGame(ctx context.Context, gameID string) {
 			break
 		}
 		g := toObj(entry.Value())
-		if s := g.str("status"); s != "created" && s != "starting" {
+		open := !g.boolv("invite_only")
+		if s := g.str("status"); s != "created" && s != "starting" && !(open && s == "in_progress") {
 			return
 		}
-		if meta, _, err := a.fetchMeta(ctx, gameID); err == nil {
-			if s := meta.str("status"); s != "created" && s != "starting" {
-				return
+		if !open {
+			if meta, _, err := a.fetchMeta(ctx, gameID); err == nil {
+				if s := meta.str("status"); s != "created" && s != "starting" {
+					return
+				}
 			}
 		}
 		players := g.players()
@@ -917,7 +1060,8 @@ func (a *Agent) unjoinGame(ctx context.Context, gameID string) {
 			break // not on the roster; nothing to remove
 		}
 		g.set("players", kept)
-		if g.str("status") == "starting" && len(kept) < g.int("player_count") {
+		g2 := toObj(g.bytes())
+		if g.str("status") == "starting" && !readyToStart(g2) {
 			g.set("status", "created")
 		}
 		if _, err := a.kv.Update(ctx, "games."+gameID, g.bytes(), entry.Revision()); err != nil {
@@ -955,18 +1099,24 @@ func (a *Agent) toggleReady(ctx context.Context, gameID string) bool {
 				players[i].Ready = true
 			}
 		}
-		allReady := len(players) > 0
-		for _, p := range players {
-			if !p.Ready {
-				allReady = false
-			}
-		}
 		g.set("players", players)
+		// The start rule (readyToStart, guide §5.3). An invite game's table
+		// is ready when full and ready — the toggle that completes it runs
+		// the countdown. An open game's is ready as soon as every playfield
+		// has a ready player: the one write that moves the listing from
+		// created to starting is elected to run the countdown.
+		ready := readyToStart(g)
+		open := !g.boolv("invite_only")
+		elected := ready && !open
+		if ready && open && g.str("status") == "created" {
+			g.set("status", "starting")
+			elected = true
+		}
 		if _, err := a.kv.Update(ctx, "games."+gameID, g.bytes(), entry.Revision()); err != nil {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
-		return allReady && len(players) >= g.int("player_count")
+		return elected
 	}
 }
 
@@ -1061,10 +1211,13 @@ func (a *Agent) runCountdown(ctx context.Context, gameID string) {
 	time.Sleep(700 * time.Millisecond)
 	if a.transitionMeta(ctx, gameID, "in_progress") {
 		// The countdown ran out and the game is on: journal it, with the
-		// game's shape from its meta.
+		// game's shape from its meta, and mirror the status onto the listing
+		// — where the lobby rows, the join rules and every agent read that
+		// the game is on (an open game's free seats are joinable from here).
 		if meta, _, err := a.fetchMeta(ctx, gameID); err == nil {
 			a.journal(ctx, logGameStarted, gameID, meta.int("mode"), meta.int("player_count"))
 		}
+		a.setListingStatus(ctx, gameID, "in_progress")
 	}
 }
 
@@ -1127,8 +1280,36 @@ func (a *Agent) run(ctx context.Context) error {
 // playGame runs one game and restores lobby presence afterward.
 func (a *Agent) playGame(ctx context.Context, gameID string, idx int) bool {
 	g := newGame(a, gameID, idx)
+	a.stateMu.Lock()
+	a.game = g
+	a.stateMu.Unlock()
 	won := g.run(ctx)
+	a.stateMu.Lock()
+	a.game = nil
+	a.stateMu.Unlock()
 	a.setPresence(0, "")
 	_ = a.publishPresence(ctx)
 	return won
+}
+
+// setListingStatus mirrors a status the meta reached onto the lobby listing
+// (a CAS loop; a listing already there, or further along, is left alone).
+func (a *Agent) setListingStatus(ctx context.Context, gameID, status string) {
+	for attempt := 0; attempt < 5; attempt++ {
+		entry, err := a.kv.Get(ctx, "games."+gameID)
+		if err != nil {
+			return
+		}
+		g := toObj(entry.Value())
+		switch g.str("status") {
+		case "created", "starting":
+		default:
+			return // there already, or past it
+		}
+		g.set("status", status)
+		if _, err := a.kv.Update(ctx, "games."+gameID, g.bytes(), entry.Revision()); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

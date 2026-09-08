@@ -58,7 +58,7 @@ func TestTeamsJoinAssignsSlotsAndRejectsFullTeam(t *testing.T) {
 	ctx := context.Background()
 
 	// 2v2 teams game: PlayerCount is the total, TeamSize per team.
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 4, 2, 2, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lbs[0].CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,24 +102,57 @@ func TestTeamsJoinAssignsSlotsAndRejectsFullTeam(t *testing.T) {
 		t.Fatalf("rejoin: got %+v, want %+v", again, r2)
 	}
 
-	// Last slot fills team 1 → both teams full → game transitions to starting.
+	// Last slot fills team 1: both teams full, the seats global and stable
+	// (team × size + slot). An open game does not start on a full roster —
+	// its players' readiness does: the listing stays created until the one
+	// ready toggle that completes the table moves it to starting, electing
+	// that one client to run the countdown.
 	r3, err := lbs[3].JoinGame(ctx, gameID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r3.Team != 1 || r3.TeamSlot != 1 {
-		t.Fatalf("fourth join: got %+v, want team 1 slot 1", r3)
+	if r3.Team != 1 || r3.TeamSlot != 1 || r3.PlayerIdx != 3 {
+		t.Fatalf("fourth join: got %+v, want team 1 slot 1 seat 3", r3)
+	}
+	if r2.PlayerIdx != 2 {
+		t.Fatalf("third join's seat = %d, want 2", r2.PlayerIdx)
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if g, ok := lbs[0].Games()[gameID]; ok && g.Status == config.GameStatusStarting {
+		if g, ok := lbs[0].Games()[gameID]; ok && len(g.Players) == 4 {
+			if g.Status != config.GameStatusCreated {
+				t.Fatalf("a full open game moved to %s on its own", g.Status)
+			}
 			if got := g.TeamMemberCount(0); got != 2 {
 				t.Fatalf("team 0 member count = %d, want 2", got)
 			}
 			if got := g.TeamMemberCount(1); got != 2 {
 				t.Fatalf("team 1 member count = %d, want 2", got)
 			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the roster to fill")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	elected := 0
+	for _, lb := range lbs {
+		res, err := lb.ToggleReady(ctx, gameID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.AllReady {
+			elected++
+		}
+	}
+	if elected != 1 {
+		t.Fatalf("%d clients were elected to run the countdown, want exactly 1", elected)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if g, ok := lbs[0].Games()[gameID]; ok && g.Status == config.GameStatusStarting {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -138,7 +171,7 @@ func TestTeamsThreeWayJoin(t *testing.T) {
 	ctx := context.Background()
 
 	// Three teams of one: PlayerCount is the total, TeamCount the teams.
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 3, 3, 1, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lbs[0].CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 3, TeamCount: 3, TeamSize: 1, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,10 +198,12 @@ func TestTeamsThreeWayJoin(t *testing.T) {
 		}
 	}
 
+	// Every team seated: an open game starts once everyone present is ready
+	// — here, once the last of the three toggles.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		g, ok := lbs[0].Games()[gameID]
-		if ok && g.Status == config.GameStatusStarting {
+		if ok && len(g.Players) == 3 {
 			if g.Teams() != 3 {
 				t.Fatalf("listing Teams() = %d, want 3", g.Teams())
 			}
@@ -177,6 +212,25 @@ func TestTeamsThreeWayJoin(t *testing.T) {
 					t.Fatalf("team %d member count = %d, want 1", team, got)
 				}
 			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the three-team roster to fill")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for i, lb := range lbs {
+		res, err := lb.ToggleReady(ctx, gameID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.AllReady != (i == len(lbs)-1) {
+			t.Fatalf("toggle %d: elected %v, want the last toggle alone", i, res.AllReady)
+		}
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if g, ok := lbs[0].Games()[gameID]; ok && g.Status == config.GameStatusStarting {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -192,7 +246,7 @@ func TestTeamsConcurrentJoinsRespectCapacity(t *testing.T) {
 
 	// 1v1: a single slot per team — concurrent joins on team 0 must produce
 	// exactly one member (the CAS loop serializes the capacity check).
-	gameID, err := lbs[0].CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lbs[0].CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

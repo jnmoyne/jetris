@@ -122,6 +122,13 @@ func (e *Engine) runInput(ctx context.Context) {
 			// goroutine and at the same cadence the blocker falls at.
 			e.retrySpawnIfPending(ctx)
 
+			// A peer's piece left behind — by a player gone from the seat,
+			// or one whose piece has not moved in a long while — is vacated
+			// here, at the same cadence (roster.go).
+			if e.gameStarted.Load() {
+				e.vacateIdlePeers(ctx)
+			}
+
 			// Garbage backstop: if rows are still owed (a signal was consumed
 			// by an attempt that lost its gate, or arrived before runInput
 			// started), re-arm the application at gravity cadence.

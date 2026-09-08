@@ -321,7 +321,7 @@ func (a *App) rosterTeams(rec config.ArchiveRecord) []layout.FlexChild {
 			children = append(children, layout.Rigid(spacer(10)))
 		}
 		children = append(children, layout.Rigid(func(gtx C) D {
-			return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, a.pixel(unit.Sp(9), "TEAM "+teamName(t), hdrCol).Layout)
+			return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, a.pixel(unit.Sp(9), "TEAM "+rec.TeamName(t), hdrCol).Layout)
 		}))
 		var members []config.PlayerResult
 		for _, p := range rec.Players {

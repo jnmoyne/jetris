@@ -608,34 +608,16 @@ func (a *App) initLobby(name string) error {
 	return nil
 }
 
-// createGame creates a game and returns its ID. For teams mode, count is the
-// number of players PER TEAM and teamCount how many teams play each other
-// (0 reads as the usual two); for the other modes count is the total player
-// count and teamCount is 0. extraCols is the wizard's board-width setting for the modes that
-// share a board — the columns every seat beyond the first adds to the
-// standard 10 (config.SharedBoardWidth); competitive ignores it. maxAgents is
-// the agent policy — how many seats idle agent players may take (0 = agents
-// may not join). rules are the game's play rules (config.GameRules: the piece
-// preview, ghost, hold and garbage settings — the wizard's Guideline preset
-// or its custom read-out), clamped for the mode by lobby.CreateGame.
-// splitPieces deals the seven piece types out between teammates (teams mode
-// with two or more per team; config.GameMeta.SplitPieces).
-// inviteOnly restricts joining to invited players (the invite flow sets it
-// and then sends the invitations).
-func (a *App) createGame(mode config.GameMode, count, teamCount, extraCols, maxAgents int, splitPieces bool, rules config.GameRules, inviteOnly bool) string {
+// createGame creates a game from the wizard's spec (config.GameSpec — the
+// game's shape, its length, the play rules, the agent policy and whether it
+// is invite-only; lobby.CreateGame normalizes it for the mode) and returns
+// its ID; an empty ID means the create failed and lobbyErr says why.
+func (a *App) createGame(spec config.GameSpec) string {
 	lb := a.getLobby()
 	if lb == nil {
 		return ""
 	}
-	playerCount, teamSize := count, 0
-	if mode == config.ModeTeams {
-		teamCount = config.NormalizeTeamCount(teamCount)
-		teamSize = count
-		playerCount = teamCount * count
-	} else {
-		teamCount = 0
-	}
-	gameID, err := lb.CreateGame(context.Background(), mode, playerCount, teamCount, teamSize, extraCols, maxAgents, splitPieces, rules, inviteOnly)
+	gameID, err := lb.CreateGame(context.Background(), spec)
 	a.mu.Lock()
 	if err != nil {
 		a.lobbyErr = "Couldn't create the game: " + err.Error()
@@ -760,12 +742,13 @@ func (a *App) joinGame(gameID string, team int) {
 	}
 
 	// Refresh roster after joining so the legend includes us (see handleJoinGame).
-	players := g.Players
+	players := g.NormalizedSeats()
 	if g2, ok := lb.Games()[gameID]; ok {
-		players = g2.Players
+		players = g2.NormalizedSeats()
 	}
 
 	a.startGameScreen(e, engCtx, engCancel, players, string(g.Status))
+	e.SetRoster(engineSeats(players))
 	go a.pumpEngine(engCtx, e)
 	if err := e.Start(); err != nil {
 		log.Printf("engine start: %v", err)
@@ -787,7 +770,8 @@ func (a *App) spectateGame(gameID string) {
 	e.OnStreamMsg = a.recordStreamMsg // feeds the "Show NATS messages" panel
 	engCtx, engCancel := context.WithCancel(a.ctx)
 
-	a.startGameScreen(e, engCtx, engCancel, g.Players, string(g.Status))
+	a.startGameScreen(e, engCtx, engCancel, g.NormalizedSeats(), string(g.Status))
+	e.SetRoster(engineSeats(g.NormalizedSeats()))
 	go a.pumpEngine(engCtx, e)
 	if err := e.Start(); err != nil {
 		log.Printf("spectate engine start: %v", err)
@@ -801,6 +785,12 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 	a.engCancel = engCancel
 	a.gamePlayers = players
 	a.readyPlayers = players
+	a.readyNote = ""
+	if lb := a.lobby; lb != nil {
+		if g, ok := lb.Games()[e.GameID()]; ok {
+			a.readyNote = g.ReadyBlocker()
+		}
+	}
 	a.score = 0
 	a.level = 0
 	a.teamScores, a.teamLevels = nil, nil
@@ -937,15 +927,39 @@ func (a *App) leaveCurrentGame() {
 				log.Printf("clear ready on leave: %v", err)
 			}
 		}
+		g, ok := lb.Games()[gameID]
+		if ok && g.Dynamic() && metaStatus == config.GameStatusInProgress && rosterHas(g, lb.PlayerID()) {
+			// Out of a running OPEN game: the falling piece comes off the
+			// board first (CAS with retry — it is ours, nothing else moves
+			// it), then the seat is freed for anyone. The lobby lists the
+			// game to join again, not to rejoin.
+			eng.VacateOwnPiece(context.Background())
+			if err := lb.UnjoinGame(context.Background(), gameID); err != nil {
+				log.Printf("leave open game: %v", err)
+			}
+			a.returnToLobby()
+			return
+		}
 		// Presence: while we still hold a seat in a live game we stay marked
 		// in-game (and thus un-invitable); once the game is done or gone we are
 		// back to a plain lobby player.
-		g, ok := lb.Games()[gameID]
 		if releaseSeatOnLeave(g, ok, metaStatus, lb.PlayerID()) {
 			_ = lb.LeaveGame(context.Background(), gameID)
 		}
 	}
 	a.returnToLobby()
+}
+
+// currentGameOpen reports whether the game on screen is an open one — its
+// seats anyone's at any time, so leaving frees ours.
+func (a *App) currentGameOpen() bool {
+	lb := a.getLobby()
+	eng := a.getEngine()
+	if lb == nil || eng == nil {
+		return false
+	}
+	g, ok := lb.Games()[eng.GameID()]
+	return ok && g.Dynamic()
 }
 
 // releaseSeatOnLeave decides whether leaving the game screen releases lobby

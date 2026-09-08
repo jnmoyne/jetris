@@ -161,7 +161,9 @@ func TestTutorialKeysAndRestore(t *testing.T) {
 	a.lobbyChatShown = false
 	a.padShown = false
 	a.showMsgs.Value = true
-	a.modeEnum.Value = "teams"
+	a.boardsEnum.Value = "multiple"
+	a.lengthEnum.Value = "lines"
+	a.lineGoalEd.SetText("20")
 	a.createJoinEnum.Value = "open"
 	a.countEd.SetText("4")
 	g.frame()
@@ -190,8 +192,8 @@ func TestTutorialKeysAndRestore(t *testing.T) {
 	if a.tutorialScene() != tutSceneGame {
 		t.Fatalf("thirty presses of → did not reach the game scene (step %d)", a.tut.step)
 	}
-	if a.lobbyTab != lobbyTabGames || !a.padShown || a.modeEnum.Value != "cooperative" {
-		t.Errorf("the tour did not set its scene up: tab=%q pad=%v mode=%q", a.lobbyTab, a.padShown, a.modeEnum.Value)
+	if a.lobbyTab != lobbyTabGames || !a.padShown || a.boardsEnum.Value != "single" || a.lengthEnum.Value != "topout" {
+		t.Errorf("the tour did not set its scene up: tab=%q pad=%v boards=%q length=%q", a.lobbyTab, a.padShown, a.boardsEnum.Value, a.lengthEnum.Value)
 	}
 	g.press(key.NameEscape)
 	if a.tutorialUp() {
@@ -207,8 +209,8 @@ func TestTutorialKeysAndRestore(t *testing.T) {
 		t.Error("the pad switch came back on")
 	case !a.showMsgs.Value:
 		t.Error("Show NATS messages came back off")
-	case a.modeEnum.Value != "teams" || a.createJoinEnum.Value != "open" || a.countEd.Text() != "4":
-		t.Errorf("the wizard's choices put back as %q/%q/%q", a.modeEnum.Value, a.createJoinEnum.Value, a.countEd.Text())
+	case a.boardsEnum.Value != "multiple" || a.createJoinEnum.Value != "open" || a.countEd.Text() != "4" || a.lengthEnum.Value != "lines" || a.lineGoalEd.Text() != "20":
+		t.Errorf("the wizard's choices put back as %q/%q/%q/%q/%q", a.boardsEnum.Value, a.createJoinEnum.Value, a.countEd.Text(), a.lengthEnum.Value, a.lineGoalEd.Text())
 	case a.createWizStep != 0:
 		t.Errorf("the wizard left open on step %d", a.createWizStep)
 	case a.gameStatus != "" || a.gamePlayers != nil || a.msgLog != nil:

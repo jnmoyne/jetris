@@ -47,7 +47,7 @@ func Offline(g OfflineGame) *Engine {
 	e.showHeadroom = rules.ShowHeadroom
 	e.hold = rules.Hold
 	e.bag = rules.Bag
-	e.seq = rng.NewBag(g.Seed, nil, e.bag)
+	e.seq.Store(rng.NewBag(g.Seed, nil, e.bag))
 	if g.Held != nil {
 		e.heldPiece, e.hasHeld = *g.Held, true
 	}

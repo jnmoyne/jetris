@@ -199,10 +199,22 @@ and no difficulty setting or flag of the agent's can raise it, only use less of 
 
 | Property | Value |
 |----------|-------|
-| Total rows | 24 |
-| Headroom rows | 4 (rows 0-3, not rendered) |
-| Visible rows | 20 (rows 4-23), in every mode — the height never depends on the mode or the number of players |
+| Total rows | 24 for one seat: a competitive board, and a shared board before any extra rows. A SHARED board — cooperative, or one team's — is `24 + (seats − 1) × extraRows` tall, where `extraRows` is the game's `meta.extra_rows` (0–10, the create wizard's extra-rows slider, default 0: absent means no extra rows, the standard playfield whatever the seat count) |
+| Headroom rows | 4 (rows 0-3, not rendered) — the same on every board: a taller board grows downwards, so the spawn rows and the top-out rule never move |
+| Visible rows | 20 (rows 4-23) for one seat, plus the extra rows of a shared board |
 | Standard width | 10 columns in competitive mode. A SHARED board — cooperative, or one team's — is `10 + (seats − 1) × extraColumns` wide, where `seats` is `playerCount` (cooperative) or `teamSize` (teams) and `extraColumns` is the game's `meta.extra_columns` (4–10, the create wizard's board-width slider, default 4). A meta without the field — every game created before the slider — reads as 10, the historical `seats × 10` board |
+
+**The line goal (`meta.line_goal`):** a game's length in lines, 0 (absent) for
+the classic run until someone tops out. With a goal the game ends the moment a
+PLAYFIELD has cleared that many lines in total — every engine decides it at the
+same point, when the `line_clear` that crosses it is consumed from the ordered
+events stream (the crew's board counts every seat's lines, a team's board its
+members', a competitive board its player's; competitive boards announce their
+clears for it): on a single playfield the game is over — the crew is done, a
+board scored per seat crowns its top scorer(s) — and across several the first
+playfield there wins for its team, or its player. Every player's engine then
+moves the meta to `finished` (the CAS makes it idempotent), the HUD counts
+`LINES 12 / 40` all along, and the game-over box reads GOAL REACHED.
 
 **Cell states:**
 
@@ -355,6 +367,24 @@ There is a single shared score visible to all players. When any player's piece l
 
 A player's `game_over` event carries the same cumulative totals, so the ending player's last points — a drop's, which only the next event would have carried — count on every engine before the game is archived.
 
+### Individual Scoring (`meta.scoring: "individual"`)
+
+The crew's one board can be a competitive one — the create wizard's **single
+playfield, competitive**: the board, the pieces, the deal and the level are
+shared exactly as above, but the score is not. Every seat keeps its own
+(`ownScore`, the points of its own locks), the HUD shows yours and lists every
+player's beside their name, best first, and a peer's `line_clear` folds the
+crew's LINES (the shared level) but never their points. The game still ends
+for everyone at the first top-out (or at the line goal), and the verdict is a
+ranking: the seats' published totals — the cumulative `total_score` the ordered
+events stream carried up to the ending event, the topper's own game_over
+included — name the top scorer(s), a tie crowning everyone tied; the winners
+see YOU WON! with the victory fireworks, the beaten YOU LOST, both over a
+ranking line (`alice 1200 · bob 940`). The archive record carries
+`scoring: "individual"`, every seat's score with `winner` on the top one, and
+no shared `total_score`, so such games rank in a replay bucket of their own and
+never against a crew's shared run.
+
 ### Level Progression
 
 Level = `totalLinesCleared / 10`, capped at 19. Level affects gravity speed (see Section 7). Level is computed independently by each engine from its local `totalLines` counter, which increases on both local clears and received `EventLineClear` events.
@@ -445,7 +475,7 @@ When a player clears 1 or more lines, garbage rows are owed to **all** other pla
 
 ### Game Over
 
-The game continues until only **one player remains**. When a player tops out (the newly spawned piece cannot be placed, an opponent's raise pushed the rising stack into the falling piece and the conflict-resolving upward shift ran the piece off the top, or the raise pushed the locked stack itself past the top of the board), that player is eliminated and transitions to spectator mode — they can watch the remaining players continue. The last player standing wins. The game UI shows a player status list with each player marked as playing (green dot) or eliminated (red cross, struck through name). At game over, winners see "YOU WON!" and the loser(s) see "YOU LOST", and the overlay shows the player's own final result — `Your score: N (level L)` — above the "Back to Lobby" button. The winner’s screen also plays a **victory fireworks show** over the whole game screen: rockets rise from the bottom edge and every one bursts into a small **NATS "N" logo** (particles sampled from the embedded nats.io icon) — except one rocket in ten (guaranteed at least once per show, since the show loops a fixed choreography), which bursts into the **Synadia Symbol** instead (the official mark from synadia.com/about/brand — the white "S" swirl on the emerald rounded square), which pops in, holds for a beat, and then visibly splits into its small squares and blows apart — the blocks flying out in every direction like a bursting shell and shrinking away as they go, rather than fading in place. As they fly, each burst either keeps the logo’s own colors or transitions its blocks to one traditional fireworks color (gold, red, green, blue, purple, or silver) — chosen per rocket at random. The show loops until the winner heads back to the lobby, and is paint-only — it never blocks input or the "Back to Lobby" button.
+The game continues until only **one player remains** — in an open game, until only one board still has a seated player who has not topped out: a board whose player left is out. When a player tops out (the newly spawned piece cannot be placed, an opponent's raise pushed the rising stack into the falling piece and the conflict-resolving upward shift ran the piece off the top, or the raise pushed the locked stack itself past the top of the board), that player is eliminated and transitions to spectator mode — they can watch the remaining players continue. The last player standing wins. The game UI shows a player status list with each player marked as playing (green dot) or eliminated (red cross, struck through name). At game over, winners see "YOU WON!" and the loser(s) see "YOU LOST", and the overlay shows the player's own final result — `Your score: N (level L)` — above the "Back to Lobby" button. The winner’s screen also plays a **victory fireworks show** over the whole game screen: rockets rise from the bottom edge and every one bursts into a small **NATS "N" logo** (particles sampled from the embedded nats.io icon) — except one rocket in ten (guaranteed at least once per show, since the show loops a fixed choreography), which bursts into the **Synadia Symbol** instead (the official mark from synadia.com/about/brand — the white "S" swirl on the emerald rounded square), which pops in, holds for a beat, and then visibly splits into its small squares and blows apart — the blocks flying out in every direction like a bursting shell and shrinking away as they go, rather than fading in place. As they fly, each burst either keeps the logo’s own colors or transitions its blocks to one traditional fireworks color (gold, red, green, blue, purple, or silver) — chosen per rocket at random. The show loops until the winner heads back to the lobby, and is paint-only — it never blocks input or the "Back to Lobby" button.
 
 ---
 
@@ -503,7 +533,7 @@ When a team clears N lines, N adversarial rows — or the Guideline table's rows
 
 **A player out is not a team out.** When a player tops out (their next spawn cannot be placed on locked cells — a spawn blocked only by a teammate's falling piece is deferred, not fatal — or a garbage raise pushed their falling piece off the top; a raise that pushes locked rows past the top takes the whole board and every remaining player on it), they vacate any of their active cells from the team board (a txn-gated transform, so a racing garbage application can never resurrect the dead piece from a stale snapshot), publish their elimination, and become a spectator of their own team's board — but their teammates play on. The UI shows "YOU'RE OUT — your team plays on" until the game resolves.
 
-A team is **out when ALL its members have topped out**, and the game is over when **at most one team is still standing**. In a duel that is the moment either side falls; past two teams the survivors play on, a fallen team simply stops attacking and stops being attacked, until only one team is left. That last team — every member of it, alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Everyone else sees "YOUR TEAM LOST"; the last teams falling together is a draw, nobody crowned. In every case (and on the interim "you're out" box) the overlay shows every team's score and level with the player's own team first — `TEAM A 42 (lvl 3) · TEAM B 17 (lvl 1)` — above the "Back to Lobby" button. All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines. Every member of the winning team — including already-eliminated members, whose engines re-emit the win — gets the same victory fireworks show as a competitive winner (rockets bursting into small NATS "N" logos that then blow apart) on their own screen.
+A team is **out when ALL its members have topped out** — or, in an open game, when nobody holds a seat on it any more — and the game is over when **at most one team is still standing**. In a duel that is the moment either side falls; past two teams the survivors play on, a fallen team simply stops attacking and stops being attacked, until only one team is left. That last team — every member of it, alive or already eliminated — wins: alive winners stop playing, and an eliminated member of the winning team sees their "you're out" flip to "YOUR TEAM WON!". Everyone else sees "YOUR TEAM LOST"; the last teams falling together is a draw, nobody crowned. In every case (and on the interim "you're out" box) the overlay shows every team's score and level with the player's own team first — `TEAM A 42 (lvl 3) · TEAM B 17 (lvl 1)` — above the "Back to Lobby" button. All engines observe the same ordered event stream, so they reach the same verdict; the meta transition to `finished` is CAS-deduplicated across the winning engines. Every member of the winning team — including already-eliminated members, whose engines re-emit the win — gets the same victory fireworks show as a competitive winner (rockets bursting into small NATS "N" logos that then blow apart) on their own screen.
 
 ### Visual Indicators
 
@@ -565,42 +595,64 @@ Games are created through a **create-game wizard**: the lobby carries a single
 **"Create a new game"** button (drawn with the shiny "attract" treatment — an
 embossed bevel and a diagonal glint sweeping across it every few seconds, so
 the lobby's main call to action can't be missed) that opens a modal walking the creator through the
-game's attributes one step at a time — **1. game type & players** (co-op /
-competitive / teams radios, the seat count, per-team in teams mode (with the
-**Teams** slider beside it — 2 to 6, default 2 — setting how many such teams
-the game is played between, so the total seat count is teams × per team), and — for
-the modes whose players share a board — the **board-width slider**: how many
-columns every seat beyond the first adds to the board's standard 10, 4 to 10,
-default 4, so a co-op pair or a team of two plays 14 columns wide, three 18,
-and the slider's top of 10 restores the historical full 10-column section per
-player. The same step spaces the seats' spawn points (§2, §3, §5).
-Competitive never shows it — every player has a standard board of their own.
-A **teams** game of two or more per team also gets the **"Split the pieces
-between teammates"** checkbox here — off by default; on, the seven piece types
-are dealt out between the teammates and each seat only ever plays its own
-ration, §5. It sits on this step, not step 2, because it shapes the TEAM the
-way the seat count and the board width do: a Guideline game may split its
-pieces too),
-**2. game rules** (a single radio: the **Guideline** preset — the default,
-listed read-only — or **custom**, every rule opening at the preset's setting:
-the next-piece count, 0-6, the "Show ghost piece" and "Hold piece" checkboxes,
-the piece bag, the hidden rows, and the garbage rules for competitive/teams —
-see §1b),
-**3. who can join** (**open game** or **invite only**), and — open games only —
-**4. agents** (the agent policy below). Each step has Next/Back plus a Cancel
-that closes the wizard without creating anything, and the previous run's choices
-are the next run's defaults.
+game's attributes one step at a time — **1. game type**: a **single
+playfield** everyone shares — the number of players, and with two or more
+the choice: **co-op**, all players scoring together (cooperative mode, §3),
+or **competitive**, each player scored individually (the same board with
+`scoring: "individual"`, §3); one player alone is a solo run for the high
+score, nothing to score together or apart; or
+**multiple playfields** — the **Playfields** slider, 2 to 6, default 2, and the
+number of players per playfield: one per playfield is competitive mode (a board
+each, the last standing wins, §4), two or more a teams game, a team on each
+board, every team scoring together (§5), the total seat count being playfields
+× per playfield.
+**2. game rules**: the **game length** — **until top out**, or **a number of
+lines** (default 40, the line goal of §2) — then a single radio: the
+**Guideline** preset — the default, listed read-only: the play rules at their
+Guideline settings, the board 4 columns wider per player and no taller, the
+pieces dealt out between the players of a playfield — or **custom**, every rule
+opening at the preset's setting: for a playfield with company the
+**board-growth sliders** (**extra columns per player**, 4 to 10, default 4, so a
+co-op pair or a team of two plays 14 columns wide, three 18, and the slider's
+top of 10 restores the historical full 10-column section per player — the same
+step spaces the seats' spawn points, §2, §3, §5 — and **extra rows per
+player**, 0 to 10, default 0, the playfield 20 rows plus that much per player
+after the first) and the **"Distribute the pieces between the players of a
+playfield"** checkbox (on by default; the seven piece types dealt out between
+the seats of a playfield, each seat only ever playing its own ration, §5), then
+the next-piece count, 0-6, the "Hold piece" and "Show ghost piece" checkboxes,
+the garbage rules where several playfields raise garbage at each other, the
+piece bag and the hidden rows — see §1b.
+**3. players** (for a teams game first the **team names** — every
+playfield's team is called after a piece colour, Cyan, Yellow, Purple, Green,
+Red, Blue, unless the creator types another, 16 letters at most, stored as
+the meta's `team_names` and shown wherever a team is named; then **invite
+only** or **open**, and for an open game the agent policy below). Each step has Next/Back plus a Cancel that closes the wizard
+without creating anything, and the previous run's choices are the next run's
+defaults.
 
-Step 3 decides how the wizard ends. A game is **open** (anyone in the lobby may
-join it) or **invite-only**: choosing invite-only ends the wizard at step 3 (the
-Next button reads **"Choose players…"**) and hands off to the invitee picker —
-there is no agents step, because an invite-only game's agent policy is
-per-invitation; choosing open continues to the agents step, whose button reads
-**"Create game"**.
+Step 3 decides how the wizard ends. A game is **invite-only** or **open**:
+choosing invite-only ends the wizard with the Next button reading **"Choose
+players…"** and hands off to the invitee picker — an invite-only game's agent
+policy is per-invitation; choosing open shows the agent policy right there and
+the button reads **"Create game"**.
 
-- **Open games** work as always: they list in the lobby with Join/Spectate buttons,
-  and the wizard's agents step — the **"Allow agents to join"** checkbox and
-  max-agents count — controls whether idle agents may take seats.
+- **Open games** list in the lobby with Join/Spectate buttons, and the
+  **"Allow agents to join"** checkbox and max-agents count under the choice
+  control whether idle agents may take seats. An open game's roster is
+  DYNAMIC — players can enter and leave at any time: the game starts as soon
+  as every playfield has a player who is ready (the crew's one board, every
+  team, every competitive board), whatever seats are still free; a free seat
+  of a running game is anyone's — the joiner plays on the live board at once,
+  no ready step; and leaving a running game (see Leaving and Rejoining)
+  takes the leaver's piece off the board and frees their seat. Seats are
+  STABLE — the lowest free one is taken, a departed player's seat is the next
+  one taken, nobody else's moves — so a cell's player index names one seat
+  for the whole game. A piece left behind by a player who crashed or dropped
+  off is vacated by the other players' engines once it has stood still for
+  10 s (a live piece never does), or the moment its seat is seen empty; and
+  with several playfields, a playfield nobody holds a seat on any more is
+  out — the last one left wins.
 - **Invite-only games** are joined by invitation only. Creating one opens an
   **invitee picker** over the lobby. There is no send button: **selecting a player
   sends their invitation at that moment**, and deselecting a still-pending player
@@ -721,9 +773,12 @@ bucket but are written without a TTL, so they persist until explicitly removed.)
   team.
 - **Once the game is in progress**, "Back to Lobby" first asks **"Are you sure
   you want to leave?"** (Yes, leave / No, keep playing) — the game keeps going
-  without you. The lobby row then shows **playing** (green) and the same
-  **Rejoin** button returns you to your live board (the game stream replays the
-  current state).
+  without you. In an **invite-only** game the lobby row then shows **playing**
+  (green) and the same **Rejoin** button returns you to your live board (the
+  game stream replays the current state). In an **open** game leaving frees
+  the seat: your falling piece is taken off the board first (a CAS with retry
+  — it is yours, nothing else moves it), then your seat is removed from the
+  roster for anyone to take; the lobby lists the game to **Join** again.
 - Presence-wise you stay marked **In Game** while you hold a live seat (so you
   can't be invited elsewhere); the seat is only released when the game ends, or
   when you free it explicitly (deselecting yourself in the invite picker, or an
@@ -735,7 +790,7 @@ bucket but are written without a TTL, so they persist until explicitly removed.)
 2. Each player's ready state is shown as a filled pill badge next to their name: green "READY" / red "NOT READY"
 3. Players toggle their own state by clicking the button, which reads "CLICK WHEN READY TO PLAY" (when not yet ready — drawn with the shiny "attract" treatment: an embossed bevel and a glint that sweeps across it every few seconds) / "CLICK IF NOT READY ANYMORE" (when ready, i.e. click to stand down; plain button, no glint)
 4. Ready state is stored in the KV game listing with CAS (prevents lost updates)
-5. When ALL players are ready: countdown begins, ready toggle is locked
+5. When the table is ready — an invite game: every seat filled and ALL players ready; an open game: everyone seated ready and every playfield with at least one player, whatever seats stay free (the bar names what it still waits for: `WAITING FOR A PLAYER ON TEAM B`) — the countdown begins and the ready toggle is locked. In an open game the one ready toggle that moves the listing from `created` to `starting` elects its client to run the countdown, so a player joining during the countdown never starts a second one; a player joining a running game gets no ready step at all
 6. **Countdown:** 5...4...3...2...1...GO! (published to NATS countdown subject, consumed by all engines), drawn as a big numeral centered over your own playfield
 7. After "GO!": game meta transitions to `in_progress`, pieces spawn
 

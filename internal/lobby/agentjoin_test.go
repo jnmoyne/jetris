@@ -20,7 +20,7 @@ func TestAgentJoinPolicy(t *testing.T) {
 	ctx := context.Background()
 
 	// maxAgents 0: agents may not join at all.
-	noAgents, err := human.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
+	noAgents, err := human.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestAgentJoinPolicy(t *testing.T) {
 	}
 
 	// maxAgents 1: one agent in, the second rejected, humans unaffected.
-	oneAgent, err := human.CreateGame(ctx, config.ModeCompetitive, 3, 0, 0, 0, 1, false, config.GameRules{Ghost: true}, false)
+	oneAgent, err := human.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 3, MaxAgents: 1, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestAgentsConcurrentJoinsRespectCap(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	gameID, err := human.CreateGame(ctx, config.ModeCompetitive, 4, 0, 0, 0, 1, false, config.GameRules{Ghost: true}, false)
+	gameID, err := human.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 4, MaxAgents: 1, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestUnjoinGame(t *testing.T) {
 	a, b := lbs[0], lbs[1]
 	ctx := context.Background()
 
-	gameID, err := a.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := a.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,9 @@ func TestUnjoinGame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Full roster → starting. B un-joins → back to created with one seat free.
+	// An open game never moves to starting on a full roster — its players'
+	// readiness starts it — so the roster fills and stays created. B un-joins
+	// → one seat free, still created.
 	if err := b.UnjoinGame(ctx, gameID); err != nil {
 		t.Fatalf("unjoin: %v", err)
 	}
@@ -151,21 +153,79 @@ func TestUnjoinGame(t *testing.T) {
 		t.Fatalf("rejoin after unjoin: %v", err)
 	}
 
-	// Once the game is started (the META is what StartGame transitions — the
-	// listing stays "starting" until archived), unjoin must refuse.
+	// Once the game is started — the META is what StartGame transitions, and
+	// the start mirrors in_progress onto the listing — an OPEN game's seats
+	// still come and go: B un-joins mid-game and the seat is free again,
+	// joinable by anyone (B itself here), the game running all along.
 	a.StartGame(ctx, gameID)
 	deadline = time.Now().Add(3 * time.Second)
 	for {
 		meta, _, err := natspkg.FetchGameMeta(ctx, a.GetJS(), gameID)
+		g, ok := a.Games()[gameID]
+		if err == nil && meta.Status == config.GameStatusInProgress && ok && g.Status == config.GameStatusInProgress {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the in_progress meta and its listing mirror")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := b.UnjoinGame(ctx, gameID); err != nil {
+		t.Fatalf("unjoin from a running open game: %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		g, ok := a.Games()[gameID]
+		if ok && len(g.Players) == 1 && g.Status == config.GameStatusInProgress {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("listing after a mid-game unjoin = %+v (ok=%v), want 1 player, in progress", g, ok)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	res, err := b.JoinGame(ctx, gameID, 0)
+	if err != nil {
+		t.Fatalf("join a running open game: %v", err)
+	}
+	if res.PlayerIdx != 1 {
+		t.Fatalf("the freed seat was %d, want 1 (a's seat 0 never moved)", res.PlayerIdx)
+	}
+
+	// An INVITE game's roster is frozen once the game starts: unjoin refuses.
+	invite, err := a.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{Ghost: true}, InviteOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.JoinGame(ctx, invite, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Invite(ctx, b.PlayerID(), invite, 0); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if _, err := b.JoinGame(ctx, invite, 0); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("b never saw its invitation")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	a.StartGame(ctx, invite)
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		meta, _, err := natspkg.FetchGameMeta(ctx, a.GetJS(), invite)
 		if err == nil && meta.Status == config.GameStatusInProgress {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for in_progress meta")
+			t.Fatal("timed out waiting for the invite game's in_progress meta")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if err := b.UnjoinGame(ctx, gameID); !errors.Is(err, ErrGameStarted) {
-		t.Fatalf("unjoin after start: got err %v, want ErrGameStarted", err)
+	if err := b.UnjoinGame(ctx, invite); !errors.Is(err, ErrGameStarted) {
+		t.Fatalf("unjoin after an invite game's start: got err %v, want ErrGameStarted", err)
 	}
 }

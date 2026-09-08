@@ -89,7 +89,7 @@ func newReplayBoards(rec config.ArchiveRecord, height int) ([]*replayBoard, map[
 	case config.ModeTeams:
 		var boards []*replayBoard
 		for t := 0; t < rec.Teams(); t++ {
-			boards = append(boards, newReplayBoard("Team "+teamName(t), t,
+			boards = append(boards, newReplayBoard("Team "+rec.TeamName(t), t,
 				config.TeamBoardWidth(rec.TeamSize, rec.ExtraColumns),
 				height, config.VisibleRowStart))
 		}

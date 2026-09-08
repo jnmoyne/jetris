@@ -27,8 +27,9 @@ type gameView struct {
 	score, level int
 	award        awardBanner // the last scored clear on this board (award.go), shown while it is fresh
 
-	teamScores           []int // teams: per-team scores in index order — read through teamScore, which answers 0 before the first stats update arrives
-	teamLevels           []int // teams: per-team levels in index order — read through teamLevel
+	teamNames            []string // teams: what the teams are called (the engine's, nil = the letters) — read through teamName
+	teamScores           []int    // teams: per-team scores in index order — read through teamScore, which answers 0 before the first stats update arrives
+	teamLevels           []int    // teams: per-team levels in index order — read through teamLevel
 	rtt                  time.Duration
 	linkDown             time.Duration // how long the NATS link has been down (0 = up) — the HUD's LINK stat
 	status               string
@@ -39,6 +40,7 @@ type gameView struct {
 	pinned               bool   // the lobby's word on whether that replay is pinned (gameOverActions)
 	gameOverNote         string // under the game-over box's buttons: a refused pin
 	myReady              bool
+	readyNote            string // under the ready bar: what an open game still waits for (a playfield with nobody on it), or how many seats an invite game has to fill
 	players, readyPlayer []lobby.PlayerSummary
 	flash                map[[2]int]time.Time
 	casWant              map[[2]int]time.Time         // own board: the outline blinking where a rejected step wanted the piece
@@ -59,6 +61,10 @@ type gameView struct {
 	voice voice.Snapshot
 }
 
+// teamName is what team t is called on this screen (config.TeamName: the
+// game's name for it, else its letter).
+func (v gameView) teamName(t int) string { return config.TeamName(v.teamNames, t) }
+
 // teamScore and teamLevel read one team's live total out of the view. The
 // slices arrive with the engine's first UpdateTeamStats, so every screen that
 // draws a scoreboard before then (and any index a stale roster could hand us)
@@ -78,6 +84,10 @@ func (v gameView) teamLevel(team int) int {
 }
 
 func (a *App) snapshotGame(now time.Time) gameView {
+	var teamNames []string
+	if a.eng != nil {
+		teamNames = a.eng.TeamNames()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	fc := make(map[[2]int]time.Time)
@@ -143,9 +153,10 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		}
 	}
 	return gameView{
-		score: a.score,
-		level: a.level,
-		award: a.award,
+		score:     a.score,
+		level:     a.level,
+		award:     a.award,
+		teamNames: teamNames,
 
 		teamScores:     a.teamScores,
 		teamLevels:     a.teamLevels,
@@ -159,6 +170,7 @@ func (a *App) snapshotGame(now time.Time) gameView {
 		finished:       a.gameStatus == string(config.GameStatusFinished) || a.gameStatus == string(config.GameStatusArchived),
 		won:            a.won,
 		myReady:        a.myReady,
+		readyNote:      a.readyNote,
 		players:        append([]lobby.PlayerSummary(nil), a.gamePlayers...),
 		readyPlayer:    append([]lobby.PlayerSummary(nil), a.readyPlayers...),
 		flash:          fc,
@@ -268,6 +280,7 @@ func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
 		// directly; leaving pre-start also clears the ready mark.
 		if mode == engine.ModePlayer && started && !view.gameOver {
 			a.confirmLeave = true
+			a.leaveFreesSeat = a.currentGameOpen()
 		} else {
 			go a.leaveCurrentGame()
 		}
@@ -367,7 +380,14 @@ func (a *App) confirmLeaveOverlay(gtx C) D {
 							layout.Rigid(a.pixel(unit.Sp(13), "LEAVE GAME?", colErr).Layout),
 							layout.Rigid(spacer(10)),
 							layout.Rigid(a.body("Are you sure you want to leave? The game keeps going —", colFg)),
-							layout.Rigid(a.body("you can rejoin it from the lobby.", colFg)),
+							layout.Rigid(func(gtx C) D {
+								if a.leaveFreesSeat {
+									// An open game: the seat is freed for anyone,
+									// and the lobby offers the game to join again.
+									return a.body("your piece is taken off the board and your seat is free for anyone; you can join again from the lobby.", colFg)(gtx)
+								}
+								return a.body("you can rejoin it from the lobby.", colFg)(gtx)
+							}),
 							layout.Rigid(spacer(16)),
 							layout.Rigid(func(gtx C) D {
 								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -614,7 +634,7 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	case config.ModeTeams:
 		modeLabel = "Teams"
 		if mode != engine.ModeSpectator {
-			modeLabel += " · TEAM " + teamName(eng.TeamIdx())
+			modeLabel += " · TEAM " + eng.TeamName(eng.TeamIdx())
 		}
 	}
 	if mode == engine.ModeSpectator {
@@ -650,13 +670,28 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 				val = fmt.Sprintf("%d · lvl %d", view.teamScore(t), view.teamLevel(t))
 			}
 			children = append(children,
-				layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatColored("TEAM "+teamName(t), val, valCol))))
+				layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatColored("TEAM "+eng.TeamName(t), val, valCol))))
 		}
 	} else {
 		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("SCORE", view.score))))
 	}
 	if !(gmode == config.ModeTeams && mode == engine.ModeSpectator) {
 		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("LEVEL", view.level))))
+	}
+	if _, goal := eng.GoalProgress(); goal > 0 {
+		// The game's length in lines: this playfield's count against the
+		// goal — every team's for a teams spectator, who has no playfield.
+		if gmode == config.ModeTeams && mode == engine.ModeSpectator {
+			parts := make([]string, 0, eng.TeamCount())
+			for t := 0; t < eng.TeamCount(); t++ {
+				lines, _ := eng.TeamGoalProgress(t)
+				parts = append(parts, fmt.Sprintf("%s %d", eng.TeamName(t), lines))
+			}
+			children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatText("LINES", strings.Join(parts, " · ")+fmt.Sprintf(" / %d", goal)))))
+		} else {
+			lines, _ := eng.GoalProgress()
+			children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatText("LINES", fmt.Sprintf("%d / %d", lines, goal)))))
+		}
 	}
 
 	if mode == engine.ModePlayer {
@@ -850,10 +885,21 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 	// bold italic with a trophy, the beaten in their board colors — no more
 	// "(out)", every beaten player is out.
 	oc := view.outcome
+	// A board scored per seat lists every seat's own score beside its name,
+	// best first — the live ranking the game is about.
+	individual := eng.IndividualScoring()
+	var scores map[string]int
+	if individual {
+		scores = eng.PlayerScores()
+		scores[eng.PlayerID()] = view.score
+	}
 	playerRow := func(i int, p lobby.PlayerSummary) layout.FlexChild {
 		return layout.Rigid(func(gtx C) D {
 			elim := (gmode == config.ModeCompetitive || gmode == config.ModeTeams) && eng.IsEliminated(p.PlayerID)
 			name := agentName(p.Name, p.Agent)
+			if individual {
+				name = fmt.Sprintf("%s  %d", name, scores[p.PlayerID])
+			}
 			textCol, won := colFg, false
 			switch {
 			case oc.wins(p.PlayerID):
@@ -865,9 +911,9 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 				textCol = colMuted
 			}
 			// In a split-pieces game the seat's ration goes under its name:
-			// which of the seven types this player — teammate or opponent —
+			// which of the seven types this player — seatmate or opponent —
 			// is the one who can hand their board that shape.
-			ration := eng.PieceSetForSlot(p.TeamSlot)
+			ration := eng.PieceSetForSlot(playfieldSlot(gmode, p))
 			return layout.Inset{Top: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx C) D {
@@ -897,12 +943,12 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 		// boards.
 		teams := eng.TeamCount()
 		for t := 0; t < teams; t++ {
-			hdr := a.header("TEAM " + teamName(t))
+			hdr := a.header("TEAM " + eng.TeamName(t))
 			if oc.decided && oc.winTeam == t {
 				// The winning team's header: gold, in the synthesized bold
 				// italic (the pixel face has no such variants).
 				hdr = func(gtx C) D {
-					return layout.Inset{Bottom: unit.Dp(5)}.Layout(gtx, a.pixelEmph(unit.Sp(10), "TEAM "+teamName(t), colGold))
+					return layout.Inset{Bottom: unit.Dp(5)}.Layout(gtx, a.pixelEmph(unit.Sp(10), "TEAM "+eng.TeamName(t), colGold))
 				}
 			}
 			children = append(children, layout.Rigid(hdr))
@@ -919,10 +965,65 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 	}
 
 	children = append(children, layout.Rigid(a.header("PLAYERS")))
-	for i, p := range view.players {
-		children = append(children, playerRow(i, p))
+	for _, r := range legendOrder(view.players, scores) {
+		children = append(children, playerRow(r.idx, r.p))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// playfieldSlot is a player's slot on their playfield — the key of their
+// piece ration (Engine.PieceSetForSlot): the seat itself on the crew's
+// shared board, the slot within the team on a team's.
+func playfieldSlot(gmode config.GameMode, p lobby.PlayerSummary) int {
+	if gmode == config.ModeTeams {
+		return p.TeamSlot
+	}
+	return p.Seat
+}
+
+// engineSeats is the roster as the engine tracks it (engine.SetRoster).
+func engineSeats(players []lobby.PlayerSummary) []engine.Seat {
+	seats := make([]engine.Seat, 0, len(players))
+	for _, p := range players {
+		seats = append(seats, engine.Seat{PlayerID: p.PlayerID, Seat: p.Seat, Team: p.Team, TeamSlot: p.TeamSlot})
+	}
+	return seats
+}
+
+// legendRow is a legend line: the player and their roster index (the swatch
+// colour's key, which follows the seat, not the line's place in the list).
+type legendRow struct {
+	idx int
+	p   lobby.PlayerSummary
+}
+
+// legendOrder is the legend's order: roster order, or — on a board scored
+// per seat, when scores is set — best score first, the roster order breaking
+// ties, so the ranking reads top to bottom.
+func legendOrder(players []lobby.PlayerSummary, scores map[string]int) []legendRow {
+	rows := make([]legendRow, 0, len(players))
+	for i, p := range players {
+		rows = append(rows, legendRow{i, p})
+	}
+	if scores != nil {
+		sort.SliceStable(rows, func(i, j int) bool {
+			return scores[rows[i].p.PlayerID] > scores[rows[j].p.PlayerID]
+		})
+	}
+	return rows
+}
+
+// rankingLine writes every seat's score on a board scored per seat, best
+// first — "alice 1200 · bob 940 · carol 310" — our own from the live view
+// (the engine's own total), the others from the totals their events
+// carried.
+func rankingLine(players []lobby.PlayerSummary, scores map[string]int, me string, myScore int) string {
+	scores[me] = myScore
+	parts := make([]string, 0, len(players))
+	for _, r := range legendOrder(players, scores) {
+		parts = append(parts, fmt.Sprintf("%s %d", agentName(r.p.Name, r.p.Agent), scores[r.p.PlayerID]))
+	}
+	return joinParts(parts)
 }
 
 // rationRow writes one seat's piece ration — the types that seat's sequence
@@ -1340,7 +1441,7 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		// none of and whose pad has just gone away, leaving the room.
 		box := func(gtx C) D {
 			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-				return a.gameOverBox(gtx, gmode, view, eng.TeamIdx())
+				return a.gameOverBox(gtx, eng, gmode, view)
 			})
 		}
 		if a.form.compact {
@@ -1539,7 +1640,7 @@ func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
 			// stacks several opposing boards, so each needs its own name.
 			label = "OPPOSING TEAM"
 			if t, ok := engine.TeamFromBoardKey(id); ok {
-				label = "TEAM " + teamName(t)
+				label = "TEAM " + eng.TeamName(t)
 			}
 		}
 		children = append(children,
@@ -1581,7 +1682,7 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 		if t != eng.TeamIdx() {
 			snap, ok = opps[engine.TeamBoardKey(t)]
 		}
-		boards = append(boards, teamBoard{"TEAM " + teamName(t), snap, ok, t})
+		boards = append(boards, teamBoard{"TEAM " + eng.TeamName(t), snap, ok, t})
 	}
 	var items []layout.Widget
 	for _, b := range boards {
@@ -1630,7 +1731,7 @@ func teamScoreLine(view gameView, first int) string {
 	}
 	parts := make([]string, 0, len(order))
 	for _, t := range order {
-		parts = append(parts, fmt.Sprintf("TEAM %s %d (lvl %d)", teamName(t), view.teamScore(t), view.teamLevel(t)))
+		parts = append(parts, fmt.Sprintf("TEAM %s %d (lvl %d)", view.teamName(t), view.teamScore(t), view.teamLevel(t)))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -1641,14 +1742,18 @@ func teamScoreLine(view gameView, first int) string {
 // (gameOverActions), Back alone while it plays on. It is laid out next to the playfield — never over it,
 // so the final board stays fully visible. myTeam is the local player's team
 // index (teams mode only).
-func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam int) D {
+func (a *App) gameOverBox(gtx C, eng *engine.Engine, gmode config.GameMode, view gameView) D {
 	won := view.won
+	myTeam := eng.TeamIdx()
+	individual := eng.IndividualScoring()
 	// Teams: a player can be out while their team plays on — show an interim
 	// message (and no Back button pressure) until the game actually finishes.
 	teamPlaysOn := gmode == config.ModeTeams && view.status == string(config.GameStatusInProgress) && !won
 	title := "GAME OVER"
 	if teamPlaysOn {
 		title = "YOU'RE OUT"
+	} else if eng.GoalReached() {
+		title = "GOAL REACHED"
 	}
 	return hardShadow(gtx, func(gtx C) D {
 		return widget.Border{Color: colAccent, Width: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
@@ -1667,7 +1772,7 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam in
 						if won {
 							msg, c = "YOUR TEAM WON!", colAccent
 						}
-					case gmode == config.ModeCompetitive:
+					case gmode == config.ModeCompetitive, individual:
 						msg, c = "YOU LOST", colErr
 						if won {
 							msg, c = "YOU WON!", colAccent
@@ -1679,13 +1784,18 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam in
 					// Final score: the shared total for cooperative, the player's own
 					// score for competitive, both team totals (own team first) for
 					// teams — while the team plays on these are the live totals.
-					var scoreLine string
-					switch gmode {
-					case config.ModeCooperative:
-						scoreLine = fmt.Sprintf("Score: %d (level %d)", view.score, view.level)
-					case config.ModeCompetitive:
+					var scoreLine, ranking string
+					switch {
+					case gmode == config.ModeCooperative && individual:
+						// A board scored per seat: our own score, then everyone
+						// ranked — the game's verdict is the ranking.
 						scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
-					case config.ModeTeams:
+						ranking = rankingLine(view.players, eng.PlayerScores(), eng.PlayerID(), view.score)
+					case gmode == config.ModeCooperative:
+						scoreLine = fmt.Sprintf("Score: %d (level %d)", view.score, view.level)
+					case gmode == config.ModeCompetitive:
+						scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
+					case gmode == config.ModeTeams:
 						// Our team first, then the rest in index order — with
 						// six teams the line is long, so the one that matters
 						// leads it.
@@ -1697,6 +1807,13 @@ func (a *App) gameOverBox(gtx C, gmode config.GameMode, view gameView, myTeam in
 						children = append(children, layout.Rigid(spacer(8)), layout.Rigid(func(gtx C) D {
 							l := material.Body1(a.th, scoreLine)
 							l.Color = colGold
+							return l.Layout(gtx)
+						}))
+					}
+					if ranking != "" {
+						children = append(children, layout.Rigid(spacer(4)), layout.Rigid(func(gtx C) D {
+							l := material.Body2(a.th, ranking)
+							l.Color = colMuted
 							return l.Layout(gtx)
 						}))
 					}

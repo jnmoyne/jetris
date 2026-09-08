@@ -180,7 +180,8 @@ type tutSaved struct {
 	hud, pad, chat, opp                bool
 	showMsgs                           bool
 	lobbyMenuPos, hudPos               layout.Position
-	mode, rules, join, count           string
+	boards, kind, length, goal         string // the wizard's game type, scoring kind, game length and line goal
+	rules, join, count                 string
 }
 
 // tutorialUp reports whether the tour is showing.
@@ -219,7 +220,8 @@ func (a *App) startTutorial() {
 		hud: a.hudShown, pad: a.padShown, chat: a.chatShown, opp: a.oppShown,
 		showMsgs:     a.showMsgs.Value,
 		lobbyMenuPos: a.lobbyMenuList.Position, hudPos: a.hudList.Position,
-		mode: a.modeEnum.Value, rules: a.rulesEnum.Value, join: a.createJoinEnum.Value, count: a.countEd.Text(),
+		boards: a.boardsEnum.Value, kind: a.singleKindEnum.Value, length: a.lengthEnum.Value, goal: a.lineGoalEd.Text(),
+		rules: a.rulesEnum.Value, join: a.createJoinEnum.Value, count: a.countEd.Text(),
 	}
 	t.scene = tutSceneLobby
 	t.step = 1
@@ -240,9 +242,13 @@ func (a *App) endTutorial() {
 	a.hudShown, a.padShown, a.chatShown, a.oppShown = s.hud, s.pad, s.chat, s.opp
 	a.showMsgs.Value = s.showMsgs
 	a.lobbyMenuList.Position, a.hudList.Position = s.lobbyMenuPos, s.hudPos
-	a.modeEnum.Value, a.rulesEnum.Value, a.createJoinEnum.Value = s.mode, s.rules, s.join
+	a.boardsEnum.Value, a.singleKindEnum.Value, a.lengthEnum.Value = s.boards, s.kind, s.length
+	a.rulesEnum.Value, a.createJoinEnum.Value = s.rules, s.join
 	if a.countEd.Text() != s.count {
 		a.countEd.SetText(s.count)
+	}
+	if a.lineGoalEd.Text() != s.goal {
+		a.lineGoalEd.SetText(s.goal)
 	}
 	t.step = 0
 	t.eng, t.engReady, t.preStart = nil, nil, false
@@ -286,7 +292,7 @@ func (a *App) tutorialSetScene(s tutScene) {
 	t.scene = s
 	switch s {
 	case tutSceneWizard:
-		a.createWizStep = wizStepMode
+		a.createWizStep = wizStepType
 	case tutScenePicker:
 		a.inviteSelfSel.Value = true
 	case tutSceneGame:
@@ -1026,10 +1032,11 @@ func tutorialSteps() []tutStep {
 		return func(a *App) {
 			lobbyOn(lobbyTabGames)(a)
 			a.createWizStep = step
-			a.modeEnum.Value = "cooperative"
+			a.boardsEnum.Value, a.singleKindEnum.Value = "single", "coop"
 			if a.countEd.Text() != "1" {
 				a.countEd.SetText("1")
 			}
+			a.lengthEnum.Value = "topout"
 			a.rulesEnum.Value = "guideline"
 			a.createJoinEnum.Value = "invite"
 		}
@@ -1108,14 +1115,14 @@ func tutorialSteps() []tutStep {
 		lobbyStep("CREATE A NEW GAME",
 			"This button opens the wizard that sets a game up, one choice at a time. Let's create one: a co-op game for a crew of one, on Guideline rules, by invitation.",
 			tutCreateBtn),
-		{scene: tutSceneWizard, title: "GAME TYPE AND PLAYERS", targets: []string{tutWizard}, prep: wizard(wizStepMode),
-			body: "Co-op: everyone plays one shared board for one shared score. Competitive: a board each, the last player standing wins, and every line you clear sends garbage to the others. Teams: team against team, each team on a shared board of its own. " +
-				"Players is the seat count — per team, in a teams game. One seat in co-op is a solo run for the high score, which is the game this tour creates; with more seats a slider sets how much wider the shared board grows per player."},
-		{scene: tutSceneWizard, title: "GAME RULES", targets: []string{tutWizard}, prep: wizard(wizStepNext),
-			body: "Guideline sets every rule to its Guideline setting: six pieces shown in the NEXT well, the ghost that marks where a hard drop lands, and the hold queue. " +
-				"Custom lets you set each one yourself — the bag the pieces are dealt from too: the 7-bag, a double bag of fourteen, or no bag at all — whether the hidden rows above the playfield show through smoked glass, and, in the modes that raise garbage, how many holes a garbage row has, whether the rows of one attack line them up, and whether attacks follow the Guideline table: a single sends nothing, a double one row, a triple two, a Jetris four."},
-		{scene: tutSceneWizard, title: "WHO CAN JOIN", targets: []string{tutWizard}, prep: wizard(wizStepJoin),
-			body: "Invite only: you choose the players, and only they can take a seat. Open: anyone in the lobby can join, and one more step decides whether agents may too, and how many. Choose players… creates the game and opens the invitation picker."},
+		{scene: tutSceneWizard, title: "GAME TYPE", targets: []string{tutWizard}, prep: wizard(wizStepType),
+			body: "A single playfield: everyone plays one shared board — co-op, all scoring together, or competitive, each player scored on their own with the top score winning. Multiple playfields: a team on each, every team scoring together, every line a team clears sending garbage to the others, the last playfield standing winning; one player per playfield is a board each. " +
+				"Players is the seat count — per playfield, when there are several. One seat on a single playfield is a solo run for the high score, which is the game this tour creates."},
+		{scene: tutSceneWizard, title: "GAME RULES", targets: []string{tutWizard}, prep: wizard(wizStepRules),
+			body: "The game length: until someone tops out, or until a playfield has cleared a number of lines — forty, the classic sprint, unless you say otherwise. Then the rules. Guideline sets every one to its Guideline setting: six pieces shown in the NEXT well, the ghost that marks where a hard drop lands, the hold queue, and the pieces dealt out between the players of a playfield. " +
+				"Custom lets you set each one yourself — how much wider and taller a shared board grows per player, the bag the pieces are dealt from: the 7-bag, a double bag of fourteen, or no bag at all — whether the hidden rows above the playfield show through smoked glass, and, with several playfields, how many holes a garbage row has, whether the rows of one attack line them up, and whether attacks follow the Guideline table: a single sends nothing, a double one row, a triple two, a Jetris four."},
+		{scene: tutSceneWizard, title: "PLAYERS", targets: []string{tutWizard}, prep: wizard(wizStepPlayers),
+			body: "Invite only: you choose the players, and only they can take a seat; the game starts once every seat is filled and ready. Open: anyone in the lobby can take a free seat, and players can enter and leave at any time, while the game runs too — it starts as soon as every playfield has a ready player; whether agents may join, and how many, is decided right here. Choose players… creates the game and opens the invitation picker."},
 		{scene: tutScenePicker, title: "INVITE PLAYERS", targets: []string{tutPickerSelf}, prep: picker,
 			body: "The picker lists everyone in the lobby. The first row is you: Play takes a seat for yourself — ticked here, since you are playing this one; unticked, you host the game and spectate it. With one seat and you in it, the game is full."},
 		{scene: tutScenePicker, title: "INVITING THE OTHERS", targets: []string{tutPickerOthers}, prep: picker,

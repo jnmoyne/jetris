@@ -621,10 +621,10 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 	})
 
 	t.Run("create-wizard", func(t *testing.T) {
-		// Every wizard step lays out, including the branches: teams mode's
-		// per-team seat label (step 1), the agents step with the max-agents
-		// editor shown (Allow agents checked), and step 3 with invite-only
-		// selected (which relabels Next and drops the step count to 3).
+		// Every wizard step lays out, including the branches: several
+		// playfields with their per-playfield seat label (step 1), step 3
+		// open with the agent policy shown (Allow agents checked), and step
+		// 3 invite-only (which relabels Next).
 		render := func(w func(C) D) {
 			var ops op.Ops
 			gtx := layout.Context{
@@ -635,33 +635,41 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 			w(gtx)
 		}
 		a := newTestApp()
-		a.modeEnum.Value = "teams"
-		for step := wizStepMode; step <= wizStepAgents; step++ {
+		a.boardsEnum.Value = "multiple"
+		a.countEd.SetText("2")
+		a.createJoinEnum.Value = "open"
+		for step := wizStepType; step <= wizStepPlayers; step++ {
 			a.createWizStep = step
 			render(a.createWizardOverlay)
 		}
 		a.allowAgentsCb.Value = true
-		a.createWizStep = wizStepAgents
+		a.createWizStep = wizStepPlayers
 		render(a.createWizardOverlay)
 		a.createJoinEnum.Value = "invite"
-		a.createWizStep = wizStepJoin
 		render(a.createWizardOverlay)
 		// Step 2 is the Guideline preset's read-only list or the custom
-		// editors; both carry the garbage rules for the modes that raise
-		// garbage (competitive, teams) and hide them for cooperative.
-		a.createWizStep = wizStepNext
+		// editors; both carry the garbage rules where several playfields
+		// raise garbage at each other and hide them on a single one, and
+		// the board's growth and the deal where a playfield has company.
+		a.createWizStep = wizStepRules
 		for _, rules := range []string{"guideline", "custom"} {
 			a.rulesEnum.Value = rules
-			for _, mode := range []string{"competitive", "cooperative"} {
-				a.modeEnum.Value = mode
-				render(a.createWizardOverlay)
+			for _, length := range []string{"topout", "lines"} {
+				a.lengthEnum.Value = length
+				for _, boards := range []string{"multiple", "single"} {
+					a.boardsEnum.Value = boards
+					for _, kind := range []string{"coop", "competitive"} {
+						a.singleKindEnum.Value = kind
+						render(a.createWizardOverlay)
+					}
+				}
 			}
 		}
 
 		// The wizard also renders as the lobby's modal overlay.
 		a.lobby = lobby.New(nil, nil, "tester", "tester")
 		a.screen = screenLobby
-		a.createWizStep = wizStepMode
+		a.createWizStep = wizStepType
 		renderOnce(t, a)
 	})
 

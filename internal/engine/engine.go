@@ -104,6 +104,40 @@ type Engine struct {
 	// written before the setting existed — reads as a full section per seat
 	// (config.ExtraColumnsPerPlayer), the board Jetris always had.
 	extraCols int
+	// extraRows is the shared board's height setting (GameMeta.ExtraRows at
+	// Start): the rows every seat beyond the first adds below the standard
+	// twenty visible ones. The headroom — and so the spawn rows and the
+	// top-out rule — stays the top config.HeadroomRows rows of every board.
+	// Zero (the default, and every meta written before the setting) adds
+	// nothing.
+	extraRows int
+	// teamNames is what the game's teams are called (GameMeta.TeamNames at
+	// Start; nil = the letters), for every screen that names a team.
+	teamNames []string
+	// individual is the single shared playfield's scoring rule
+	// (GameMeta.IndividualScoring at Start): every seat scored on its own —
+	// the shown score is ours alone, the top score wins at the end.
+	individual bool
+	// lineGoal is the game's length in lines (GameMeta.LineGoal at Start):
+	// the game ends the moment a playfield has cleared this many lines
+	// (goal.go); 0 is until top out.
+	lineGoal    int
+	goalReached bool // the game ended by reaching the goal (goal.go); guarded by e.mu
+	// The decided outcome (outcome.go): the winners' IDs, the winning team
+	// (-1 otherwise), and whether it has been decided. Guarded by e.mu.
+	winners        map[string]bool
+	winTeam        int
+	outcomeDecided bool
+	// roster is who is seated, as the lobby last pushed it (SetRoster); nil
+	// until then. Guarded by e.mu.
+	roster []Seat
+	// peerPieces is every other seat's falling piece on the own shared
+	// board as last seen, with its idle clock (roster.go); idleVacateAfter
+	// is the threshold a peer's piece may stand still before this engine
+	// vacates it (config.IdlePieceVacateAfter; tests shorten it). Guarded
+	// by e.mu.
+	peerPieces      map[int]peerPiece
+	idleVacateAfter time.Duration
 
 	// gameStarted flips true when this engine learns the game is in_progress
 	// (at Start, or from the meta consumer). The piece-less watchdog is gated
@@ -153,16 +187,28 @@ type Engine struct {
 	opponentPlayfields map[string]*game.Playfield // keyed by playerID (competitive)
 	opponentPlayerID   string                     // single opponent (for 2-player join)
 
-	seq      *rng.Sequence
+	// seq is this seat's piece sequence (rng.Sequence), read wherever a piece
+	// is drawn or previewed — the input loop, the hold, the UI's NEXT well —
+	// and swapped whole by a re-deal (redealLocked), so it is an atomic
+	// pointer: seqNow reads it.
+	seq      atomic.Pointer[rng.Sequence]
 	pieceIdx atomic.Uint64
 	metaSeq  uint64
 
-	// The teams-mode piece split (GameMeta.SplitPieces, read at Start):
-	// pieceSets is the deal — one ration of piece types per team slot, the
-	// same on both teams — and e.seq draws only from this seat's. Nil in
-	// every other game, where every seat runs the full 7-bag. Written once in
-	// Start, read-only after, so the UI may read it unlocked.
-	pieceSets [][]game.PieceType
+	// The piece split (GameMeta.SplitsPieces, read at Start): the seven
+	// types dealt out between the seats sharing this engine's playfield.
+	// pieceSets is the deal — one ration per slot of the playfield (a coop
+	// seat, a team slot; the same on every team), nil for a slot nobody
+	// holds — and e.seq draws only from this seat's. Nil in every game that
+	// does not split, where every seat runs the full 7-bag. The deal follows
+	// the seed and the slots PRESENT: an open game re-deals whenever the
+	// roster changes (SetRoster → redealLocked), among the seats there are.
+	// Guarded by e.mu.
+	pieceSets     [][]game.PieceType
+	splitPieces   bool   // the game deals its pieces out (GameMeta.SplitsPieces)
+	seed          uint64 // the game's seed, for the deal and the sequences
+	seatsPerBoard int    // slots on this engine's playfield (GameMeta.SeatsPerPlayfield)
+	presentSlots  []int  // the slots the last deal was made among (sorted); nil = every slot
 
 	score         atomic.Int64
 	totalLines    atomic.Int64
@@ -216,7 +262,7 @@ type Engine struct {
 	// full-history replay (mid-game spectator) or a missed intermediate event
 	// converges to the same totals. Touched only by the events-consumer
 	// goroutine — no lock needed.
-	eventTotals map[string]struct{ score, lines int } // guarded by e.mu
+	eventTotals map[string]struct{ score, lines, team int } // guarded by e.mu
 
 	Updates        chan EngineUpdate
 	OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -343,7 +389,10 @@ func New(
 		eliminatedTeam:     make(map[string]int),
 		opponentGarbage:    make(map[string]opponentLedger),
 		garbageRaiseHoles:  game.RaiseHoles,
-		eventTotals:        make(map[string]struct{ score, lines int }),
+		eventTotals:        make(map[string]struct{ score, lines, team int }),
+		winTeam:            -1,
+		peerPieces:         make(map[int]peerPiece),
+		idleVacateAfter:    config.IdlePieceVacateAfter,
 		rttPending:         make(map[uint64]time.Time),
 		lockDelay:          config.LockDelay,
 		inflightCells:      make(map[game.CellPos]int),
@@ -376,6 +425,10 @@ func (e *Engine) Start() error {
 	e.teamCount = meta.Teams()
 	e.teamSize = meta.TeamSize
 	e.extraCols = meta.ExtraColumns
+	e.extraRows = meta.ExtraRows
+	e.teamNames = append([]string(nil), meta.TeamNames...)
+	e.individual = meta.IndividualScoring()
+	e.lineGoal = config.NormalizeLineGoal(meta.LineGoal)
 	e.nextCount = meta.NextCount
 	e.noGhost = meta.NoGhost
 	e.showHeadroom = meta.ShowHeadroom
@@ -391,42 +444,31 @@ func (e *Engine) Start() error {
 	// playerIdx was supplied by the caller (lobby.JoinGame return value)
 	// at engine construction time; no discovery needed here.
 
+	e.seed = meta.Seed
 	switch e.gameMode {
-	case config.ModeCooperative:
-		// Cooperative mode: shared wide playfield, shared RNG seed
-		e.seq = rng.NewBag(meta.Seed, nil, e.bag)
+	case config.ModeCooperative, config.ModeTeams:
+		// A shared board — the crew's, or one team's — with coop-style RNG:
+		// every player gets the full deterministic 7-bag from the shared
+		// seed with an independent pieceIdx, so every seat (and both teams)
+		// sees the identical, fair piece sequence — unless the game splits
+		// the pieces, when the seven types are dealt out between the seats
+		// of the playfield (rng.PieceSets, off the same seed, so both teams'
+		// slot N hold the same ration) and this seat draws only from its
+		// own. A spectator has no seat of its own; it keeps the deal for the
+		// HUD and reads slot 0's sequence, which it never spawns from. Either
+		// way the game's bag rule says how the set is dealt.
+		e.seatsPerBoard = meta.SeatsPerPlayfield()
+		e.splitPieces = meta.SplitsPieces()
+		e.redealLocked(nil)
 		e.pieceIdx.Store(0)
-		// Shared wide playfield with the standard height
-		e.playfield = game.NewPlayfieldWithHeight(
-			config.SharedBoardWidth(meta.PlayerCount, meta.ExtraColumns),
-			config.TotalRows,
-		)
-	case config.ModeTeams:
-		// Teams: shared per-team board, coop-style RNG (every player gets the
-		// full deterministic 7-bag from the shared seed with an independent
-		// pieceIdx, so both teams see the identical, fair piece sequence) —
-		// unless the game splits the pieces, when the seven types are dealt
-		// out between the teammates (rng.PieceSets, off the same seed, so
-		// both teams' slot N hold the same ration) and this seat draws only
-		// from its own. A spectator has no seat of its own; it keeps the deal
-		// for the HUD and reads slot 0's sequence, which it never spawns from.
-		// Either way the game's bag rule says how the set is dealt.
-		if meta.SplitsPieces() {
-			e.pieceSets = rng.PieceSets(meta.Seed, meta.TeamSize)
-			e.seq = rng.NewBag(meta.Seed, e.PieceSet(), e.bag)
-		} else {
-			e.seq = rng.NewBag(meta.Seed, nil, e.bag)
-		}
-		e.pieceIdx.Store(0)
-		e.playfield = game.NewPlayfieldWithHeight(
-			config.TeamBoardWidth(meta.TeamSize, meta.ExtraColumns),
-			config.TotalRows,
-		)
+		// Shared playfield, grown per seat by the meta's settings
+		e.playfield = game.NewPlayfieldWithHeight(meta.BoardWidth(), meta.BoardHeight())
 	default:
-		e.seq = rng.NewBag(meta.Seed, nil, e.bag)
+		e.seatsPerBoard = 1
+		e.redealLocked(nil)
 		e.pieceIdx.Store(meta.PieceIdx)
 		// Competitive: a private standard board
-		e.playfield = game.NewPlayfieldWithHeight(config.StandardWidth, config.TotalRows)
+		e.playfield = game.NewPlayfieldWithHeight(config.StandardWidth, config.StandardHeight)
 	}
 	e.metaSeq = metaSeq
 	// The echo-only replica mirrors the own board's dimensions; the snapshot
@@ -474,6 +516,10 @@ func (e *Engine) Start() error {
 			if e.ackedField != e.playfield {
 				e.ackedField.Apply(c.Row, c.Col, data, c.Seq)
 			}
+			// A peer's piece found on the board starts its idle clock now:
+			// one left behind by a player who is gone is vacated a
+			// threshold from here (roster.go).
+			e.notePeerCellLocked(data, time.Now())
 		}
 
 		// Check if there's already an active piece for this player
@@ -652,7 +698,7 @@ func (e *Engine) startTeamBoardConsumer(ctx context.Context, team int) {
 		e.mu.Unlock()
 		return
 	}
-	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TotalRows)
+	pf := game.NewPlayfieldWithHeight(config.TeamBoardWidth(e.teamSize, e.extraCols), config.TeamBoardHeight(e.teamSize, e.extraRows))
 	e.opponentPlayfields[key] = pf
 	e.mu.Unlock()
 
@@ -701,7 +747,7 @@ func (e *Engine) startOpponentConsumer(ctx context.Context, oppID string) {
 		e.mu.Unlock()
 		return // already tracking this opponent
 	}
-	pf := game.NewPlayfieldWithHeight(config.StandardWidth, config.TotalRows)
+	pf := game.NewPlayfieldWithHeight(config.StandardWidth, config.StandardHeight)
 	e.opponentPlayfields[oppID] = pf
 	e.mu.Unlock()
 
@@ -1133,7 +1179,7 @@ func (e *Engine) GameOutcome() (won, over bool) {
 // lock; Start spawns with the lock released) so the publish write-through can
 // avoid re-locking.
 func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
-	p := e.spawnPosition(e.seq.Piece(e.pieceIdx.Load()))
+	p := e.spawnPosition(e.seqNow().Piece(e.pieceIdx.Load()))
 
 	if !locked {
 		e.mu.Lock()
@@ -1278,7 +1324,7 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 		return nil
 	}
 	e.mu.Lock()
-	if !e.hold || e.holdUsed || e.seq == nil {
+	if !e.hold || e.holdUsed || e.seqNow() == nil {
 		e.mu.Unlock()
 		return nil
 	}
@@ -1290,7 +1336,7 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 	fromQueue := !e.hasHeld
 	incoming := e.heldPiece
 	if fromQueue {
-		incoming = e.seq.Piece(e.pieceIdx.Load() + 1)
+		incoming = e.seqNow().Piece(e.pieceIdx.Load() + 1)
 	}
 	np := e.spawnPosition(incoming)
 	var canPlace bool
@@ -1387,9 +1433,16 @@ func (e *Engine) TeamCount() int {
 	return config.NormalizeTeamCount(e.teamCount)
 }
 
-func (e *Engine) ExtraColumns() int    { return e.extraCols }
-func (e *Engine) VisibleRowStart() int { return e.visibleRowStart }
-func (e *Engine) PlayfieldHeight() int { return e.playfield.Height }
+func (e *Engine) ExtraColumns() int { return e.extraCols }
+func (e *Engine) ExtraRows() int    { return e.extraRows }
+func (e *Engine) LineGoal() int     { return e.lineGoal }
+
+// TeamNames is what the game's teams are called, by index (nil = the
+// letters); TeamName one of them (config.TeamName).
+func (e *Engine) TeamNames() []string   { return e.teamNames }
+func (e *Engine) TeamName(t int) string { return config.TeamName(e.teamNames, t) }
+func (e *Engine) VisibleRowStart() int  { return e.visibleRowStart }
+func (e *Engine) PlayfieldHeight() int  { return e.playfield.Height }
 func (e *Engine) IsEliminated(id string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1414,23 +1467,45 @@ func (e *Engine) PlayerScores() map[string]int {
 func (e *Engine) PieceIdx() uint64 { return e.pieceIdx.Load() }
 
 // SplitPieces reports whether this game deals its piece types out between
-// teammates (GameMeta.SplitPieces): each seat draws only from its own ration,
-// the seven types between them (rng.PieceSets).
-func (e *Engine) SplitPieces() bool { return e.pieceSets != nil }
+// the seats of a playfield (GameMeta.SplitsPieces): each seat draws only from
+// its own ration, the seven types between them (rng.PieceSets).
+func (e *Engine) SplitPieces() bool { return e.splitPieces }
 
-// PieceSetForSlot returns the ration the given team slot holds — the piece
-// types that seat's sequence draws from, in piece order. Nil in a game that
-// does not split the pieces (every seat draws the whole bag there), so the
-// HUD can ask for any seat's ration and show what comes back.
+// PieceSetForSlot returns the ration the given slot of this engine's
+// playfield holds — a coop seat's, a team slot's: the piece types that
+// seat's sequence draws from, in piece order. Nil in a game that does not
+// split the pieces (every seat draws the whole bag there), and for a slot
+// nobody holds in the current deal, so the HUD can ask for any seat's ration
+// and show what comes back.
 func (e *Engine) PieceSetForSlot(slot int) []game.PieceType {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pieceSetForSlotLocked(slot)
+}
+
+func (e *Engine) pieceSetForSlotLocked(slot int) []game.PieceType {
 	if slot < 0 || slot >= len(e.pieceSets) {
 		return nil
 	}
 	return e.pieceSets[slot]
 }
 
-// PieceSet returns this seat's own ration (PieceSetForSlot at e.teamSlot).
-func (e *Engine) PieceSet() []game.PieceType { return e.PieceSetForSlot(e.teamSlot) }
+// PieceSet returns this seat's own ration (PieceSetForSlot at the seat's slot
+// of its playfield: the seat itself on the crew's board, the team slot on a
+// team's).
+func (e *Engine) PieceSet() []game.PieceType { return e.PieceSetForSlot(e.seatSlot()) }
+
+// seatSlot is this seat's slot on its playfield: the seat index on the
+// crew's shared board, the slot within the team on a team's.
+func (e *Engine) seatSlot() int {
+	if e.gameMode == config.ModeTeams {
+		return e.teamSlot
+	}
+	return e.playerIdx
+}
+
+// seqNow is this seat's current piece sequence.
+func (e *Engine) seqNow() *rng.Sequence { return e.seq.Load() }
 
 // NextCount reports how many upcoming pieces this game reveals
 // (GameMeta.NextCount, fixed at game creation; 0 = no preview).
@@ -1494,13 +1569,14 @@ func (e *Engine) Bag() config.Bag { return e.bag }
 // slice is empty when the game was created with no preview. The sequence is
 // seekable (rng.Sequence.Piece), so this is a pure read with no queue state.
 func (e *Engine) NextPieces() []game.PieceType {
-	if e.nextCount <= 0 || e.seq == nil {
+	seq := e.seqNow()
+	if e.nextCount <= 0 || seq == nil {
 		return nil
 	}
 	idx := e.pieceIdx.Load()
 	out := make([]game.PieceType, e.nextCount)
 	for i := range out {
-		out[i] = e.seq.Piece(idx + 1 + uint64(i))
+		out[i] = seq.Piece(idx + 1 + uint64(i))
 	}
 	return out
 }
@@ -1525,7 +1601,15 @@ func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
 
 	data, _ := json.Marshal(ev)
 	_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
-	e.transitionToSpectator(false) // we topped out → we lost
+	if e.individual {
+		// A shared board scored per seat: our top-out ends the game, but
+		// the verdict — who scored most — is decided from the ordered event
+		// stream when our own game_over echoes back (handleGameEvent), the
+		// same way every other engine decides it. Until then, play stops.
+		e.setMode(ModeGameOver)
+	} else {
+		e.transitionToSpectator(false) // we topped out → we lost
+	}
 
 	// Transition game meta to finished:
 	// - Cooperative: any top-out finishes the game
@@ -1557,19 +1641,13 @@ func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
 		e.mu.Unlock()
 	}
 
-	// Vacate our piece so teammates don't play around a dead piece. A gated
-	// transform: racing bulk transforms (a garbage application projecting our
-	// piece from a stale snapshot would resurrect it) are serialized by the
-	// board's txn gate, and the loser recomputes from converged state.
+	// Vacate our piece so teammates don't play around a dead piece: the
+	// gated transform of roster.go's vacatePiece — racing bulk transforms
+	// (a garbage application projecting our piece from a stale snapshot
+	// would resurrect it) are serialized by the board's txn gate, and the
+	// loser recomputes from converged state.
 	if hadPiece {
-		e.publishGatedTransform(ctx, txnOpVacate, locked, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
-			if pf.ActivePieceForPlayer(e.playerIdx) == nil {
-				return nil, TxnRegister{}, false // already gone (a shrink topped us, or a prior attempt landed)
-			}
-			clone := pf.Clone()
-			clone.ClearActiveCellsForPlayer(e.playerIdx)
-			return clone.Rows, TxnRegister{Applied: txn.Applied}, true
-		})
+		e.vacatePiece(ctx, e.playerIdx, locked)
 	}
 
 	ev := GameEvent{

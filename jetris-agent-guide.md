@@ -281,11 +281,11 @@ and the real-time push fabric.
 
 | Subject | Payload | Notes |
 |---------|---------|-------|
-| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` (the hard-drop ghost preview) and `show_headroom` (the four hidden rows above the playfield drawn behind smoked glass) are UI-only rules agents can ignore; `split_pieces` (bool, absent = false) is the TEAMS-mode piece split — the seven types are dealt out between a team's seats and your seat plays only its own ration, see below; `bag` (`"double"` / `"none"`, absent = the 7-bag) is how every seat's piece sequence is dealt — the double bag, or no bag at all (§1.3); `team_count` (2-6, absent = 2) is how many teams a TEAMS game is played between and `team_size` how many seats each of them holds, so `player_count = team_count × team_size`, team indices run `0..team_count-1`, a team board has the standard 20 visible rows like every other board, and the game is over once at most one team still has a member standing (§5 of the gameplays) |
-| `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery) |
+| `jetris.game.<id>.meta` | `GameMeta` JSON | lifecycle state machine; CAS on last subject sequence; `extra_columns` (4-10, absent = 10) is the SHARED board's width setting — a cooperative or team board is `10 + (seats − 1) × extra_columns` wide (`seats` = `player_count` in cooperative, `team_size` in teams) and the seats' spawn points are one `extra_columns` step apart, so seat N spawns at column `N × extra_columns + 3` (§2/§3/§5 of the gameplays); absent — every game created before the setting — means the historical full 10-column section per seat, and competitive ignores it entirely; `next_count` (0-6) is the piece-preview size — your lookahead allowance; `garbage_holes` (0-4, absent = 0) is how many empty cells every garbage row you raise is punched with, and `random_garbage_holes` (bool, absent = false) whether each row draws its own columns (§4.4); `guideline_garbage` (bool, absent = false) makes your clears attack by the Guideline table — 0/1/2/4 rows for 1/2/3/4 lines — instead of one row per line (§4.4); `hold` (bool, absent = false) switches on the Guideline hold queue for every seat — a player may swap the falling piece for a held one, once per piece: on the wire that is an ordinary CAS cell batch (the outgoing piece's cells vacated, the incoming type placed at the seat's spawn point, active cells first), so you need do nothing to *see* a hold, and to *use* one you publish that same batch yourself, keeping your own slot and advancing your `pieceIdx` only when the slot was empty (the reference agent never holds); `no_ghost` (the hard-drop ghost preview) and `show_headroom` (the four hidden rows above the playfield drawn behind smoked glass) are UI-only rules agents can ignore; `split_pieces` (bool, absent = false) is the piece split of every SHARED playfield — cooperative and teams alike: the seven types are dealt out between the seats of a playfield (`player_count` of them on the crew's board, `team_size` on a team's) and your seat plays only its own ration, see below — and in an OPEN game (the listing's `invite_only` false) the deal follows the seats PRESENT: re-deal among the seats the listing holds on your playfield, ranked in slot order, whenever the roster changes (§1.2); `bag` (`"double"` / `"none"`, absent = the 7-bag) is how every seat's piece sequence is dealt — the double bag, or no bag at all (§1.3); `team_count` (2-6, absent = 2) is how many teams a TEAMS game is played between and `team_size` how many seats each of them holds, so `player_count = team_count × team_size`, team indices run `0..team_count-1`, `team_names` (an array by team index, absent = the letters A, B, C…) is what the teams are called — the piece colours Cyan, Yellow, Purple, Green, Red, Blue unless the creator renamed them; screens show the name, the wire still carries the index — and the game is over once at most one team still has a member standing (§5 of the gameplays); `extra_rows` (0-10, absent = 0) is the SHARED board's height setting — a cooperative or team board is `24 + (seats − 1) × extra_rows` rows tall, headroom included (the headroom stays rows 0-3: the board grows downwards, so the spawn rows and the top-out rule never move), competitive ignores it and every board of a game without the field is the standard 24; `line_goal` (absent = 0 = until top out) is the game's length in lines — the game ends the moment a PLAYFIELD has cleared that many lines in total, decided by every engine at the same point: when the `line_clear` that crosses it is consumed from the ordered `events.>` stream (count every sender's `total_lines` on the crew's board, the team's senders' on a team board, the sender's own on a competitive board — your own echo included), the crew winning together, a board scored per seat by its top scorer(s), a team by its members, a competitive board by its player; every player then CASes the meta to `finished` (idempotent), so the finish never waits on the winner; `scoring` (`"individual"`, absent = shared) makes the crew's ONE board a competitive one: every seat's `total_score` stands alone (fold the crew's lines for the shared level, never their points), and when the board tops out (or reaches the goal) the top published score wins — a tie crowns everyone tied |
+| `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery); its `seat` is the STABLE seat the player holds — the index every cell they write carries (`pi`), their colour and their spawn section — assigned by the join as the lowest free one (in teams `team × team_size + team_slot`), never renumbered when someone leaves; a listing written before the field carries zeros, read by roster position |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
-| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's Guideline names (`t_spin` 0/1/2, `back_to_back`, `combo`, `perfect`; §4.6) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
+| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. `line_clear` is published in EVERY mode — competitive too, where nobody folds your points but the line goal and the archive read your totals. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's Guideline names (`t_spin` 0/1/2, `back_to_back`, `combo`, `perfect`; §4.6) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
 | `jetris.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
 | `jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
 | `jetris.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
@@ -488,16 +488,46 @@ each lock of yours:
    `LimitMarkerTTL` enables it) so your entry self-deletes if you die without
    the clean exit; stale entries (3× heartbeat) are also pruned by others.
 2. **Join**: CAS-update the `games.<gameID>` listing (append your `PlayerSummary`
-   with `"agent": true`, honoring `max_agents` and, in teams, per-team capacity);
-   after the CAS commits, publish your roster entry.
-3. **Ready → countdown**: toggle your `ready` flag via CAS. **If your toggle is
-   the one that completes the ready set, YOU run the countdown**: publish
-   `{"seconds": 5..0}` at 1s intervals, pause ~700ms, then CAS the meta to
-   `in_progress`. Skip this and the game never starts.
+   with `"agent": true` and your `seat` — the LOWEST FREE seat, in teams the
+   lowest free slot of your team (`seat = team × team_size + team_slot`) —
+   honoring `max_agents` and, in teams, per-team capacity); after the CAS
+   commits, publish your roster entry. Your seat is your player index for
+   the whole game. An OPEN game (`invite_only` false) takes joiners while it
+   runs too — a free seat of an `in_progress` listing is yours to take, and
+   you play on the live board at once: fetch the board, spawn, no ready step
+   (the countdown, `starting`, is the one moment it takes nobody). An invite
+   game's roster is frozen once it starts.
+3. **Ready → countdown**: toggle your `ready` flag via CAS. The table is ready
+   when — invite game — every seat is filled and everyone is ready, or —
+   open game — everyone seated is ready and EVERY PLAYFIELD has a player
+   (the crew's one board, every team, every competitive board), whatever
+   seats stay free. **If your toggle is the one that completes it, YOU run
+   the countdown**: in an open game that is the one CAS write that moves the
+   listing from `created` to `starting` (write the status in the same
+   update; a toggle that finds it `starting` already is not elected), in an
+   invite game the toggle that completes the set. Publish `{"seconds": 5..0}`
+   at 1s intervals, pause ~700ms, then CAS the meta to `in_progress` — and
+   mirror `in_progress` onto the listing's `status` (CAS), which is where
+   everyone reads that the game is on. Skip this and the game never starts.
 4. **Play** by the mode rules (`jetris-gameplays.md` §3–§5). Never touch cells
-   that aren't yours to change.
+   that aren't yours to change — with one exception on a shared board: a
+   peer's falling piece that has stood still for 10 s (`IdlePieceVacateAfter`
+   — a live piece never does; gravity moves it and the lock delay's resets
+   cap well under), or whose seat the listing no longer holds, was left
+   behind by a player who crashed or walked out, and any PLAYING peer may
+   vacate it: on a team board the txn-gated `vacate` transform, on the
+   crew's board one atomic batch emptying its cells with CAS expectations at
+   their last-seen sequences (a piece that moved fails the CAS — look again
+   next tick; two vacates commit one). The GUI's engines do this; an agent
+   may, never a spectator. Watch the listing while you play: the roster it
+   holds is who is seated — a seat gone means that player's piece may go,
+   the deal may change (`split_pieces`), and a playfield nobody holds a seat
+   on any more is OUT of a multi-playfield game (the last one left wins; a
+   crew's board simply plays on).
 5. **Finish**: competitive's last player standing, any winning teams player, or
-   the cooperative topper CAS-transitions the meta to `finished` — and then
+   the cooperative topper CAS-transitions the meta to `finished` — a game a
+   line goal ended is finished by EVERY player alike, and a board scored per
+   seat by its topper — and then
    **archives**, in this order: transition `finished → archived` (CAS; one
    winner), publish the `ArchiveRecord` **immediately** (it is what every
    lobby's history shows — do not make it wait for anything below), archive
@@ -547,8 +577,12 @@ each lock of yours:
    own half-made copy and archive without a replay. `golang-mk1`'s
    `replay.go` is the reference implementation.
 7. **Walk away cleanly**: if a game you joined never starts, remove yourself from
-   the roster (CAS, pre-start only) and purge your roster announcement so you
-   don't linger as a ghost seat.
+   the roster (CAS) and purge your roster announcement so you don't linger as
+   a ghost seat. In an OPEN game you may leave at any time, the game running
+   too: FIRST vacate your own falling piece (the same vacate as step 4, retried
+   until it lands — it is yours, nothing else moves it), THEN CAS-remove your
+   seat; the seat is free for the next joiner the moment the listing lands. An
+   invite game's seat is kept for you to rejoin once the game has started.
 
 ## 6. Testing your agent
 
@@ -576,7 +610,13 @@ each lock of yours:
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried (pipelined/async batches allowed — a lost one drains, repairs, and re-plans; barriers settle the pipeline first, §4.3)
 - [ ] CAS-failure flashes broadcast on `jetris.flash.<id>.<name>` (core NATS)
 - [ ] Gravity, lock-in, clears, garbage, spawn rules implemented
-- [ ] In a teams game with the meta's `split_pieces`, pieces drawn from YOUR seat's ration — the deal computed off `seed` and `team_size` for your `team_slot` (§1.2)
+- [ ] On a shared playfield with the meta's `split_pieces`, pieces drawn from YOUR seat's ration — the deal computed off `seed` and the seats of your playfield for your slot, and in an open game re-dealt among the seats PRESENT whenever the roster changes (§1.2)
+- [ ] Your `seat` taken as the lowest free one at the join, kept as your player index, never renumbered
+- [ ] An open game joined while `in_progress` when a seat is free — no ready toggle then; the start rule (`readyToStart`) and the `created → starting` election honored when readying up
+- [ ] Board height read from `extra_rows` on a shared board (`24 + (seats − 1) × extra_rows`)
+- [ ] `line_clear` published in competitive too; the `line_goal` counted per playfield off the ordered stream, the finish CASed by every player when it is reached
+- [ ] `scoring: "individual"` honored: the crew's points never folded into yours, the top published score the winner
+- [ ] Your own piece vacated before your seat is freed on the way out of a running open game; a peer's piece idle 10 s (or seatless) vacated by you only while you play
 - [ ] Pieces dealt by the meta's `bag` — the 7-bag when absent, the double bag under `"double"`, independent draws under `"none"`, a ration shaped the same way (§1.3)
 - [ ] Garbage rows raised with the meta's `garbage_holes` (one column set per raise, or one per row under `random_garbage_holes`), and a holed garbage row cleared like any line once its holes are filled — a solid garbage row never (§4.2, §4.4)
 - [ ] Attacks delivered by CAS-adding victims' garbage registers (never events), sized one row per line — or by the Guideline table (0/1/2/4 for plain clears, the T-spin rows, the Back-to-Back and perfect-clear bonuses) when the meta's `guideline_garbage` is true (§4.4)

@@ -50,7 +50,10 @@ func main() {
 	randomHoles := flag.Bool("random-holes", false, "every garbage row draws its own hole columns when creating a game (default: the rows of one attack share a draw)")
 	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Jetris 4 (default: one row per line)")
 	hold := flag.Bool("hold", false, "the Guideline hold queue when creating a game (the agent itself never holds; the humans in the game may)")
-	splitPieces := flag.Bool("split-pieces", false, "when creating a TEAMS game of two or more per team: deal the seven piece types out between the teammates, each seat playing only its own ration")
+	splitPieces := flag.Bool("split-pieces", false, "when creating a game whose playfields have two or more seats: deal the seven piece types out between the seats of a playfield, each playing only its own ration")
+	extraRows := flag.Int("extra-rows", 0, "shared-board height when creating a cooperative or teams game: rows every seat beyond the first adds below the standard 20 (0-10)")
+	lineGoal := flag.Int("line-goal", 0, "the game's length in lines when creating a game: the first playfield to clear this many wins (0 = until top out)")
+	individual := flag.Bool("individual", false, "when creating a cooperative game of two or more: score every seat on its own, the top score wins")
 	bag := flag.String("bag", "", "piece randomizer when creating a game: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
 	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 6, hold, the 7-bag, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
@@ -96,7 +99,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "--bag %q is not a bag kind: use double, none, or leave it unset for the 7-bag\n", *bag)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag}
+		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag,
+			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
 			host.next, host.holes, host.random, host.guideline, host.hold, host.bag = maxNextCount, 1, false, true, true, bagSingle

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func TestLobbyCreateGame(t *testing.T) {
 	lb, _ := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, false, config.GameRules{Ghost: true}, false)
+	gameID, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.GameRules{Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,16 +204,17 @@ func TestLobbyPresence(t *testing.T) {
 	}
 }
 
-// TestLobbyCreateGameSplitPieces: the teams-mode piece split reaches both
-// records — the meta every engine deals from and the listing the lobby row
-// tags — and only where it means something: a game with teammates to split
-// between. A team of one, or any other mode, records nothing, so no row can
-// advertise a split that will never happen.
+// TestLobbyCreateGameSplitPieces: the piece split reaches both records — the
+// meta every engine deals from and the listing the lobby row tags — and only
+// where it means something: a playfield with seatmates to split between. A
+// team of one, a solo co-op game, or a competitive game (a board each)
+// records nothing, so no row can advertise a split that will never happen;
+// a co-op crew of two splits like a team of two.
 func TestLobbyCreateGameSplitPieces(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	split, err := lb.CreateGame(ctx, config.ModeTeams, 4, 2, 2, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
+	split, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2, SplitPieces: true, Rules: config.GameRules{NextCount: 1, Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,30 +230,39 @@ func TestLobbyCreateGameSplitPieces(t *testing.T) {
 		t.Errorf("listing split_pieces = %v (splits: %v), want a split 2v2", g.SplitPieces, g.SplitsPieces())
 	}
 
-	// A team of one has nobody to split with, and a co-op game no teams.
-	solo, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
-	if err != nil {
-		t.Fatal(err)
+	// A team of one has nobody to split with; neither has a solo co-op
+	// player, nor a competitive player on a board of their own.
+	for name, spec := range map[string]config.GameSpec{
+		"team of one": {Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, SplitPieces: true, Rules: config.GameRules{NextCount: 1, Ghost: true}},
+		"solo co-op":  {Mode: config.ModeCooperative, PlayerCount: 1, SplitPieces: true, Rules: config.GameRules{NextCount: 1, Ghost: true}},
+		"competitive": {Mode: config.ModeCompetitive, PlayerCount: 3, SplitPieces: true, Rules: config.GameRules{NextCount: 1, Ghost: true}},
+	} {
+		id, err := lb.CreateGame(ctx, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta, _, err = natspkg.FetchGameMeta(ctx, js, id); err != nil {
+			t.Fatal(err)
+		}
+		if meta.SplitPieces || meta.SplitsPieces() {
+			t.Errorf("%s: recorded a piece split", name)
+		}
 	}
-	if meta, _, err = natspkg.FetchGameMeta(ctx, js, solo); err != nil {
-		t.Fatal(err)
-	}
-	if meta.SplitPieces {
-		t.Error("a team of one recorded a piece split")
-	}
-	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, true, config.GameRules{NextCount: 1, Ghost: true}, false)
+
+	// A co-op crew of two is a playfield with seatmates: the split stands.
+	coop, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, SplitPieces: true, Rules: config.GameRules{NextCount: 1, Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if meta, _, err = natspkg.FetchGameMeta(ctx, js, coop); err != nil {
 		t.Fatal(err)
 	}
-	if meta.SplitPieces {
-		t.Error("a cooperative game recorded a piece split")
+	if !meta.SplitPieces || !meta.SplitsPieces() {
+		t.Error("a two-seat cooperative game dropped its piece split")
 	}
 	time.Sleep(300 * time.Millisecond)
-	if g := lb.Games()[coop]; g.SplitPieces || g.SplitsPieces() {
-		t.Error("a cooperative listing advertises a piece split")
+	if g := lb.Games()[coop]; !g.SplitPieces || !g.SplitsPieces() {
+		t.Error("a two-seat cooperative listing does not advertise its piece split")
 	}
 }
 
@@ -263,7 +274,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 2}, false)
+	gameID, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +290,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Errorf("listing garbage_holes = %d, want 2", g.GarbageHoles)
 	}
 
-	over, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 9}, false)
+	over, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, Rules: config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 9}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +305,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Error("random holes should be off unless asked for")
 	}
 
-	random, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 3, RandomGarbageHoles: true}, false)
+	random, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: 3, RandomGarbageHoles: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +322,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 	}
 
 	// Random holes without holes is meaningless: stored off.
-	solidRandom, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, RandomGarbageHoles: true}, false)
+	solidRandom, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true, RandomGarbageHoles: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +334,7 @@ func TestLobbyCreateGameGarbageHoles(t *testing.T) {
 		t.Error("random holes at 0 holes should be stored off")
 	}
 
-	under, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: -1}, false)
+	under, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true, GarbageHoles: -1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +361,7 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true}, false)
+	plain, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +373,7 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 		t.Error("guideline garbage should be off unless asked for")
 	}
 
-	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, GuidelineGarbage: true}, false)
+	guideline, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, Rules: config.GameRules{NextCount: 1, Ghost: true, GuidelineGarbage: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +399,7 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
-	plain, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true}, false)
+	plain, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +414,7 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 		t.Error("next 1 / no hold is not the Guideline preset")
 	}
 
-	guideline, err := lb.CreateGame(ctx, config.ModeTeams, 2, 2, 1, 0, 0, false, config.GuidelineRules(), false)
+	guideline, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, Rules: config.GuidelineRules()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +437,7 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 		t.Errorf("the preset's listing %+v should read back as the Guideline preset", g.Rules())
 	}
 
-	coop, err := lb.CreateGame(ctx, config.ModeCooperative, 2, 0, 0, 0, 0, false, config.GuidelineRules(), false)
+	coop, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.GuidelineRules()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +470,7 @@ func TestLobbyCreateGameBag(t *testing.T) {
 	ctx := context.Background()
 
 	for _, bag := range []config.Bag{config.BagDouble, config.BagNone} {
-		id, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, Bag: bag}, false)
+		id, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{NextCount: 1, Ghost: true, Bag: bag}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -476,7 +487,7 @@ func TestLobbyCreateGameBag(t *testing.T) {
 		}
 	}
 
-	junk, err := lb.CreateGame(ctx, config.ModeCooperative, 1, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, Bag: "triple"}, false)
+	junk, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1, Rules: config.GameRules{NextCount: 1, Ghost: true, Bag: "triple"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +513,7 @@ func TestLobbyCreateGameShowHeadroom(t *testing.T) {
 	ctx := context.Background()
 
 	for _, show := range []bool{true, false} {
-		id, err := lb.CreateGame(ctx, config.ModeCooperative, 1, 0, 0, 0, 0, false, config.GameRules{NextCount: 1, Ghost: true, ShowHeadroom: show}, false)
+		id, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1, Rules: config.GameRules{NextCount: 1, Ghost: true, ShowHeadroom: show}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -517,5 +528,100 @@ func TestLobbyCreateGameShowHeadroom(t *testing.T) {
 		if g := lb.Games()[id]; g.ShowHeadroom != show || g.Rules().ShowHeadroom != show {
 			t.Errorf("listing show_headroom = %v, want %v", g.ShowHeadroom, show)
 		}
+	}
+}
+
+// TestLobbyCreateGameSpecRoundTrip: the new shape settings — the extra rows,
+// the line goal, the scoring, the stable seat — reach both records, and a
+// game created without them stores nothing (the fields absent, as every game
+// before them). JoinGame fills the seat with the roster position.
+func TestLobbyCreateGameSpecRoundTrip(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+
+	id, err := lb.CreateGame(ctx, config.GameSpec{
+		Mode: config.ModeCooperative, PlayerCount: 3, ExtraColumns: 5, ExtraRows: 4, LineGoal: 40,
+		Scoring: config.ScoringIndividual, SplitPieces: true, MaxAgents: 1,
+		Rules: config.GameRules{NextCount: 2, Ghost: true, Hold: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, js, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ExtraRows != 4 || meta.LineGoal != 40 || !meta.IndividualScoring() || !meta.SplitsPieces() {
+		t.Errorf("meta lost a setting: extra_rows=%d line_goal=%d scoring=%q split=%v", meta.ExtraRows, meta.LineGoal, meta.Scoring, meta.SplitPieces)
+	}
+	if got, want := meta.BoardHeight(), config.SharedBoardHeight(3, 4); got != want {
+		t.Errorf("meta BoardHeight() = %d, want %d", got, want)
+	}
+	time.Sleep(300 * time.Millisecond)
+	g := lb.Games()[id]
+	if g.ExtraRows != 4 || g.LineGoal != 40 || !g.IndividualScoring() || !g.SplitsPieces() || g.MaxAgents != 1 || !g.Dynamic() {
+		t.Errorf("listing lost a setting: %+v", g)
+	}
+	if got, want := g.BoardHeight(), config.SharedBoardHeight(3, 4); got != want {
+		t.Errorf("listing BoardHeight() = %d, want %d", got, want)
+	}
+	if g.Playfields() != 1 || g.SeatsPerPlayfield() != 3 {
+		t.Errorf("listing shape = %d playfields × %d seats, want 1 × 3", g.Playfields(), g.SeatsPerPlayfield())
+	}
+
+	// The seat: the roster position, on the listing and in the join result.
+	res, err := lb.JoinGame(ctx, id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	g = lb.Games()[id]
+	if len(g.Players) != 1 || g.Players[0].Seat != 0 || res.PlayerIdx != 0 {
+		t.Errorf("first joiner's seat = %+v / idx %d, want seat 0", g.Players, res.PlayerIdx)
+	}
+	seats := g.NormalizedSeats()
+	if len(seats) != 1 || seats[0].Seat != 0 {
+		t.Errorf("NormalizedSeats() = %+v", seats)
+	}
+
+	// The defaults store nothing.
+	plain, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, ExtraRows: 5, Scoring: config.ScoringIndividual, Rules: config.GameRules{Ghost: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta, _, err = natspkg.FetchGameMeta(ctx, js, plain); err != nil {
+		t.Fatal(err)
+	}
+	if meta.ExtraRows != 0 || meta.LineGoal != 0 || meta.Scoring != config.ScoringShared || meta.IndividualScoring() {
+		t.Errorf("a competitive game recorded shared-board settings: %+v", meta)
+	}
+	raw, _ := json.Marshal(meta)
+	for _, field := range []string{"extra_rows", "line_goal", "scoring"} {
+		if strings.Contains(string(raw), `"`+field+`"`) {
+			t.Errorf("the default %s is written out: %s", field, raw)
+		}
+	}
+}
+
+// NormalizedSeats reads a listing written before the seat field — every seat
+// zero — by roster position, as the game assigned them then; a listing with
+// recorded seats is returned as it is.
+func TestNormalizedSeatsLegacy(t *testing.T) {
+	legacy := GameListing{Players: []PlayerSummary{{PlayerID: "a"}, {PlayerID: "b"}, {PlayerID: "c"}}}
+	for i, p := range legacy.NormalizedSeats() {
+		if p.Seat != i {
+			t.Errorf("legacy seat %d = %d", i, p.Seat)
+		}
+	}
+	if legacy.Players[1].Seat != 0 {
+		t.Error("NormalizedSeats must not mutate the listing")
+	}
+	seated := GameListing{Players: []PlayerSummary{{PlayerID: "a", Seat: 2}, {PlayerID: "b", Seat: 0}}}
+	got := seated.NormalizedSeats()
+	if got[0].Seat != 2 || got[1].Seat != 0 {
+		t.Errorf("recorded seats rewritten: %+v", got)
+	}
+	if solo := (GameListing{Players: []PlayerSummary{{PlayerID: "a", Seat: 3}}}).NormalizedSeats(); solo[0].Seat != 3 {
+		t.Errorf("a lone recorded seat rewritten: %+v", solo)
 	}
 }

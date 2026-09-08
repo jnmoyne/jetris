@@ -135,6 +135,57 @@ func TeamLetter(team int) string {
 	return string(rune('A' + team))
 }
 
+// MaxTeamNameLen caps a team's name (GameMeta.TeamNames), in runes.
+const MaxTeamNameLen = 16
+
+// pieceColorNames are the seven piece types' colours in piece order — I, O,
+// T, S, Z, J, L — the names a game's teams are called by unless the creator
+// renames them (DefaultTeamNames).
+var pieceColorNames = [...]string{"Cyan", "Yellow", "Purple", "Green", "Red", "Blue", "Orange"}
+
+// DefaultTeamNames names n teams after the piece colours, in piece order:
+// team 0 is Cyan (the I), team 1 Yellow (the O), and so on — the same on
+// every peer, so a game created without names reads the same everywhere.
+func DefaultTeamNames(n int) []string {
+	names := make([]string, 0, n)
+	for t := 0; t < n; t++ {
+		names = append(names, pieceColorNames[t%len(pieceColorNames)])
+	}
+	return names
+}
+
+// TeamName is how a team is called: its recorded name when the game has one
+// (names[t], set), else its letter (TeamLetter) — what every game before the
+// names, and every screen that aggregates across games, calls it.
+func TeamName(names []string, t int) string {
+	if t >= 0 && t < len(names) {
+		if name := strings.TrimSpace(names[t]); name != "" {
+			return name
+		}
+	}
+	return TeamLetter(t)
+}
+
+// NormalizeTeamNames reads the creator's team names for a game of n teams:
+// exactly n of them, each trimmed and cut to MaxTeamNameLen runes, a blank
+// one replaced by the team's default piece colour.
+func NormalizeTeamNames(names []string, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	out := DefaultTeamNames(n)
+	for t := 0; t < n && t < len(names); t++ {
+		name := strings.TrimSpace(names[t])
+		if r := []rune(name); len(r) > MaxTeamNameLen {
+			name = strings.TrimSpace(string(r[:MaxTeamNameLen]))
+		}
+		if name != "" {
+			out[t] = name
+		}
+	}
+	return out
+}
+
 // Bag is a game's piece randomizer: how its sequence groups the seven piece
 // types. The standard 7-bag — the Guideline's — deals the seven types
 // once each, shuffled, seven pieces at a time; the double bag deals them
@@ -179,6 +230,31 @@ func (b Bag) Label() string {
 	}
 }
 
+// Scoring is how the players sharing ONE playfield are scored: together — the
+// crew's single score, the cooperative game as it always was — or each on
+// their own, the shared-board competitive game where everyone plays the same
+// board but only their own locks count, and the top score at the end wins.
+// Only a cooperative-mode board (a single playfield) has the choice; a
+// multi-playfield game scores per playfield (teams) or per board
+// (competitive) by construction. Stored on the meta (GameMeta.Scoring) and
+// mirrored on the listing; absent — the zero value, and every meta written
+// before the field — is the shared score.
+type Scoring string
+
+const (
+	ScoringShared     Scoring = ""           // one score for the whole playfield: the default, and every meta written before the field
+	ScoringIndividual Scoring = "individual" // every seat scored on its own locks; the top score wins
+)
+
+// Normalized reads a recorded scoring: individual as itself, anything else —
+// absent, the zero value, every meta written before the field — as shared.
+func (s Scoring) Normalized() Scoring {
+	if s == ScoringIndividual {
+		return ScoringIndividual
+	}
+	return ScoringShared
+}
+
 type GameStatus string
 
 const (
@@ -196,6 +272,7 @@ type GameMeta struct {
 	PlayerCount        int        `json:"player_count"`
 	TeamCount          int        `json:"team_count,omitempty"`           // teams mode: how many teams play each other (MinTeamCount..MaxTeamCount). Absent — the zero value, and every meta written before the field — reads as DefaultTeamCount, the historical Team A vs Team B (see Teams)
 	TeamSize           int        `json:"team_size,omitempty"`            // teams mode: players per team (PlayerCount = TeamCount*TeamSize)
+	TeamNames          []string   `json:"team_names,omitempty"`           // teams mode: what each team is called, by index (MaxTeamNameLen runes at most) — the piece colours (DefaultTeamNames) unless the creator renamed them; absent — every meta written before the field — reads as the letters A, B, C… (TeamName)
 	ExtraColumns       int        `json:"extra_columns,omitempty"`        // shared boards (cooperative, teams): columns every seat beyond the first adds to the board's standard 10 (MinExtraColumns..MaxExtraColumns), and the spacing between neighbouring spawn points. Absent — every meta written before the field — reads as MaxExtraColumns: the historical full section per player (see ExtraColumnsPerPlayer). Meaningless in competitive, where each player has a board of their own
 	NextCount          int        `json:"next_count"`                     // how many upcoming pieces are shown (0..MaxNextCount); bounds lookahead for humans and agents alike
 	NoGhost            bool       `json:"no_ghost,omitempty"`             // hard-drop ghost preview disabled for this game; inverted so the zero value — and metas written before the field — keep the ghost SHOWN (the default). Meta, not listing: like NextCount it is one rule for every player
@@ -206,6 +283,9 @@ type GameMeta struct {
 	SplitPieces        bool       `json:"split_pieces,omitempty"`         // teams mode: the seven piece types are dealt out between the teammates (rng.PieceSets), every seat drawing only from its own ration and the whole bag present across the team. Unset — the default, and every meta written before the field — every seat runs the full 7-bag. Structural like TeamSize, not a play rule: the deal follows Seed, so both teams' slot N hold the same ration (see SplitsPieces)
 	Bag                Bag        `json:"bag,omitempty"`                  // the piece randomizer every seat's sequence is drawn with (Bag): "double" for the double bag, "none" for no bag at all; unset — the default, and every meta written before the field — the standard 7-bag. One rule for every seat, like NextCount; in a split-pieces game it shapes each seat's ration the same way (a double bag of the ration, or independent draws from it)
 	ShowHeadroom       bool       `json:"show_headroom,omitempty"`        // the hidden headroom rows above the playfield (HeadroomRows, where a piece spawns) are drawn — behind smoked glass, so they read as the out-of-bounds they are — on every board of the game; unset — the default, and every meta written before the field — the boards start at the visible playfield, the Guideline way. Presentation only: nothing about play changes, and agents may ignore it. One setting for every seat and spectator, like NoGhost
+	ExtraRows          int        `json:"extra_rows,omitempty"`           // shared boards (cooperative, teams): rows every seat beyond the first adds to the board's standard VisibleRows (MinExtraRows..MaxExtraRows) — the board grows downwards, the headroom and the spawn rows stay where they are (see SharedBoardHeight). Absent — the zero value, and every meta written before the field — adds nothing: the standard 20-row playfield whatever the seat count. Meaningless in competitive, like ExtraColumns
+	LineGoal           int        `json:"line_goal,omitempty"`            // the game's length in lines: the game ends the moment a playfield has cleared this many lines in total — on a single playfield the game is over (the crew is done, or in individual scoring the top score wins); across several the first playfield there wins. Absent — the zero value, and every meta written before the field — the game runs until someone tops out (NormalizeLineGoal)
+	Scoring            Scoring    `json:"scoring,omitempty"`              // how the seats of a single shared playfield are scored (Scoring): "individual" for every seat on its own; absent — the default, and every meta written before the field — the crew's one shared score. Only meaningful on a cooperative-mode board with more than one seat (IndividualScoring)
 	Seed               uint64     `json:"seed"`
 	Status             GameStatus `json:"status"`
 	CreatorID          string     `json:"creator_id"`
@@ -300,12 +380,223 @@ func (m GameMeta) Teams() int {
 }
 
 // SplitsPieces reports whether this game deals its piece types out between
-// teammates: the SplitPieces setting, which only a teams game of at least two
-// per team can honour (a team of one would be dealt the whole bag anyway, and
-// no other mode has teammates to split between). The one place the rule is
-// decided — engines, the lobby row and the HUD all ask here.
+// the seats sharing a playfield: the SplitPieces setting, which only a
+// playfield of at least two seats can honour (a seat alone would be dealt the
+// whole bag anyway). The one place the rule is decided — engines, the lobby
+// row and the HUD all ask here.
 func (m GameMeta) SplitsPieces() bool {
-	return m.SplitPieces && m.Mode == ModeTeams && m.TeamSize > 1
+	return m.SplitPieces && m.SeatsPerPlayfield() > 1
+}
+
+// Playfields is how many boards the game is played on: the one shared board
+// of a cooperative game, one per team in teams mode, one per player in
+// competitive.
+func (m GameMeta) Playfields() int {
+	return playfields(m.Mode, m.PlayerCount, m.TeamCount)
+}
+
+// SeatsPerPlayfield is how many seats share one board: every seat in
+// cooperative, a team's in teams mode, a single one in competitive.
+func (m GameMeta) SeatsPerPlayfield() int {
+	return seatsPerPlayfield(m.Mode, m.PlayerCount, m.TeamSize)
+}
+
+// BoardWidth is the width of the board(s) this game plays on: the shared
+// board's (widened per seat by ExtraColumns) or the standard 10 columns of a
+// competitive player's own board.
+func (m GameMeta) BoardWidth() int {
+	if m.Mode == ModeCompetitive {
+		return StandardWidth
+	}
+	return SharedBoardWidth(m.SeatsPerPlayfield(), m.ExtraColumns)
+}
+
+// BoardHeight is the height (headroom + visible rows) of the board(s) this
+// game plays on: the shared board's, grown per seat by ExtraRows, or the
+// standard height of a competitive player's own board.
+func (m GameMeta) BoardHeight() int {
+	if m.Mode == ModeCompetitive {
+		return StandardHeight
+	}
+	return SharedBoardHeight(m.SeatsPerPlayfield(), m.ExtraRows)
+}
+
+// IndividualScoring reports whether the seats of this game's single shared
+// playfield are scored on their own (Scoring): the setting, which only a
+// cooperative-mode board with more than one seat can honour — a seat alone
+// has nobody to rank against, and every other mode scores per playfield or
+// per board already.
+func (m GameMeta) IndividualScoring() bool {
+	return m.Scoring.Normalized() == ScoringIndividual && m.Mode == ModeCooperative && m.PlayerCount > 1
+}
+
+// TeamName is what team t of this game is called (see TeamName).
+func (m GameMeta) TeamName(t int) string { return TeamName(m.TeamNames, t) }
+
+// Spec is the creation spec this meta was (or could have been) created from:
+// the structural settings and the play rules, without the lobby-only agent
+// policy and invitation setting (which the listing carries).
+func (m GameMeta) Spec() GameSpec {
+	return GameSpec{
+		Mode:         m.Mode,
+		PlayerCount:  m.PlayerCount,
+		TeamCount:    m.TeamCount,
+		TeamSize:     m.TeamSize,
+		TeamNames:    append([]string(nil), m.TeamNames...),
+		ExtraColumns: m.ExtraColumns,
+		ExtraRows:    m.ExtraRows,
+		LineGoal:     m.LineGoal,
+		Scoring:      m.Scoring,
+		SplitPieces:  m.SplitPieces,
+		Rules:        m.Rules(),
+	}
+}
+
+func playfields(mode GameMode, playerCount, teamCount int) int {
+	switch mode {
+	case ModeCompetitive:
+		return max(playerCount, 1)
+	case ModeTeams:
+		return NormalizeTeamCount(teamCount)
+	default:
+		return 1
+	}
+}
+
+func seatsPerPlayfield(mode GameMode, playerCount, teamSize int) int {
+	switch mode {
+	case ModeCompetitive:
+		return 1
+	case ModeTeams:
+		return max(teamSize, 1)
+	default:
+		return max(playerCount, 1)
+	}
+}
+
+// GameSpec is everything a creator decides about a game, bundled for the one
+// create path (lobby.CreateGame) and the screens that feed it (the create
+// wizard, the invitee picker, the headless player): the game's shape — its
+// mode, how many seats, how many playfields and how many seats share one,
+// how the shared boards grow per seat, how the seats are scored, whether the
+// pieces are dealt out between seatmates — its length in lines, the lobby's
+// agent policy and invitation setting, and the play rules (GameRules). The
+// meta records everything but the lobby-only MaxAgents and InviteOnly, which
+// the listing carries. Normalized clamps every field to what the mode can
+// honour; Meta writes the meta record.
+//
+// The wizard's game types map onto the modes like this: a single playfield is
+// a cooperative-mode board — shared score, or every seat scored on its own
+// (Scoring) — and several playfields are teams mode when seats share them
+// (TeamCount boards of TeamSize seats) or competitive when every player has
+// a board of their own.
+type GameSpec struct {
+	Mode         GameMode
+	PlayerCount  int      // seats in the game: the roster's size for an invite game, its MAXIMUM for an open one (every seat beyond the present players stays free to join)
+	TeamCount    int      // teams: how many boards (MinTeamCount..MaxTeamCount); 0 elsewhere
+	TeamSize     int      // teams: seats per board (PlayerCount = TeamCount*TeamSize); 0 elsewhere
+	TeamNames    []string // teams: what each board's team is called (NormalizeTeamNames: the piece colours unless renamed); nil elsewhere
+	ExtraColumns int      // shared boards: columns per seat beyond the first (MinExtraColumns..MaxExtraColumns)
+	ExtraRows    int      // shared boards: rows per seat beyond the first (MinExtraRows..MaxExtraRows)
+	LineGoal     int      // the game's length in lines (0 = until top out; see GameMeta.LineGoal)
+	Scoring      Scoring  // single playfield: shared or individual scores
+	SplitPieces  bool     // the seven piece types dealt out between the seats of a playfield
+	MaxAgents    int      // lobby: how many seats idle agent players may take (0 = none)
+	InviteOnly   bool     // lobby: only invited players (and the creator) may join; otherwise the game is open, and its roster changes at any time
+	Rules        GameRules
+}
+
+// Normalized returns the spec clamped to what its mode can honour — the one
+// place a game's settings are made legal: team count and size only in teams
+// mode; the agent policy within the seat count; the shared-board growth,
+// the deal and the scoring only where there is a shared board with seats to
+// share it; the line goal and the play rules within their ranges.
+func (s GameSpec) Normalized() GameSpec {
+	if s.Mode == ModeTeams {
+		s.TeamCount = NormalizeTeamCount(s.TeamCount)
+		s.TeamSize = max(s.TeamSize, 1)
+		s.PlayerCount = s.TeamCount * s.TeamSize
+		s.TeamNames = NormalizeTeamNames(s.TeamNames, s.TeamCount)
+	} else {
+		s.TeamCount, s.TeamSize, s.TeamNames = 0, 0, nil
+		s.PlayerCount = max(s.PlayerCount, 1)
+	}
+	s.MaxAgents = min(max(s.MaxAgents, 0), s.PlayerCount)
+	s.Rules = s.Rules.Normalized(s.Mode)
+	// Only a shared board has a width and a height to set; competitive
+	// boards are always the standard board, so its meta records no setting.
+	if s.Mode == ModeCompetitive {
+		s.ExtraColumns, s.ExtraRows = 0, 0
+	} else {
+		if s.ExtraColumns > 0 {
+			s.ExtraColumns = ExtraColumnsPerPlayer(s.ExtraColumns)
+		}
+		s.ExtraRows = ExtraRowsPerPlayer(s.ExtraRows)
+	}
+	// Only a playfield with seatmates has pieces to split between them;
+	// anywhere else the setting would deal the whole bag to everybody, so it
+	// is not recorded.
+	s.SplitPieces = s.SplitPieces && s.SeatsPerPlayfield() > 1
+	// Only a single shared playfield with company chooses how it is scored.
+	s.Scoring = s.Scoring.Normalized()
+	if s.Mode != ModeCooperative || s.PlayerCount < 2 {
+		s.Scoring = ScoringShared
+	}
+	s.LineGoal = NormalizeLineGoal(s.LineGoal)
+	return s
+}
+
+// Playfields is how many boards the game is played on (see GameMeta.Playfields).
+func (s GameSpec) Playfields() int {
+	return playfields(s.Mode, s.PlayerCount, s.TeamCount)
+}
+
+// SeatsPerPlayfield is how many seats share one board (see GameMeta.SeatsPerPlayfield).
+func (s GameSpec) SeatsPerPlayfield() int {
+	return seatsPerPlayfield(s.Mode, s.PlayerCount, s.TeamSize)
+}
+
+// SplitsPieces reports whether the game deals its piece types out between
+// seatmates (see GameMeta.SplitsPieces).
+func (s GameSpec) SplitsPieces() bool {
+	return s.SplitPieces && s.SeatsPerPlayfield() > 1
+}
+
+// IndividualScoring reports whether the seats of the single shared playfield
+// are scored on their own (see GameMeta.IndividualScoring).
+func (s GameSpec) IndividualScoring() bool {
+	return s.Scoring.Normalized() == ScoringIndividual && s.Mode == ModeCooperative && s.PlayerCount > 1
+}
+
+// Meta is the meta record a game created from this (normalized) spec starts
+// with: every setting the engines read at Start, the seed the sequences are
+// drawn from, and the created status.
+func (s GameSpec) Meta(gameID, creatorID string, seed uint64, now time.Time) GameMeta {
+	return GameMeta{
+		GameID:             gameID,
+		Mode:               s.Mode,
+		PlayerCount:        s.PlayerCount,
+		TeamCount:          s.TeamCount,
+		TeamSize:           s.TeamSize,
+		TeamNames:          append([]string(nil), s.TeamNames...),
+		ExtraColumns:       s.ExtraColumns,
+		ExtraRows:          s.ExtraRows,
+		LineGoal:           s.LineGoal,
+		Scoring:            s.Scoring,
+		NextCount:          s.Rules.NextCount,
+		NoGhost:            !s.Rules.Ghost,
+		Hold:               s.Rules.Hold,
+		GarbageHoles:       s.Rules.GarbageHoles,
+		RandomGarbageHoles: s.Rules.RandomGarbageHoles,
+		GuidelineGarbage:   s.Rules.GuidelineGarbage,
+		SplitPieces:        s.SplitPieces,
+		Bag:                s.Rules.Bag,
+		ShowHeadroom:       s.Rules.ShowHeadroom,
+		Seed:               seed,
+		Status:             GameStatusCreated,
+		CreatorID:          creatorID,
+		CreatedAt:          now,
+	}
 }
 
 // PlayerResult captures per-player stats at game end.
@@ -333,7 +624,11 @@ type ArchiveRecord struct {
 	FinalLevel   int            `json:"final_level,omitempty"`   // cooperative: shared level at game end
 	TeamCount    int            `json:"team_count,omitempty"`    // teams mode: how many teams played (GameMeta.TeamCount); absent — every record written before the field — reads as DefaultTeamCount (see Teams)
 	TeamSize     int            `json:"team_size,omitempty"`     // teams mode
+	TeamNames    []string       `json:"team_names,omitempty"`    // teams mode: what each team was called (GameMeta.TeamNames); absent = the letters
 	ExtraColumns int            `json:"extra_columns,omitempty"` // shared boards: columns per seat beyond the first (GameMeta.ExtraColumns) — what the replay rebuilds the board's width from
+	ExtraRows    int            `json:"extra_rows,omitempty"`    // shared boards: rows per seat beyond the first (GameMeta.ExtraRows)
+	LineGoal     int            `json:"line_goal,omitempty"`     // the game's length in lines (GameMeta.LineGoal); absent = played until a top-out
+	Scoring      Scoring        `json:"scoring,omitempty"`       // single playfield: how its seats were scored (GameMeta.Scoring); "individual" ranks by each player's own score, and never against shared-score co-op runs (SameReplayBucket)
 	BoardRows    int            `json:"board_rows,omitempty"`    // the boards' height (headroom + visible) the game was played on, as the archiver knew it; the replay reads the height off the replay stream itself and keeps this as its fallback (see BoardHeight)
 	WinningTeam  int            `json:"winning_team"`            // teams mode: the winning team's index; -1 = draw or not a team game
 	TeamScores   []int          `json:"team_scores,omitempty"`   // teams mode: final score per team (indexed by team)
@@ -356,6 +651,9 @@ func (r ArchiveRecord) Teams() int {
 	}
 	return NormalizeTeamCount(r.TeamCount)
 }
+
+// TeamName is what team t of the archived game was called (see TeamName).
+func (r ArchiveRecord) TeamName(t int) string { return TeamName(r.TeamNames, t) }
 
 // BoardHeight is the total rows (headroom + visible) the record SAYS the
 // game's boards were played on: what the archiver wrote, or today's board for
@@ -412,13 +710,22 @@ const (
 	ReplayRecentN = 25
 )
 
+// IndividualScoring reports whether the archived game's single playfield
+// scored every seat on its own (see GameMeta.IndividualScoring).
+func (r ArchiveRecord) IndividualScoring() bool {
+	return r.Scoring.Normalized() == ScoringIndividual && r.Mode == ModeCooperative
+}
+
 // HeadlineScore is the score a finished game is ranked (and listed) by: the
 // shared total for cooperative, the best team's total for teams, and the best
-// player's score for competitive.
+// player's score for competitive — and for a shared board whose seats were
+// scored on their own.
 func (r ArchiveRecord) HeadlineScore() int {
 	switch r.Mode {
 	case ModeCooperative:
-		return r.TotalScore
+		if !r.IndividualScoring() {
+			return r.TotalScore
+		}
 	case ModeTeams:
 		if len(r.TeamScores) > 0 {
 			best := r.TeamScores[0]
@@ -480,15 +787,22 @@ func (r ArchiveRecord) RecentBefore(o ArchiveRecord) bool {
 }
 
 // SameReplayBucket reports whether two records compete for the same replay
-// top-N: same mode, and both with (or both without) agent seats.
+// top-N: same mode, the same scoring (a shared board's individual scores
+// never rank against a crew's shared total), and both with (or both without)
+// agent seats.
 func (r ArchiveRecord) SameReplayBucket(o ArchiveRecord) bool {
-	return r.Mode == o.Mode && r.HasAgents() == o.HasAgents()
+	return r.replayBucket() == o.replayBucket()
 }
 
 // replayBucketKey identifies a record's replay bucket (see SameReplayBucket).
 type replayBucketKey struct {
-	mode   GameMode
-	agents bool
+	mode       GameMode
+	individual bool
+	agents     bool
+}
+
+func (r ArchiveRecord) replayBucket() replayBucketKey {
+	return replayBucketKey{r.Mode, r.IndividualScoring(), r.HasAgents()}
 }
 
 // uniqueRecords collapses recs to one record per game ID (the last occurrence
@@ -516,7 +830,7 @@ func uniqueRecords(recs []ArchiveRecord) []ArchiveRecord {
 func rankedReplayBuckets(recs []ArchiveRecord) map[replayBucketKey][]ArchiveRecord {
 	buckets := make(map[replayBucketKey][]ArchiveRecord)
 	for _, r := range uniqueRecords(recs) {
-		k := replayBucketKey{r.Mode, r.HasAgents()}
+		k := r.replayBucket()
 		buckets[k] = append(buckets[k], r)
 	}
 	for _, b := range buckets {
@@ -687,15 +1001,34 @@ type BoardCell struct {
 }
 
 const (
-	// Every board in every mode is the same height: 20 visible rows — the
-	// Guideline playfield — above which sit the hidden headroom rows a piece
-	// spawns in. Neither the player count nor the number of opponents that
-	// can send garbage changes it.
+	// A board for one seat is 20 visible rows — the Guideline playfield —
+	// above which sit the hidden headroom rows a piece spawns in. The
+	// headroom and the spawn rows are the same on every board in every mode;
+	// only a SHARED board can be taller, growing by GameMeta.ExtraRows for
+	// every seat beyond the first (SharedBoardHeight) — the number of
+	// opponents that can send garbage never changes a board's height.
 	HeadroomRows    = 4
 	VisibleRows     = 20
 	VisibleRowStart = HeadroomRows
 	TotalRows       = HeadroomRows + VisibleRows
+	StandardHeight  = TotalRows // one seat's board: a competitive board, or a shared board before any extra rows
 	StandardWidth   = 10
+
+	// A shared board is VisibleRows tall for its first seat and
+	// GameMeta.ExtraRows more for every seat after it — the create wizard's
+	// extra-rows slider, between MinExtraRows and MaxExtraRows. Zero, the
+	// default (and every meta written before the field), keeps the standard
+	// playfield whatever the seat count: the Guideline board.
+	MinExtraRows     = 0
+	MaxExtraRows     = 10
+	DefaultExtraRows = MinExtraRows
+
+	// A game's length in lines (GameMeta.LineGoal): the wizard's "X lines"
+	// game length defaults to the sprint's classic forty; 0 is "until top
+	// out", the game as it always was. MaxLineGoal only keeps the editor's
+	// read-out sane.
+	DefaultLineGoal = 40
+	MaxLineGoal     = 999
 
 	// MaxNextCount caps GameMeta.NextCount, the per-game number of upcoming
 	// pieces shown to players (0 = none). The same bound applies to agents:
@@ -728,6 +1061,14 @@ const (
 	// nothing about the delay is on the wire.
 	LockDelay           = 500 * time.Millisecond
 	LockDelayMoveResets = 15
+
+	// IdlePieceVacateAfter is how long a falling piece may stand still on a
+	// shared board before the other players vacate it: a piece left behind
+	// by a player who crashed, or walked away without vacating it. A live
+	// piece never stands still that long — gravity moves it every tick, and
+	// the lock delay's resets end well short (LockDelayMoveResets ×
+	// LockDelay), so a piece on the stack locks first.
+	IdlePieceVacateAfter = 10 * time.Second
 
 	LobbyKVBucket     = "JETRIS_LOBBY"
 	ChatStream        = "JETRIS_CHAT"
@@ -793,6 +1134,40 @@ func SharedSpawnOffset(section, extraCols int) int {
 // cooperative board.
 func TeamBoardWidth(teamSize, extraCols int) int {
 	return SharedBoardWidth(teamSize, extraCols)
+}
+
+// ExtraRowsPerPlayer clamps a game's extra-rows setting to its legal range.
+// Unlike the columns, zero — the value every meta written before the field
+// carries — means exactly that: no extra rows, the standard playfield.
+func ExtraRowsPerPlayer(extraRows int) int {
+	return min(max(extraRows, MinExtraRows), MaxExtraRows)
+}
+
+// SharedBoardHeight returns the height (headroom + visible rows) of a board
+// shared by players seats — the cooperative board (players = PlayerCount) or
+// one team's board (players = TeamSize): the standard board the first seat
+// needs, plus extraRows for every seat after it. The headroom stays the top
+// HeadroomRows rows: the board grows downwards, so the spawn rows and the
+// top-out rule are the same on every board.
+func SharedBoardHeight(players, extraRows int) int {
+	return StandardHeight + max(players-1, 0)*ExtraRowsPerPlayer(extraRows)
+}
+
+// TeamBoardHeight returns the height of one team's shared board: the standard
+// board plus extraRows per teammate beyond the first, like the cooperative
+// board.
+func TeamBoardHeight(teamSize, extraRows int) int {
+	return SharedBoardHeight(teamSize, extraRows)
+}
+
+// NormalizeLineGoal reads a recorded line goal: nothing (the zero value, and
+// every meta written before the field) or anything negative is "until top
+// out", and a goal is clamped to MaxLineGoal.
+func NormalizeLineGoal(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return min(n, MaxLineGoal)
 }
 
 func GameStream(gameID string) string {

@@ -58,7 +58,7 @@ func TestServerLogJournal(t *testing.T) {
 		return count(got, config.LogKindConnected, "Bob") == 1
 	})
 
-	gameID, err := lb.CreateGame(ctx, config.ModeCompetitive, 2, 0, 0, 0, 0, false, config.GameRules{}, false)
+	gameID, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Rules: config.GameRules{}})
 	if err != nil {
 		t.Fatal(err)
 	}

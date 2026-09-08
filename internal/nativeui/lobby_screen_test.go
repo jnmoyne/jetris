@@ -160,7 +160,7 @@ func TestLobbySwitchesUnderAModal(t *testing.T) {
 	const w, h = 1280, 820
 	g := newLobbyRig(t, image.Pt(w, h), deviceDesktop)
 	y := g.barY()
-	g.a.createWizStep = wizStepMode
+	g.a.createWizStep = wizStepType
 	g.frame()
 	g.tap(barMenuX(), y)
 	if !g.a.lobbyMenuVisible() {

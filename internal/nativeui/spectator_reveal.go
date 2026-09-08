@@ -157,16 +157,20 @@ func playerVerdict(gmode config.GameMode, view gameView, me string, myTeam int) 
 	return decided, winners, winTeam
 }
 
-// liveVerdict is the result box's verdict line for a decided game.
-func liveVerdict(gmode config.GameMode, players []lobby.PlayerSummary, winners map[string]bool, winTeam int, score int) string {
+// liveVerdict is the result box's verdict line for a decided game. A shared
+// board scored per seat (individual) names its top scorer(s) like a
+// competitive game does; the crew's shared run names its final score.
+func liveVerdict(gmode config.GameMode, individual bool, teamNames []string, players []lobby.PlayerSummary, winners map[string]bool, winTeam int, score int) string {
 	switch gmode {
 	case config.ModeTeams:
 		if winTeam >= 0 {
-			return "TEAM " + teamName(winTeam) + " WINS!"
+			return "TEAM " + config.TeamName(teamNames, winTeam) + " WINS!"
 		}
 		return "DRAW"
 	case config.ModeCooperative:
-		return fmt.Sprintf("FINAL SCORE %d", score)
+		if !individual {
+			return fmt.Sprintf("FINAL SCORE %d", score)
+		}
 	}
 	var names []string
 	for _, p := range players {
@@ -177,13 +181,16 @@ func liveVerdict(gmode config.GameMode, players []lobby.PlayerSummary, winners m
 	return winnersVerdict(names)
 }
 
-// liveBanner is the word the winning board floats.
-func liveBanner(gmode config.GameMode) string {
+// liveBanner is the word the winning board floats: the crew's shared run
+// simply ends, every other game has a winner.
+func liveBanner(gmode config.GameMode, individual bool) string {
 	switch gmode {
 	case config.ModeTeams:
 		return "WINNERS"
 	case config.ModeCooperative:
-		return "GAME OVER"
+		if !individual {
+			return "GAME OVER"
+		}
 	}
 	return "WINNER"
 }
@@ -201,7 +208,18 @@ func (a *App) resolveOutcome(eng *engine.Engine, view gameView, gmode config.Gam
 	var decided bool
 	var winners map[string]bool
 	var winTeam int
-	if eng.InitialMode() == engine.ModeSpectator {
+	spectator := eng.InitialMode() == engine.ModeSpectator
+	if w, wt, ok := eng.Winners(); ok && (spectator || (view.gameOver && view.won)) {
+		// The engine's own verdict (outcome.go) — the one every engine
+		// reached from the ordered event stream — settles it: on a
+		// spectator's screen, and on a winning player's. A beaten player's
+		// screen still resolves nothing (the reveal is not theirs).
+		decided, winners, winTeam = true, w, wt
+	} else if ok {
+		// Decided, and this player did not win: no reveal — a board scored
+		// per seat is a competitive game here, not the crew's shared run.
+		return none
+	} else if spectator {
 		decided, winners, winTeam = spectatorVerdict(gmode, view.players, eng.IsEliminated, view.gameOver, eng.TeamCount())
 	} else {
 		decided, winners, winTeam = playerVerdict(gmode, view, eng.PlayerID(), eng.TeamIdx())
@@ -209,9 +227,10 @@ func (a *App) resolveOutcome(eng *engine.Engine, view gameView, gmode config.Gam
 	if !decided {
 		return none
 	}
+	individual := eng.IndividualScoring()
 	oc := liveOutcome{
 		decided: true, winners: winners, winTeam: winTeam, scores: eng.PlayerScores(),
-		banner: liveBanner(gmode), verdict: liveVerdict(gmode, view.players, winners, winTeam, view.score),
+		banner: liveBanner(gmode, individual), verdict: liveVerdict(gmode, individual, eng.TeamNames(), view.players, winners, winTeam, view.score),
 	}
 	a.mu.Lock()
 	if a.decidedAt.IsZero() {
@@ -262,8 +281,12 @@ func (a *App) rankLiveGame(eng *engine.Engine, view gameView, oc liveOutcome, gm
 func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.GameMode, now time.Time) config.ArchiveRecord {
 	rec := config.ArchiveRecord{
 		GameID: eng.GameID(), Mode: gmode, PlayerCount: eng.PlayerCount(),
-		TeamCount: eng.TeamCount(), TeamSize: eng.TeamSize(),
-		ExtraColumns: eng.ExtraColumns(), WinningTeam: oc.winTeam, FinishedAt: now,
+		TeamCount: eng.TeamCount(), TeamSize: eng.TeamSize(), TeamNames: eng.TeamNames(),
+		ExtraColumns: eng.ExtraColumns(), ExtraRows: eng.ExtraRows(), LineGoal: eng.LineGoal(),
+		WinningTeam: oc.winTeam, FinishedAt: now,
+	}
+	if eng.IndividualScoring() {
+		rec.Scoring = config.ScoringIndividual
 	}
 	for _, p := range view.players {
 		rec.Players = append(rec.Players, config.PlayerResult{
@@ -272,7 +295,9 @@ func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.
 	}
 	switch gmode {
 	case config.ModeCooperative:
-		rec.TotalScore = view.score
+		if !eng.IndividualScoring() {
+			rec.TotalScore = view.score
+		}
 	case config.ModeTeams:
 		rec.TeamScores = append([]int(nil), view.teamScores...)
 		rec.TeamLevels = append([]int(nil), view.teamLevels...)

@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +53,29 @@ func sharedWidth(seats, extra int) int {
 	return width + max(seats-1, 0)*extra
 }
 
+// A shared board is `standardHeight` rows (headroom included) for its first
+// seat and the game's `extra_rows` more for every seat after it — the
+// creator's extra-rows setting, between minExtraRows and maxExtraRows. The
+// headroom stays the top rows: the board grows downwards, so the spawn rows
+// and the top-out rule are the same on every board.
+const (
+	standardHeight = headroom + 20
+	minExtraRows   = 0
+	maxExtraRows   = 10
+)
+
+// extraRows clamps the meta's extra_rows to its legal range. Absent — zero,
+// as every game created before the setting existed reads — means exactly
+// that: no extra rows, unlike the columns.
+func extraRows(v int) int {
+	return min(max(v, minExtraRows), maxExtraRows)
+}
+
+// sharedHeight is the height of a board shared by seats players.
+func sharedHeight(seats, extra int) int {
+	return standardHeight + max(seats-1, 0)*extraRows(extra)
+}
+
 // The number of teams a teams game is played between (meta team_count). Two —
 // Team A vs Team B — is the default and what every meta written before the
 // field reads as; team indices run 0..count-1 and are named by their letter.
@@ -75,6 +100,17 @@ func teamLetter(t int) string {
 		return strconv.Itoa(t)
 	}
 	return string(rune('A' + t))
+}
+
+// teamNames names n teams after the piece colours in piece order — the
+// GUI's default (meta team_names) when the creator renames none.
+func teamNames(n int) []string {
+	colors := []string{"Cyan", "Yellow", "Purple", "Green", "Red", "Blue", "Orange"}
+	out := make([]string, 0, n)
+	for t := 0; t < n; t++ {
+		out = append(out, colors[t%len(colors)])
+	}
+	return out
 }
 
 // gravityInterval is the guideline speed curve (gameplays §7): seconds per
@@ -469,9 +505,17 @@ func (g *Game) foldLineClear(ev event) {
 		return
 	}
 	g.senderTotals[ev.PlayerID] = [2]int{ev.TotalScore, ev.TotalLines}
+	if g.senderTeams == nil {
+		g.senderTeams = map[string]int{}
+	}
+	g.senderTeams[ev.PlayerID] = ev.Team
 	switch g.mode {
 	case modeCooperative:
-		g.sharedScore += ds
+		// A board scored per seat folds the crew's lines (the shared level)
+		// but never their points.
+		if !g.individual {
+			g.sharedScore += ds
+		}
 		g.totalLines += dl
 	case modeTeams:
 		if ev.Team >= 0 && ev.Team < len(g.teamScores) {
@@ -496,7 +540,9 @@ func (g *Game) teamDead(t int) bool {
 			return false
 		}
 	}
-	return n > 0
+	// Every member out — or, in an open game, every member gone: a team
+	// nobody holds a seat on any more is out (the game started with one).
+	return n > 0 || g.hadRivals
 }
 
 // othersDead reports whether every team but our own is fully out — the moment
@@ -615,4 +661,132 @@ func (g *Game) waitForVerdict(ctx context.Context) bool {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// ---- the deal --------------------------------------------------------------
+
+// mySlot is this seat's slot on its playfield: the seat itself on the crew's
+// board, the slot within the team on a team's.
+func (g *Game) mySlot() int {
+	if g.mode == modeTeams {
+		return g.teamSlot
+	}
+	return g.idx
+}
+
+// presentSlots is the slots seated on our playfield per a listing's roster:
+// every seat on the crew's board, our team's slots on a team's.
+func (g *Game) presentSlots(roster []playerSummary) []int {
+	var slots []int
+	for _, p := range roster {
+		switch g.mode {
+		case modeCooperative:
+			slots = append(slots, p.Seat)
+		case modeTeams:
+			if p.Team == g.team {
+				slots = append(slots, p.TeamSlot)
+			}
+		}
+	}
+	sort.Ints(slots)
+	return slots
+}
+
+// redeal follows the GUI's engine (outcome.go redealLocked): in a game that
+// splits its pieces, the seven types are dealt out between the slots
+// PRESENT on our playfield — the seats an open game has right now — ranked
+// in slot order, and this seat draws from its rank's ration. Every slot
+// present (or no roster at all) is the deal at creation. Only our own
+// sequence depends on it, so nobody has to agree; the piece index stands.
+// Returns whether the ration changed. mu held.
+func (g *Game) redealLocked(present []int) bool {
+	if !g.split || g.seatsOnPF <= 1 {
+		return false
+	}
+	var slots []int
+	seen := map[int]bool{}
+	for _, s := range present {
+		if s >= 0 && s < g.seatsOnPF && !seen[s] {
+			seen[s] = true
+			slots = append(slots, s)
+		}
+	}
+	sort.Ints(slots)
+	if len(slots) == 0 {
+		slots = slots[:0]
+		for i := 0; i < g.seatsOnPF; i++ {
+			slots = append(slots, i)
+		}
+		g.presentPF = nil
+	} else if slices.Equal(slots, g.presentPF) {
+		return false
+	} else {
+		g.presentPF = slots
+	}
+	rank := slices.Index(slots, g.mySlot())
+	if rank < 0 {
+		rank = 0 // not in the deal (a seat we are leaving): the first ration
+	}
+	g.ration = pieceSetFor(g.metaSeed, len(slots), rank)
+	return true
+}
+
+// ---- the line goal ---------------------------------------------------------
+
+// playfieldLinesLocked is the lines the playfield ev's sender plays on has
+// cleared, as the stream told us so far — our own included: every seat's on
+// the crew's board, our team's seats' on a team's board, the sender's own on
+// a competitive board (the GUI's goal.go, mirrored). mu held.
+func (g *Game) playfieldLinesLocked(ev event) int {
+	switch g.mode {
+	case modeCooperative:
+		n := g.lines
+		for _, t := range g.senderTotals {
+			n += t[1]
+		}
+		return n
+	case modeTeams:
+		n := 0
+		if ev.Team == g.team {
+			n = g.lines
+		}
+		for id, t := range g.senderTotals {
+			if g.senderTeams[id] == ev.Team {
+				n += t[1]
+			}
+		}
+		return n
+	default:
+		if ev.PlayerID == g.a.name {
+			return g.lines
+		}
+		return g.senderTotals[ev.PlayerID][1]
+	}
+}
+
+// checkLineGoal runs on every line_clear consumed (our own echo too): when
+// the sender's playfield has reached the goal the game is decided — the
+// crew wins together, a board scored per seat by its top scorer(s), a team
+// by its members, a competitive board by its player — and the play loop
+// ends; run finishes the meta (guide §5).
+func (g *Game) checkLineGoal(ev event) {
+	if g.lineGoal <= 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.goalDecided || g.playfieldLinesLocked(ev) < g.lineGoal {
+		return
+	}
+	g.goalDecided = true
+	switch g.mode {
+	case modeCooperative:
+		g.goalWon = !g.individual || g.individualWinnerLocked()
+	case modeTeams:
+		g.goalWon = ev.Team == g.team
+	default:
+		g.goalWon = ev.PlayerID == g.a.name
+	}
+	log.Printf("line goal reached by %s's playfield — %s", ev.PlayerID, map[bool]string{true: "we win", false: "we lose"}[g.goalWon])
+	g.markEnded()
 }

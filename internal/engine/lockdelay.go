@@ -162,10 +162,12 @@ func (e *Engine) lockPieceIfGrounded(ctx context.Context) {
 		// Coop shares cell subjects: CAS+merge-retry so this lock can't
 		// clobber another player's mid-flight piece with our stale view.
 		e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, false)
+		e.noteLockSent(false)
 		return
 	}
 	// In-place lock: all messages convert active cells to locked in place, so
 	// lock-in fires at the batch's last message with every locked cell
 	// already applied (see orderedCellKeys).
 	e.publishProjectedCellsNoCAS(ctx, cells, false)
+	e.noteLockSent(false)
 }

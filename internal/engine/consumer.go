@@ -169,6 +169,21 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	// multiplier one more.
 	award := e.lockAward
 	e.lockAward = lockAward{}
+	// The lock-in is here: the watchdog's wait for the lock is over, and
+	// from here to the spawn's commit it stands down for the lock-in
+	// itself (spawning) — which releases the engine's lock around its
+	// network round trips below, the clear's publish and the spawn's.
+	// Held across them, a far server's latency (a beta player's 189 ms
+	// batch round trip) stalled every UI frame and the input loop for two
+	// round trips per piece and one more per clear, and the next piece's
+	// inputs pressed in that time raced the spawn for the lock and were
+	// lost when they won. The deferred relock runs first at return, so
+	// the flag clears under the lock; the caller (runConsumer, the
+	// journal's publishLocal) holds the lock again when this returns and
+	// re-reads the board's piece before trusting it.
+	e.lockInFlight = false
+	e.spawning = true
+	defer func() { e.spawning = false }()
 	level := game.Level(int(e.totalLines.Load())) + 1
 
 	// Detect completed rows on the live replica. Cooperative publishes the
@@ -196,14 +211,22 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			// applies another player's shifted (active) piece cells before its
 			// old positions are vacated, so its active-cell count never hits
 			// zero and no spurious lock + respawn fires on their engine.
-			e.publishProjectedCellsWithMergeRetry(ctx, changed, nil, true)
+			// Off the lock for the round trip (above); the merge-retry
+			// refetches on a lost race either way.
+			e.mu.Unlock()
+			e.publishProjectedCellsWithMergeRetry(ctx, changed, nil, false)
+			e.mu.Lock()
 			clearedLines = len(completed)
 			clearedRows = completed
 			after = projected
 		} else {
 			shiftAnchors := e.sharedBoard()
 			var cleared []int
-			committed := e.publishGatedTransform(ctx, txnOpClear, true, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
+			// Off the lock for the round trip (above): the transform clones
+			// the board under the lock itself for its first attempt, and a
+			// lost gate recomputes from the server's snapshot regardless.
+			e.mu.Unlock()
+			committed := e.publishGatedTransform(ctx, txnOpClear, false, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
 				rows := game.CompletedRows(pf)
 				if len(rows) == 0 {
 					return nil, TxnRegister{}, false
@@ -212,6 +235,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 				after = pf.ProjectClearRows(rows, shiftAnchors)
 				return after, TxnRegister{Applied: txn.Applied}, true
 			})
+			e.mu.Lock()
 			if committed {
 				clearedLines = len(cleared)
 				clearedRows = cleared
@@ -262,6 +286,13 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 		e.emitUpdate(EngineUpdate{Kind: UpdateAward, PlayerID: e.playerID, Clear: clear, Score: points})
 	}
 
+	// Off the lock from here to the end (see the top): nothing below needs
+	// the board to stand still — the event carries totals already folded,
+	// the piece index is atomic, and spawnPiece takes the lock itself
+	// exactly as it does from Start.
+	e.mu.Unlock()
+	defer e.mu.Lock()
+
 	// Cooperative: notify other players of the score change. Teams: notify
 	// everyone of the score AND line-count change (lines keep every
 	// teammate's level/gravity in sync). Competitive: the board is private,
@@ -296,9 +327,9 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	// durable CAS-add ledger replaces the old fire-and-forget shrink
 	// event — simultaneous attacks sum instead of trimming each other,
 	// and victims reconcile the register whenever they catch up. On a
-	// goroutine: handleLockIn holds e.mu, which the bump needs briefly,
-	// and the bump's publishes must not extend the lock-in critical
-	// section anyway. The attack is one row per line, or the Guideline
+	// goroutine: the bump's publishes must not delay the spawn behind
+	// them (the lock-in is off e.mu here, which the bump takes briefly
+	// itself). The attack is one row per line, or the Guideline
 	// table (a single sends nothing, a T-spin more, a Back-to-Back or a
 	// perfect clear a bonus — game.Clear.AttackRows) when the game was
 	// created with guideline garbage; a zero attack is no bump at all.
@@ -312,10 +343,10 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	e.pieceIdx.Add(1)
 	go e.publishPieceIdxUpdate(e.pieceIdx.Load())
 
-	// Spawn next piece if we're the player. handleLockIn runs under e.mu (held
-	// by runConsumer), so locked=true.
+	// Spawn next piece if we're the player — off the lock (above), the
+	// spawn's publish being a round trip.
 	if e.getMode() == ModePlayer {
-		e.spawnPiece(ctx, true)
+		e.spawnPiece(ctx, false)
 	}
 }
 

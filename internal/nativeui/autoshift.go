@@ -238,7 +238,11 @@ func (s *autoShift) step(now time.Time, arr time.Duration, room int,
 // piece during the lock-to-spawn gap, exactly like a gesture's
 // (handleGestures replays heldMoves the frame the piece appears).
 func (a *App) shiftEmit(eng *engine.Engine) func(int) {
-	noPiece := eng.Started() && !eng.HasActivePiece()
+	// Not in the gap behind the player's own hard drop: the engine holds
+	// the moves made there for the next piece itself, in the order they
+	// were made (Engine.AwaitingSpawn), so a shift dispatched now keeps its
+	// place among the rotations dispatched around it.
+	noPiece := eng.Started() && !eng.HasActivePiece() && !eng.AwaitingSpawn()
 	return func(dir int) {
 		m := engine.MoveLeft
 		if dir > 0 {

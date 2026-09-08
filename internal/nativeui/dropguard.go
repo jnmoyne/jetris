@@ -40,15 +40,20 @@ import (
 
 // dropGuard watches one board's pieces go by.
 //
-// The piece INDEX is what it watches, not the piece on the board: the lock
-// and the spawn that follows it happen in one critical section on the
-// engine's consumer goroutine (engine/consumer.go handleLockIn), so a frame
-// may well never see the board without a piece — but Engine.PieceIdx, bumped
-// there, has moved on for good and any frame after it can tell.
+// The piece INDEX is what it watches first (Engine.PieceIdx): it moves on
+// at the lock-in, for good, so a frame can tell a lock went by even when it
+// never saw the board without a piece (on a LAN the lock and the spawn
+// behind it are a millisecond apart). On a far server the board IS seen
+// without a piece — for a round trip after the index moved, while the
+// spawn's publish is out (engine/consumer.go handleLockIn) — and the two
+// readings must agree on whose lock it was: the drops the player made are
+// counted (owed), each lock-in pays one off, and a lock nobody paid for is
+// the accident the guard is for.
 type dropGuard struct {
 	seen  bool      // idx has been read: the first frame arms nothing
 	idx   uint64    // the piece the board was on (Engine.PieceIdx)
-	spent bool      // that piece is the player's own to commit: they hard dropped it
+	owed  int       // hard drops the player made whose lock-ins have not come back: the next index bumps are theirs
+	own   bool      // the last lock-in paid for one of them: the gap behind it, until the next piece is on the board, is the player's
 	armed bool      // a lock the player did not make: waiting for the next piece
 	until time.Time // the window past that piece's arrival
 }
@@ -61,16 +66,27 @@ func (g *dropGuard) observe(idx uint64, hasPiece bool, now time.Time, d time.Dur
 		return
 	}
 	if idx != g.idx {
-		// The piece moved on. Either the player dropped it (spent) or it
-		// locked on its own — and only the second is guarded. This is also
-		// the whole of it when the gap below was never visible to a frame.
-		g.armed = g.armed || (!g.spent && d > 0)
-		g.idx, g.spent = idx, false
+		// The piece moved on. Either the player dropped it (a drop owed
+		// pays for it) or it locked on its own — and only the second is
+		// guarded. This is also the whole of it when the gap below was
+		// never visible to a frame.
+		g.idx = idx
+		if g.owed > 0 {
+			g.owed, g.own = g.owed-1, true
+		} else {
+			g.own, g.armed = false, g.armed || d > 0
+		}
 	}
-	if !hasPiece && !g.spent && d > 0 {
+	if !hasPiece && g.owed == 0 && !g.own && d > 0 {
 		// The lock-to-spawn gap of a lock the player did not make: the piece
-		// is off the board and its lock-in has not come back yet.
+		// is off the board, no drop of theirs is out, and the last lock-in
+		// was not theirs either.
 		g.armed = true
+	}
+	if hasPiece {
+		// The next piece is here (or the dropped one still is): a gap
+		// behind an own drop is over once a piece follows it.
+		g.own = false
 	}
 	if g.armed && hasPiece {
 		// The next piece is here: the guard becomes the knob's window.
@@ -87,9 +103,11 @@ func (g *dropGuard) blocked(now time.Time, d time.Duration) bool {
 	return g.armed || now.Before(g.until)
 }
 
-// spend marks the piece as the player's own to commit: the lock it is about
-// to make is a hard drop of theirs, not the accident the guard is for.
-func (g *dropGuard) spend() { g.spent = true }
+// spend counts a hard drop the player made: the lock-in it brings — of the
+// piece on the board, or of the next one when it was pressed in the gap
+// behind a drop already out (the engine holds it for that piece) — is
+// theirs, not the accident the guard is for.
+func (g *dropGuard) spend() { g.owed++ }
 
 // reset forgets everything: the game screen left, the player eliminated, the
 // game over — nothing carries into the next one.

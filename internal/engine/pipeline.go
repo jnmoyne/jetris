@@ -94,6 +94,11 @@ import (
 // CAS protection while pipelining, at the price of a repair whenever the
 // stream did not do what the engine assumed; quiet games (a solo board, a
 // slow opponent) predict right nearly always, busy shared streams do not.
+// The trade is a shared board's: on a competitive board the player is the
+// only writer of their cells, a step in flight cannot lose, and the
+// optimistic mode pipelines like the async one — no expectation on a cell
+// in flight, nothing to guess and nothing to lose to the opponent's traffic
+// (publishStep).
 
 // Both pipelined modes bound their depth by COALESCING: with the in-flight
 // limit's worth of batches out (InflightLimit), runInput leaves the moves
@@ -427,7 +432,18 @@ func (e *Engine) publishStep(ctx context.Context, cells map[game.CellPos]game.Ce
 	}
 	internal := moves == nil
 	if m := e.PublishMode(); m == PublishAsync || m == PublishOptimistic {
-		e.publishStepAsync(ctx, cells, pre, target, moves, m == PublishOptimistic)
+		// The optimistic mode's guessed expectations are a SHARED board's:
+		// they guard a cell in flight against a teammate's write. On a
+		// competitive board nobody else ever writes the player's cells (the
+		// opponents' attacks land on the garbage register, the player's own
+		// engine applies them, as a barrier), so the step in flight cannot
+		// lose and the step behind it has nothing to guard those cells
+		// against — while a guess loses to every message the opponent lands
+		// in the stream during the round trip, a lost race and a repair for
+		// nothing, on a far server every time a drop is pressed behind a
+		// move (a beta player's clip: the piece drawn dropped, snapping back
+		// into the headroom, landing again two round trips later).
+		e.publishStepAsync(ctx, cells, pre, target, moves, m == PublishOptimistic && e.sharedBoard())
 		return
 	}
 	// A sync step behind pipelined ones (the mode was just switched): let

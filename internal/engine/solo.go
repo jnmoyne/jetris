@@ -180,11 +180,12 @@ func (e *Engine) resyncLocal(ctx context.Context) {
 // cells it announces — while every other engine publishes it synchronously,
 // as it always did.
 func (e *Engine) publishEvent(ctx context.Context, subject string, data []byte) {
-	if e.solo() {
-		if _, err := e.js.PublishAsync(subject, data); err != nil {
-			log.Printf("engine %s: publish event: %v", e.playerID, err)
-		}
-		return
+	// Sent, not awaited, in every mode: the lock-in publishes it on the
+	// consumer goroutine between the lock and the spawn, and waiting for
+	// the ack there put a round trip between a player and their next piece
+	// on a far server. The connection keeps the events in order, which is
+	// all the receivers' delta folding needs (foldTotals).
+	if _, err := e.js.PublishAsync(subject, data); err != nil {
+		log.Printf("engine %s: publish event: %v", e.playerID, err)
 	}
-	_, _ = e.js.Publish(ctx, subject, data)
 }

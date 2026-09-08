@@ -452,13 +452,18 @@ func (a *App) handleGestures(gtx C, eng *engine.Engine, active bool) {
 	// piece is there, so a swipe or a tap begun right after a drop lands on
 	// the new piece where the finger already is. A hard drop is not held: a
 	// flick meant for the piece that just locked must not drop the next one.
-	noPiece := active && eng.Started() && !eng.HasActivePiece()
+	// The gap behind the player's OWN hard drop is the engine's to hold
+	// (Engine.AwaitingSpawn): the moves made there go straight to it, in
+	// order, the flick included — a drop pressed behind a drop is the next
+	// piece's, as the guard (dropguard.go) reads it too.
+	gap := active && eng.Started() && !eng.HasActivePiece()
+	noPiece := gap && !eng.AwaitingSpawn()
 	// The lock-to-spawn gap as the frames see it, for the touch diagnostic
 	// (view_js.go): how long the board went without a piece.
 	switch {
-	case noPiece && a.pieceGapStart.IsZero():
+	case gap && a.pieceGapStart.IsZero():
 		a.pieceGapStart = gtx.Now
-	case !noPiece && !a.pieceGapStart.IsZero():
+	case !gap && !a.pieceGapStart.IsZero():
 		a.spawnGapLast = gtx.Now.Sub(a.pieceGapStart)
 		a.spawnGapMax = max(a.spawnGapMax, a.spawnGapLast)
 		a.pieceGapStart = time.Time{}

@@ -196,3 +196,71 @@ func TestDropGuardHeldSpaceIsSpent(t *testing.T) {
 		t.Fatalf("a held space refused by the guard: %d moves buffered, want none", n)
 	}
 }
+
+// TestDropGuardOwnDropSpawnLagsTheIndex: on a far server the frames see the
+// gap behind the player's own drop in full — the piece gone, then the index
+// moved on with still no piece while the spawn's publish round-trips, then
+// the next piece. None of it is guarded: the drop was theirs.
+func TestDropGuardOwnDropSpawnLagsTheIndex(t *testing.T) {
+	var g dropGuard
+	t0 := time.Unix(8000, 0)
+	g.observe(1, true, t0, guardWindow)
+
+	g.spend()                                      // the player's own hard drop
+	g.observe(1, true, t0.Add(16*ms), guardWindow) // its commit still round-tripping: the piece is still on the board
+	g.observe(1, false, t0.Add(200*ms), guardWindow)
+	if g.blocked(t0.Add(200*ms), guardWindow) {
+		t.Fatal("the gap after the player's own drop: the drop must not be refused")
+	}
+	g.observe(2, false, t0.Add(216*ms), guardWindow) // the lock-in came back, the spawn is out
+	if g.blocked(t0.Add(216*ms), guardWindow) {
+		t.Fatal("the index moved on behind the player's own drop: the drop must not be refused")
+	}
+	g.observe(2, false, t0.Add(300*ms), guardWindow)
+	if g.blocked(t0.Add(300*ms), guardWindow) {
+		t.Fatal("still the player's own gap: the drop must not be refused")
+	}
+	g.observe(2, true, t0.Add(400*ms), guardWindow)
+	if g.blocked(t0.Add(400*ms), guardWindow) {
+		t.Fatal("the piece after the player's own drop: the drop must not be refused")
+	}
+
+	// And a lock they did not make, seen the same way, is guarded again.
+	g.observe(2, false, t0.Add(900*ms), guardWindow)
+	if !g.blocked(t0.Add(900*ms), guardWindow) {
+		t.Fatal("a lock the player did not make: the gap must refuse the drop")
+	}
+	g.observe(3, false, t0.Add(916*ms), guardWindow)
+	g.observe(3, true, t0.Add(1100*ms), guardWindow)
+	if !g.blocked(t0.Add(1100*ms), guardWindow) {
+		t.Fatal("inside the window after it: the drop must be refused")
+	}
+	if g.blocked(t0.Add(1100*ms).Add(guardWindow), guardWindow) {
+		t.Fatal("past the window: the drop must be the player's again")
+	}
+}
+
+// TestDropGuardDropPressedInOwnGap: a drop pressed in the gap behind a drop
+// of the player's own is the next piece's (the engine holds it for that
+// piece), and the lock it makes is theirs too — two drops, two lock-ins,
+// nothing guarded.
+func TestDropGuardDropPressedInOwnGap(t *testing.T) {
+	var g dropGuard
+	t0 := time.Unix(9000, 0)
+	g.observe(1, true, t0, guardWindow)
+
+	g.spend()
+	g.observe(1, false, t0.Add(200*ms), guardWindow)
+	g.spend() // the next piece's, pressed a round trip early
+	g.observe(2, false, t0.Add(216*ms), guardWindow)
+	g.observe(2, true, t0.Add(400*ms), guardWindow) // the next piece lands, and the held drop takes it at once
+	g.observe(2, false, t0.Add(600*ms), guardWindow)
+	if g.blocked(t0.Add(600*ms), guardWindow) {
+		t.Fatal("the gap behind the second drop: the drop must not be refused")
+	}
+	g.observe(3, false, t0.Add(616*ms), guardWindow)
+	g.observe(3, true, t0.Add(800*ms), guardWindow)
+	if g.blocked(t0.Add(800*ms), guardWindow) {
+		t.Fatal("the piece after two drops of the player's own: the drop must not be refused")
+	}
+}

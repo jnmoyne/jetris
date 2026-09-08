@@ -48,6 +48,16 @@ func (e *Engine) runInput(ctx context.Context) {
 			if e.pipelineFull() && !e.barrierQueued() {
 				continue
 			}
+			// The moves queued behind the player's own hard drop, while
+			// its lock and the spawn behind it round-trip, are the NEXT
+			// piece's — a rotation, a shift, the next drop, pressed a
+			// round trip early by a player faster than the wire. They
+			// wait in the queue for that piece (spawnPiece wakes the loop
+			// once it is on the board) instead of running against a board
+			// with no piece on it, where a move is a no-op and lost.
+			if e.AwaitingSpawn() {
+				continue
+			}
 			// A lost pipelined step is repaired BEFORE the queue is read: the
 			// repair puts the moves pipelined behind the loss back at its head
 			// (pipeline.go), and they go out ahead of what queued since.
@@ -407,6 +417,7 @@ func (e *Engine) publishHardDrop(ctx context.Context) error {
 	// before the vacated ones, ensuring a line completed by the drop is
 	// detected at this lock (not one piece later). See publishProjectedCellsNoCAS.
 	e.publishProjectedCellsNoCAS(ctx, cells, false)
+	e.noteLockSent(true)
 	return nil
 }
 
@@ -443,6 +454,7 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 	// applies the landing cells before the vacated ones so a line completed by
 	// the drop is detected at this lock, not one piece later.
 	e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, false)
+	e.noteLockSent(true)
 	return nil
 }
 

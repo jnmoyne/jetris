@@ -234,6 +234,10 @@ type Engine struct {
 	teamLines         [config.MaxTeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
 	hadActivePiece    bool                              // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
 	spawnPending      bool                              // shared boards: spawn deferred because another player's ACTIVE piece covers the spawn cells; guarded by e.mu; retried from runInput's gravity tick (retrySpawnIfPending). Never set in competitive mode.
+	awaitSpawn        bool                              // the player's own hard drop took their piece off the board and the next has not landed on it yet: the moves queued meanwhile are that piece's and wait for it (runInput, noteDropGap); guarded by e.mu; cleared by spawnPiece
+	spawning          bool                              // the lock-in is between its lock and its spawn's commit, off the lock (handleLockIn): the piece-less watchdog must not count the gap, let alone spawn into it (retrySpawnIfPending); guarded by e.mu
+	lockInFlight      bool                              // the engine's own lock — a hard drop's, the lock delay's — is written through and its lock-in is on its way back on the echo (noteLockSent, cleared by handleLockIn): the watchdog leaves the piece-less board alone meanwhile, up to lockEchoGrace; guarded by e.mu
+	lockSentAt        time.Time                         // when lockInFlight was set; guarded by e.mu
 	pieceLessTicks    int                               // consecutive gravity ticks spent alive with NO active piece and NO pending spawn; guarded by e.mu; at 2 the piece-less watchdog forces a spawn (see retrySpawnIfPending)
 	eliminatedPlayers map[string]bool                   // players who have topped out (competitive/teams); guarded by e.mu
 	eliminatedTeam    map[string]int                    // teams: eliminated player → team; guarded by e.mu
@@ -606,6 +610,46 @@ func (e *Engine) Started() bool { return e.started.Load() }
 // WatchdogSpawns is how many pieces the piece-less watchdog had to force so
 // far — pieces that came late (retrySpawnIfPending).
 func (e *Engine) WatchdogSpawns() int64 { return e.watchdogSpawns.Load() }
+
+// AwaitingSpawn reports the lock-to-spawn gap behind the player's OWN hard
+// drop: their piece is off the board because they dropped it, and the next
+// one has not landed on it yet — a round trip on the wire. The moves made
+// in that gap are the next piece's, and the engine holds them for it in
+// order (runInput), so the UI dispatches them at once instead of holding
+// them itself (nativeui/autoshift.go shiftEmit, gesture.go). The gap after a
+// lock the player did not make is not this: there a move dispatched is a
+// no-op, as ever, and the UI decides what to hold and what to refuse.
+func (e *Engine) AwaitingSpawn() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.awaitSpawn
+}
+
+// lockEchoGrace bounds lockInFlight: an own lock whose lock-in has not come
+// back in this long is treated as lost, and the piece-less watchdog is free
+// to respawn (retrySpawnIfPending). Far beyond any round trip a game is
+// playable over.
+const lockEchoGrace = 3 * time.Second
+
+// noteLockSent is called right after the engine's own lock publishes — a
+// hard drop's (ownDrop) or the lock delay's. If it took the piece off the
+// acked board (it may not have: a coop drop resting on a teammate's falling
+// piece keeps it, and so does a lock the wire rejected; and on a journal the
+// lock-in has already spawned the next piece by the time the publish
+// returns), the lock-in is now on its way back on the echo, the piece-less
+// watchdog stands down for it (lockInFlight), and — behind the player's own
+// drop — the moves queued meanwhile are the next piece's and wait for it
+// (awaitSpawn, runInput).
+func (e *Engine) noteLockSent(ownDrop bool) {
+	e.mu.Lock()
+	if e.playfield.ActivePieceForPlayer(e.playerIdx) == nil {
+		e.lockInFlight, e.lockSentAt = true, time.Now()
+		if ownDrop {
+			e.awaitSpawn = true
+		}
+	}
+	e.mu.Unlock()
+}
 
 // HasActivePiece reports whether this player's falling piece is on the board
 // right now. It is not between a lock and the next spawn — a NATS round trip
@@ -1276,9 +1320,13 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 		e.mu.Lock()
 	}
 	e.hadActivePiece = true
+	// The next piece is on the board: the moves held for it behind the
+	// player's own drop (awaitSpawn) go out now.
+	e.awaitSpawn = false
 	if !locked {
 		e.mu.Unlock()
 	}
+	e.signalMoves()
 }
 
 // spawnPosition is where a piece of type pt enters play on this engine's
@@ -1402,6 +1450,17 @@ func (e *Engine) retrySpawnIfPending(ctx context.Context) {
 	}
 	if e.playfield.ActivePieceForPlayer(e.playerIdx) != nil {
 		e.spawnPending = false // another path already spawned meanwhile
+		e.pieceLessTicks = 0
+		return
+	}
+	if e.spawning || (e.lockInFlight && time.Since(e.lockSentAt) < lockEchoGrace) {
+		// Not a stall: the engine's own lock is on its way back on the
+		// echo (the tick fired during its publish and runs the instant
+		// the ack wrote it through, before the consumer has seen a thing),
+		// or the lock-in is spawning the next piece right now, its publish
+		// round-tripping off the lock (handleLockIn). A forced spawn here
+		// would be a second piece — and the real lock-in, finding a piece
+		// on the board, would never fire.
 		e.pieceLessTicks = 0
 		return
 	}

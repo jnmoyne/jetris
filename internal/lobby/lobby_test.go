@@ -541,7 +541,7 @@ func TestLobbyCreateGameSpecRoundTrip(t *testing.T) {
 
 	id, err := lb.CreateGame(ctx, config.GameSpec{
 		Mode: config.ModeCooperative, PlayerCount: 3, ExtraColumns: 5, ExtraRows: 4, LineGoal: 40,
-		Scoring: config.ScoringIndividual, SplitPieces: true, MaxAgents: 1,
+		Scoring: config.ScoringIndividual, SplitPieces: true, MaxAgents: 1, AgentsPauseAlone: true,
 		Rules: config.GameRules{NextCount: 2, Ghost: true, Hold: true},
 	})
 	if err != nil {
@@ -559,7 +559,7 @@ func TestLobbyCreateGameSpecRoundTrip(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	g := lb.Games()[id]
-	if g.ExtraRows != 4 || g.LineGoal != 40 || !g.IndividualScoring() || !g.SplitsPieces() || g.MaxAgents != 1 || !g.Dynamic() {
+	if g.ExtraRows != 4 || g.LineGoal != 40 || !g.IndividualScoring() || !g.SplitsPieces() || g.MaxAgents != 1 || !g.AgentsPauseAlone || !g.Dynamic() {
 		t.Errorf("listing lost a setting: %+v", g)
 	}
 	if got, want := g.BoardHeight(), config.SharedBoardHeight(3, 4); got != want {

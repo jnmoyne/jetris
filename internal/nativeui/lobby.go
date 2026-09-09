@@ -1852,8 +1852,18 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	} else {
 		extra += " · open"
 	}
+	// The agent policy: the seats agents hold against the seats they may
+	// take — on each team of a teams game, in the whole game elsewhere —
+	// and whether an agent left alone waits for company.
 	if g.MaxAgents > 0 {
-		extra += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
+		if g.Mode == config.ModeTeams {
+			extra += fmt.Sprintf(" · agents %d, max %d per team", g.AgentCount(), g.MaxAgents)
+		} else {
+			extra += fmt.Sprintf(" · agents %d/%d", g.AgentCount(), g.MaxAgents)
+		}
+		if g.AgentsPauseAlone {
+			extra += " · agents pause when alone"
+		}
 	}
 	// The play rules: one "guideline" tag for the wizard's preset, else each
 	// rule that differs from the classic game.

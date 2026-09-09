@@ -88,7 +88,8 @@ go build -o golang-mk1 .
 ./golang-mk1 --create --players 2 --once
 ./golang-mk1 --create --mode cooperative --players 2 --once
 ./golang-mk1 --create --mode cooperative --players 1 --once  # solo: one seat, played for the high score
-./golang-mk1 --create --mode teams --players 2 --once     # 2v2 (--players is per team)
+./golang-mk1 --create --mode teams --players 2 --once     # 2v2 (--players is per team, --max-agents too)
+./golang-mk1 --create --mode cooperative --pause-alone   # host a co-op game; alone in it, wait for company
 
 # offline conformance checks (RNG + split-deal parity with the game, planner sanity)
 ./golang-mk1 --selftest
@@ -97,7 +98,9 @@ go build -o golang-mk1 .
 Flags: `--server` (overrides `--context`; `--user`/`--password` go with it), `--context`
 (a NATS context; default: the selected one), `--name` (version stem, default
 `golang-mk1`), `--difficulty` (`easy`/`medium`/`hard`), `--join`, `--create` (with
-`--mode`, `--players`, `--max-agents`, `--next`, `--holes` — holes per garbage row, 0-4,
+`--mode`, `--players`, `--max-agents` — the agent seats, per team in a teams game —
+`--pause-alone` — the listing's `agents_pause_alone`: an agent left as the game's only
+player waits for someone to join instead of playing on — `--next`, `--holes` — holes per garbage row, 0-4,
 written to the meta as `garbage_holes` — `--random-holes`, each garbage row drawing
 its own columns, `random_garbage_holes` — `--guideline-garbage`, the
 Guideline attack table (0/1/2/4 for plain clears, the T-spin rows, the Back-to-Back

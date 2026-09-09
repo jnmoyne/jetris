@@ -175,15 +175,19 @@ func (a *App) wizardSpec() config.GameSpec {
 		spec.Rules = config.GuidelineRules()
 		spec.ExtraColumns, spec.ExtraRows, spec.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, false
 	}
-	// Agent policy (open games): how many seats idle agent players may take.
-	// Unchecked = 0 = agents may not join; clamped to the seat count by the
-	// normalization. An invite-only game's policy is per invitation.
+	// Agent policy (open games): how many seats idle agent players may take
+	// — on each team of a teams game, in the whole game elsewhere — and
+	// whether an agent left as the only player waits for company. Unchecked
+	// = 0 = agents may not join; the count is clamped to the seats it counts
+	// over by the normalization. An invite-only game's policy is per
+	// invitation.
 	if !spec.InviteOnly && a.allowAgentsCb.Value {
 		n, err := strconv.Atoi(strings.TrimSpace(a.maxAgentsEd.Text()))
 		if err != nil || n < 1 {
 			n = 1
 		}
 		spec.MaxAgents = n
+		spec.AgentsPauseAlone = a.pauseAgentsCb.Value
 	}
 	return spec.Normalized()
 }
@@ -692,7 +696,8 @@ func (a *App) wizardCustomRules(gtx C, spec config.GameSpec) D {
 // wizardPlayersStep is step 3: for a multi-playfield game with teams, what
 // each team is called (the piece colours unless renamed); then invite-only,
 // or open — and for an open game, whether idle agent players may take seats,
-// and at most how many.
+// at most how many (on each team, where there are teams), and whether an
+// agent left as the only player waits for company.
 func (a *App) wizardPlayersStep(gtx C) D {
 	open := a.createJoinEnum.Value == "open"
 	hint := "Next you'll pick the players to invite; the game starts once every seat is filled and ready."
@@ -716,8 +721,17 @@ func (a *App) wizardPlayersStep(gtx C) D {
 				return D{}
 			}
 			agentsHint := "Agents will not take seats in this game."
+			maxLabel := "Max agents:"
 			if a.allowAgentsCb.Value {
 				agentsHint = "Idle agent players may take seats — up to the number below (capped at the game's seat count)."
+				if spec.Mode == config.ModeTeams {
+					agentsHint = "Idle agent players may take seats — up to the number below on each team (capped at the players per team)."
+					maxLabel = "Max agents per team:"
+				}
+			}
+			pauseHint := "An agent left as the only player in the game plays on by itself."
+			if a.pauseAgentsCb.Value {
+				pauseHint = "An agent left as the only player in the game stops playing until someone joins it."
 			}
 			return layout.Inset{Left: unit.Dp(24)}.Layout(gtx, func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -729,7 +743,9 @@ func (a *App) wizardPlayersStep(gtx C) D {
 						}
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 							layout.Rigid(spacer(8)),
-							layout.Rigid(a.wizardNumber("Max agents:", &a.maxAgentsEd, "1", nil)),
+							layout.Rigid(a.wizardNumber(maxLabel, &a.maxAgentsEd, "1", nil)),
+							layout.Rigid(spacer(8)),
+							layout.Rigid(a.wizardCheckBox(&a.pauseAgentsCb, "Agents pause when alone", pauseHint)),
 						)
 					}),
 				)

@@ -55,21 +55,22 @@ type connChoice struct {
 // hosting is the --create configuration: what kind of game to host, how big,
 // and how agent-friendly. nil on an Agent means "never host".
 type hosting struct {
-	mode      int    // modeCooperative / modeCompetitive / modeTeams
-	players   int    // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
-	teams     int    // teams mode: how many teams play each other (clamped 2..6; the total seat count is teams × players)
-	extraCols int    // shared boards: columns every seat beyond the first adds to the standard 10 (clamped 4..10)
-	maxAgents int    // agent seats, this agent included (<=0 = all seats)
-	next      int    // revealed upcoming pieces (clamped 0..maxNextCount)
-	holes     int    // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
-	random    bool   // every garbage row draws its own hole columns (off = one draw per raise)
-	guideline bool   // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
-	hold      bool   // the Guideline hold queue (this agent never holds; humans in the game may)
-	split     bool   // shared playfields with company: deal the seven piece types out between the seats of a playfield, each playing only its ration (meta split_pieces)
-	bag       string // the piece randomizer (meta bag): "" the 7-bag, "double" the double bag, "none" no bag
-	extraRows int    // shared boards: rows every seat beyond the first adds below the standard 20 (clamped 0..10; meta extra_rows)
-	lineGoal  int    // the game's length in lines (meta line_goal; 0 = until top out)
-	single    bool   // cooperative: score every seat on its own, the top score wins (meta scoring "individual")
+	mode       int    // modeCooperative / modeCompetitive / modeTeams
+	players    int    // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
+	teams      int    // teams mode: how many teams play each other (clamped 2..6; the total seat count is teams × players)
+	extraCols  int    // shared boards: columns every seat beyond the first adds to the standard 10 (clamped 4..10)
+	maxAgents  int    // agent seats, this agent included — on each team of a teams game, in the whole game elsewhere (<=0 = all seats)
+	next       int    // revealed upcoming pieces (clamped 0..maxNextCount)
+	holes      int    // holes per garbage row (clamped 0..4; 0 = solid, permanent rows)
+	random     bool   // every garbage row draws its own hole columns (off = one draw per raise)
+	guideline  bool   // attacks follow the Guideline table (0/1/2/4 rows for 1/2/3/4 lines)
+	hold       bool   // the Guideline hold queue (this agent never holds; humans in the game may)
+	split      bool   // shared playfields with company: deal the seven piece types out between the seats of a playfield, each playing only its ration (meta split_pieces)
+	bag        string // the piece randomizer (meta bag): "" the 7-bag, "double" the double bag, "none" no bag
+	extraRows  int    // shared boards: rows every seat beyond the first adds below the standard 20 (clamped 0..10; meta extra_rows)
+	lineGoal   int    // the game's length in lines (meta line_goal; 0 = until top out)
+	single     bool   // cooperative: score every seat on its own, the top score wins (meta scoring "individual")
+	pauseAlone bool   // open games: an agent left as the only player waits for company instead of playing on (listing agents_pause_alone)
 }
 
 // Agent is one connected peer: lobby plumbing plus the game loop it runs when
@@ -530,15 +531,11 @@ func (a *Agent) declineInvite(ctx context.Context, gameID string) {
 }
 
 // joinable reports an open game (any mode) with a free seat this agent may
-// take — in teams, a free seat on at least one team.
+// take under the game's agent policy (guide §2): max_agents caps the agents
+// of the whole game — or, in teams, of EACH team, so a free seat on at
+// least one team whose agent seats are not all taken.
 func joinable(g obj) bool {
 	players := g.players()
-	agents := 0
-	for _, p := range players {
-		if p.Agent {
-			agents++
-		}
-	}
 	// An open game takes joiners before it starts and while it runs (its
 	// seats are anyone's at any time); the countdown is the one moment it
 	// does not (guide §5). An invite game takes nobody uninvited.
@@ -547,13 +544,24 @@ func joinable(g obj) bool {
 	default:
 		return false
 	}
-	if g.boolv("invite_only") || len(players) >= g.int("player_count") || g.int("max_agents") <= agents {
+	if g.boolv("invite_only") || len(players) >= g.int("player_count") {
 		return false
 	}
 	if g.int("mode") == modeTeams {
-		return pickTeam(g, -1) >= 0
+		return pickTeam(g, -1, true) >= 0
 	}
-	return true
+	return g.int("max_agents") > agentsAmong(players)
+}
+
+// agentsAmong counts the roster seats agents hold.
+func agentsAmong(players []playerSummary) int {
+	n := 0
+	for _, p := range players {
+		if p.Agent {
+			n++
+		}
+	}
+	return n
 }
 
 // freeSeat is the lowest free seat of a listing — and, in teams, the lowest
@@ -638,28 +646,37 @@ func readyOn(players []playerSummary, on func(playerSummary) bool) int {
 // pickTeam returns the team an agent should join: the invited team when the
 // invitation names one (want >= 0), else the least-populated team with room —
 // over however many teams the game is played between (listing team_count;
-// absent is the historical two). Returns -1 when no team has a free seat.
-func pickTeam(g obj, want int) int {
+// absent is the historical two). With policy set, a team also needs a free
+// AGENT seat: the listing's max_agents caps the agents of each team (guide
+// §2); an invitation is the permission, so an invited join passes false.
+// Returns -1 when no team has a seat for us.
+func pickTeam(g obj, want int, policy bool) int {
 	teamCount := normalizeTeamCount(g.int("team_count"))
 	teamSize := g.int("team_size")
 	if teamSize <= 0 {
 		teamSize = g.int("player_count") / teamCount
 	}
-	counts := make([]int, teamCount)
+	counts, agents := make([]int, teamCount), make([]int, teamCount)
 	for _, p := range g.players() {
 		if p.Team >= 0 && p.Team < teamCount {
 			counts[p.Team]++
+			if p.Agent {
+				agents[p.Team]++
+			}
 		}
 	}
+	room := func(t int) bool {
+		return counts[t] < teamSize && (!policy || agents[t] < g.int("max_agents"))
+	}
 	if want >= 0 && want < teamCount {
-		if counts[want] < teamSize {
+		if room(want) {
 			return want
 		}
 		return -1
 	}
 	best, bestCount := -1, teamSize
 	for t := 0; t < teamCount; t++ {
-		if counts[t] < bestCount {
+		if room(t) && counts[t] < bestCount {
 			best, bestCount = t, counts[t]
 		}
 	}
@@ -771,16 +788,13 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 		default:
 			return -1
 		}
-		if !invited { // an invitation IS the permission (bypasses the policy)
-			agents := 0
-			for _, p := range players {
-				if p.Agent {
-					agents++
-				}
-			}
-			if g.int("max_agents") <= 0 || agents >= g.int("max_agents") {
-				return -1
-			}
+		// The agent policy (guide §2), checked here inside the CAS loop so
+		// agents racing for the last agent seat never over-fill it: agents
+		// may not join at all at max_agents 0, and past that the cap is on
+		// the agents of each TEAM in teams mode (pickTeam), of the whole
+		// game elsewhere. An invitation IS the permission (bypasses it).
+		if !invited && g.int("max_agents") <= 0 {
+			return -1
 		}
 		if len(players) >= g.int("player_count") {
 			return -1
@@ -791,9 +805,11 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 			if invited {
 				want = a.inviteTeam
 			}
-			if team = pickTeam(g, want); team < 0 {
-				return -1 // the invited (or every) team is full
+			if team = pickTeam(g, want, !invited); team < 0 {
+				return -1 // the invited (or every) team is full, or its agent seats are
 			}
+		} else if !invited && agentsAmong(players) >= g.int("max_agents") {
+			return -1 // the game's agent seats are taken
 		}
 		// The seat: the lowest free one (freeSeat) — stable, so a cell's
 		// player index names one seat for the whole game.
@@ -863,9 +879,16 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 			players = floor
 		}
 	}
+	// The agent policy: how many seats agents may take — on each team of a
+	// teams game, in the whole game elsewhere (guide §2). Agent-hosted
+	// games are agent-friendly by default: every seat.
+	policySeats := players
+	if h.mode == modeTeams {
+		policySeats = teamSize
+	}
 	maxAgents := h.maxAgents
-	if maxAgents <= 0 || maxAgents > players {
-		maxAgents = players // agent-hosted games are agent-friendly by default
+	if maxAgents <= 0 || maxAgents > policySeats {
+		maxAgents = policySeats
 	}
 	// A shared board's width setting; competitive boards are always the
 	// standard 10 columns, so its meta records none.
@@ -971,6 +994,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		listing.set("extra_columns", extra)
 	}
 	listing.set("max_agents", maxAgents)
+	if h.pauseAlone {
+		listing.set("agents_pause_alone", true)
+	}
 	listing.set("next_count", next)
 	if holes > 0 {
 		listing.set("garbage_holes", holes)
@@ -1014,12 +1040,17 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	_ = a.nc.Publish("jetris.lobby.event.game.created", ev)
 
 	shape := ""
+	policy := fmt.Sprintf("max %d agents", maxAgents)
 	if teamCount > 0 {
 		shape = fmt.Sprintf(" in %d teams of %d", teamCount, teamSize)
+		policy += " per team"
 	}
-	log.Printf("created %s game %s for %d players%s (max %d agents, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v, %s) — waiting for opponents",
+	if h.pauseAlone {
+		policy += ", pausing when alone"
+	}
+	log.Printf("created %s game %s for %d players%s (%s, next %d, garbage holes %d, random %v, guideline garbage %v, hold %v, %s) — waiting for opponents",
 		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
-		gameID, players, shape, maxAgents, next, holes, random, h.guideline, h.hold, bagLabel(h.bag))
+		gameID, players, shape, policy, next, holes, random, h.guideline, h.hold, bagLabel(h.bag))
 	return gameID, nil
 }
 

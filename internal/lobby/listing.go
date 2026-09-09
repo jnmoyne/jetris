@@ -17,7 +17,8 @@ type GameListing struct {
 	TeamSize           int               `json:"team_size,omitempty"`            // teams mode: players per team
 	TeamNames          []string          `json:"team_names,omitempty"`           // teams mode: what each team is called; mirrors GameMeta.TeamNames for the lobby row, the join buttons and the invitations (absent = the letters)
 	ExtraColumns       int               `json:"extra_columns,omitempty"`        // shared boards: columns per seat beyond the first; mirrors GameMeta.ExtraColumns for the lobby row's board-width tag
-	MaxAgents          int               `json:"max_agents,omitempty"`           // creator's agent policy: how many roster seats agents may take (0 = agents not allowed)
+	MaxAgents          int               `json:"max_agents,omitempty"`           // creator's agent policy: how many roster seats agents may take — on EACH team of a teams game, in the whole game elsewhere (0 = agents not allowed; see AgentSeatFree)
+	AgentsPauseAlone   bool              `json:"agents_pause_alone,omitempty"`   // open games: an agent left as the only player in the game stops playing — keeping its seat — until someone, agent or human, joins; unset, agents play on alone or among themselves
 	NextCount          int               `json:"next_count,omitempty"`           // how many upcoming pieces are shown (0..config.MaxNextCount); mirrors GameMeta.NextCount for the lobby row
 	NoGhost            bool              `json:"no_ghost,omitempty"`             // the hard-drop ghost is off; mirrors GameMeta.NoGhost (inverted like it) so the row's "guideline" tag matches the preset exactly
 	Hold               bool              `json:"hold,omitempty"`                 // the Guideline hold queue is on; mirrors GameMeta.Hold for the lobby row's "hold" tag
@@ -140,19 +141,20 @@ func (g GameListing) Dynamic() bool {
 // derived-shape helpers shared with the meta.
 func (g GameListing) spec() config.GameSpec {
 	return config.GameSpec{
-		Mode:         g.Mode,
-		PlayerCount:  g.PlayerCount,
-		TeamCount:    g.TeamCount,
-		TeamSize:     g.TeamSize,
-		TeamNames:    append([]string(nil), g.TeamNames...),
-		ExtraColumns: g.ExtraColumns,
-		ExtraRows:    g.ExtraRows,
-		LineGoal:     g.LineGoal,
-		Scoring:      g.Scoring,
-		SplitPieces:  g.SplitPieces,
-		MaxAgents:    g.MaxAgents,
-		InviteOnly:   g.InviteOnly,
-		Rules:        g.Rules(),
+		Mode:             g.Mode,
+		PlayerCount:      g.PlayerCount,
+		TeamCount:        g.TeamCount,
+		TeamSize:         g.TeamSize,
+		TeamNames:        append([]string(nil), g.TeamNames...),
+		ExtraColumns:     g.ExtraColumns,
+		ExtraRows:        g.ExtraRows,
+		LineGoal:         g.LineGoal,
+		Scoring:          g.Scoring,
+		SplitPieces:      g.SplitPieces,
+		MaxAgents:        g.MaxAgents,
+		AgentsPauseAlone: g.AgentsPauseAlone,
+		InviteOnly:       g.InviteOnly,
+		Rules:            g.Rules(),
 	}
 }
 
@@ -205,6 +207,32 @@ func (g GameListing) AgentCount() int {
 		}
 	}
 	return n
+}
+
+// TeamAgentCount returns how many of a team's roster seats are taken by
+// agents (teams mode).
+func (g GameListing) TeamAgentCount(team int) int {
+	n := 0
+	for _, p := range g.Players {
+		if p.Agent && p.Team == team {
+			n++
+		}
+	}
+	return n
+}
+
+// AgentSeatFree reports whether the agent policy lets one more agent in:
+// MaxAgents is a cap on the agents of EACH team in teams mode (team is the
+// one the agent would join) and on the agents of the whole game elsewhere.
+// False when agents are not allowed at all.
+func (g GameListing) AgentSeatFree(team int) bool {
+	if g.MaxAgents <= 0 {
+		return false
+	}
+	if g.Mode == config.ModeTeams {
+		return g.TeamAgentCount(team) < g.MaxAgents
+	}
+	return g.AgentCount() < g.MaxAgents
 }
 
 // FreeSeat finds the lowest free seat of the game — and, in teams mode, the

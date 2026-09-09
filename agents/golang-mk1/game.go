@@ -73,6 +73,7 @@ type Game struct {
 	results    map[string]event
 	roster     []playerSummary
 	hadRivals  bool // the roster once held someone besides us: a roster down to us alone is a win, not a game never joined
+	pauseAlone bool // the listing's agents_pause_alone, in an open game: alone on the roster, we wait for company between pieces (pauseWhileAlone)
 
 	// attackRotor picks which opposing team our next attack lands on: past
 	// two teams a clear cannot go to "the other" team, so targets rotate
@@ -1371,8 +1372,16 @@ func (g *Game) run(ctx context.Context) bool {
 		log.Printf("bag rule: %s", bagLabel(g.bag))
 	}
 	g.a.mu.Lock()
-	g.roster = g.a.listings[g.id].players()
+	listing := g.a.listings[g.id]
+	g.roster = listing.players()
 	g.a.mu.Unlock()
+	// The creator's pause-when-alone rule (guide §5 step 4): only an open
+	// game's roster can dwindle to us alone, so it is read off the listing
+	// there alone.
+	g.pauseAlone = listing.boolv("agents_pause_alone") && !listing.boolv("invite_only")
+	if g.pauseAlone {
+		log.Printf("agents pause when alone: left as the only player, we wait for company")
+	}
 	// Board geometry and our spawn section (gameplays §2/§3/§5). Every seat
 	// tracks its own piece index on shared boards; competitive keeps the
 	// legacy meta counter.
@@ -1480,6 +1489,11 @@ func (g *Game) playPieces(ctx context.Context) bool {
 		g.mu.Unlock()
 		if dead {
 			return g.topOut(ctx)
+		}
+		// Between pieces — no piece of ours on the board — is where an agent
+		// left alone waits for company, when the game says so.
+		if !g.pauseWhileAlone(ctx) {
+			break
 		}
 		g.mu.Lock()
 		spawnT, placed, over := g.spawn(ctx)
@@ -1742,6 +1756,50 @@ func (g *Game) winCheck() bool {
 	// Every other board out — or, in an open game, gone: a roster down to
 	// us alone after others played is the last board standing (guide §5).
 	return (others > 0 || g.hadRivals) && !g.dead
+}
+
+// pauseWhileAlone is the creator's agents_pause_alone rule (guide §5 step
+// 4): in an open game whose listing sets it, an agent left as the only
+// player on the roster stops playing — between pieces, so no piece of ours
+// is left hanging on the board; its seat kept and the board followed all
+// the while — and plays on the moment anyone, agent or human, takes a seat
+// (the lobby watch pushes the roster, onRoster). Without the rule, or with
+// company, it returns at once. Returns false when the game or the agent
+// stops while waiting.
+func (g *Game) pauseWhileAlone(ctx context.Context) bool {
+	if !g.pauseAlone {
+		return true
+	}
+	paused := false
+	for {
+		g.mu.Lock()
+		alone := g.aloneLocked()
+		g.mu.Unlock()
+		if !alone {
+			if paused {
+				log.Printf("company arrived — playing on")
+			}
+			return true
+		}
+		if !paused {
+			paused = true
+			log.Printf("alone in the game — pausing until someone joins")
+		}
+		if !g.wait(ctx, 250*time.Millisecond) {
+			return false
+		}
+	}
+}
+
+// aloneLocked reports whether nobody but us holds a seat on the roster.
+// mu held.
+func (g *Game) aloneLocked() bool {
+	for _, p := range g.roster {
+		if p.PlayerID != g.a.name {
+			return false
+		}
+	}
+	return true
 }
 
 // onRoster takes the listing's roster as it changes — an open game's seats

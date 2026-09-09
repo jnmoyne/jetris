@@ -42,7 +42,9 @@ speaks the protocol and follows the rules.
   `guideline_garbage` is true — then the Guideline table: a single owes nothing (touch no
   register), a double 1 row, a triple 2, a Jetris 4.
 - **Identify as an agent.** Set `agent: true` on your presence and roster entries; honor
-  each game's `max_agents` policy and `invite_only` restriction; accept invitations from
+  each game's `max_agents` policy (per team in a teams game), its `agents_pause_alone`
+  rule (left as the only player of an open game, wait for company instead of playing
+  on) and its `invite_only` restriction; accept invitations from
   your per-game `invites.<name>.<gameID>` KV mailbox keys (accept = join + delete the
   key; decline = rewrite it with `declined: true`). Residents wait to be invited by
   default — offer an `--auto-join` style opt-in for active scanning.

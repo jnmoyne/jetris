@@ -14,6 +14,7 @@
 //	golang-mk1 --create --players 2 --once                    # host a game, play it, exit
 //	golang-mk1 --create --mode teams --players 2              # host a 2v2 teams game
 //	golang-mk1 --create --mode teams --teams 3 --players 2    # ...or a three-way, 2 per team
+//	golang-mk1 --create --mode cooperative --pause-alone      # host a co-op game and wait, paused, for company
 //	golang-mk1 --difficulty hard --once                       # play a single game, then exit
 //	golang-mk1 --selftest                                     # offline conformance checks
 package main
@@ -43,7 +44,8 @@ func main() {
 	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	players := flag.Int("players", 2, "player count when creating a game (with --create; cooperative: 1 or more, a solo game plays for the high score; teams: players per team)")
 	teams := flag.Int("teams", defaultTeamCount, "teams mode: how many teams play each other when creating a game (2-6; total seats = teams × --players)")
-	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent (0 = all seats)")
+	maxAgents := flag.Int("max-agents", 0, "agent seats when creating a game, including this agent — on each team in teams mode (0 = all seats)")
+	pauseAlone := flag.Bool("pause-alone", false, "when creating a game: an agent left as the only player in it stops playing until someone joins, instead of playing on by itself")
 	extraCols := flag.Int("extra-cols", minExtraColumns, "shared-board width when creating a cooperative or teams game: columns every seat beyond the first adds to the standard 10 (4-10)")
 	next := flag.Int("next", maxNextCount, "upcoming pieces the game reveals when creating a game (0-6, 0 = none)")
 	holes := flag.Int("holes", 0, "holes per garbage row when creating a competitive or teams game (0-4, 0 = solid rows that never clear)")
@@ -100,7 +102,7 @@ func main() {
 			os.Exit(2)
 		}
 		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag,
-			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual}
+			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual, pauseAlone: *pauseAlone}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
 			host.next, host.holes, host.random, host.guideline, host.hold, host.bag = maxNextCount, 1, false, true, true, bagSingle

@@ -820,17 +820,21 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // deal), its length in lines, the lobby's agent policy and invitation
 // setting, and the play rules. The spec is normalized first
 // (config.GameSpec.Normalized), so every setting lands legal for its mode.
-// Everything but MaxAgents and InviteOnly is stored on BOTH records: the meta
-// is the rule book every peer — human UI and agent alike — reads at Start,
-// the listing tags the lobby row (next N, holes N, guideline garbage, hold,
-// double bag / no bag, N lines, board W×H — or plain "guideline" when the
-// rules are the Guideline preset). MaxAgents — how many roster seats agent
-// players may take (0 = agents may not join) — is enforced atomically by
-// JoinGame's CAS loop; InviteOnly restricts joining to invited players (and
-// the creator) — see Invite/JoinGame; invited agents are exempt from the
-// agent policy, the invitation being explicit permission. An open game (the
-// default) lets players join and leave at any time. The ghost rule is stored
-// inverted as GameMeta.NoGhost so pre-field metas keep the ghost shown.
+// Everything but MaxAgents, AgentsPauseAlone and InviteOnly is stored on BOTH
+// records: the meta is the rule book every peer — human UI and agent alike —
+// reads at Start, the listing tags the lobby row (next N, holes N, guideline
+// garbage, hold, double bag / no bag, N lines, board W×H — or plain
+// "guideline" when the rules are the Guideline preset). MaxAgents — how many
+// roster seats agent players may take, on each team of a teams game and in
+// the whole game elsewhere (0 = agents may not join) — is enforced
+// atomically by JoinGame's CAS loop; AgentsPauseAlone tells the agents of an
+// open game to stop playing while one of them is the only player left (the
+// agents read it off the listing); InviteOnly restricts joining to invited
+// players (and the creator) — see Invite/JoinGame; invited agents are exempt
+// from the agent policy, the invitation being explicit permission. An open
+// game (the default) lets players join and leave at any time. The ghost rule
+// is stored inverted as GameMeta.NoGhost so pre-field metas keep the ghost
+// shown.
 func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, error) {
 	gameID := uuid.New().String()
 	// The one place a game's settings are made legal for its mode
@@ -863,6 +867,7 @@ func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, e
 		TeamNames:          spec.TeamNames,
 		ExtraColumns:       spec.ExtraColumns,
 		MaxAgents:          spec.MaxAgents,
+		AgentsPauseAlone:   spec.AgentsPauseAlone,
 		NextCount:          spec.Rules.NextCount,
 		NoGhost:            !spec.Rules.Ghost,
 		Hold:               spec.Rules.Hold,
@@ -899,7 +904,8 @@ var ErrTeamFull = errors.New("team is full")
 var ErrAgentsNotAllowed = errors.New("game does not allow agent players")
 
 // ErrAgentSlotsFull is returned by JoinGame when an agent tries to join a game
-// whose agent seats (GameListing.MaxAgents) are already taken.
+// whose agent seats (GameListing.MaxAgents) are already taken — in teams
+// mode, the agent seats of the team it asked for.
 var ErrAgentSlotsFull = errors.New("game's agent seats are already taken")
 
 // ErrNotInvited is returned by JoinGame for an invite-only game when the
@@ -964,12 +970,13 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 
 		// Agent policy: enforced inside the CAS loop so concurrent agent joins
 		// racing for the last agent seat are serialized by the kv.Update below —
-		// at most MaxAgents roster seats ever go to agents.
+		// at most MaxAgents roster seats ever go to agents: on each team of a
+		// teams game, in the whole game elsewhere (AgentSeatFree).
 		if l.isAgent && !invited {
 			if g.MaxAgents <= 0 {
 				return JoinResult{}, ErrAgentsNotAllowed
 			}
-			if g.AgentCount() >= g.MaxAgents {
+			if !g.AgentSeatFree(team) {
 				return JoinResult{}, ErrAgentSlotsFull
 			}
 		}

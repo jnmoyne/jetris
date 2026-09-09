@@ -617,6 +617,13 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 			w(gtx)
 		}
 		render(func(gtx C) D { return a.gameRow(gtx, g, false) })
+		// A teams row states the policy per team, and the pause-when-alone
+		// rule beside it.
+		teams := g
+		teams.GameID, teams.Mode, teams.TeamCount, teams.TeamSize, teams.PlayerCount = "agent-teams-1234", config.ModeTeams, 2, 2, 4
+		teams.AgentsPauseAlone = true
+		teams.Players = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}, {PlayerID: "hal", Name: "hal", Agent: true, Team: 1, Seat: 2}}
+		render(func(gtx C) D { return a.gameRow(gtx, teams, false) })
 		render(a.createRow)
 	})
 

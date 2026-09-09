@@ -481,9 +481,9 @@ func seatsPerPlayfield(mode GameMode, playerCount, teamSize int) int {
 // how the shared boards grow per seat, how the seats are scored, whether the
 // pieces are dealt out between seatmates — its length in lines, the lobby's
 // agent policy and invitation setting, and the play rules (GameRules). The
-// meta records everything but the lobby-only MaxAgents and InviteOnly, which
-// the listing carries. Normalized clamps every field to what the mode can
-// honour; Meta writes the meta record.
+// meta records everything but the lobby-only MaxAgents, AgentsPauseAlone and
+// InviteOnly, which the listing carries. Normalized clamps every field to
+// what the mode can honour; Meta writes the meta record.
 //
 // The wizard's game types map onto the modes like this: a single playfield is
 // a cooperative-mode board — shared score, or every seat scored on its own
@@ -491,26 +491,29 @@ func seatsPerPlayfield(mode GameMode, playerCount, teamSize int) int {
 // (TeamCount boards of TeamSize seats) or competitive when every player has
 // a board of their own.
 type GameSpec struct {
-	Mode         GameMode
-	PlayerCount  int      // seats in the game: the roster's size for an invite game, its MAXIMUM for an open one (every seat beyond the present players stays free to join)
-	TeamCount    int      // teams: how many boards (MinTeamCount..MaxTeamCount); 0 elsewhere
-	TeamSize     int      // teams: seats per board (PlayerCount = TeamCount*TeamSize); 0 elsewhere
-	TeamNames    []string // teams: what each board's team is called (NormalizeTeamNames: the piece colours unless renamed); nil elsewhere
-	ExtraColumns int      // shared boards: columns per seat beyond the first (MinExtraColumns..MaxExtraColumns)
-	ExtraRows    int      // shared boards: rows per seat beyond the first (MinExtraRows..MaxExtraRows)
-	LineGoal     int      // the game's length in lines (0 = until top out; see GameMeta.LineGoal)
-	Scoring      Scoring  // single playfield: shared or individual scores
-	SplitPieces  bool     // the seven piece types dealt out between the seats of a playfield
-	MaxAgents    int      // lobby: how many seats idle agent players may take (0 = none)
-	InviteOnly   bool     // lobby: only invited players (and the creator) may join; otherwise the game is open, and its roster changes at any time
-	Rules        GameRules
+	Mode             GameMode
+	PlayerCount      int      // seats in the game: the roster's size for an invite game, its MAXIMUM for an open one (every seat beyond the present players stays free to join)
+	TeamCount        int      // teams: how many boards (MinTeamCount..MaxTeamCount); 0 elsewhere
+	TeamSize         int      // teams: seats per board (PlayerCount = TeamCount*TeamSize); 0 elsewhere
+	TeamNames        []string // teams: what each board's team is called (NormalizeTeamNames: the piece colours unless renamed); nil elsewhere
+	ExtraColumns     int      // shared boards: columns per seat beyond the first (MinExtraColumns..MaxExtraColumns)
+	ExtraRows        int      // shared boards: rows per seat beyond the first (MinExtraRows..MaxExtraRows)
+	LineGoal         int      // the game's length in lines (0 = until top out; see GameMeta.LineGoal)
+	Scoring          Scoring  // single playfield: shared or individual scores
+	SplitPieces      bool     // the seven piece types dealt out between the seats of a playfield
+	MaxAgents        int      // lobby: how many seats idle agent players may take — on EACH team of a teams game, in the whole game elsewhere (0 = none; see AgentPolicySeats)
+	AgentsPauseAlone bool     // lobby, open games: an agent left as the only player in the game stops playing, keeping its seat, until someone joins; unset, agents play on — alone, or among themselves
+	InviteOnly       bool     // lobby: only invited players (and the creator) may join; otherwise the game is open, and its roster changes at any time
+	Rules            GameRules
 }
 
 // Normalized returns the spec clamped to what its mode can honour — the one
 // place a game's settings are made legal: team count and size only in teams
-// mode; the agent policy within the seat count; the shared-board growth,
-// the deal and the scoring only where there is a shared board with seats to
-// share it; the line goal and the play rules within their ranges.
+// mode; the agent policy within the seats it counts over (a team's, or the
+// game's) and the pause-when-alone rule only in an open game; the
+// shared-board growth, the deal and the scoring only where there is a
+// shared board with seats to share it; the line goal and the play rules
+// within their ranges.
 func (s GameSpec) Normalized() GameSpec {
 	if s.Mode == ModeTeams {
 		s.TeamCount = NormalizeTeamCount(s.TeamCount)
@@ -521,7 +524,11 @@ func (s GameSpec) Normalized() GameSpec {
 		s.TeamCount, s.TeamSize, s.TeamNames = 0, 0, nil
 		s.PlayerCount = max(s.PlayerCount, 1)
 	}
-	s.MaxAgents = min(max(s.MaxAgents, 0), s.PlayerCount)
+	s.MaxAgents = min(max(s.MaxAgents, 0), s.AgentPolicySeats())
+	// Only an open game's roster can dwindle to one player — an invite
+	// game's is frozen once it starts — so only an open game has agents
+	// pause when left alone.
+	s.AgentsPauseAlone = s.AgentsPauseAlone && !s.InviteOnly
 	s.Rules = s.Rules.Normalized(s.Mode)
 	// Only a shared board has a width and a height to set; competitive
 	// boards are always the standard board, so its meta records no setting.
@@ -544,6 +551,17 @@ func (s GameSpec) Normalized() GameSpec {
 	}
 	s.LineGoal = NormalizeLineGoal(s.LineGoal)
 	return s
+}
+
+// AgentPolicySeats is how many seats the agent policy (MaxAgents) counts
+// over: a team's in teams mode — the cap is PER TEAM there, so a creator can
+// seat an agent on every side — and the whole game's elsewhere, where there
+// are no teams to tell apart.
+func (s GameSpec) AgentPolicySeats() int {
+	if s.Mode == ModeTeams {
+		return max(s.TeamSize, 1)
+	}
+	return max(s.PlayerCount, 1)
 }
 
 // Playfields is how many boards the game is played on (see GameMeta.Playfields).

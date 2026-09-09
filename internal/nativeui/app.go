@@ -441,7 +441,8 @@ type App struct {
 	// same full bag unless the creator says otherwise.
 	splitPiecesCb widget.Bool
 	allowAgentsCb widget.Bool   // wizard agents step: allow idle agents to take seats
-	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take
+	maxAgentsEd   widget.Editor // wizard agents step: how many seats agents may take — on each team of a teams game, in the whole game elsewhere (config.GameSpec.MaxAgents)
+	pauseAgentsCb widget.Bool   // wizard agents step: an agent left as the only player in the game waits for company instead of playing on (config.GameSpec.AgentsPauseAlone)
 	rulesEnum     widget.Enum   // wizard step 2: "guideline" (config.GuidelineRules, read-only) or "custom" (the editors below)
 	holdCb        widget.Bool   // wizard (custom rules): the Guideline hold queue
 	headroomCb    widget.Bool   // wizard (custom rules): the hidden headroom rows drawn above the playfield, behind smoked glass (config.GameMeta.ShowHeadroom)

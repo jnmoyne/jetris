@@ -335,8 +335,9 @@ func TestWizardExtraRows(t *testing.T) {
 }
 
 // TestWizardAgentsPolicy pins step 3's agent policy: only an open game has
-// one, unchecked means none, the count is clamped to the seats, blank or
-// junk reads as one.
+// one, unchecked means none, the count is clamped to the seats — the
+// players per team in a teams game, where it is per team — blank or junk
+// reads as one; and the pause-when-alone rule rides with it.
 func TestWizardAgentsPolicy(t *testing.T) {
 	a := newTestApp()
 	a.countEd.SetText("3")
@@ -356,6 +357,29 @@ func TestWizardAgentsPolicy(t *testing.T) {
 	a.allowAgentsCb.Value = false
 	if spec := a.wizardSpec(); spec.MaxAgents != 0 {
 		t.Errorf("an unchecked box let %d agents in", spec.MaxAgents)
+	}
+	// The pause-when-alone rule rides with the policy: only where agents
+	// may join, and only in an open game.
+	a.pauseAgentsCb.Value = true
+	if spec := a.wizardSpec(); spec.AgentsPauseAlone {
+		t.Error("agents pause when alone in a game they may not join")
+	}
+	a.allowAgentsCb.Value = true
+	if spec := a.wizardSpec(); !spec.AgentsPauseAlone {
+		t.Error("the pause-when-alone box was not read")
+	}
+	a.createJoinEnum.Value = "invite"
+	if spec := a.wizardSpec(); spec.AgentsPauseAlone {
+		t.Error("an invite-only game carries the pause-when-alone rule")
+	}
+	// In a teams game the count is per team: clamped to the players per
+	// team, not to the game's seats.
+	a.createJoinEnum.Value = "open"
+	a.boardsEnum.Value = "multiple"
+	a.countEd.SetText("2")
+	a.maxAgentsEd.SetText("9")
+	if spec := a.wizardSpec(); spec.Mode != config.ModeTeams || spec.MaxAgents != 2 {
+		t.Errorf("a teams game's policy = %d (mode %v), want 2: clamped to the players per team", spec.MaxAgents, spec.Mode)
 	}
 }
 

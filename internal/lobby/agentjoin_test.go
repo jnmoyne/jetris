@@ -229,3 +229,57 @@ func TestUnjoinGame(t *testing.T) {
 		t.Fatalf("unjoin after an invite game's start: got err %v, want ErrGameStarted", err)
 	}
 }
+
+// In teams mode the agent policy is per team: with MaxAgents 1 a 2v2 seats
+// one agent on EACH team — a second agent asking for a team whose agent
+// seat is taken is refused, and lands on the other team; humans are
+// unaffected. The listing also carries the creator's pause-when-alone rule
+// for the agents to read.
+func TestAgentJoinPolicyPerTeam(t *testing.T) {
+	lbs := setupLobbies(t, 3)
+	human, agent1, agent2 := lbs[0], lbs[1], lbs[2]
+	agent1.SetAgent(true)
+	agent2.SetAgent(true)
+	ctx := context.Background()
+
+	gameID, err := human.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2, MaxAgents: 1, AgentsPauseAlone: true, Rules: config.GameRules{Ghost: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent1.JoinGame(ctx, gameID, 0); err != nil {
+		t.Fatalf("first agent on team A: %v", err)
+	}
+	if _, err := agent2.JoinGame(ctx, gameID, 0); !errors.Is(err, ErrAgentSlotsFull) {
+		t.Fatalf("second agent on team A: got err %v, want ErrAgentSlotsFull", err)
+	}
+	res, err := agent2.JoinGame(ctx, gameID, 1)
+	if err != nil {
+		t.Fatalf("second agent on team B: %v", err)
+	}
+	if res.Team != 1 {
+		t.Fatalf("second agent landed on team %d, want 1", res.Team)
+	}
+	if _, err := human.JoinGame(ctx, gameID, 0); err != nil {
+		t.Fatalf("human on team A beside the agent: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		g, ok := human.Games()[gameID]
+		if ok && len(g.Players) == 3 {
+			if g.TeamAgentCount(0) != 1 || g.TeamAgentCount(1) != 1 || g.AgentCount() != 2 {
+				t.Fatalf("agents per team = %d/%d (total %d), want 1/1 (2): %+v", g.TeamAgentCount(0), g.TeamAgentCount(1), g.AgentCount(), g.Players)
+			}
+			if g.AgentSeatFree(0) || g.AgentSeatFree(1) {
+				t.Fatalf("a team still has an agent seat free: %+v", g.Players)
+			}
+			if !g.AgentsPauseAlone {
+				t.Fatalf("the listing lost the pause-when-alone rule: %+v", g)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the listing to show all three players")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

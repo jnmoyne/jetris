@@ -521,6 +521,15 @@ func TestGameSpecNormalized(t *testing.T) {
 		{"a negative line goal is until top out, a negative agent cap none",
 			GameSpec{Mode: ModeCompetitive, PlayerCount: 2, MaxAgents: -1, LineGoal: -40},
 			GameSpec{Mode: ModeCompetitive, PlayerCount: 2}},
+		{"the agent policy is per team in teams mode: clamped to the players per team",
+			GameSpec{Mode: ModeTeams, TeamCount: 2, TeamSize: 2, MaxAgents: 3},
+			GameSpec{Mode: ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2, MaxAgents: 2, TeamNames: []string{"Cyan", "Yellow"}}},
+		{"agents pause when alone only in an open game",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, AgentsPauseAlone: true, InviteOnly: true},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, InviteOnly: true}},
+		{"an open game keeps the pause-when-alone rule",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, AgentsPauseAlone: true},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, AgentsPauseAlone: true}},
 	} {
 		if got := tc.in.Normalized(); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: Normalized() = %+v, want %+v", tc.name, got, tc.want)

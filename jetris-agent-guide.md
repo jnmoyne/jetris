@@ -157,10 +157,25 @@ Agents are first-class but visible:
   tags you `[agent]` everywhere.
 - **Respect the per-game agent policy.** Every game listing carries
   `max_agents` — how many roster seats agents may take (`0` = agents may not
-  join). `lobby.JoinGame` enforces it atomically inside its CAS loop
-  (`ErrAgentsNotAllowed`, `ErrAgentSlotsFull`); if you implement joining yourself,
-  you MUST perform the same check inside the same CAS update, or racing agents can
-  over-fill a game.
+  join). In a **teams** game the cap is **per team**: at most `max_agents`
+  agents on EACH team, so a creator can seat an agent on every side — count
+  the agents of the team you are joining (`team` on the roster entries); in
+  every other mode count the agents of the whole roster. `lobby.JoinGame`
+  enforces it atomically inside its CAS loop (`ErrAgentsNotAllowed`,
+  `ErrAgentSlotsFull`); if you implement joining yourself, you MUST perform
+  the same check inside the same CAS update, or racing agents can over-fill a
+  game (or a team).
+- **Pause when left alone, if the game says so.** An open game's listing may
+  carry `agents_pause_alone: true`: the creator wants an agent that is left as
+  the ONLY player on the roster — everyone else walked out of the open game —
+  to stop playing until someone, agent or human, takes a seat, rather than
+  play the board on by itself. Watch the roster (you already do, §5 step 4);
+  when it holds nobody but you, finish the piece in hand and spawn no more —
+  keep your seat, keep consuming the board, keep your presence — and play on
+  the moment another seat is taken. Without the flag, play on: agents alone or
+  among themselves keep the game going. (In a multi-playfield game a roster
+  down to you alone is the last playfield standing — the game ends, §5 step
+  4 — so the pause only ever bites on the crew's one board.)
 - **Accept invitations.** A game may be `invite_only` (`GameListing.InviteOnly`,
   creator in `CreatorID`); such games are joined ONLY by the creator or by an
   invited player — never by scanning the games list. An invitation is a JSON record
@@ -531,7 +546,8 @@ each lock of yours:
    holds is who is seated — a seat gone means that player's piece may go,
    the deal may change (`split_pieces`), and a playfield nobody holds a seat
    on any more is OUT of a multi-playfield game (the last one left wins; a
-   crew's board simply plays on).
+   crew's board simply plays on — unless the listing's `agents_pause_alone`
+   asks an agent left alone on it to wait for company, §2).
 5. **Finish**: competitive's last player standing, any winning teams player, or
    the cooperative topper CAS-transitions the meta to `finished` — a game a
    line goal ended is finished by EVERY player alike, and a board scored per
@@ -603,8 +619,8 @@ each lock of yours:
   in this guide, so it is a conformant sparring partner.
 - **Against humans**: run the GUI and either create an invite-only game and invite
   the agent by name (it accepts immediately), or create a game with "Allow agents"
-  checked and a max-agents count for an `--auto-join` resident to find, or `--join`
-  it in directly.
+  checked and a max-agents count (per team in a teams game) for an `--auto-join`
+  resident to find, or `--join` it in directly.
 - **In Go**: `internal/testutil.StartServer` gives an embedded JetStream server
   for protocol experiments and tests.
 
@@ -612,7 +628,8 @@ each lock of yours:
 
 - [ ] Decisions use only UI-visible information (§1): the seed is read only to generate your own sequence; lookahead is capped by the game's `next_count` read from its meta (absent = 0), and no difficulty, flag or default of yours can raise it (§1.1)
 - [ ] `agent: true` on presence and roster entries
-- [ ] `max_agents` honored inside the join CAS
+- [ ] `max_agents` honored inside the join CAS — per TEAM in a teams game, over the whole roster elsewhere
+- [ ] `agents_pause_alone` honored: left as the only player on the roster of an open game that sets it, no piece spawned until someone joins (seat kept, board followed)
 - [ ] `invite_only` games joined only when invited (watch `invites.<name>.*`; accept = join + delete key, decline = rewrite with `declined: true`)
 - [ ] Name is `<agent-name>-<instance>-<difficulty>`, KV-key-safe, ≤32 chars
 - [ ] Moves published as atomic CAS batches; dropped moves re-planned, not retried (pipelined/async batches allowed — a lost one drains, repairs, and re-plans; barriers settle the pipeline first, §4.3)

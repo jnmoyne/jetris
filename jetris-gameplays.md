@@ -657,8 +657,10 @@ policy is per-invitation; choosing open shows the agent policy right there and
 the button reads **"Create game"**.
 
 - **Open games** list in the lobby with Join/Spectate buttons, and the
-  **"Allow agents to join"** checkbox and max-agents count under the choice
-  control whether idle agents may take seats. An open game's roster is
+  **"Allow agents to join"** checkbox and max-agents count (per team in a
+  teams game) under the choice control whether idle agents may take seats,
+  with **"Agents pause when alone"** beneath them for an agent left as the
+  only player to wait for company (§11). An open game's roster is
   DYNAMIC — players can enter and leave at any time: the game starts as soon
   as every playfield has a player who is ready (the crew's one board, every
   team, every competitive board), whatever seats are still free; a free seat
@@ -1369,16 +1371,27 @@ game, and easy ignores the preview entirely.
 ### Agent policy: who decides whether agents may join
 
 Every game (any mode) carries its creator's **agent policy**: `MaxAgents`, the number of
-roster seats agent players may take (0 = agents may not join). In the GUI the policy is
-the create wizard's **agents step** — an **"Allow agents to join" checkbox** (off by
-default — games are human-only unless opted in) plus a **Max agents** count, offered for
-every game mode. The step is **reached only for open games** — an invite-only game's
-agent policy is decided per invitation, so its wizard ends at the who-can-join step and
-never asks. `lobby.JoinGame`
+roster seats agent players may take (0 = agents may not join) — **per team in a teams
+game** (at most that many agents on each team, so a creator can seat an agent on every
+side, or one agent per team to fill in for the missing humans), over the whole game
+elsewhere. In the GUI the policy is the create wizard's **agents step** — an **"Allow
+agents to join" checkbox** (off by default — games are human-only unless opted in) plus
+a **Max agents** count (**Max agents per team** for a teams game, capped at the players
+per team), offered for every game mode, and beneath them **"Agents pause when alone"**
+(off by default): with it, an agent left as the **only player** in the open game — everyone
+else walked out — stops playing, keeping its seat, until someone (a player or another agent)
+takes a seat again; without it, agents play on, alone or among themselves — enough of them
+(one per team, say) keep a game going after the humans leave. The setting rides on the
+listing (`agents_pause_alone`) and is the agents' to honour; the GUI itself never pauses.
+(In a multi-playfield game a roster down to one player ends the game — the last playfield
+standing wins — so the pause only ever bites on a single shared playfield.) The step is
+**reached only for open games** — an invite-only game's agent policy is decided per
+invitation, so its wizard ends at the who-can-join step and never asks. `lobby.JoinGame`
 enforces the policy **atomically inside its CAS loop**: an agent joining a no-agents game
-gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats are held by agents further agent
-joins get `ErrAgentSlotsFull` — so several idle agents racing for the last agent seat can
-never over-fill it. Agents are first-class but visible: an agent's player name has
+gets `ErrAgentsNotAllowed`, and once `MaxAgents` roster seats — of the team it asked for, in
+teams mode — are held by agents further agent joins get `ErrAgentSlotsFull` — so several
+idle agents racing for the last agent seat can never over-fill it. Agents are first-class
+but visible: an agent's player name has
 **three parts** — `<version>-<instance>-<difficulty>`, e.g. **`golang-mk1-3f7a-hard`**. The
 version stem names the agent's CODE generation (`golang-mk1` uses its codename,
 bumped whenever its play logic changes; third-party agents use
@@ -1391,7 +1404,8 @@ fit the 32-character cap — so opponents, spectators and the archive all see ex
 which agent, which copy, and how strong. Their presence entries and roster seats
 are additionally flagged, and the UI tags them `[agent]` in the lobby player list, game
 listings, ready roster and in-game legend; game rows show `agents k/N` when a game
-allows them.
+allows them (`agents k, max N per team` for a teams game, and `agents pause when alone`
+when the creator asked for it).
 
 ### Lobby behavior: agents are residents
 
@@ -1422,6 +1436,7 @@ One-shot game selection remains CLI-driven: `--join <gameID>` for a specific gam
 (still subject to that game's agent policy), or `--create --mode
 cooperative|competitive|teams --players N [--max-agents M] [--next K]
 [--split-pieces]` to host one
-(`--players` is per team in teams mode, like the GUI's count, and floors like it — 1 for a cooperative game, which an agent may host and play solo for the high score, 2 for competitive; `--split-pieces`
-deals the seven types out between the teammates there, §5) — agent-hosted games
+(`--players` is per team in teams mode, like the GUI's count, and floors like it — 1 for a cooperative game, which an agent may host and play solo for the high score, 2 for competitive; `--max-agents` is per team there too; `--split-pieces`
+deals the seven types out between the teammates there, §5; `--pause-alone` asks the
+agents of the game to wait for company when left as its only player) — agent-hosted games
 allow agents in all seats by default, since the host itself takes one.

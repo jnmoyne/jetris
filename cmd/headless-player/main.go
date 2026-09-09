@@ -80,12 +80,14 @@ func main() {
 	}
 
 	// Teams of two, as many teams as --teams asks for (teamCount*teamSize
-	// players), agents may take every seat but ours, the default preview — or
-	// a 2-seat co-op with one agent seat.
+	// players), agents may take every seat but ours — the agent policy is
+	// per team there, so every seat of every team is theirs to take, ours
+	// being taken — the default preview — or a 2-seat co-op with one agent
+	// seat.
 	teamCount := config.NormalizeTeamCount(*teams)
 	gameMode, teamSize := config.ModeTeams, 2
 	playerCount := teamCount * teamSize
-	maxAgents := playerCount - 1
+	maxAgents := teamSize
 	if *mode == "cooperative" {
 		gameMode, playerCount, teamCount, teamSize, maxAgents = config.ModeCooperative, 2, 0, 0, 1
 	}

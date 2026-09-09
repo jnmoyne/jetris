@@ -609,6 +609,17 @@ func (a *App) setLoginErr(msg string) {
 // connection page in the middle, the big Play button at the bottom.
 func (a *App) loginNormalContent(gtx C, loggingIn bool, loginErr string) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			// A game's share link (share.go) with no name on it: the screen
+			// says which game Play joins before it asks who is playing.
+			id := a.linkedJoinGame()
+			if id == "" {
+				return D{}
+			}
+			l := material.Body1(a.th, "You're about to join game "+shortID(id)+". Type a name, or leave it blank to play anonymously.")
+			l.Color = colNATSGreen
+			return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, l.Layout)
+		}),
 		layout.Rigid(a.header("YOUR NAME")),
 		layout.Rigid(func(gtx C) D {
 			return a.editorBox(gtx, &a.loginEd, "Enter your name")

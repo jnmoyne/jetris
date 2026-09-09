@@ -22,7 +22,7 @@ const DefaultPage = "https://jnmoyne.github.io/jetris/"
 // connect. (The one other combination that always fails, a plain ws:// server
 // from an https page, is the caller's to warn about: mixed content.)
 func JoinLink(page, server, name string) (string, error) {
-	return joinPageLink(page, server, name, "")
+	return joinPageLink(page, server, name, "", "")
 }
 
 // ReplayLink builds the link to one game's replay on a server:
@@ -36,12 +36,27 @@ func ReplayLink(page, server, name, gameID string) (string, error) {
 	if gameID == "" {
 		return "", fmt.Errorf("replay link: no game ID")
 	}
-	return joinPageLink(page, server, name, gameID)
+	return joinPageLink(page, server, name, "replay", gameID)
 }
 
-// joinPageLink is JoinLink and ReplayLink's shared builder; replay is the
-// game ID to name, or "" for a plain join link.
-func joinPageLink(page, server, name, replay string) (string, error) {
+// GameLink builds the link into one OPEN game on a server:
+// <page>/join.html?server=…[&name=…]&game=<gameID> — the lobby row's Share.
+// It is a join link with the game named: the join page says which game the
+// link is for, asks for a name (blank plays anonymously) and hands over to
+// the game, which connects, lands in the lobby and takes a free seat in
+// that game (config.Config.JoinGameID). The same rules as JoinLink's: the
+// server must be a WebSocket URL.
+func GameLink(page, server, name, gameID string) (string, error) {
+	if gameID == "" {
+		return "", fmt.Errorf("game link: no game ID")
+	}
+	return joinPageLink(page, server, name, "game", gameID)
+}
+
+// joinPageLink is JoinLink, ReplayLink and GameLink's shared builder; key
+// and id name the game the link is for ("replay" or "game"), or are ""
+// for a plain join link.
+func joinPageLink(page, server, name, key, id string) (string, error) {
 	su, err := url.Parse(server)
 	if err != nil {
 		return "", fmt.Errorf("server URL %q: %w", server, err)
@@ -71,8 +86,8 @@ func joinPageLink(page, server, name, replay string) (string, error) {
 	if name != "" {
 		q.Set("name", name)
 	}
-	if replay != "" {
-		q.Set("replay", replay)
+	if id != "" {
+		q.Set(key, id)
 	}
 	join, _ := url.Parse("join.html")
 	join.RawQuery = q.Encode()

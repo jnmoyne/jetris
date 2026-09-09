@@ -7,7 +7,9 @@
 #   join.html       the join page (from web/): a link or QR code carrying a
 #                   server (?server=…&name=…) opens it, it asks for a player
 #                   name and hands all three to index.html — see
-#                   scripts/gen-qr.go, which builds those links
+#                   scripts/gen-qr.go, which builds those links; a share
+#                   link names a replay (&replay=) or an open game (&game=)
+#                   as well (internal/webdist/join.go)
 #   screenshot.png  the landing page's screenshot (Jetris-screenshot-1.png)
 # The release workflow (.github/workflows/release.yml) runs this on every tag,
 # attaches the directory to the release as jetris-<tag>-web.tar.gz and

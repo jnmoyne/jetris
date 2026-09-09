@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -565,9 +566,12 @@ func (a *App) doLogin(name string, force bool) {
 	a.mu.Unlock()
 	a.invalidate()
 	// A share link's landing (share.go): the replay it named opens as soon
-	// as the lobby holds the game's record.
+	// as the lobby holds the game's record; the open game it named is
+	// joined as soon as the lobby lists it.
 	if id := a.takeLinkedReplay(); id != "" {
 		go a.openLinkedReplay(id)
+	} else if id := a.takeLinkedJoin(); id != "" {
+		go a.openLinkedGame(id)
 	}
 }
 
@@ -702,16 +706,19 @@ func (a *App) uninvite(gameID, inviteeID string) {
 
 // joinGame mirrors ui.Server.handleJoinGame: join to get our player index, build
 // and start the engine, wire archive-on-finish, and switch to the game screen.
-// team selects which team to join in teams mode (ignored otherwise).
-func (a *App) joinGame(gameID string, team int) {
+// team selects which team to join in teams mode (ignored otherwise). A seat
+// refused is logged and returned (ErrTeamFull in particular: someone else
+// grabbed the last one first); the row's Join ignores the return, a game
+// link's landing reports it (openLinkedGame).
+func (a *App) joinGame(gameID string, team int) error {
 	lb := a.getLobby()
 	if lb == nil {
-		return
+		return errors.New("not in a lobby")
 	}
 	g, ok := lb.Games()[gameID]
 	if !ok {
 		log.Printf("join game: game %s not found", gameID)
-		return
+		return errors.New("game not found")
 	}
 	opponentID := ""
 	for _, p := range g.Players {
@@ -723,9 +730,8 @@ func (a *App) joinGame(gameID string, team int) {
 
 	res, err := lb.JoinGame(context.Background(), gameID, team)
 	if err != nil {
-		// ErrTeamFull in particular: someone else grabbed the last slot first.
 		log.Printf("join game: %v", err)
-		return
+		return err
 	}
 
 	e := engine.New(lb.GetJS(), gameID, lb.PlayerID(), opponentID, g.Mode, engine.ModePlayer, res.PlayerIdx, res.Team, res.TeamSlot)
@@ -754,6 +760,7 @@ func (a *App) joinGame(gameID string, team int) {
 		log.Printf("engine start: %v", err)
 	}
 	a.invalidate()
+	return nil
 }
 
 // spectateGame mirrors ui.Server.handleSpectateGame.

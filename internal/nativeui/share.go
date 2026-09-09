@@ -10,13 +10,22 @@ package nativeui
 //
 // SHARE is a link to this very replay: the join page with the server AND the
 // game named (webdist.ReplayLink), shown as a QR code and as text with a
-// Copy link button. Whoever opens it types a name — the one thing a link
-// cannot know — and lands on the replay screen with this game playing
-// (config.Config.ReplayGameID → openLinkedReplay). The link needs the
-// server's WebSocket address, which is all a browser can dial: the address
-// this build dialed when it is one, the LAN party's own listener, or the
-// WebSocket sibling of a nats:// favorite (the official servers are listed
-// both ways); with none of those there is no link, and the modal says why.
+// Copy link button. Whoever opens it lands on the replay screen with this
+// game playing, under a dealt Watcher_ name (config.Config.ReplayGameID →
+// openLinkedReplay). The link needs the server's WebSocket address, which
+// is all a browser can dial: the address this build dialed when it is one,
+// the LAN party's own listener, or the WebSocket sibling of a nats://
+// favorite (the official servers are listed both ways); with none of those
+// there is no link, and the modal says why.
+//
+// The lobby shares an OPEN GAME the same way: every open game's row has a
+// Share button while the game takes joiners, and its link is the join page
+// with that game named (webdist.GameLink). Whoever opens it is told which
+// game the link is for and asked for a name — blank plays anonymously —
+// and the game then lands in the lobby and takes a free seat in that game
+// (config.Config.JoinGameID → openLinkedGame), on the emptiest team of a
+// teams game. A seat that is gone by then is reported under the lobby
+// banner, the row still there to spectate from.
 
 import (
 	"context"
@@ -31,6 +40,7 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 
+	"jetris/internal/config"
 	"jetris/internal/lobby"
 	"jetris/internal/prefs"
 	"jetris/internal/qr"
@@ -44,6 +54,11 @@ const shareCopiedFor = 2 * time.Second
 // game's archive record to arrive off the archive stream before giving up
 // with a note in the lobby.
 var linkedReplayWait = 15 * time.Second
+
+// linkedJoinWait bounds how long a game link's landing waits for the game's
+// listing to show in the lobby (the KV's initial load is normally complete
+// before the lobby is drawn, so this only covers a load that timed out).
+var linkedJoinWait = 5 * time.Second
 
 // replayPinned reports whether the replay on screen is pinned — the lobby's
 // word, which follows the KV live.
@@ -109,15 +124,37 @@ func (a *App) setGameOverNote(msg string) {
 }
 
 // replayShareLink builds the share link for one game's replay, or says why
-// there is none (why is "" when link is set). The page and the server come
-// from wherever this build is: the LAN party's own page and listener; in
-// the browser, this page and the server it dialed; on the desktop, the
+// there is none (why is "" when link is set): the link's parts
+// (shareLinkParts) joined by webdist.ReplayLink.
+func (a *App) replayShareLink(gameID string) (link, why string) {
+	page, server, name, why := a.shareLinkParts()
+	if why != "" {
+		return "", why
+	}
+	return linkOrWhy(webdist.ReplayLink(page, server, name, gameID))
+}
+
+// gameShareLink builds the share link into one open game, or says why
+// there is none: the same parts joined by webdist.GameLink.
+func (a *App) gameShareLink(gameID string) (link, why string) {
+	page, server, name, why := a.shareLinkParts()
+	if why != "" {
+		return "", why
+	}
+	return linkOrWhy(webdist.GameLink(page, server, name, gameID))
+}
+
+// shareLinkParts is what every share link built here is made of — the page,
+// the server's WebSocket address and the server's name — or why there is no
+// link to build (why is "" when the parts are set). The page and the server
+// come from wherever this build is: the LAN party's own page and listener;
+// in the browser, this page and the server it dialed; on the desktop, the
 // GitHub Pages copy of the game (webdist.DefaultPage) and the server's
 // WebSocket address — the dialed one when it is a ws:// or wss:// URL, else
 // the WebSocket sibling of the same host among the favorites.
-func (a *App) replayShareLink(gameID string) (link, why string) {
+func (a *App) shareLinkParts() (page, server, name, why string) {
 	if page, server, name, ok := a.lanLinkParts(); ok {
-		return shareLinkOrWhy(page, server, name, gameID)
+		return page, server, name, ""
 	}
 	a.mu.Lock()
 	nc, connName, connURL := a.nc, a.connName, a.connURL
@@ -137,25 +174,24 @@ func (a *App) replayShareLink(gameID string) (link, why string) {
 		dialed = connName
 	}
 	if dialed == "" {
-		return "", "Not connected to a server."
+		return "", "", "", "Not connected to a server."
 	}
-	page := currentPageURL()
+	page = currentPageURL()
 	if page == "" {
 		page = webdist.DefaultPage
 	}
-	// The name the join page shows over the address: the favorite's label
-	// (connName is one when connURL stands apart from it), never a bare
-	// URL or a context's name, which mean nothing to whoever opens it.
+	// The name: the header's, when it is a name and not a URL or a context
+	// (a context's name means nothing to whoever opens the link).
 	label := ""
 	if connURL != "" && !strings.HasPrefix(connName, "context ") {
 		label = connName
 	}
 	u, err := url.Parse(dialed)
 	if err != nil {
-		return "", "The server's address could not be read: " + err.Error()
+		return "", "", "", "The server's address could not be read: " + err.Error()
 	}
 	if u.Scheme == "ws" || u.Scheme == "wss" {
-		return shareLinkOrWhy(page, dialed, label, gameID)
+		return page, dialed, label, ""
 	}
 	// Reached over plain NATS: the same host's WebSocket listener, if a
 	// favorite names it (the official servers are bookmarked both ways).
@@ -163,14 +199,14 @@ func (a *App) replayShareLink(gameID string) (link, why string) {
 		if label == "" {
 			label = sibling.Label
 		}
-		return shareLinkOrWhy(page, sibling.URL, label, gameID)
+		return page, sibling.URL, label, ""
 	}
-	return "", fmt.Sprintf("This server was reached over %s://, and a browser can only open a replay through the server's WebSocket (ws:// or wss://) address, which isn't known here. Bookmark the server's WebSocket address in the server browser, or connect through it, and share again.", u.Scheme)
+	return "", "", "", fmt.Sprintf("This server was reached over %s://, and a browser can only reach a game through the server's WebSocket (ws:// or wss://) address, which isn't known here. Bookmark the server's WebSocket address in the server browser, or connect through it, and share again.", u.Scheme)
 }
 
-// shareLinkOrWhy is webdist.ReplayLink with its error as the modal's line.
-func shareLinkOrWhy(page, server, name, gameID string) (link, why string) {
-	link, err := webdist.ReplayLink(page, server, name, gameID)
+// linkOrWhy turns a link builder's result into the modal's link, or its
+// error into the modal's line.
+func linkOrWhy(link string, err error) (string, string) {
 	if err != nil {
 		return "", "No share link: " + err.Error()
 	}
@@ -206,6 +242,25 @@ func (a *App) openShare(rv *replayView) { a.openShareFor(rv.rec.GameID) }
 // encoded) once here rather than every frame.
 func (a *App) openShareFor(gameID string) {
 	link, why := a.replayShareLink(gameID)
+	a.openShareModal("SHARE THIS REPLAY", link, why,
+		"Anyone who opens the link — or scans the code — watches this replay in their browser, on this server. No name to type: they watch as a Watcher_.")
+}
+
+// openGameShare puts the share modal up for one open game — the lobby row's
+// Share: the link into the game, and what opening it does.
+func (a *App) openGameShare(gameID string) {
+	link, why := a.gameShareLink(gameID)
+	a.openShareModal("SHARE THIS GAME", link, why,
+		"Anyone who opens the link — or scans the code — is told they are about to join game "+shortID(gameID)+" on this server, asked for a name (blank plays anonymously), and lands straight in the game, in a free seat — for as long as the game is open and has one.")
+}
+
+// openShareModal is the share modal's opening, whatever is shared: the
+// title, the link (and its QR code, encoded once here rather than every
+// frame) or why there is none, and the line that says what opening the
+// link does.
+func (a *App) openShareModal(title, link, why, note string) {
+	a.shareScreen = a.getScreen()
+	a.shareTitle, a.shareNote = title, note
 	a.shareLink, a.shareWhy, a.shareCode = link, why, nil
 	if link != "" {
 		a.shareCode, _ = qr.Encode([]byte(link))
@@ -214,19 +269,30 @@ func (a *App) openShareFor(gameID string) {
 	a.shareOpen = true
 }
 
+// handleShareModal dispatches the share modal's own buttons — Copy link and
+// OK — and reports whether the modal is (still) up. Shared by every screen
+// the modal appears over: the replay screen, the game-over box and the
+// lobby.
+func (a *App) handleShareModal(gtx C) bool {
+	if !a.shareOpen {
+		return false
+	}
+	if a.shareOKBtn.Clicked(gtx) {
+		a.shareOpen = false
+	}
+	if a.shareCopyBtn.Clicked(gtx) && a.shareLink != "" {
+		a.shareCopyOK = copyText(gtx, a.shareLink)
+		a.shareCopiedAt = gtx.Now
+	}
+	return a.shareOpen
+}
+
 // handleReplayActions dispatches the replay screen's PIN and SHARE buttons
 // and the share modal's own (Copy link, OK), and reports whether the modal
 // is up. The buttons under the modal's scrim are not answered while it is.
 func (a *App) handleReplayActions(gtx C, rv *replayView) (modal bool) {
 	if a.shareOpen {
-		if a.shareOKBtn.Clicked(gtx) {
-			a.shareOpen = false
-		}
-		if a.shareCopyBtn.Clicked(gtx) && a.shareLink != "" {
-			a.shareCopyOK = copyText(gtx, a.shareLink)
-			a.shareCopiedAt = gtx.Now
-		}
-		return a.shareOpen
+		return a.handleShareModal(gtx)
 	}
 	if a.replayPinBtn.Clicked(gtx) {
 		a.toggleReplayPin(rv)
@@ -242,14 +308,7 @@ func (a *App) handleReplayActions(gtx C, rv *replayView) (modal bool) {
 // own buttons, for the game just played, and whether the modal is up.
 func (a *App) handleGameOverActions(gtx C, gameID string) (modal bool) {
 	if a.shareOpen {
-		if a.shareOKBtn.Clicked(gtx) {
-			a.shareOpen = false
-		}
-		if a.shareCopyBtn.Clicked(gtx) && a.shareLink != "" {
-			a.shareCopyOK = copyText(gtx, a.shareLink)
-			a.shareCopiedAt = gtx.Now
-		}
-		return a.shareOpen
+		return a.handleShareModal(gtx)
 	}
 	if a.gameOverPinBtn.Clicked(gtx) {
 		a.togglePin(gameID, a.setGameOverNote)
@@ -330,12 +389,14 @@ func (a *App) shareModalOver(gtx C, screen layout.Widget) D {
 	)
 }
 
-// shareOverlay is the share modal: the replay's link as a QR code on a
-// white plate, the link itself under it, Copy link and OK — or, when no
-// link can be built, the reason and OK. Drawn under App.mu (the replay
-// screen's layout holds it), so it reads only what openShare stored.
+// shareOverlay is the share modal: the link as a QR code on a white plate,
+// the link itself under it, a line on what opening it does, Copy link and
+// OK — or, when no link can be built, the reason and OK. The title and the
+// line are whatever is shared (openShareModal): a replay, or an open game.
+// Drawn under App.mu on the replay screen (its layout holds it), so it
+// reads only what openShareModal stored.
 func (a *App) shareOverlay(gtx C) D {
-	link, why, code := a.shareLink, a.shareWhy, a.shareCode
+	link, why, code, title, note := a.shareLink, a.shareWhy, a.shareCode, a.shareTitle, a.shareNote
 	copied := !a.shareCopiedAt.IsZero() && gtx.Now.Sub(a.shareCopiedAt) < shareCopiedFor
 	if copied {
 		animate(gtx) // the COPIED readout reverts on its own
@@ -349,7 +410,7 @@ func (a *App) shareOverlay(gtx C) D {
 						side := min(gtx.Constraints.Max.X, gtx.Constraints.Max.Y-gtx.Dp(260))
 						side = max(side, gtx.Dp(120))
 						kids := []layout.FlexChild{
-							layout.Rigid(a.pixel(unit.Sp(13), "SHARE THIS REPLAY", colNATSGreen).Layout),
+							layout.Rigid(a.pixel(unit.Sp(13), title, colNATSGreen).Layout),
 							layout.Rigid(spacer(14)),
 						}
 						if link == "" {
@@ -369,7 +430,7 @@ func (a *App) shareOverlay(gtx C) D {
 								layout.Rigid(spacer(12)),
 								layout.Rigid(a.body(link, colFg)),
 								layout.Rigid(spacer(8)),
-								layout.Rigid(a.body("Anyone who opens the link — or scans the code — watches this replay in their browser, on this server. No name to type: they watch as a Watcher_.", colMuted)),
+								layout.Rigid(a.body(note, colMuted)),
 								layout.Rigid(spacer(16)),
 								layout.Rigid(func(gtx C) D {
 									return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -443,6 +504,118 @@ func (a *App) openLinkedReplay(gameID string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// takeLinkedJoin returns the game ID a game's share link (or --join) asked
+// to take a seat in, once: one-shot like takeLinkedReplay, so quitting to
+// the login screen and playing again lands in the lobby.
+func (a *App) takeLinkedJoin() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	id := a.linkedJoin
+	a.linkedJoin = ""
+	return id
+}
+
+// linkedJoinGame is the game a share link asked to take a seat in, while the
+// landing is still ahead — what the login screen's note names.
+func (a *App) linkedJoinGame() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.linkedJoin
+}
+
+// openLinkedGame takes a seat in the game a share link named, as soon as
+// the lobby lists it (the KV's initial load normally completes before the
+// lobby is drawn; linkedJoinWait covers one that timed out) — the emptiest
+// team of a teams game. A game the lobby never lists, or one that will not
+// take this player (over, full, invite only), is reported under the lobby
+// banner instead, the player left in the lobby with the row in view. Runs
+// off the UI goroutine.
+func (a *App) openLinkedGame(gameID string) {
+	lb := a.getLobby()
+	if lb == nil {
+		return
+	}
+	deadline := time.Now().Add(linkedJoinWait)
+	for {
+		if a.ctx != nil && a.ctx.Err() != nil {
+			return
+		}
+		a.mu.Lock()
+		still := a.lobby == lb && a.screen == screenLobby
+		a.mu.Unlock()
+		if !still {
+			return // the player moved on (or quit) before the listing came
+		}
+		if g, ok := lb.Games()[gameID]; ok {
+			team, why := linkedJoinTeam(g, lb.PlayerID(), a.invitedTo(gameID))
+			if why == "" {
+				if err := a.joinGame(gameID, team); err != nil {
+					why = fmt.Sprintf("Couldn't join game %s: %v.", shortID(gameID), err)
+				}
+			}
+			if why != "" {
+				a.setLobbyErr(why)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			a.setLobbyErr("No game " + gameID + " on this server — it may be over, or the link may be for another server.")
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// setLobbyErr puts a line under the lobby banner (the red strip), for a
+// landing that could not do what its link asked.
+func (a *App) setLobbyErr(msg string) {
+	a.mu.Lock()
+	a.lobbyErr = msg
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// linkedJoinTeam is a game link's landing's word on the game: the team to
+// join — the emptiest one with room in a teams game, 0 elsewhere — or why
+// the game takes no seat from this player, in the words of the lobby strip.
+// The same gating as the lobby row's Join button (joinGating), spelled out.
+func linkedJoinTeam(g lobby.GameListing, me string, invited bool) (team int, why string) {
+	short := shortID(g.GameID)
+	if rosterHas(g, me) {
+		return 0, "" // a seat already held: joinGame rejoins it
+	}
+	if g.InviteOnly && me != g.CreatorID && !invited {
+		return 0, fmt.Sprintf("Game %s is invite only — ask its creator for an invitation.", short)
+	}
+	joinable, canJoin := joinGating(g)
+	if !joinable {
+		if gameAlive(g.Status) {
+			return 0, fmt.Sprintf("Game %s isn't taking players any more.", short)
+		}
+		return 0, fmt.Sprintf("Game %s is over.", short)
+	}
+	if !canJoin {
+		return 0, fmt.Sprintf("Game %s is full — spectate it from its row, or wait for a seat to free up.", short)
+	}
+	if g.Mode != config.ModeTeams {
+		return 0, ""
+	}
+	team = -1
+	for t := 0; t < g.Teams(); t++ {
+		n := g.TeamMemberCount(t)
+		if n >= g.TeamSize {
+			continue
+		}
+		if team < 0 || n < g.TeamMemberCount(team) {
+			team = t
+		}
+	}
+	if team < 0 {
+		return 0, fmt.Sprintf("Game %s is full — spectate it from its row, or wait for a seat to free up.", short)
+	}
+	return team, ""
 }
 
 // lanLinkParts is the LAN party's join link in its parts — the page, the

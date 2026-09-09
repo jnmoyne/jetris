@@ -24,6 +24,7 @@
     .card { border: 1px solid var(--line); border-radius: 10px; padding: 22px 20px; background: #060b0a; }
     .lead { margin: 0 0 4px; color: var(--muted); font-size: 14px; letter-spacing: .08em; text-transform: uppercase; }
     .server { margin: 0 0 4px; font-size: 22px; font-weight: 600; overflow-wrap: anywhere; }
+    .on { margin: 0 0 4px; font-size: 16px; overflow-wrap: anywhere; }
     .url { margin: 0 0 20px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 
     label { display: block; margin: 0 0 6px; color: var(--muted); font-size: 14px; letter-spacing: .08em; text-transform: uppercase; }
@@ -52,8 +53,10 @@
     <form class="card" id="form" hidden>
       <p class="lead" id="lead">Connect to</p>
       <p class="server" id="server-name"></p>
+      <!-- A game link's "on <server>" line, under the game's ID. -->
+      <p class="on" id="game-on" hidden></p>
       <p class="url mono" id="server-url"></p>
-      <label for="player">Your name</label>
+      <label for="player" id="player-label">Your name</label>
       <input id="player" name="player" type="text" maxlength="32" autocomplete="nickname"
              autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"
              placeholder="blank gets you a random one">
@@ -92,6 +95,12 @@
       // the game page, which deals a Watcher_ name, connects and opens that
       // replay the moment it lands in the lobby.
       const replay = (params.get("replay") || "").trim();
+      // An open game's share link (the lobby row's Share, webdist.GameLink)
+      // names the game to JOIN: the card says which game — the first eight
+      // characters of its ID, as the lobby row shows it — and on which
+      // server, the name is optional (blank plays anonymously), and the game
+      // page takes a seat in that game the moment it lands in the lobby.
+      const game = (params.get("game") || "").trim();
       const form = document.getElementById("form");
       const input = document.getElementById("player");
       const errLine = document.getElementById("err");
@@ -127,6 +136,7 @@
         if (label) next.set("name", label);
         if (player) next.set("player", player);
         if (replay) next.set("replay", replay);
+        if (game) next.set("game", game);
         return "./?" + next.toString();
       }
 
@@ -173,8 +183,23 @@
         return;
       }
 
-      document.getElementById("server-name").textContent = label || server;
       const urlLine = document.getElementById("server-url");
+      if (game) {
+        // The game heads the card, the server stands under it as "on …".
+        document.getElementById("lead").textContent = "You\u2019re about to join game";
+        const name = document.getElementById("server-name");
+        name.textContent = game.length > 8 ? game.slice(0, 8) : game;
+        name.classList.add("mono");
+        const on = document.getElementById("game-on");
+        on.textContent = "on " + (label || server);
+        on.hidden = false;
+        document.getElementById("player-label").textContent = "Your name (optional)";
+        input.placeholder = "leave blank to play anonymously";
+        document.getElementById("join").textContent = "\u25B6 JOIN GAME";
+        document.title = "Jetris \u2014 join a game";
+      } else {
+        document.getElementById("server-name").textContent = label || server;
+      }
       // With no name to head the card the URL is already the title; showing
       // it twice just makes the card look broken.
       if (label) urlLine.textContent = server; else urlLine.hidden = true;

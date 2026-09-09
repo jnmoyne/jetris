@@ -27,7 +27,13 @@ type Config struct {
 	// in the lobby (--replay, or a share link's ?replay= — see
 	// webdist.ReplayLink): the link to one particular recording. Empty
 	// means the lobby as usual.
-	ReplayGameID     string
+	ReplayGameID string
+	// JoinGameID is an OPEN game the app takes a seat in as soon as it lands
+	// in the lobby (--join, or a game's share link's ?game= — see
+	// webdist.GameLink): the link into one particular game. Empty means the
+	// lobby as usual. Without a PlayerName the login screen is still shown,
+	// saying which game the link is for, and a blank name plays anonymously.
+	JoinGameID       string
 	RunEmbedded      bool   // run an in-process JetStream-enabled nats-server and connect to it
 	EmbeddedHost     string // address the embedded server is advertised and dialed on ("" = auto-detected LAN IP); it always LISTENS on every interface, so this only overrides a wrong auto-detection
 	EmbeddedPort     int    // port for the embedded server (0 = DefaultEmbeddedPort)

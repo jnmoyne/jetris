@@ -122,7 +122,7 @@ jetris/
 │   ├── qr/                           ← QR encoder (byte mode, level M, versions 1–20): the lobby's Show QR code and scripts/gen-qr.go
 │   │   └── qr.go
 │   ├── webdist/                      ← the browser build embedded in the desktop binary (go:embed dist/) and the
-│   │   ├── webdist.go                   HTTPS server that serves it in LAN party mode; JoinLink builds join-page links
+│   │   ├── webdist.go                   HTTPS server that serves it in LAN party mode; JoinLink, ReplayLink and GameLink build join-page links
 │   │   ├── server.go                 ← + server_js.go: the browser's stub (a wasm module carries no copy of itself);
 │   │   │                                TLS with the party's own certificate, the WebSocket proxy to the embedded
 │   │   │                                server (same origin), and the http→https redirect on the same port
@@ -144,7 +144,9 @@ jetris/
 │   │   ├── lanqr.go                  ← LAN party: the join link (lanJoinLink) and the lobby's Show QR code modal
 │   │   ├── share.go                  ← the replay screen's Pin (a pins.<gameID> lobby KV entry: kept out of every archiver's
 │   │   │                                purge until unpinned) and Share (the replay's link — webdist.ReplayLink — as a QR code
-│   │   │                                with Copy link), and a share link's landing (Config.ReplayGameID → openLinkedReplay)
+│   │   │                                with Copy link), the lobby row's Share of an open game (webdist.GameLink, the same
+│   │   │                                modal), and the links' landings (Config.ReplayGameID → openLinkedReplay,
+│   │   │                                Config.JoinGameID → openLinkedGame: a seat in the game, the emptiest team's)
 │   │   ├── input.go
 │   │   ├── lab.go
 │   │   ├── lifecycle.go
@@ -227,6 +229,7 @@ The player enters a name on the same screen; identity is NATS-backed presence. L
 | `--context` | `""` | NATS context (as configured with `nats context add`) to preselect in the login screen's server browser. |
 | `--server` / `--user` / `--password` | `""` | NATS URL + credentials: `--server` preselects that URL in the server browser (beating `--context`; listed under a COMMAND LINE section unless it is already a favorite); user/password apply to URL connects. |
 | `--name` | `""` | The player's name, answered before the login screen is drawn: with a server also selected (`--server`, `--context`, or the first favorite) that screen plays its own Play button on its first frame and the player lands in the lobby, having seen nothing. It reaches `nativeui` as `config.Config.PlayerName`, which fills the name field and arms the one-shot `App.autoLogin` (`NewWithPicker`); a connect that fails leaves the player on the login screen with the error and the name still filled in. The browser build's `?player=` is the same field (`applyPageParams`, `cmd/jetris/flags_js.go`), and `web/join.html` — the page a join link or a `scripts/gen-qr.go` QR code opens — is a form whose whole job is to collect it. |
+| `--replay` / `--join` | `""` | A game ID: `--replay` opens that game's replay on landing in the lobby (what a replay's share link carries, `webdist.ReplayLink`; without `--name` the game watches under a dealt `Watcher_` name, no login screen), `--join` takes a seat in that OPEN game on landing (what a game's share link carries, `webdist.GameLink`; without `--name` the login screen is shown, saying which game Play joins, and a blank name plays anonymously). They reach `nativeui` as `config.Config.ReplayGameID` / `JoinGameID` (`?replay=` / `?game=` in the browser build) and are taken once on landing (`share.go`: `openLinkedReplay`, `openLinkedGame`). |
 | `--version` | `false` | Print the version and exit. The `main.version` variable defaults to `dev`, is overridden at release time via `-ldflags "-X main.version=<tag>"` (see [Section 20 — Release Pipeline](#20-release-pipeline)), and is passed to `nativeui.SetVersion` so the same string shows on the UI's top-right version plate. |
 | `--no-update-check` | `false` | Skip the startup lookup of the latest GitHub release. Otherwise `checkForUpdate` runs on its own goroutine (10 s cap, `updateCheckTimeout`): `update.Check(ctx, version)` (`internal/update`) fetches `api.github.com/repos/jnmoyne/jetris/releases/latest` and compares its `tag_name` with the stamped version (`Newer`: major.minor.patch, a final release beating its pre-release; anything that isn't a version — `dev` — compares as nothing, and a `dev` build never even asks). A newer release is logged and handed to `App.NotifyUpdate(tag, url)`: the VER plate turns gold and reads `VER <this> · <new> AVAILABLE` on every screen, and the login screen shows `▲ UPDATE AVAILABLE · JETRIS <new>` with the release page's URL (`updateNotice`). A failed lookup (offline, rate-limited) is logged and otherwise ignored; nothing is ever downloaded or installed. |
 

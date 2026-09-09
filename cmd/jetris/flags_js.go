@@ -18,13 +18,16 @@ import (
 // preselects that server in the login screen's browser, just as --server
 // does on the desktop; &name=.. names it for the browser row and the lobby
 // header; &player=.. answers the login screen's one question, so the game
-// connects and lands in the lobby without it; and &replay=<gameID> opens
+// connects and lands in the lobby without it; &replay=<gameID> opens
 // that game's replay on landing (a replay's share link, webdist.ReplayLink)
-// — with no &player= the game deals a Watcher_ name rather than ask. The
-// join page (web/join.html), which the QR codes of scripts/gen-qr.go and
-// the replay screen's Share point at, is nothing but a form that collects
-// that player name and comes back here with it (a replay link skips the
-// form and comes straight here).
+// — with no &player= the game deals a Watcher_ name rather than ask; and
+// &game=<gameID> takes a seat in that open game on landing (a game's share
+// link, webdist.GameLink) — with no &player= the login screen asks for one,
+// saying which game the link is for. The join page (web/join.html), which
+// the QR codes of scripts/gen-qr.go and the lobby's and the replay screen's
+// Share point at, is nothing but a form that collects that player name and
+// comes back here with it (a replay link skips the form and comes straight
+// here; a game link's form says which game it is joining).
 func applyPageParams(cfg *config.Config) {
 	loc := js.Global().Get("location")
 	if !loc.Truthy() {
@@ -53,5 +56,8 @@ func applyPageParams(cfg *config.Config) {
 	}
 	if v := strings.TrimSpace(q.Get("replay")); v != "" {
 		cfg.ReplayGameID = v
+	}
+	if v := strings.TrimSpace(q.Get("game")); v != "" {
+		cfg.JoinGameID = v
 	}
 }

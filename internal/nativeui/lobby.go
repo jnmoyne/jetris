@@ -73,10 +73,12 @@ func (a *App) layoutLobby(gtx C) D {
 	// The key bindings dialog (keymap.go), opened from the menu's KEYS
 	// legend.
 	keysOpen := a.handleKeysModal(gtx, wizOpen || pickerOpen || inviteOpen || qrOpen)
+	// An open game's share link (share.go), opened from its row's Share.
+	shareOpen := a.handleShareModal(gtx)
 	// The How to play tour (tutorial.go) is a modal of its own over the
 	// whole screen: while it is up nothing under it takes a press.
 	tour := a.tutorialUp()
-	modal := wizOpen || pickerOpen || inviteOpen || qrOpen || keysOpen || tour
+	modal := wizOpen || pickerOpen || inviteOpen || qrOpen || keysOpen || shareOpen || tour
 	// The bar's switches and the panel's tabs, drained before anything is
 	// laid out so a column shown or hidden this frame is already in the
 	// layout that measures it — and answered only while no modal is up, since
@@ -142,6 +144,10 @@ func (a *App) layoutLobby(gtx C) D {
 		if btns.spectate.Clicked(gtx) {
 			id := g.GameID
 			go a.spectateGame(id)
+		}
+		if btns.share.Clicked(gtx) && !modal {
+			a.openGameShare(g.GameID)
+			shareOpen = true
 		}
 		if btns.reinvite.Clicked(gtx) {
 			// Re-open the picker for this already-created invite-only game so
@@ -292,7 +298,7 @@ func (a *App) layoutLobby(gtx C) D {
 		}),
 		layout.Flexed(1, body),
 	)
-	if !pickerOpen && !inviteOpen && !wizOpen && !qrOpen && !keysOpen {
+	if !pickerOpen && !inviteOpen && !wizOpen && !qrOpen && !keysOpen && !shareOpen {
 		return base
 	}
 	return layout.Stack{}.Layout(gtx,
@@ -313,6 +319,8 @@ func (a *App) layoutLobby(gtx C) D {
 				return a.qrOverlay(gtx)
 			case keysOpen:
 				return a.keysOverlay(gtx)
+			case shareOpen:
+				return a.shareOverlay(gtx)
 			default:
 				return a.createWizardOverlay(gtx)
 			}
@@ -1776,6 +1784,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	// returning to the lobby (the picker only opens automatically at creation).
 	canReinvite := g.InviteOnly && lb != nil && me == g.CreatorID &&
 		joinable && len(g.Players) < g.PlayerCount
+	canShare := canShareGame(g, abandoned)
 
 	teams := g.Mode == config.ModeTeams
 	// In an invite-only game every roster member was let in by name, so spell
@@ -1998,6 +2007,14 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 							})
 						}
 						return D{}
+					}),
+					layout.Rigid(func(gtx C) D {
+						if !canShare {
+							return D{}
+						}
+						return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+							return a.secondaryButton(gtx, &btns.share, "Share")
+						})
 					}),
 					layout.Rigid(func(gtx C) D {
 						if !abandoned {
@@ -2478,6 +2495,16 @@ func gameShape(g lobby.GameListing) string {
 	default:
 		return g.Mode.String()
 	}
+}
+
+// canShareGame is the lobby row's word on its Share button: an open game is
+// anyone's to pass on while it takes joiners (joinGating) — full or not, an
+// open game's seats free up as players leave — and its link is the row's
+// Share (share.go). An invite-only game is joined by invitation, not by
+// link, and an abandoned one is for deleting.
+func canShareGame(g lobby.GameListing, abandoned bool) bool {
+	joinable, _ := joinGating(g)
+	return !g.InviteOnly && joinable && !abandoned
 }
 
 // joinGating is the lobby row's word on a game's seats: joinable while the

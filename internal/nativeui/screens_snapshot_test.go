@@ -160,6 +160,22 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_lobby", func(gtx C) { a.layout(gtx) })
 	})
 
+	// An open game's Share (share.go): the game's link as a QR code over the
+	// lobby, with what opening it does — and the login screen a nameless
+	// game link lands on, saying which game Play joins.
+	t.Run("lobby_share", func(t *testing.T) {
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		a.connName, a.connURL = "Jetris EU central", "nats://eu-central.jetris.net:4222"
+		a.favorites = prefs.DefaultFavorites()
+		a.openGameShare("3f2a9b1c-7d4e-4a52-9b1e-0c8d6f2a1b3c")
+		snapshotPNG(t, w, dir, "screen_lobby_share", func(gtx C) { a.layout(gtx) })
+		login := NewWithPicker(config.Config{JoinGameID: "3f2a9b1c-7d4e-4a52-9b1e-0c8d6f2a1b3c"}, []string{"alpha", "beta", "demo"}, "beta", prefs.DefaultFavorites())
+		login.th = newTestApp().th
+		snapshotPNG(t, w, dir, "screen_login_join", func(gtx C) { login.layout(gtx) })
+	})
+
 	// The same login and lobby screens on a display larger than the design
 	// window (1920×1200): the display-adaptive scale (scale.go) stretches
 	// them to fill it instead of leaving the 1280×820 layout floating.

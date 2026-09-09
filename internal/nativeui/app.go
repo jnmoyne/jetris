@@ -96,6 +96,7 @@ type gameRowBtns struct {
 	join     widget.Clickable
 	joinTeam [config.MaxTeamCount]widget.Clickable // teams mode: one join button per team (only the game's first Teams() are drawn)
 	spectate widget.Clickable
+	share    widget.Clickable // open games: the game's share link as a QR code (share.go)
 	reinvite widget.Clickable // invite-only creator: re-open the invitee picker
 	del      widget.Clickable // abandoned games: opens the delete confirmation
 	delYes   widget.Clickable // delete confirmation: "Yes, delete"
@@ -362,11 +363,14 @@ type App struct {
 	// The replay screen's PIN and SHARE (share.go): the pin toggles the
 	// lobby KV entry that keeps the replay for good; Share puts the replay's
 	// link up as a QR code with a Copy link button, up while shareOpen —
-	// shareLink/shareWhy/shareCode are what openShare built for it, and
-	// shareCopiedAt when the link was last copied (the button reads COPIED
-	// for shareCopiedFor after). UI goroutine only. linkedReplay is the
-	// game a share link (or --replay) asked to open on landing in the lobby,
-	// taken once (takeLinkedReplay); guarded by mu.
+	// shareTitle/shareNote say what is shared (a replay, or an open game
+	// from the lobby row's Share), shareLink/shareWhy/shareCode are what
+	// openShareModal built for it, and shareCopiedAt when the link was last
+	// copied (the button reads COPIED for shareCopiedFor after). UI
+	// goroutine only. linkedReplay is the game a share link (or --replay)
+	// asked to open on landing in the lobby, and linkedJoin the open game a
+	// game link (or --join) asked to take a seat in; each taken once
+	// (takeLinkedReplay, takeLinkedJoin); guarded by mu.
 	replayPinBtn   widget.Clickable
 	replayShareBtn widget.Clickable
 	// The game-over box's own Pin and Share (gameOverActions), for the game
@@ -378,12 +382,16 @@ type App struct {
 	shareOKBtn       widget.Clickable
 	shareCopyBtn     widget.Clickable
 	shareOpen        bool
+	shareScreen      screenKind // the screen the modal was opened over: it closes with it
+	shareTitle       string
+	shareNote        string
 	shareLink        string
 	shareWhy         string
 	shareCode        *qr.Code
 	shareCopiedAt    time.Time
 	shareCopyOK      bool // whether the last copy reached the clipboard (copyText)
 	linkedReplay     string
+	linkedJoin       string
 
 	// connPicked: the player clicked a browser row since the page-opening
 	// refresh started, so its result must not move the selection. favOrder
@@ -866,7 +874,10 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 // without seeing the screen — unless something fails, when they see it with
 // the error and their name still in place. A replay link (cfg.ReplayGameID:
 // --replay, or ?replay=) with no name does the same under a dealt
-// Watcher_ name: nobody is asked who they are on the way to a replay.
+// Watcher_ name: nobody is asked who they are on the way to a replay. A
+// game link (cfg.JoinGameID: --join, or ?game=) with no name is the one
+// exception that waits: the screen is shown, saying which game the link
+// is for, and Play with the field blank plays anonymously as always.
 func NewWithPicker(cfg config.Config, contexts []string, selected string, favorites []prefs.Favorite) *App {
 	a := New(nil, nil)
 	a.needConn = true
@@ -882,6 +893,7 @@ func NewWithPicker(cfg config.Config, contexts []string, selected string, favori
 		a.autoLogin = true
 	}
 	a.linkedReplay = cfg.ReplayGameID
+	a.linkedJoin = cfg.JoinGameID
 	a.connContexts = append([]string(nil), contexts...)
 	a.connSelected = selected
 	a.favorites = append([]prefs.Favorite(nil), favorites...)
@@ -1072,10 +1084,11 @@ func (a *App) layout(gtx C) D {
 	a.touchDebugFrame()
 	var d D
 	tourGame := a.tutorialScene() == tutSceneGame
-	// The share modal belongs to the replay screen and the game-over box;
-	// a screen change under it (the game torn down, say) leaves it closed
-	// rather than waiting for the next of those screens.
-	if s := a.getScreen(); a.shareOpen && s != screenReplay && s != screenGame {
+	// The share modal belongs to the screen it was opened over — the replay
+	// screen, the game-over box or the lobby; a screen change under it (the
+	// game torn down, a linked game joined, say) leaves it closed rather
+	// than carrying it to the next screen.
+	if a.shareOpen && a.getScreen() != a.shareScreen {
 		a.shareOpen = false
 	}
 	switch a.getScreen() {

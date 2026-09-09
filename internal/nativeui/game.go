@@ -620,10 +620,13 @@ func (a *App) sessionLine(gtx C) D {
 }
 
 // gameHUD is the menu column's content, top to bottom: the game's name and
-// the session, the players, the stats, the ready list before the start, Back
-// to Lobby, the voice chat, the switches and the knobs, the controls legend,
-// the NATS messages switch, and the NATS tag last. It is laid out at its own
-// height — the column it is in scrolls it
+// the session, the players, the stats, the ready list before the start, the
+// voice chat, the switches and the knobs, the controls legend, the NATS
+// messages switch, and the NATS tag last. Back to Lobby is NOT in here: the
+// way out stands on the button line over the whole screen (gameActions),
+// where putting the menu away cannot take it with it.
+//
+// It is laid out at its own height — the column it is in scrolls it
 // (hudColumn) — and slotY is the height that column shows at once, which is
 // where the tag is pinned while the rest leaves it the room.
 func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode, slotY int) D {
@@ -718,12 +721,6 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	}
 
 	children = append(children,
-		// Back to Lobby right under the stats: the column's one action,
-		// before its settings, where it is found without a scroll.
-		layout.Rigid(spacer(18)),
-		layout.Rigid(a.tutMarked(tutHUDBack, func(gtx C) D {
-			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
-		})),
 		// The voice chat (voice.go): a player's and a spectator's alike.
 		layout.Rigid(spacer(14)),
 		layout.Rigid(func(gtx C) D { return a.voiceSection(gtx, view.voice, a.voiceRoomName(eng, view.voice)) }),

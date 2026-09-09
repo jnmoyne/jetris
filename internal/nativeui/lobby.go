@@ -25,10 +25,11 @@ import (
 // playfield goes.
 //
 // It is built the same way and out of the same parts (gamescreen.go): one
-// slim bar across the top, and under it the thing the screen is FOR, with a
+// slim bar across the top, under it the line of buttons this screen's actions
+// live on (lobbyActions), and under that the thing the screen is FOR, with a
 // switch in the bar for each thing that costs it room. The menu column (who
-// we are, which server, the address to share, Disconnect), the players in the
-// lobby, the chat strip — every one of them shows or it does not, and none of
+// we are, which server, the address to share), the players in the lobby, the
+// chat strip — every one of them shows or it does not, and none of
 // them is a window: there is no scrim, nothing to dismiss, and the button that
 // shows a column is the only thing that hides it. Each starts ON
 // (lobbyMenuVisible, lobbyPlayersVisible, lobbyChatVisible — panels.go) and
@@ -41,9 +42,9 @@ import (
 // it, on tabs: the games on offer now, and the games already played. They are
 // tabs and not two stacked lists because either one can be long — twenty open
 // games or two hundred finished ones — and a screen that gives half its
-// height to each shows too little of both. The one action that is neither
-// list stands over them, where it cannot be scrolled away from: Create a new
-// game.
+// height to each shows too little of both. The actions that belong to neither
+// list stand over them all, on the button line under the bar, where nothing a
+// switch does can take them away: Disconnect, Create a new game, How to play.
 //
 // The brand banner stays over the bar. This is the screen a player lands on
 // and the one they leave from, and it is the only one that says what Jetris
@@ -59,9 +60,6 @@ func (a *App) layoutLobby(gtx C) D {
 	}
 
 	// --- event handling ---
-	if a.quitBtn.Clicked(gtx) {
-		go a.quit()
-	}
 	// Modal overlays: the create-game wizard, the invitee picker (after
 	// creating an invite-only game), the incoming-invitation pop-up, and the
 	// LAN party's QR code (lanqr.go). Their buttons are dispatched here so a
@@ -84,6 +82,13 @@ func (a *App) layoutLobby(gtx C) D {
 	// layout that measures it — and answered only while no modal is up, since
 	// the scrim dims the bar without taking its presses.
 	a.handleLobbyBarClicks(gtx, modal)
+	// The way out, from the action line (lobbyActions): answered only while
+	// no modal is up, as every other button on this screen is — the lobby's
+	// scrim dims what is under it without taking its presses, and leaving the
+	// server is not what a press meant for the wizard should do.
+	if a.quitBtn.Clicked(gtx) && !modal {
+		go a.quit()
+	}
 	// The Create button just opens the wizard; the wizard's last step does
 	// the actual creating (finishCreateWizard). The previous run's choices
 	// stick around as this run's defaults.
@@ -288,6 +293,7 @@ func (a *App) layoutLobby(gtx C) D {
 		layout.Rigid(func(gtx C) D {
 			return a.lobbyBar(gtx, lb.PlayerName(), connName, len(chat) > a.lobbyChatSeen, vs)
 		}),
+		layout.Rigid(a.lobbyActions),
 		layout.Rigid(func(gtx C) D {
 			if msg == "" {
 				return D{}
@@ -535,8 +541,8 @@ func (a *App) lobbyPlayersBeside(gtx C, w int) bool {
 // lobbyMenuColumn is the lobby's menu as a column beside the panel: its own
 // panel ground and a hairline down the edge it meets the panel on, and
 // nothing else — no scrim behind it, no close button in it. What it holds is
-// everything about this SESSION rather than about any game: who we are, the
-// server we are on and the one we are hosting, and the way out.
+// everything about this SESSION rather than about any game: who we are, and
+// the server we are on and the one we are hosting.
 //
 // The column is the slot's exact height and its content scrolls in it, as
 // the game screen's does (hudColumn): the menu with the legend under it is
@@ -555,10 +561,12 @@ func (a *App) lobbyMenuColumn(gtx C, playerName, connName, connURL string, vs vo
 	})
 }
 
-// lobbyMenu is that column's contents: the way out, who we are and where we are connected,
+// lobbyMenu is that column's contents: who we are and where we are connected,
 // the address to hand out while hosting a server, and — since
 // this is the screen a player sits on before they play — how the game is
 // played, the same legend the game's own menu carries (controlsSections).
+// The way out is NOT in here: Disconnect stands on the button line over the
+// column (lobbyActions), where a put-away menu cannot take it with it.
 // Everything in it stacks rather than running along a line: the column is a
 // third of a phone's width at its narrowest, and a server URL beside its
 // label there would be two ellipses.
@@ -573,8 +581,6 @@ func (a *App) lobbyMenu(gtx C, playerName, connName, connURL string, vs voice.Sn
 	// just the server's name.
 	addr, _, _ := a.lanAddrs()
 	children := []layout.FlexChild{
-		layout.Rigid(func(gtx C) D { return a.secondaryButton(gtx, &a.quitBtn, "Disconnect") }),
-		layout.Rigid(spacer(14)),
 		layout.Rigid(func(gtx C) D { return a.pixelLabelFit(gtx, unit.Sp(11), playerName, colAccent) }),
 	}
 	if connName != "" {
@@ -740,12 +746,21 @@ func (a *App) lobbyPlayersFlow(gtx C, players []lobby.PlayerPresence, vs voice.S
 			})
 		}
 	}
-	gap, avail := gtx.Dp(14), gtx.Constraints.Max.X
-	var rows []layout.Widget
-	var line []layout.Widget
-	x := 0
+	items := make([]layout.Widget, 0, len(players))
 	for _, p := range players {
-		w := entry(p)
+		items = append(items, entry(p))
+	}
+	return flowRows(gtx, gtx.Dp(14), items)
+}
+
+// flowRows packs widgets along a line, gap px apart, and starts a new line
+// where the next one will not fit: each is measured at its own width first,
+// and a line is broken only between two of them.
+func flowRows(gtx C, gap int, items []layout.Widget) []layout.Widget {
+	avail := gtx.Constraints.Max.X
+	var rows, line []layout.Widget
+	x := 0
+	for _, w := range items {
 		m := gtx
 		m.Constraints.Min = image.Point{}
 		rec := op.Record(gtx.Ops)
@@ -765,6 +780,23 @@ func (a *App) lobbyPlayersFlow(gtx C, players []lobby.PlayerPresence, vs voice.S
 		rows = append(rows, flowLine(line, gap))
 	}
 	return rows
+}
+
+// buttonLine is a row of buttons packed along one line and wrapped onto
+// further lines where the screen has not the width for them — what the
+// screens' action lines are made of (lobbyActions, gameActions). A Flex
+// handed more than it has squeezes its children instead, which on a phone
+// turns three buttons into three stacks of syllables.
+func buttonLine(gtx C, gap int, items ...layout.Widget) D {
+	rows := flowRows(gtx, gap, items)
+	kids := make([]layout.FlexChild, 0, 2*len(rows))
+	for i, r := range rows {
+		if i > 0 {
+			kids = append(kids, layout.Rigid(spacer(8)))
+		}
+		kids = append(kids, layout.Rigid(r))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 }
 
 // lobbyPlayerName is a presence's name line: the name, and the speaker mark
@@ -820,16 +852,14 @@ func (a *App) lobbyChatStrip(gtx C, chat []lobby.ChatMessage) D {
 	})
 }
 
-// lobbyPanel is the middle of the screen: the one action that is not a list
-// over the two that are. Create a new game stands above the tabs rather than
-// inside either of them, because it belongs to neither and because a button
-// on a scrolling list is a button that can be scrolled away from.
+// lobbyPanel is the middle of the screen: the lists a lobby has in it, on
+// tabs. The actions that belong to none of them are not in here — they stand
+// on the button line above the whole body (lobbyActions), off every list and
+// out of every column.
 func (a *App) lobbyPanel(gtx C, games []lobby.GameListing, abandoned map[string]bool, archives []config.ArchiveRecord, logEntries []config.LogEntry) D {
 	history := a.lobbyTab == lobbyTabHistory
 	serverLog := a.lobbyTab == lobbyTabLog
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.createRow),
-		layout.Rigid(spacer(12)),
 		layout.Rigid(func(gtx C) D {
 			// The tabs sit on the panel's top border like file-folder tabs
 			// (the connection page's, connPage), each carrying its own count
@@ -1724,20 +1754,41 @@ func archiveModeLine(r config.ArchiveRecord) string {
 	return fmt.Sprintf("competitive · %s", strings.Join(parts, ", "))
 }
 
-// createRow is the single entry point to game creation: one button that opens
-// the create-game wizard (the game's attributes are chosen there, step by
-// step, instead of on an inline option row) — and beside it, for a player
-// who has never seen one, the How to play tour (tutorial.go).
-func (a *App) createRow(gtx C) D {
-	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-		layout.Rigid(a.tutMarked(tutCreateBtn, func(gtx C) D {
-			return a.attractButton(gtx, &a.createBtn, "Create a new game")
-		})),
-		layout.Rigid(hSpacer(12)),
-		layout.Rigid(a.tutMarked(tutHowToPlayBtn, func(gtx C) D {
-			return a.secondaryButton(gtx, &a.tutBtn, "How to play")
-		})),
-	)
+// lobbyActions is the lobby's line of buttons, across the whole screen just
+// under the bar: the way out of the server, the single entry point to game
+// creation — one button that opens the create-game wizard, where the game's
+// attributes are chosen step by step instead of on an inline option row — and
+// beside it, for a player who has never seen one, the How to play tour
+// (tutorial.go).
+//
+// It is a line of its own and not part of anything the bar switches: the menu
+// column, the panel and the players all begin UNDER it, so Disconnect is in
+// the same place whether the menu is up or away, and none of the three can be
+// scrolled off with a list. Where the screen has not the width for all of
+// them the line wraps onto a second (buttonLine) rather than squeezing the
+// labels into stacked syllables.
+func (a *App) lobbyActions(gtx C) D {
+	// A phone gets the line at tighter margins: the side inset and the gap a
+	// desktop can afford are the difference between two lines and three on a
+	// 375 dp screen, and a third line of buttons costs the games list more
+	// than the margins are worth.
+	pad, gap := unit.Dp(12), unit.Dp(12)
+	if a.form.compact {
+		pad, gap = unit.Dp(8), unit.Dp(8)
+	}
+	return layout.Inset{Left: pad, Right: pad, Top: unit.Dp(10), Bottom: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+		return buttonLine(gtx, gtx.Dp(gap),
+			a.tutMarked(tutLobbyQuit, func(gtx C) D {
+				return a.secondaryButton(gtx, &a.quitBtn, "Disconnect")
+			}),
+			a.tutMarked(tutCreateBtn, func(gtx C) D {
+				return a.attractButton(gtx, &a.createBtn, "Create a new game")
+			}),
+			a.tutMarked(tutHowToPlayBtn, func(gtx C) D {
+				return a.secondaryButton(gtx, &a.tutBtn, "How to play")
+			}),
+		)
+	})
 }
 
 // invitedTo reports whether this player holds a pending invitation to gameID.

@@ -78,6 +78,7 @@ const (
 	tutLobbyTabHistory = "lobby.tab.history"
 	tutLobbyTabLog     = "lobby.tab.log"
 	tutHistoryActions  = "history.actions" // View board and Replay on the tour's own history row
+	tutLobbyQuit       = "lobby.quit"      // Disconnect, on the lobby's button line
 	tutCreateBtn       = "lobby.create"
 	tutHowToPlayBtn    = "lobby.howto"
 	tutWizard          = "wizard"
@@ -105,7 +106,7 @@ const (
 	tutHUDARR          = "hud.arr"
 	tutHUDSDF          = "hud.sdf"
 	tutHUDGuard        = "hud.guard"
-	tutHUDBack         = "hud.back"
+	tutGameBack        = "game.back" // Back to Lobby, on the game screen's button line
 )
 
 // tutLabelPrefix keeps the tour's labels apart from the screens' own
@@ -1083,7 +1084,7 @@ func tutorialSteps() []tutStep {
 			"This tour walks through the lobby, creating a game, and the game screen. "+
 				"Next and Back move through it (or the ← → keys); Close, or Esc, leaves it at any point."),
 		lobbyStep("THE MENU BUTTON",
-			"The ☰ button shows and hides the menu column: Disconnect, your name and the server you are on, the voice chat, and the controls legend. "+
+			"The ☰ button shows and hides the menu column: your name and the server you are on, the voice chat, and the controls legend. "+
 				"It is a switch — the button that shows a column is the only thing that hides it — and it remembers your choice from one session to the next.",
 			tutLobbyMenuBtn, tutLobbyMenu),
 		lobbyStep("VOICE CHAT",
@@ -1157,13 +1158,13 @@ func tutorialSteps() []tutStep {
 		gameStep("THE ON-SCREEN PAD",
 			"The whole keyboard scheme as buttons: the D-pad moves (its ▲ rotates clockwise), the face buttons rotate either way or half round, DROP hard-drops and HOLD holds. On a touch screen it grows to thumb size — and the swipes work on the playfield with or without it.",
 			tutGamePad, tutGamePadFace),
+		gameStep("BACK TO LOBBY",
+			"On its own line under the bar, wherever the menu is: leaves the game screen. In the middle of a game you are asked to confirm — the seat is kept, the board plays on, and the lobby's row offers Rejoin. Once a game is over, the lobby's history has its result.",
+			tutGameBack),
 		hudStep("PLAYERS AND STATS",
 			"The menu column opens with the roster in its board colors, then SCORE and LEVEL — one shared pair in co-op, one per team in teams — and Batch RTT: the round trip from publishing a move to seeing it come back from the server, colored as it grows. "+
 				"LINK LOST shows here if the connection drops; the moves you make meanwhile land once it is back.",
 			tutHUDStats),
-		hudStep("BACK TO LOBBY",
-			"Leaves the game screen. In the middle of a game you are asked to confirm: the seat is kept, the board plays on, and the lobby's row offers Rejoin. Once a game is over, the lobby's history has its result.",
-			tutHUDBack),
 		hudStep("MOVE PUBLISHING",
 			"Two ways to play the round trip. Pessimistic sync ☹ shows a move only once the server has committed it and sent it back. Optimistic async ☺, the default, draws the piece where you steer it at once and pipelines the publishing; a lost race snaps it back and replays the moves behind it. Flip between them to feel what each costs.",
 			tutHUDLab),

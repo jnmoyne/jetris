@@ -624,7 +624,7 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		teams.AgentsPauseAlone = true
 		teams.Players = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}, {PlayerID: "hal", Name: "hal", Agent: true, Team: 1, Seat: 2}}
 		render(func(gtx C) D { return a.gameRow(gtx, teams, false) })
-		render(a.createRow)
+		render(a.lobbyActions)
 	})
 
 	t.Run("create-wizard", func(t *testing.T) {

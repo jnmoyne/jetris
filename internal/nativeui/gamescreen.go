@@ -5,9 +5,10 @@ package nativeui
 // The rule is that nothing permanent stands between the player and the
 // playfield, and that nothing on this screen ever takes the game away from
 // the player. One slim bar runs across the top: the score, and a switch for
-// each thing that costs the board room. Every one of them is a switch and
-// not a window — the menu column (players, stats, the controls legend, the
-// lab switches, Back to Lobby), the opponents' boards, the chat strip, the
+// each thing that costs the board room. Under the bar is the button line the
+// way out stands on (gameActions), and nothing else. Every one of the rest is
+// a switch and not a window — the menu column (players, stats, the controls
+// legend, the lab switches), the opponents' boards, the chat strip, the
 // on-screen pad. They show or they do not; there is no scrim over the board,
 // nothing to dismiss, and no panel that swallows the keys, so the piece keeps
 // falling and keeps taking moves while the menu is open — which is the point
@@ -194,8 +195,24 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 	body := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D { return a.gameBar(gtx, eng, view, mode, gmode) }),
+		layout.Rigid(a.gameActions),
 		layout.Flexed(1, body),
 	)
+}
+
+// gameActions is this screen's line of buttons, across the whole width just
+// under the bar — the lobby's (lobbyActions) in the same place, so the way
+// out is where it was on the screen the player came from. Back to Lobby is
+// the only thing on it, and it is here rather than in the menu column
+// because the menu is a switch: the way out of a game must not be one press
+// behind another. Everything the bar switches — the menu column, the board,
+// the opponents — begins under it.
+func (a *App) gameActions(gtx C) D {
+	return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(8), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+		return buttonLine(gtx, gtx.Dp(12), a.tutMarked(tutGameBack, func(gtx C) D {
+			return a.secondaryButton(gtx, &a.backBtn, "Back to Lobby")
+		}))
+	})
 }
 
 // handleFormClicks drains the bar's switches. Called at the top of the game

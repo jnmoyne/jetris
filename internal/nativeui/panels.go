@@ -28,8 +28,10 @@ package nativeui
 import "jetris/internal/prefs"
 
 // hudVisible reports whether the game's menu column (the stats, the controls
-// legend, the lab switches, Back to Lobby) stands beside the board — or, where
-// there is no room to stand beside it, over the board (hudBeside).
+// legend, the lab switches) stands beside the board — or, where there is no
+// room to stand beside it, over the board (hudBeside). Back to Lobby is not
+// in it: the way out of a game is on the button line under the bar
+// (gameActions), which no switch takes away.
 func (a *App) hudVisible() bool { return a.hudShown }
 
 // padVisible reports whether the on-screen control pad is laid out at all.
@@ -46,8 +48,9 @@ func (a *App) oppVisible() bool { return a.oppShown }
 func (a *App) chatVisible() bool { return a.chatShown }
 
 // lobbyMenuVisible reports whether the lobby's menu column — who we are, which
-// server, the address to share while hosting one, Disconnect — stands beside
-// the panel (or over it, where there is no room beside: lobbyMenuBeside).
+// server, the address to share while hosting one — stands beside the panel
+// (or over it, where there is no room beside: lobbyMenuBeside). Disconnect is
+// not in it either (lobbyActions).
 func (a *App) lobbyMenuVisible() bool { return a.lobbyMenuShown }
 
 // lobbyPlayersVisible reports whether everyone in the lobby shows in a column

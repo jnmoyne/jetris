@@ -516,8 +516,12 @@ each lock of yours:
    the whole game. An OPEN game (`invite_only` false) takes joiners while it
    runs too — a free seat of an `in_progress` listing is yours to take, and
    you play on the live board at once: fetch the board, spawn, no ready step
-   (the countdown, `starting`, is the one moment it takes nobody). An invite
-   game's roster is frozen once it starts.
+   (the countdown, `starting`, is the one moment it takes nobody). Read the
+   meta first, though: the listing says `in_progress` until the archiver
+   deletes it (for the archive's grace period, or for good when that client
+   went away), and a game whose meta is `finished`, `archived` or
+   `cancelled` takes nobody. An invite game's roster is frozen once it
+   starts.
 3. **Ready → countdown**: toggle your `ready` flag via CAS. The table is ready
    when — invite game — every seat is filled and everyone is ready, or —
    open game — EVERY PLAYFIELD has a READY player (the crew's one board:
@@ -550,8 +554,13 @@ each lock of yours:
    asks an agent left alone on it to wait for company, §2).
 5. **Finish**: competitive's last player standing, any winning teams player, or
    the cooperative topper CAS-transitions the meta to `finished` — a game a
-   line goal ended is finished by EVERY player alike, and a board scored per
-   seat by its topper — and then
+   line goal ended, and the crew's game a peer's `game_over` ended (a board
+   scored per seat included), are finished by EVERY seated player alike: the
+   CAS makes it idempotent, and the topper's own finish may never land (its
+   connection may have gone with it — one such loss left an open game
+   listed, joinable and playing on for hours). Your own `game_over` is the
+   one announcement nothing can stand in for: retry it past a blip rather
+   than drop it. Then
    **archives**, in this order: transition `finished → archived` (CAS; one
    winner), publish the `ArchiveRecord` **immediately** (it is what every
    lobby's history shows — do not make it wait for anything below), archive
@@ -640,6 +649,7 @@ each lock of yours:
 - [ ] An open game joined while `in_progress` when a seat is free — no ready toggle then; the start rule (`readyToStart`) and the `created → starting` election honored when readying up
 - [ ] Board height read from `extra_rows` on a shared board (`24 + (seats − 1) × extra_rows`)
 - [ ] `line_clear` published in competitive too; the `line_goal` counted per playfield off the ordered stream, the finish CASed by every player when it is reached
+- [ ] The crew's game a peer's `game_over` ended finished by you too (CAS), your own `game_over` retried past a blip, and no seat taken in an open game whose meta says it is over
 - [ ] `scoring: "individual"` honored: the crew's points never folded into yours, the top published score the winner
 - [ ] Your own piece vacated before your seat is freed on the way out of a running open game; a peer's piece idle 10 s (or seatless) vacated by you only while you play
 - [ ] Pieces dealt by the meta's `bag` — the 7-bag when absent, the double bag under `"double"`, independent draws under `"none"`, a ration shaped the same way (§1.3)

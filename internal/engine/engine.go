@@ -1681,27 +1681,68 @@ func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
 	// only carried by the next event), and a shared score converges on them.
 	ev := GameEvent{Kind: EventGameOver, PlayerID: e.playerID, Score: int(e.score.Load()), Level: e.AchievedLevel(), PieceCount: e.pieceIdx.Load(),
 		TotalScore: int(e.ownScore.Load()), TotalLines: int(e.ownClearLines.Load())}
-
 	data, _ := json.Marshal(ev)
-	_, _ = e.js.Publish(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
-	if e.individual {
+
+	switch {
+	case e.individual:
 		// A shared board scored per seat: our top-out ends the game, but
 		// the verdict — who scored most — is decided from the ordered event
 		// stream when our own game_over echoes back (handleGameEvent), the
 		// same way every other engine decides it. Until then, play stops.
 		e.setMode(ModeGameOver)
-	} else {
+	case e.gameMode == config.ModeCooperative && e.lineGoal > 0:
+		// The crew set out to clear the goal and fell short: a loss, with
+		// nobody a winner — decided here, as every peer decides it from
+		// our game_over (handleGameEvent).
+		e.decideOutcome(map[string]bool{}, -1)
+	default:
 		e.transitionToSpectator(false) // we topped out → we lost
 	}
 
-	// Transition game meta to finished:
-	// - Cooperative: any top-out finishes the game
-	// - Competitive: only finish when this was the last elimination
-	if e.gameMode == config.ModeCooperative {
-		go e.transitionGameToFinished(ctx)
-	}
-	// Competitive finishing is handled by the last player standing (see handleGameEvent)
+	// The announcement is what the rest of the game runs on — every peer's
+	// game over in cooperative, the elimination count in competitive — so
+	// it is retried past a connection blip rather than dropped (a lost
+	// game_over left an open co-op game running for hours after its crew's
+	// top-out). Cooperative: the topper then moves the meta to finished;
+	// every peer does the same on consuming the game_over, so the finish
+	// never depends on this one client staying connected. Competitive: the
+	// finish is the last player standing's (handleGameEvent).
+	go func() {
+		e.publishWithRetry(ctx, config.EventKindSubject(e.gameID, string(EventGameOver), e.playerID), data)
+		if e.gameMode == config.ModeCooperative {
+			e.transitionGameToFinished(ctx)
+		}
+	}()
 }
+
+// publishWithRetry publishes one message to the game stream, retrying with a
+// growing pause (a quarter second doubling to five) for up to a minute or
+// until the engine stops; reports whether it landed. For the announcements
+// nothing else can stand in for: a player's game_over.
+func (e *Engine) publishWithRetry(ctx context.Context, subject string, data []byte) bool {
+	deadline := time.Now().Add(publishRetryFor)
+	pause := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		if _, err := e.js.Publish(ctx, subject, data); err == nil {
+			return true
+		} else if time.Now().After(deadline) {
+			log.Printf("engine %s: publish %s: giving up after %d attempts: %v", e.playerID, subject, attempt, err)
+			return false
+		} else {
+			log.Printf("engine %s: publish %s: attempt %d failed, retrying: %v", e.playerID, subject, attempt, err)
+		}
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			return false
+		}
+		pause = min(pause*2, 5*time.Second)
+	}
+}
+
+// publishRetryFor bounds publishWithRetry: a minute of retries outlasts a
+// reconnect, and a player gone for longer has left the game.
+const publishRetryFor = time.Minute
 
 // handleTeamTopOut implements teams-mode per-player elimination: the topped-out
 // player vacates any of their active cells from the shared team board and
@@ -1755,16 +1796,27 @@ func (e *Engine) handleTeamTopOut(ctx context.Context, locked bool) {
 }
 
 func (e *Engine) transitionGameToFinished(ctx context.Context) {
-	// Retry CAS: racing publishers (e.g. publishPieceIdxUpdate) can bump the
-	// meta sequence between our fetch and publish. Without retry, the game
-	// stays in_progress forever and never archives.
+	// Retry: racing publishers (a join's starting transition, another
+	// engine's finish) can bump the meta sequence between our fetch and
+	// publish, and a connection blip can fail either round trip. Without a
+	// retry the game stays in_progress forever and never archives; the
+	// attempts pause a little longer each time (a quarter second more, two
+	// seconds at most) so a reconnect has time to land.
 	const maxAttempts = 10
 	succeeded := false
 	alreadyFinished := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(min(time.Duration(attempt)*250*time.Millisecond, 2*time.Second)):
+			case <-ctx.Done():
+				return
+			}
+		}
 		meta, metaSeq, err := natspkg.FetchGameMeta(context.Background(), e.js, e.gameID)
 		if err != nil {
-			return
+			log.Printf("transition to finished: fetch meta (attempt %d): %v", attempt, err)
+			continue
 		}
 		if meta.Status == config.GameStatusFinished || meta.Status == config.GameStatusArchived {
 			alreadyFinished = true

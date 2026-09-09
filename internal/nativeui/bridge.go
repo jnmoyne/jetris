@@ -23,11 +23,13 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 				return
 			}
 			// A cooperative game-over can still earn fireworks: beating the
-			// best archived co-op score for this seat count. Resolved BEFORE
-			// taking a.mu — beatsCoopBest reads the lobby via getLobby, which
-			// locks a.mu itself.
+			// best archived co-op score for this seat count — unless the
+			// crew had a goal and missed it (a loss celebrates nothing).
+			// Resolved BEFORE taking a.mu — beatsCoopBest reads the lobby
+			// via getLobby, which locks a.mu itself.
 			coopRecord := u.Kind == engine.UpdateGameOver &&
-				e.GameMode() == config.ModeCooperative && !e.IndividualScoring() && a.beatsCoopBest(e)
+				e.GameMode() == config.ModeCooperative && !e.IndividualScoring() &&
+				(e.LineGoal() == 0 || u.Won) && a.beatsCoopBest(e)
 			a.mu.Lock()
 			switch u.Kind {
 			case engine.UpdateScore:

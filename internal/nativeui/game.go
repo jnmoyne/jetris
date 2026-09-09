@@ -1803,22 +1803,7 @@ func (a *App) gameOverBox(gtx C, eng *engine.Engine, gmode config.GameMode, view
 					children := []layout.FlexChild{
 						layout.Rigid(a.pixel(unit.Sp(18), title, colFg).Layout),
 					}
-					var msg string
-					var c colorN
-					switch {
-					case teamPlaysOn:
-						msg, c = "Your team plays on", colMuted
-					case gmode == config.ModeTeams:
-						msg, c = "YOUR TEAM LOST", colErr
-						if won {
-							msg, c = "YOUR TEAM WON!", colAccent
-						}
-					case gmode == config.ModeCompetitive, individual:
-						msg, c = "YOU LOST", colErr
-						if won {
-							msg, c = "YOU WON!", colAccent
-						}
-					}
+					msg, c := gameOverVerdict(gmode, individual, won, eng.LineGoal(), eng.GoalReached(), teamPlaysOn)
 					if msg != "" {
 						children = append(children, layout.Rigid(spacer(10)), layout.Rigid(a.pixel(unit.Sp(12), msg, c).Layout))
 					}
@@ -1866,6 +1851,31 @@ func (a *App) gameOverBox(gtx C, eng *engine.Engine, gmode config.GameMode, view
 			})
 		})
 	})
+}
+
+// gameOverVerdict is the game-over box's verdict line and its colour: the
+// team's or the player's win or loss, a team still playing on, and the
+// crew's missed goal — a crew that set out to clear goal lines and topped
+// out first has lost, nobody a winner. The crew's reached goal and its
+// classic run (no goal) say nothing beyond the title and the score.
+func gameOverVerdict(gmode config.GameMode, individual, won bool, goal int, goalReached, playsOn bool) (string, colorN) {
+	switch {
+	case playsOn:
+		return "Your team plays on", colMuted
+	case gmode == config.ModeTeams:
+		if won {
+			return "YOUR TEAM WON!", colAccent
+		}
+		return "YOUR TEAM LOST", colErr
+	case gmode == config.ModeCompetitive, individual:
+		if won {
+			return "YOU WON!", colAccent
+		}
+		return "YOU LOST", colErr
+	case gmode == config.ModeCooperative && goal > 0 && !goalReached && !won:
+		return "GOAL MISSED · YOU LOST", colErr
+	}
+	return "", colFg
 }
 
 func (a *App) hudStat(label string, val int) layout.Widget {

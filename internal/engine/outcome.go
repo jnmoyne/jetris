@@ -10,10 +10,11 @@ import (
 )
 
 // The game's outcome, decided once. Every way a game can end — the last
-// player or team standing, the cooperative crew's top-out, a shared board
-// whose seats are ranked by their own scores, a playfield reaching the line
-// goal, a roster that emptied every board but one — comes here to record
-// the winners (decideOutcome), and every screen and the archiver read them
+// player or team standing, the cooperative crew's top-out (a loss, nobody
+// a winner, when the crew had a line goal to reach), a shared board whose
+// seats are ranked by their own scores, a playfield reaching the line goal,
+// a roster that emptied every board but one — comes here to record the
+// winners (decideOutcome), and every screen and the archiver read them
 // back (Winners). The decision is made from the ordered event stream on
 // every engine alike, so every engine names the same winners.
 

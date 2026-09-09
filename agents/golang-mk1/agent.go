@@ -785,6 +785,13 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 			if g.boolv("invite_only") {
 				return -1
 			}
+			// The listing says in_progress until the archiver deletes it:
+			// the meta is what says an open game is over.
+			if meta, _, err := a.fetchMeta(ctx, gameID); err == nil {
+				if s := meta.str("status"); s == "finished" || s == "archived" || s == "cancelled" {
+					return -1
+				}
+			}
 		default:
 			return -1
 		}
@@ -1176,7 +1183,10 @@ func (a *Agent) transitionMeta(ctx context.Context, gameID, status string) bool 
 	for i := 0; i < 5; i++ {
 		meta, seq, err := a.fetchMeta(ctx, gameID)
 		if err != nil {
-			return false
+			// A blip: the next attempt may see the stream again.
+			log.Printf("transition %s to %s: fetch meta: %v", gameID, status, err)
+			time.Sleep(250 * time.Millisecond)
+			continue
 		}
 		cur := meta.str("status")
 		if (cur == "finished" || cur == "archived" || cur == "cancelled") && status != "archived" {

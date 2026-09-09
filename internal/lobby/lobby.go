@@ -944,6 +944,21 @@ func (l *Lobby) JoinGame(ctx context.Context, gameID string, team int) (JoinResu
 			return JoinResult{}, err
 		}
 
+		// An open game's listing says in_progress until the archiver deletes
+		// it: the META is what says the game is over (finished by a top-out
+		// or the line goal, archived, cancelled), and a game that is over
+		// takes nobody — not even a rejoin. A listing that never got past the
+		// countdown cannot be over, and an invite game's roster is frozen
+		// below anyway, so only a running open game asks.
+		if g.Dynamic() && g.Status == config.GameStatusInProgress {
+			if meta, _, err := natspkg.FetchGameMeta(ctx, l.js, gameID); err == nil {
+				switch meta.Status {
+				case config.GameStatusFinished, config.GameStatusArchived, config.GameStatusCancelled:
+					return JoinResult{}, ErrGameOver
+				}
+			}
+		}
+
 		// Already in the game — just update presence and return our position.
 		already := false
 		for i, p := range g.Players {
@@ -1071,6 +1086,12 @@ func (l *Lobby) LeaveGame(ctx context.Context, gameID string) error {
 // ErrGameStarted is returned by UnjoinGame when the game has already left the
 // created/starting states — the roster is frozen once play begins.
 var ErrGameStarted = errors.New("game has already started")
+
+// ErrGameOver is returned by JoinGame for an open game whose meta says it is
+// finished, archived or cancelled while its lobby listing still says
+// in_progress — the listing outlives the finish for the archive's grace
+// period, and for good when the archiving client went away.
+var ErrGameOver = errors.New("game is over")
 
 // UnjoinGame removes the local player from a game — before it starts in
 // any game, and at any time in an OPEN game, whose seats come and go (a CAS

@@ -215,7 +215,12 @@ clears for it): on a single playfield the game is over — the crew is done, a
 board scored per seat crowns its top scorer(s) — and across several the first
 playfield there wins for its team, or its player. Every player's engine then
 moves the meta to `finished` (the CAS makes it idempotent), the HUD counts
-`LINES 12 / 40` all along, and the game-over box reads GOAL REACHED.
+`LINES 12 / 40` all along, and the game-over box reads GOAL REACHED. A crew
+that **tops out before its goal has lost**: the game ends as at any top-out
+(Game Over, below), but the verdict is decided — nobody a winner — on every
+engine alike, the box reads GAME OVER over `GOAL MISSED · YOU LOST`, no name
+is crowned, the high-score fireworks stay dark, and the archive record marks
+no winner.
 
 **Cell states:**
 
@@ -409,9 +414,9 @@ Level = `totalLinesCleared / 10`, capped at 19. Level affects gravity speed (see
 ### Game Over
 
 When **any** player tops out (newly spawned piece cannot be placed **on locked cells** — a spawn covered only by another player's falling piece waits instead, see Piece Spawning), the game ends for **all** players:
-1. The topped-out player publishes `EventGameOver`
-2. All other players' event consumers receive it and immediately transition to game over
-3. All players see the "GAME OVER" overlay simultaneously
+1. The topped-out player publishes `EventGameOver` — retried past a connection blip rather than dropped: the announcement is what everyone else's game over runs on — and CASes the meta to `finished`
+2. All other players' event consumers receive it and immediately transition to game over — and every seated player CASes the meta to `finished` too (idempotent, like a line goal's finish), so the finish never depends on the topper's client staying connected: a lost finish once left an open game listed, joinable and playing on for hours after its crew's top-out
+3. All players see the "GAME OVER" overlay simultaneously; with a line goal the crew has lost (`GOAL MISSED · YOU LOST`, nobody crowned)
 
 The overlay shows the team's final result — `Score: N (level L)`, the shared total — above the "Back to Lobby" button.
 
@@ -1343,7 +1348,9 @@ see `jetris-agent-guide.md`.
 ### Per-mode outcomes
 
 - **Cooperative:** the agent plays for the shared score; anyone's top-out ends the game
-  for everyone, and if the agent is the topper it finishes and archives the shared game.
+  for everyone, and the agent finishes and archives the shared game — as the topper, and
+  on a peer's top-out too (the CAS makes the finish idempotent; the topper's own may
+  never land).
 - **Competitive:** last standing wins; the agent reports WON/LOST, and — like any
   winning player — the winner archives before moving on. A loser stays connected
   briefly for the verdict rather than vanishing mid-game.

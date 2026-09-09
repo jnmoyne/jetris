@@ -642,12 +642,22 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			// ordered stream carried up to this very event, the topper's own
 			// echo included, so every engine crowns the same top scorer(s).
 			e.decideOutcome(e.topScorers(), -1)
+			if ev.PlayerID != e.playerID {
+				e.finishCoopGame(ctx)
+			}
 			return
 		}
 		if ev.PlayerID != e.playerID {
 			if e.gameMode == config.ModeCooperative {
-				// Cooperative: any player's game over ends the game for all
-				e.transitionToSpectator(false)
+				// Cooperative: any player's game over ends the game for all —
+				// a loss when the crew had a goal to reach (nobody wins),
+				// the end of the crew's run otherwise.
+				if e.lineGoal > 0 {
+					e.decideOutcome(map[string]bool{}, -1)
+				} else {
+					e.transitionToSpectator(false)
+				}
+				e.finishCoopGame(ctx)
 			} else {
 				// Competitive: track eliminated player
 				e.mu.Lock()
@@ -699,6 +709,18 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 				go e.transitionGameToFinished(ctx)
 			}
 		}
+	}
+}
+
+// finishCoopGame moves the meta to finished on a seated engine that just
+// consumed a peer's game_over on the crew's board: the topper finishes the
+// game too (handleTopOut), but its client may be gone — the crew's top-out
+// once left an open game running for hours because the topper's finish
+// never landed — and the CAS makes the finish idempotent, so every seated
+// engine may make it. The one whose transition lands archives the game.
+func (e *Engine) finishCoopGame(ctx context.Context) {
+	if e.initialMode == ModePlayer && e.js != nil {
+		go e.transitionGameToFinished(ctx)
 	}
 }
 

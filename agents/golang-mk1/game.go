@@ -73,6 +73,7 @@ type Game struct {
 	results    map[string]event
 	roster     []playerSummary
 	hadRivals  bool // the roster once held someone besides us: a roster down to us alone is a win, not a game never joined
+	peerEnded  bool // coop: a peer's top-out ended the game — a finish every seated player makes (finishOnEnd)
 	pauseAlone bool // the listing's agents_pause_alone, in an open game: alone on the roster, we wait for company between pieces (pauseWhileAlone)
 
 	// attackRotor picks which opposing team our next attack lands on: past
@@ -1245,21 +1246,7 @@ func (g *Game) startConsumers(ctx context.Context) error {
 			g.foldLineClear(ev)
 			g.checkLineGoal(ev)
 		case "game_over":
-			g.foldLineClear(ev) // its totals: the ending player's last points, like a line_clear's
-			g.mu.Lock()
-			g.eliminated[ev.PlayerID] = true
-			if ev.PlayerID != g.a.name {
-				g.results[ev.PlayerID] = ev
-			}
-			enemyDead := g.mode == modeTeams && g.othersDead()
-			g.mu.Unlock()
-			if g.mode == modeCooperative || enemyDead {
-				// Coop: anyone's top-out ends the game for everyone. Teams:
-				// the verdict is EVENT-driven, not piece-cadence-driven — the
-				// enemy team's last elimination must end our play loop even
-				// if our current piece never reaches a lock-in.
-				g.markEnded()
-			}
+			g.onGameOver(ev)
 		}
 	}, true)
 	if err != nil {
@@ -1470,10 +1457,11 @@ func (g *Game) run(ctx context.Context) bool {
 	g.mu.Lock()
 	byGoal := g.goalDecided
 	g.mu.Unlock()
-	if won || byGoal {
+	if won || byGoal || g.finishOnEnd() {
 		// A winner finishes the game (the CAS makes it idempotent — every
-		// winner may). A goal-ended game is finished by every player alike,
-		// so the finish never waits on a winner that does not know the rule.
+		// winner may). A goal-ended game, and the crew's game a peer's
+		// top-out ended, are finished by every player alike, so the finish
+		// never waits on one client that knows the rule or stays connected.
 		g.transitionFinishedAndArchive(ctx)
 	} else {
 		g.waitForEnd(ctx)
@@ -1902,6 +1890,39 @@ func (g *Game) topOut(ctx context.Context) bool {
 	return false
 }
 
+// onGameOver folds one player's game_over (ours echoed, or a peer's): its
+// totals, the elimination, and what ends here. Coop: anyone's top-out ends
+// the game for everyone — and a PEER's is ours to finish too (finishOnEnd):
+// the topper finishes it as well, but its client may be gone, and the CAS
+// makes the finish idempotent. Teams: the verdict is EVENT-driven, not
+// piece-cadence-driven — the enemy team's last elimination must end our
+// play loop even if our current piece never reaches a lock-in.
+func (g *Game) onGameOver(ev event) {
+	g.foldLineClear(ev) // its totals: the ending player's last points, like a line_clear's
+	g.mu.Lock()
+	g.eliminated[ev.PlayerID] = true
+	peer := ev.PlayerID != g.a.name
+	if peer {
+		g.results[ev.PlayerID] = ev
+	}
+	if g.mode == modeCooperative && peer {
+		g.peerEnded = true
+	}
+	enemyDead := g.mode == modeTeams && g.othersDead()
+	g.mu.Unlock()
+	if g.mode == modeCooperative || enemyDead {
+		g.markEnded()
+	}
+}
+
+// finishOnEnd reports whether the game ended on a peer's top-out of the
+// crew's board, which every seated player finishes (guide §3).
+func (g *Game) finishOnEnd() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.peerEnded
+}
+
 func (g *Game) publishGameOver(ctx context.Context) {
 	// Our cumulative totals ride along, like a line_clear's: the points of
 	// our last locks may never have been announced (a drop's are carried by
@@ -1910,7 +1931,21 @@ func (g *Game) publishGameOver(ctx context.Context) {
 		Score: g.score, Level: min(g.lines/10, 19), PieceCount: g.pieceIdx,
 		TotalScore: g.score, TotalLines: g.lines}
 	b, _ := json.Marshal(ev)
-	_, _ = g.a.js.Publish(ctx, "jetris.game."+g.id+".events.game_over."+g.a.name, b)
+	// The announcement is what every peer's game over (coop) or the
+	// elimination count (competitive, teams) runs on: retried past a
+	// connection blip rather than dropped.
+	for attempt := 0; attempt < 5; attempt++ {
+		_, err := g.a.js.Publish(ctx, "jetris.game."+g.id+".events.game_over."+g.a.name, b)
+		if err == nil {
+			return
+		}
+		log.Printf("game_over: attempt %d failed, retrying: %v", attempt+1, err)
+		select {
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (g *Game) transitionFinishedAndArchive(ctx context.Context) {

@@ -7,10 +7,14 @@ import (
 )
 
 // DefaultPage is where the browser build is served from when no other page
-// is known: the GitHub Pages copy, always the latest release. It is what a
-// desktop build connected to a public server sends a replay's share link
-// to, and scripts/gen-qr.go's default -page.
-const DefaultPage = "https://jnmoyne.github.io/jetris/"
+// is known: the GitHub Pages copy under its own domain, always the latest
+// release. It is what a desktop build connected to a public server sends a
+// replay's or a game's share link to, and scripts/gen-qr.go's default -page.
+// The domain, not jnmoyne.github.io/jetris: GitHub answers that address with
+// a redirect to jetris.net over plain http (Enforce HTTPS off), and a page
+// landed on over http gets no microphone from the browser — the voice chat
+// would be listen-only for whoever opened the link.
+const DefaultPage = "https://jetris.net/"
 
 // JoinLink builds the join page's link: <page>/join.html?server=…[&name=…] —
 // the URL a QR code carries (the lobby's Show QR code, scripts/gen-qr.go).
@@ -74,7 +78,7 @@ func joinPageLink(page, server, name, key, id string) (string, error) {
 		return "", fmt.Errorf("page URL %q: %w", page, err)
 	}
 	if base.Scheme == "" || base.Host == "" {
-		return "", fmt.Errorf("page URL %q: need a full URL, e.g. https://jnmoyne.github.io/jetris/", page)
+		return "", fmt.Errorf("page URL %q: need a full URL, e.g. https://jetris.net/", page)
 	}
 	// A base that already names a page ("…/index.html") resolves to its
 	// directory; one that names a directory needs the trailing slash or

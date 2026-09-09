@@ -1,7 +1,7 @@
 # Release pipeline: push a tag matching v* (e.g. v0.1.0) and this workflow
 # builds the jetris binary for every supported platform, publishes a GitHub
 # release with the archives and a SHA256SUMS file, and deploys the browser
-# (WebAssembly) build to GitHub Pages at https://jnmoyne.github.io/jetris/.
+# (WebAssembly) build to GitHub Pages at https://jetris.net/.
 #
 # Gio (gioui.org) constrains how we build:
 #   - Linux: cgo against X11/Wayland/EGL headers, so the build must run on a

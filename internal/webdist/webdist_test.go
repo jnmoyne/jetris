@@ -139,13 +139,18 @@ func TestJoinLink(t *testing.T) {
 	if want := "http://192.168.1.20:8080/join.html?name=LAN+party&server=ws%3A%2F%2F192.168.1.20%3A4223"; link != want {
 		t.Fatalf("link = %q, want %q", link, want)
 	}
-	// A page URL naming a directory without its slash, and one naming index.html.
-	for _, page := range []string{"https://jnmoyne.github.io/jetris", "https://jnmoyne.github.io/jetris/index.html"} {
+	// A bare origin without its slash, a page URL naming index.html, and a
+	// directory without its slash.
+	for page, want := range map[string]string{
+		"https://jetris.net":            "https://jetris.net/join.html?server=wss%3A%2F%2Fdemo.nats.io%3A8443",
+		"https://jetris.net/index.html": "https://jetris.net/join.html?server=wss%3A%2F%2Fdemo.nats.io%3A8443",
+		"https://example.com/jetris":    "https://example.com/jetris/join.html?server=wss%3A%2F%2Fdemo.nats.io%3A8443",
+	} {
 		link, err := JoinLink(page, "wss://demo.nats.io:8443", "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := "https://jnmoyne.github.io/jetris/join.html?server=wss%3A%2F%2Fdemo.nats.io%3A8443"; link != want {
+		if link != want {
 			t.Fatalf("link for %s = %q, want %q", page, link, want)
 		}
 	}
@@ -166,7 +171,7 @@ func TestReplayLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "https://jnmoyne.github.io/jetris/join.html?name=Jetris+EU+central&replay=1a2b-3c4d&server=wss%3A%2F%2Feu-central.jetris.net%3A4223"; link != want {
+	if want := "https://jetris.net/join.html?name=Jetris+EU+central&replay=1a2b-3c4d&server=wss%3A%2F%2Feu-central.jetris.net%3A4223"; link != want {
 		t.Fatalf("link = %q, want %q", link, want)
 	}
 	if _, err := ReplayLink(DefaultPage, "wss://host:443", "", ""); err == nil {
@@ -185,7 +190,7 @@ func TestGameLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "https://jnmoyne.github.io/jetris/join.html?game=1a2b-3c4d&name=Jetris+EU+central&server=wss%3A%2F%2Feu-central.jetris.net%3A4223"; link != want {
+	if want := "https://jetris.net/join.html?game=1a2b-3c4d&name=Jetris+EU+central&server=wss%3A%2F%2Feu-central.jetris.net%3A4223"; link != want {
 		t.Fatalf("link = %q, want %q", link, want)
 	}
 	if _, err := GameLink(DefaultPage, "wss://host:443", "", ""); err == nil {

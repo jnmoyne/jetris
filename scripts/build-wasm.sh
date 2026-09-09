@@ -13,7 +13,7 @@
 #   screenshot.png  the landing page's screenshot (Jetris-screenshot-1.png)
 # The release workflow (.github/workflows/release.yml) runs this on every tag,
 # attaches the directory to the release as jetris-<tag>-web.tar.gz and
-# publishes it to GitHub Pages: https://jnmoyne.github.io/jetris/ — and runs
+# publishes it to GitHub Pages: https://jetris.net/ — and runs
 # it before building each desktop binary, which embeds a copy of the
 # directory (internal/webdist) to serve in LAN party mode.
 #

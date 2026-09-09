@@ -53,7 +53,7 @@ func Dialable(rawURL string) bool {
 
 // SecurePage reports whether the page was served over https, in which case
 // the browser refuses plain ws:// sockets (mixed content) and only wss:// can
-// be dialed. The GitHub Pages site (https://jnmoyne.github.io/jetris/) is one
+// be dialed. The GitHub Pages site (https://jetris.net/) is one
 // such page; a local http://localhost server is not.
 func SecurePage() bool {
 	loc := js.Global().Get("location")

@@ -2508,7 +2508,14 @@ func statusText(s lobby.PresenceStatus) string {
 	}
 }
 
+// shortID is how a game is named on screen: its NAME whole when its creator
+// gave it one — a named game's ID is its name (config.GameName), and a name
+// is what everyone calls the game — and a generated ID cut to its first
+// group, which is as much of a UUID as anyone reads.
 func shortID(id string) string {
+	if config.IsGameName(id) {
+		return id
+	}
 	if len(id) > 8 {
 		return id[:8]
 	}

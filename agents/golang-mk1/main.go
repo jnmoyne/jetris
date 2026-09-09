@@ -15,6 +15,7 @@
 //	golang-mk1 --create --mode teams --players 2              # host a 2v2 teams game
 //	golang-mk1 --create --mode teams --teams 3 --players 2    # ...or a three-way, 2 per team
 //	golang-mk1 --create --mode cooperative --pause-alone      # host a co-op game and wait, paused, for company
+//	golang-mk1 --create --game-name friday-night              # host a NAMED game: its ID, its lobby row and its stream
 //	golang-mk1 --difficulty hard --once                       # play a single game, then exit
 //	golang-mk1 --selftest                                     # offline conformance checks
 package main
@@ -26,6 +27,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -41,6 +43,7 @@ func main() {
 	difficulty := flag.String("difficulty", "hard", "play strength: easy, medium, or hard")
 	join := flag.String("join", "", "join this specific game id instead of scanning the lobby")
 	create := flag.Bool("create", false, "create a game and wait for opponents")
+	gameNameFlag := flag.String("game-name", "", "name the game when creating one: the name becomes the game's ID, so its stream is JETRIS_GAME_<name> and lobbies list it by name (empty = a generated ID)")
 	modeStr := flag.String("mode", "competitive", "game mode when creating: cooperative, competitive or teams (with --create)")
 	players := flag.Int("players", 2, "player count when creating a game (with --create; cooperative: 1 or more, a solo game plays for the high score; teams: players per team)")
 	teams := flag.Int("teams", defaultTeamCount, "teams mode: how many teams play each other when creating a game (2-6; total seats = teams × --players)")
@@ -101,7 +104,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "--bag %q is not a bag kind: use double, none, or leave it unset for the 7-bag\n", *bag)
 			os.Exit(2)
 		}
-		host = &hosting{mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag,
+		// A name is the game's ID, so it has to be one: something a stream
+		// name, a subject and a KV key all take (gameName), and not "lobby",
+		// which the chat stream and the voice rooms keep for the lobby's own
+		// channels.
+		if gn := gameName(*gameNameFlag); *gameNameFlag != "" && gn == "" {
+			fmt.Fprintf(os.Stderr, "--game-name %q has nothing a game ID can be made of: use letters, digits, - or _\n", *gameNameFlag)
+			os.Exit(2)
+		} else if strings.EqualFold(gn, "lobby") {
+			fmt.Fprintln(os.Stderr, "--game-name lobby is reserved: it is what the lobby's own chat and voice channels go by")
+			os.Exit(2)
+		}
+		host = &hosting{gameName: gameName(*gameNameFlag), mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag,
 			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual, pauseAlone: *pauseAlone}
 		if *preset {
 			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).

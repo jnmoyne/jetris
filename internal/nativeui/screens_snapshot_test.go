@@ -176,6 +176,34 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_login_join", func(gtx C) { login.layout(gtx) })
 	})
 
+	// The games list with a NAMED game beside an unnamed one: a game its
+	// creator named heads its row with the name whole — the name IS its ID
+	// (config.GameName) — where a generated ID is cut to its first group
+	// (shortID).
+	t.Run("game_names", func(t *testing.T) {
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.screen = screenLobby
+		now := time.Now()
+		games := []lobby.GameListing{
+			{
+				GameID: "Friday-night", Mode: config.ModeCooperative,
+				Status: config.GameStatusCreated, PlayerCount: 3, NextCount: 6, Hold: true,
+				Players:   []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}},
+				CreatedAt: now,
+			},
+			{
+				GameID: "3f2a9b1c-7d4e-4a52-9b1e-0c8d6f2a1b3c", Mode: config.ModeCompetitive,
+				Status: config.GameStatusCreated, PlayerCount: 2, NextCount: 6, Hold: true,
+				Players:   []lobby.PlayerSummary{{PlayerID: "bob", Name: "bob"}},
+				CreatedAt: now.Add(-time.Minute),
+			},
+		}
+		snapshotPNGSized(t, w, dir, "screen_lobby_game_names", image.Pt(1200, 200), func(gtx C) {
+			a.lobbyGamesTab(gtx, games, nil)
+		})
+	})
+
 	// The same login and lobby screens on a display larger than the design
 	// window (1920×1200): the display-adaptive scale (scale.go) stretches
 	// them to fill it instead of leaving the 1280×820 layout floating.

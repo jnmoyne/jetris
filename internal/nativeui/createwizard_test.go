@@ -520,3 +520,44 @@ func TestWizardStepsAndLabels(t *testing.T) {
 		}
 	}
 }
+
+// The wizard's name editor names the GAME — and so its ID: what the creator
+// types is cut to what a game ID can be (config.GameName) on the way into the
+// spec, and a blank editor leaves the game to be dealt a generated one.
+func TestWizardGameName(t *testing.T) {
+	a := newTestApp()
+	if got := a.wizardSpec().Name; got != "" {
+		t.Errorf("a blank editor named the game %q", got)
+	}
+	a.gameNameEd.SetText("Friday night!")
+	if got := a.wizardSpec().Name; got != "Friday-night" {
+		t.Errorf("spec name = %q, want Friday-night", got)
+	}
+	if got := a.wizardName(); got != "Friday-night" {
+		t.Errorf("wizardName() = %q, want Friday-night", got)
+	}
+	// Nothing a game ID can be made of: the game goes by a generated ID, and
+	// the step says so rather than refusing the name.
+	a.gameNameEd.SetText("!!!")
+	if got := a.wizardSpec().Name; got != "" {
+		t.Errorf("spec name = %q, want empty", got)
+	}
+	if got := a.wizardNameErr(a.wizardName()); got != "" {
+		t.Errorf("wizardNameErr = %q, want no complaint", got)
+	}
+}
+
+// A name the game cannot have holds the wizard on step 1 with the reason
+// under the editor. Without a lobby only the reserved name can be judged —
+// the create is the arbiter for the rest.
+func TestWizardGameNameReserved(t *testing.T) {
+	a := newTestApp()
+	a.gameNameEd.SetText("Lobby")
+	if got := a.wizardNameErr(a.wizardName()); got == "" {
+		t.Error("the lobby's own name was accepted")
+	}
+	a.gameNameEd.SetText("lobbies")
+	if got := a.wizardNameErr(a.wizardName()); got != "" {
+		t.Errorf("wizardNameErr = %q, want no complaint", got)
+	}
+}

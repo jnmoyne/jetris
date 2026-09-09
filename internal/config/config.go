@@ -192,6 +192,89 @@ func NormalizeTeamNames(names []string, n int) []string {
 	return out
 }
 
+// MaxGameNameLen caps a game's name, in characters. A name is the game's ID
+// (Lobby.CreateGame), so it lands in the game's NATS stream name, in every
+// subject the game writes and in the lobby KV key its listing lives under —
+// short enough to read whole on a lobby row and in a stream listing.
+const MaxGameNameLen = 24
+
+// GameName is the name a game takes from what its creator typed — and, a
+// named game's ID being its name, the game's ID itself (Lobby.CreateGame; a
+// game created without a name keeps a generated one). A game ID is a NATS
+// stream name, a subject token and a KV key all at once, so a name is cut to
+// what all three accept: letters, digits and the underscore. Everything else
+// — spaces, punctuation, anything outside ASCII — reads as a separator and
+// becomes a single dash, the ends are trimmed, and the whole is cut to
+// MaxGameNameLen characters: "Friday night!" names a game Friday-night. A
+// name with nothing usable in it comes back empty and the game keeps its
+// generated ID: the stream carries the name where it can, not at the price
+// of a game that cannot be created.
+func GameName(s string) string {
+	name := make([]byte, 0, MaxGameNameLen)
+	sep := false
+	for _, r := range s {
+		usable := r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !usable {
+			sep = true // a dash the creator typed included: a run is one dash
+			continue
+		}
+		// A separator only counts between two usable characters, so a name
+		// never starts or ends with a dash — and one that no longer has room
+		// for both the dash and what follows it stops here rather than
+		// trailing off in a dash.
+		if sep && len(name) > 0 {
+			if len(name)+2 > MaxGameNameLen {
+				break
+			}
+			name = append(name, '-')
+		}
+		if len(name) >= MaxGameNameLen {
+			break
+		}
+		sep = false
+		name = append(name, byte(r))
+	}
+	return string(name)
+}
+
+// GameNameReserved reports whether a name is one the lobby keeps for itself:
+// "lobby" is the game ID the chat stream and the voice rooms give the lobby's
+// own channels (LobbyChatGameID), so a game named it would share them.
+func GameNameReserved(name string) bool {
+	return strings.EqualFold(name, LobbyChatGameID)
+}
+
+// IsGameName reports whether a game ID is a name its creator gave the game
+// rather than the ID a game created without one is dealt. Everything that
+// puts a game in front of a player asks: a name is shown whole, a generated
+// ID abbreviated to its first group.
+func IsGameName(gameID string) bool {
+	return gameID != "" && !isGeneratedGameID(gameID)
+}
+
+// isGeneratedGameID reports the shape of an unnamed game's ID: the UUID
+// Lobby.CreateGame deals it — 8-4-4-4-12 hex digits.
+func isGeneratedGameID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		hex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !hex {
+			return false
+		}
+	}
+	return true
+}
+
 // Bag is a game's piece randomizer: how its sequence groups the seven piece
 // types. The standard 7-bag — the Guideline's — deals the seven types
 // once each, shuffled, seven pieces at a time; the double bag deals them
@@ -439,11 +522,22 @@ func (m GameMeta) IndividualScoring() bool {
 // TeamName is what team t of this game is called (see TeamName).
 func (m GameMeta) TeamName(t int) string { return TeamName(m.TeamNames, t) }
 
+// Name is what the game is called: its ID when the creator named it (a named
+// game's ID IS its name — GameName), and nothing when the game was created
+// without a name and carries a generated ID.
+func (m GameMeta) Name() string {
+	if IsGameName(m.GameID) {
+		return m.GameID
+	}
+	return ""
+}
+
 // Spec is the creation spec this meta was (or could have been) created from:
 // the structural settings and the play rules, without the lobby-only agent
 // policy and invitation setting (which the listing carries).
 func (m GameMeta) Spec() GameSpec {
 	return GameSpec{
+		Name:         m.Name(),
 		Mode:         m.Mode,
 		PlayerCount:  m.PlayerCount,
 		TeamCount:    m.TeamCount,
@@ -497,6 +591,7 @@ func seatsPerPlayfield(mode GameMode, playerCount, teamSize int) int {
 // (TeamCount boards of TeamSize seats) or competitive when every player has
 // a board of their own.
 type GameSpec struct {
+	Name             string // what the creator called the game (GameName): a named game's ID IS its name, so its stream is JETRIS_GAME_<name> and the lobby lists it by name. Blank — the default — leaves the game a generated ID
 	Mode             GameMode
 	PlayerCount      int      // seats in the game: the roster's size for an invite game, its MAXIMUM for an open one (every seat beyond the present players stays free to join)
 	TeamCount        int      // teams: how many boards (MinTeamCount..MaxTeamCount); 0 elsewhere
@@ -521,6 +616,7 @@ type GameSpec struct {
 // shared board with seats to share it; the line goal and the play rules
 // within their ranges.
 func (s GameSpec) Normalized() GameSpec {
+	s.Name = GameName(s.Name)
 	if s.Mode == ModeTeams {
 		s.TeamCount = NormalizeTeamCount(s.TeamCount)
 		s.TeamSize = max(s.TeamSize, 1)
@@ -1096,7 +1192,7 @@ const (
 
 	LobbyKVBucket     = "JETRIS_LOBBY"
 	ChatStream        = "JETRIS_CHAT"
-	LobbyChatGameID   = "lobby"         // reserved chat "game ID" for the lobby chat (real game IDs are UUIDs, so no collision)
+	LobbyChatGameID   = "lobby"         // reserved chat "game ID" for the lobby chat; no game may be named it (GameNameReserved), and a generated game ID never is
 	LobbyVoiceRoom    = LobbyChatGameID // the lobby's voice room, by the same token: jetris.voice.lobby.all.<player>
 	LobbyChatSubject  = chatSubjectPrefix + LobbyChatGameID
 	ArchiveStream     = "JETRIS_ARCHIVE"

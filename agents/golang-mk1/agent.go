@@ -55,6 +55,7 @@ type connChoice struct {
 // hosting is the --create configuration: what kind of game to host, how big,
 // and how agent-friendly. nil on an Agent means "never host".
 type hosting struct {
+	gameName   string // what to call the game: the name IS its ID, so its stream is JETRIS_GAME_<name> and lobbies list it by name ("" = a generated UUID). Cut to what a stream name, a subject and a KV key all take by gameName()
 	mode       int    // modeCooperative / modeCompetitive / modeTeams
 	players    int    // seat count (per TEAM in teams mode, like the GUI's editor; min 2, teams min 1)
 	teams      int    // teams mode: how many teams play each other (clamped 2..6; the total seat count is teams × players)
@@ -907,7 +908,16 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	holes := min(max(h.holes, 0), maxGarbageHoles)
 	random := h.random && holes > 0
 
+	// A named game IS its name: the name is the game's ID, so the stream
+	// below is JETRIS_GAME_<name> and every lobby lists the game by name. The
+	// claim on it is the meta publish further down — expected sequence 0
+	// lands only on a stream with no meta on it — since CreateStream is
+	// idempotent for an identical config and two games of one name have
+	// exactly that.
 	gameID := uuidV4()
+	if h.gameName != "" {
+		gameID = h.gameName
+	}
 	// The stream config every game runs on (guide §4.1): full game history
 	// retained in memory (no per-subject cap — ordered consumers then never
 	// skip a trimmed write, and spectators replay the game from the start),
@@ -921,6 +931,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		Storage:            jetstream.MemoryStorage,
 		Retention:          jetstream.LimitsPolicy,
 	}); err != nil {
+		if h.gameName != "" && errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+			return "", fmt.Errorf("a game called %s already exists", gameID)
+		}
 		return "", fmt.Errorf("create stream: %w", err)
 	}
 
@@ -984,6 +997,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if _, conflict, err := a.metaPublish(ctx, gameID, meta.bytes(), 0); err != nil {
 		return "", fmt.Errorf("publish meta: %w", err)
 	} else if conflict {
+		if h.gameName != "" {
+			return "", fmt.Errorf("a game called %s already exists", gameID)
+		}
 		return "", fmt.Errorf("game id %s already has a meta", gameID)
 	}
 
@@ -1059,6 +1075,43 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		map[int]string{modeCooperative: "cooperative", modeCompetitive: "competitive", modeTeams: "teams"}[h.mode],
 		gameID, players, shape, policy, next, holes, random, h.guideline, h.hold, bagLabel(h.bag))
 	return gameID, nil
+}
+
+// maxGameNameLen caps a game's name, in characters — the GUI's
+// config.MaxGameNameLen. A name is the game's ID, so it lands in the game's
+// stream name, in every subject it writes and in its lobby KV key.
+const maxGameNameLen = 24
+
+// gameName cuts what the user typed to a name a game can carry — and so to
+// the game's ID, since a named game's ID IS its name (config.GameName in the
+// game's own code, and the same rule here): letters, digits and the
+// underscore survive, every other run becomes one dash, the ends are trimmed
+// and the whole is cut to maxGameNameLen. It is what a NATS stream name, a
+// subject token and a KV key all accept, those being what a game ID has to
+// be. Nothing usable in it comes back empty, and the game keeps a UUID.
+func gameName(s string) string {
+	name := make([]byte, 0, maxGameNameLen)
+	sep := false
+	for _, r := range s {
+		usable := r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !usable {
+			sep = true
+			continue
+		}
+		if sep && len(name) > 0 {
+			if len(name)+2 > maxGameNameLen {
+				break
+			}
+			name = append(name, '-')
+		}
+		if len(name) >= maxGameNameLen {
+			break
+		}
+		sep = false
+		name = append(name, byte(r))
+	}
+	return string(name)
 }
 
 // uuidV4 returns a random RFC-4122 v4 UUID string — the game-id format every

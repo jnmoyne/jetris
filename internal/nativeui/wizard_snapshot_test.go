@@ -11,8 +11,9 @@ import (
 )
 
 // TestWizardSnapshots renders the three-step create wizard for inspection:
-// step 1 single and multiple, step 2 the Guideline list and the custom rules
-// with the line goal, step 3 open with the agent policy. Opt-in: set
+// step 1 single and multiple (and named, and with a name the lobby's own),
+// step 2 the Guideline list and the custom rules with the line goal, step 3
+// open with the agent policy. Opt-in: set
 // FW_SNAPSHOT_DIR (needs a GPU); the PNGs are for eyes, not for comparison.
 func TestWizardSnapshots(t *testing.T) {
 	dir := os.Getenv("FW_SNAPSHOT_DIR")
@@ -57,6 +58,17 @@ func TestWizardSnapshots(t *testing.T) {
 		}},
 		{"wizard_step3_invite", func(a *App) { a.createWizStep, a.createJoinEnum.Value = wizStepPlayers, "invite" }},
 		{"wizard_step1_solo", func(a *App) { a.createWizStep = wizStepType; a.countEd.SetText("1") }},
+		{"wizard_step1_named", func(a *App) {
+			a.createWizStep = wizStepType
+			a.countEd.SetText("3")
+			a.gameNameEd.SetText("Friday night!")
+		}},
+		{"wizard_step1_bad_name", func(a *App) {
+			a.createWizStep = wizStepType
+			a.countEd.SetText("3")
+			a.gameNameEd.SetText("lobby")
+			a.wizNameErr = a.wizardNameErr(a.wizardName())
+		}},
 		{"wizard_step3_teams_names", func(a *App) {
 			a.createWizStep, a.boardsEnum.Value, a.createJoinEnum.Value = wizStepPlayers, "multiple", "open"
 			a.setPlayfieldCount(3)

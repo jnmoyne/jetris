@@ -281,9 +281,23 @@ discipline.
 | Resource | Kind | Purpose |
 |----------|------|---------|
 | `JETRIS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game), pinned replays (`pins.<gameID>`: the key's existence keeps that game's replay out of every archiver's purge — read them before you purge, step 6) |
-| `JETRIS_CHAT` | stream | all chat on `jetris.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby` |
+| `JETRIS_CHAT` | stream | all chat on `jetris.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby`, which is why no game may be named it |
 | `JETRIS_ARCHIVE` | stream | finished-game records (`jetris.archive`) |
 | `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, full game history retained (no per-subject cap), atomic publish + direct get enabled |
+
+A game ID is either a v4 UUID or the **name** its creator gave the game: a
+named game's ID *is* its name, so its stream is `JETRIS_GAME_<name>` and every
+lobby lists it by name. A name is whatever a stream name, a subject token and a
+KV key all accept — letters, digits, `-` and `_`, at most 24 of them — and is
+unique the way an ID is, and the **meta publish claims it**: publish the new
+game's meta with an expected last-subject-sequence of 0 (§4.3's CAS) and a
+conflict means another game already holds the name — `CreateStream` will not
+tell you, being idempotent for an identical config, which two games of one
+name have. Check the listing key `games.<name>` first too: a lobby row still
+standing under the name holds it even where the game's stream has gone.
+`lobby` is reserved (it is the chat and voice ID of the lobby's own channels).
+Treat an ID as opaque: never parse a name out of it, and never assume a UUID.
+
 | `jetris.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
 | `jetris.voice.<gameID>.>` | core NATS subjects | the players' voice chat: 168-byte IMA ADPCM frames on `…all.<player>` and `…team.<t>.<player>` (the lobby's room is `jetris.voice.lobby.all.<player>`) — no stream, never replayed; nothing an agent needs to subscribe to or publish |
 

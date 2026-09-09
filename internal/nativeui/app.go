@@ -403,7 +403,7 @@ type App struct {
 
 	// Create-game wizard: the lobby's single "Create a new game" button
 	// (createBtn) opens a modal that walks through the game's attributes one
-	// step at a time — 1: game type + seats, 2: the play rules (the Guideline
+	// step at a time — 1: name, game type + seats, 2: the play rules (the Guideline
 	// preset, or custom: preview, ghost, hold, bag, garbage), 3: open vs
 	// invite-only, 4: agent policy (open games only; an invite-only game
 	// finishes at step 3 and hands off to the invitee picker). createWizStep
@@ -420,6 +420,8 @@ type App struct {
 	wizCancelBtn   widget.Clickable                   // wizard: close without creating
 	wizList        widget.List                        // wizard: the step's body, scrolling when the step is taller than the window leaves it (the custom rules step in a garbage mode at the minimum window height)
 	countEd        widget.Editor                      // wizard step 1: the players (per playfield, when there are several)
+	gameNameEd     widget.Editor                      // wizard step 1: what the game is called — blank for a game that goes by a generated ID (config.GameSpec.Name)
+	wizNameErr     string                             // wizard step 1: why the typed name cannot be this game's (taken, or the lobby's own), blank while it can — drained each frame by handleCreateWizard, which blocks the step on it
 	teamNameEds    [config.MaxTeamCount]widget.Editor // wizard step 3, teams: what each playfield's team is called (the piece colours unless renamed — config.DefaultTeamNames)
 	// The board-growth sliders of wizard step 2's custom rules, shown for a
 	// playfield with company: extraCols is how many columns every seat
@@ -794,6 +796,8 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.loginEd.InputHint = hintPlain
 	a.chatEd.SingleLine = true
 	a.chatEd.Submit = true
+	a.gameNameEd.SingleLine = true
+	a.gameNameEd.InputHint = hintPlain
 	a.countEd.SingleLine = true
 	a.countEd.InputHint = key.HintNumeric
 	a.countEd.SetText("2") // the wizard opens on co-op: a crew of two unless the creator changes it

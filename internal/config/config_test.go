@@ -608,9 +608,12 @@ func TestGameSpecShape(t *testing.T) {
 }
 
 // The meta a spec writes carries every setting, and reads back as the spec
-// it was written from (less the lobby-only agent policy and invitation).
+// it was written from (less the lobby-only agent policy and invitation). The
+// name comes back with it: a named game's ID IS its name, so the ID the meta
+// was written under is what Spec() reads the name off.
 func TestGameSpecMetaRoundTrip(t *testing.T) {
 	spec := GameSpec{
+		Name: "game",
 		Mode: ModeCooperative, PlayerCount: 3, ExtraColumns: 6, ExtraRows: 5, LineGoal: 40,
 		Scoring: ScoringIndividual, SplitPieces: true, MaxAgents: 2, InviteOnly: true,
 		Rules: GameRules{NextCount: 3, Ghost: false, Hold: true, Bag: BagDouble, ShowHeadroom: true},

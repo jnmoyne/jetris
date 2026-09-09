@@ -16,7 +16,30 @@ import (
 
 // EnsureGameStream creates the per-game stream if it does not exist.
 func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error {
-	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	_, err := js.CreateOrUpdateStream(ctx, gameStreamConfig(gameID))
+	return err
+}
+
+// CreateGameStream creates the per-game stream WITHOUT reconfiguring one that
+// is already there: a stream of the same name whose config differs comes back
+// jetstream.ErrStreamNameAlreadyInUse rather than being updated under a
+// running game. It is what a NAMED game is created with (Lobby.CreateGame),
+// whose stream carries the creator's name — JETRIS_GAME_<name> — and so can
+// collide with another game's where a generated ID never could. It is not by
+// itself the claim on the name: CreateStream is idempotent for an IDENTICAL
+// config (and two Jetris games of one name have exactly that), so the claim
+// is the meta publish that follows, which lands only on a stream with no meta
+// on it yet.
+func CreateGameStream(ctx context.Context, js jetstream.JetStream, gameID string) error {
+	_, err := js.CreateStream(ctx, gameStreamConfig(gameID))
+	return err
+}
+
+// gameStreamConfig is the stream a game is played on: its name carries the
+// game's ID — the name its creator gave it, or the generated one — so a
+// game's stream is identifiable at a glance in a stream listing.
+func gameStreamConfig(gameID string) jetstream.StreamConfig {
+	return jetstream.StreamConfig{
 		Name:               config.GameStream(gameID),
 		Subjects:           []string{config.GameSubjectFilter(gameID)},
 		AllowAtomicPublish: true,
@@ -38,8 +61,7 @@ func EnsureGameStream(ctx context.Context, js jetstream.JetStream, gameID string
 		// and the stream is deleted once the game is archived.
 		Storage:   jetstream.MemoryStorage,
 		Retention: jetstream.LimitsPolicy,
-	})
-	return err
+	}
 }
 
 // EnsureChatStream creates the chat stream. It carries BOTH the lobby chat

@@ -40,6 +40,7 @@ func main() {
 	extraRows := flag.Int("extra-rows", config.DefaultExtraRows, "shared-board height: rows every seat beyond the first adds below the standard 20 (0-10)")
 	lineGoal := flag.Int("line-goal", 0, "the game's length in lines: the first playfield to clear this many wins (0 = until top out)")
 	individual := flag.Bool("individual", false, "cooperative: score every seat on its own (the top score wins) instead of the crew together")
+	name := flag.String("name", "", "name the game: the name becomes its ID, so its stream is JETRIS_GAME_<name> (empty = a generated ID)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -96,6 +97,7 @@ func main() {
 		scoring = config.ScoringIndividual
 	}
 	gameID, err := lb.CreateGame(ctx, config.GameSpec{
+		Name:         *name,
 		Mode:         gameMode,
 		PlayerCount:  playerCount,
 		TeamCount:    teamCount,

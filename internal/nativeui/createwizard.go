@@ -14,8 +14,8 @@ import (
 )
 
 // The create-game wizard: three steps, one choice at a time — the game's
-// type (a single playfield everyone shares, scored together or each on
-// their own, or several playfields with a team on each), its rules (how
+// name and type (a single playfield everyone shares, scored together or each
+// on their own, or several playfields with a team on each), its rules (how
 // long it runs, and the Guideline preset or every rule by hand), and its
 // players (by invitation, or open to anyone at any time, agents included).
 // Every step reads into one config.GameSpec (wizardSpec), which the create
@@ -33,16 +33,21 @@ const (
 // (so the caller draws the modal and suppresses background clicks).
 func (a *App) handleCreateWizard(gtx C) bool {
 	if a.createWizStep == 0 {
+		a.wizNameErr = ""
 		return false
 	}
 	if a.wizCancelBtn.Clicked(gtx) {
 		a.createWizStep = 0
 		return false
 	}
+	// A name this game cannot have — one another game holds, or the lobby's
+	// own — is read once a frame here, both to say so under the editor and
+	// to hold the wizard on the step until the creator picks another.
+	a.wizNameErr = a.wizardNameErr(a.wizardName())
 	if a.wizBackBtn.Clicked(gtx) && a.createWizStep > wizStepType {
 		a.createWizStep--
 	}
-	if a.wizNextBtn.Clicked(gtx) {
+	if a.wizNextBtn.Clicked(gtx) && a.wizNameErr == "" {
 		if a.createWizStep < wizStepPlayers {
 			a.createWizStep++
 		} else {
@@ -50,6 +55,37 @@ func (a *App) handleCreateWizard(gtx C) bool {
 		}
 	}
 	return a.createWizStep != 0
+}
+
+// wizardName reads step 1's name editor as the game would take it: what a
+// game called this would be named, and be identified by everywhere
+// (config.GameName). Blank — nothing typed, or nothing usable typed — is a
+// game that goes by a generated ID.
+func (a *App) wizardName() string {
+	return config.GameName(a.gameNameEd.Text())
+}
+
+// wizardNameErr is why a game cannot be called name, in the words the
+// creator reads under the editor: the lobby keeps "lobby" for its own chat
+// and voice, and a name another game already holds is not free — a name is
+// the game's ID, so no two games share one. Blank means the name is this
+// game's for the taking. (The check is the lobby as this client sees it; the
+// create itself is the arbiter, and says the same thing if it loses a race.)
+func (a *App) wizardNameErr(name string) string {
+	if name == "" {
+		return ""
+	}
+	if config.GameNameReserved(name) {
+		return fmt.Sprintf("%q is the lobby's own name — pick another.", name)
+	}
+	lb := a.getLobby()
+	if lb == nil {
+		return ""
+	}
+	if _, taken := lb.Games()[name]; taken {
+		return fmt.Sprintf("A game called %s is already on the list — pick another name.", name)
+	}
+	return ""
 }
 
 // wizardMultiple reports whether step 1 has several playfields picked.
@@ -143,13 +179,16 @@ func (a *App) wizardLineGoal() int {
 
 // wizardSpec reads every step into the game's creation spec, normalized —
 // the one read-out the create paths, the step readouts and the tests all
-// share. The game types map onto the modes like this: a single playfield is
+// share. The name is passed as typed and cut by the normalization
+// (config.GameName): what comes out is the game's name AND its ID, or
+// nothing at all, in which case the game is dealt a generated one. The game types map onto the modes like this: a single playfield is
 // a cooperative-mode board (scored together, or per seat — Scoring), several
 // playfields with one player each are competitive (a board each, the last
 // standing wins), with more a teams game. The Guideline preset keeps the
 // board's growth and the deal at their defaults; custom rules set them.
 func (a *App) wizardSpec() config.GameSpec {
 	spec := config.GameSpec{
+		Name:       a.gameNameEd.Text(),
 		LineGoal:   a.wizardLineGoal(),
 		InviteOnly: a.createJoinEnum.Value == "invite",
 	}
@@ -460,15 +499,17 @@ func (a *App) wizardNumber(label string, ed *widget.Editor, hint string, note la
 	}
 }
 
-// wizardTypeStep is step 1: one playfield everyone shares — how many
-// players, and with company whether they score together (co-op) or each
-// seat on its own (competitive); one player alone is a solo game — or
-// several playfields, a team on each: how many playfields and how many
-// players on each.
+// wizardTypeStep is step 1: what the game is called, then one playfield
+// everyone shares — how many players, and with company whether they score
+// together (co-op) or each seat on its own (competitive); one player alone
+// is a solo game — or several playfields, a team on each: how many
+// playfields and how many players on each.
 func (a *App) wizardTypeStep(gtx C) D {
 	multiple := a.wizardMultiple()
 	spec := a.wizardSpec()
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.wizardNameField),
+		layout.Rigid(spacer(14)),
 		layout.Rigid(a.wizardRadio(&a.boardsEnum, "single", "Single playfield — everyone plays one shared board")),
 		layout.Rigid(func(gtx C) D {
 			if multiple {
@@ -526,6 +567,37 @@ func (a *App) wizardTypeStep(gtx C) D {
 				)
 			})
 		}),
+	)
+}
+
+// wizardNameField is step 1's name: the editor, and under it what the name
+// does — the game's ID, so the lobby lists it by name, its link carries the
+// name and its stream is JETRIS_GAME_<name>. What a game called this would
+// actually be named is spelt out as it is typed (config.GameName cuts a name
+// to what a stream name, a subject and a KV key all take), and a name this
+// game cannot have (wizardNameErr) is said in red — the wizard holds the
+// step until it is changed.
+func (a *App) wizardNameField(gtx C) D {
+	name := a.wizardName()
+	hint, col := "Unnamed: the game is listed and shared by an ID of its own.", colMuted
+	if name != "" {
+		hint = fmt.Sprintf("The game is called %s: the lobby lists it by that name, and its stream is %s.", name, config.GameStream(name))
+	}
+	if a.wizNameErr != "" {
+		hint, col = a.wizNameErr, colErr
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.body("Name:", colMuted)),
+				layout.Rigid(hSpacer(6)),
+				layout.Flexed(1, func(gtx C) D {
+					return a.editorBox(gtx, &a.gameNameEd, "optional")
+				}),
+			)
+		}),
+		layout.Rigid(spacer(4)),
+		layout.Rigid(a.body(hint, col)),
 	)
 }
 

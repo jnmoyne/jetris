@@ -815,10 +815,14 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 }
 
 // CreateGame creates a game — its stream, its meta and its lobby listing —
-// from a config.GameSpec: the game's shape (mode, seats, playfields and the
-// seats sharing one, how the shared boards grow per seat, the scoring, the
-// deal), its length in lines, the lobby's agent policy and invitation
-// setting, and the play rules. The spec is normalized first
+// from a config.GameSpec: the game's NAME (blank for a game that goes by a
+// generated ID), its shape (mode, seats, playfields and the seats sharing
+// one, how the shared boards grow per seat, the scoring, the deal), its
+// length in lines, the lobby's agent policy and invitation setting, and the
+// play rules. A name is the game's ID — the lobby row, the share link and
+// the game's stream (JETRIS_GAME_<name>) all read it — so it must be free:
+// a name another game holds comes back ErrGameNameTaken, one the lobby keeps
+// for itself ErrGameNameReserved. The spec is normalized first
 // (config.GameSpec.Normalized), so every setting lands legal for its mode.
 // Everything but MaxAgents, AgentsPauseAlone and InviteOnly is stored on BOTH
 // records: the meta is the rule book every peer — human UI and agent alike —
@@ -836,14 +840,47 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // is stored inverted as GameMeta.NoGhost so pre-field metas keep the ghost
 // shown.
 func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, error) {
-	gameID := uuid.New().String()
 	// The one place a game's settings are made legal for its mode
 	// (config.GameSpec.Normalized): teams only in teams mode, the agent
 	// policy within the seat count, the shared-board growth, the deal and the
-	// scoring only where a shared board has seats to share, the rules clamped.
+	// scoring only where a shared board has seats to share, the rules clamped
+	// — and the name cut to what a stream name, a subject token and a KV key
+	// all accept (config.GameName).
 	spec = spec.Normalized()
 
-	if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
+	// A named game IS its name: the name is the game's ID, so its stream is
+	// JETRIS_GAME_<name>, its subjects carry the name and the lobby lists it
+	// by name. That makes the name unique in the way an ID is — no two games
+	// may hold one — and the meta publish below is what settles it: a listing
+	// standing under the name is refused here, and a game already on the
+	// name's stream is refused by the meta's CAS, which lands only where no
+	// meta has landed yet. A game created without a name is dealt a generated
+	// ID as it always was.
+	named := spec.Name != ""
+	gameID := uuid.New().String()
+	if named {
+		if config.GameNameReserved(spec.Name) {
+			return "", fmt.Errorf("%w: %s", ErrGameNameReserved, spec.Name)
+		}
+		gameID = spec.Name
+		// A listing under the name holds it even where the game's stream has
+		// gone — an archived game whose row is still up — and nothing below
+		// would catch that one: the create would land on a fresh stream and
+		// overwrite the row.
+		if _, err := l.kv.Get(ctx, config.LobbyGameKey(gameID)); err == nil {
+			return "", fmt.Errorf("%w: %s", ErrGameNameTaken, gameID)
+		}
+		// CreateStream rather than CreateOrUpdateStream: a stream already on
+		// this name is left exactly as it is (it is the game holding the
+		// name, and the meta CAS below is what says so), never reconfigured
+		// under whoever is playing on it.
+		if err := natspkg.CreateGameStream(ctx, l.js, gameID); err != nil {
+			if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+				return "", fmt.Errorf("%w: %s", ErrGameNameTaken, gameID)
+			}
+			return "", err
+		}
+	} else if err := natspkg.EnsureGameStream(ctx, l.js, gameID); err != nil {
 		return "", err
 	}
 
@@ -852,7 +889,14 @@ func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, e
 	if err != nil {
 		return "", err
 	}
+	// Expected sequence 0: the meta lands only on a stream that has none, so
+	// this is the atomic claim on a name — a second creator reaching for one
+	// that is taken loses the CAS here, whether the holder created it a
+	// moment or an hour ago.
 	if err := natspkg.PublishMeta(ctx, l.js, gameID, data, 0); err != nil {
+		if named && errors.Is(err, natspkg.ErrCASFailure) {
+			return "", fmt.Errorf("%w: %s", ErrGameNameTaken, gameID)
+		}
 		return "", err
 	}
 
@@ -894,6 +938,15 @@ func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, e
 	l.journal(ctx, e, "")
 	return gameID, nil
 }
+
+// ErrGameNameTaken is returned by CreateGame when the name its creator gave
+// the game is already another game's: a name IS the game's ID, so two games
+// can no more share a name than they could share an ID.
+var ErrGameNameTaken = errors.New("a game by that name already exists")
+
+// ErrGameNameReserved is returned by CreateGame for a name the lobby keeps
+// for its own channels (config.GameNameReserved).
+var ErrGameNameReserved = errors.New("that name is reserved")
 
 // ErrTeamFull is returned by JoinGame when the requested team already has
 // teamSize members.

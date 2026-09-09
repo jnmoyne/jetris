@@ -96,10 +96,11 @@
       // replay the moment it lands in the lobby.
       const replay = (params.get("replay") || "").trim();
       // An open game's share link (the lobby row's Share, webdist.GameLink)
-      // names the game to JOIN: the card says which game — the first eight
-      // characters of its ID, as the lobby row shows it — and on which
-      // server, the name is optional (blank plays anonymously), and the game
-      // page takes a seat in that game the moment it lands in the lobby.
+      // names the game to JOIN: the card says which game — its name, or the
+      // first eight characters of a generated ID, as the lobby row shows it
+      // (gameLabel) — and on which server, the name is optional (blank plays
+      // anonymously), and the game page takes a seat in that game the moment
+      // it lands in the lobby.
       const game = (params.get("game") || "").trim();
       const form = document.getElementById("form");
       const input = document.getElementById("player");
@@ -177,6 +178,16 @@
         return "";
       }
 
+      // gameLabel is how a game is named on the card, the rule the lobby row
+      // follows (nativeui.shortID): a game its creator NAMED is its name —
+      // the name IS the game's ID (config.GameName) — and a game that goes
+      // by a generated ID shows the first group of that UUID, which is as
+      // much of one as anyone reads.
+      function gameLabel(id) {
+        const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+        return uuid.test(id) ? id.slice(0, 8) : id;
+      }
+
       const problem = serverProblem(server);
       if (problem) {
         refuse(problem);
@@ -188,7 +199,7 @@
         // The game heads the card, the server stands under it as "on …".
         document.getElementById("lead").textContent = "You\u2019re about to join game";
         const name = document.getElementById("server-name");
-        name.textContent = game.length > 8 ? game.slice(0, 8) : game;
+        name.textContent = gameLabel(game);
         name.classList.add("mono");
         const on = document.getElementById("game-on");
         on.textContent = "on " + (label || server);

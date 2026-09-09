@@ -20,7 +20,8 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
   (teams invitations join the invited team), and with `--auto-join` also joins open
   games that allow agents. With `--create` it **hosts** any mode: it creates the game
   stream + meta + lobby listing itself (agent seats open by default), joins its own
-  game, and waits for opponents.
+  game, and waits for opponents — under a name of its own with `--game-name`, the
+  name being the game's ID and so its stream's.
 - Outlives its server: when the NATS server goes away the resident just waits, idle
   (no CPU), while nats.go reconnects in the background — forever, it never gives up — and
   its lobby mirror and presence pick up by themselves once the server is back. Only a
@@ -90,6 +91,7 @@ go build -o golang-mk1 .
 ./golang-mk1 --create --mode cooperative --players 1 --once  # solo: one seat, played for the high score
 ./golang-mk1 --create --mode teams --players 2 --once     # 2v2 (--players is per team, --max-agents too)
 ./golang-mk1 --create --mode cooperative --pause-alone   # host a co-op game; alone in it, wait for company
+./golang-mk1 --create --game-name friday-night --once    # host a NAMED game: JETRIS_GAME_friday-night
 
 # offline conformance checks (RNG + split-deal parity with the game, planner sanity)
 ./golang-mk1 --selftest
@@ -114,7 +116,11 @@ fourteen) or `none` for no bag at all (every piece an independent draw), the
 7-bag when unset — and
 `--guideline`, the GUI wizard's Guideline preset in one flag: next 6, hold, the
 7-bag, 1 hole per garbage row, the Guideline attack table, overriding the
-individual rule flags),
+individual rule flags — and `--game-name`, what to call the game: the name
+becomes the game's ID, so the lobby lists it by name and its stream is
+`JETRIS_GAME_<name>` rather than one named after a UUID; letters, digits, `-`
+and `_`, at most 24 of them, anything else in the name becoming a dash, and the
+create fails if another game already holds it),
 `--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
 `async`), `--auto-join`, `--wait`, `--once`, `--selftest`.
 

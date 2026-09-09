@@ -454,3 +454,15 @@ func TestPlayersStripWrapsAndCaps(t *testing.T) {
 			h30, lobbyPlayersStripRows*one, lobbyPlayersStripRows)
 	}
 }
+
+// A game its creator named is called that on the lobby row — a name IS the
+// game's ID (config.GameName), so it stands where a generated ID's first
+// group would, and it stands whole.
+func TestShortIDKeepsNames(t *testing.T) {
+	if got := shortID("Friday-night"); got != "Friday-night" {
+		t.Errorf("shortID(name) = %q, want it whole", got)
+	}
+	if got := shortID("550e8400-e29b-41d4-a716-446655440000"); got != "550e8400" {
+		t.Errorf("shortID(uuid) = %q, want 550e8400", got)
+	}
+}

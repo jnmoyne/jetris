@@ -523,7 +523,7 @@ Coop rules per team: player at team slot N spawns centered in their section at c
 
 #### Split pieces (`split_pieces`)
 
-A teams game can be created with the pieces **dealt out between the teammates** instead of every seat running the same full bag: `split_pieces` (`GameMeta.SplitPieces`, the create wizard's step-1 checkbox "Split the pieces between teammates", off by default, mirrored on the lobby row as a `split pieces` tag). Each seat is dealt a **ration** of one or more piece types and its sequence is a bag of that ration alone — three types means those three, shuffled, forever; one type means that one piece, forever. The deal's rules:
+A teams game can be created with the pieces **dealt out between the teammates** instead of every seat running the same full bag: `split_pieces` (`GameMeta.SplitPieces`, the create wizard's step-2 custom-rules checkbox "Distribute the pieces between the players of a playfield", off by default and never set by the Guideline preset, mirrored on the lobby row as a `split pieces` tag). Each seat is dealt a **ration** of one or more piece types and its sequence is a bag of that ration alone — three types means those three, shuffled, forever; one type means that one piece, forever. The deal's rules:
 
 - **Every one of the seven types goes to somebody, and nobody is left empty-handed.** The team between them still has the whole bag; it just has to co-operate to use it, because the teammate holding the I is the only one who can hand the board an I. With two seats one holds four types and the other three, with seven they hold one each, and past seven the types start doubling up (`rng.PieceSets`).
 - **The deal follows `meta.Seed`, so it is the same on every peer that computes it** — both teams' boards, a spectator's engine, an agent's own port of the function. In particular **team A's slot N holds exactly what team B's slot N holds**, which is what keeps the match fair, exactly as both teams have always seen one identical piece sequence.
@@ -633,8 +633,8 @@ board, every team scoring together (§5), the total seat count being playfields
 **2. game rules**: the **game length** — **until top out**, or **a number of
 lines** (default 40, the line goal of §2) — then a single radio: the
 **Guideline** preset — the default, listed read-only: the play rules at their
-Guideline settings, the board 4 columns wider per player and no taller, the
-pieces dealt out between the players of a playfield — or **custom**, every rule
+Guideline settings, the board 4 columns wider per player and no taller, every
+player of a playfield playing the same full bag — or **custom**, every rule
 opening at the preset's setting: for a playfield with company the
 **board-growth sliders** (**extra columns per player**, 4 to 10, default 4, so a
 co-op pair or a team of two plays 14 columns wide, three 18, and the slider's
@@ -642,8 +642,10 @@ top of 10 restores the historical full 10-column section per player — the same
 step spaces the seats' spawn points, §2, §3, §5 — and **extra rows per
 player**, 0 to 10, default 0, the playfield 20 rows plus that much per player
 after the first) and the **"Distribute the pieces between the players of a
-playfield"** checkbox (on by default; the seven piece types dealt out between
-the seats of a playfield, each seat only ever playing its own ration, §5), then
+playfield"** checkbox (off by default — every player plays the same full bag
+unless the creator checks it, and then the seven piece types are dealt out
+between the seats of a playfield, each seat only ever playing its own ration,
+§5), then
 the next-piece count, 0-6, the "Hold piece" and "Show ghost piece" checkboxes,
 the garbage rules where several playfields raise garbage at each other, the
 piece bag and the hidden rows — see §1b.

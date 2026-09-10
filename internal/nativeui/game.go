@@ -1067,7 +1067,7 @@ func rankingLine(players []lobby.PlayerSummary, scores map[string]int, me string
 // rationRow writes one seat's piece ration — the types that seat's sequence
 // draws from when the game splits the pieces between teammates — as its
 // letters, each in the piece's own board color, so the hand reads at a glance
-// (a cyan I, a purple T). Empty in every game that does not split.
+// (a green I, an amber T). Empty in every game that does not split.
 func (a *App) rationRow(gtx C, set []game.PieceType) D {
 	kids := make([]layout.FlexChild, 0, len(set)*2)
 	for i, pt := range set {
@@ -2026,7 +2026,7 @@ func drawMiniPiece(ops *op.Ops, x0, y0, cellPx int, pt game.PieceType) int {
 	for _, rc := range cells {
 		x := x0 + (rc[1]+shift)*cellPx
 		y := y0 + (rc[0]-minR)*cellPx
-		drawCell(ops, x, y, cellPx, ap.Fill, ap.Outline, ap.OutlineW, ap.Bevel)
+		drawCell(ops, x, y, cellPx, ap.Fill, ap.Outline, ap.OutlineW, ap.Panels)
 	}
 	return (maxR - minR + 1) * cellPx
 }

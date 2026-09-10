@@ -60,15 +60,15 @@ func TestAccountLockComboAndBackToBack(t *testing.T) {
 
 }
 
-// TestTSpinDoubleThenBackToBackJetris plays the Guideline's showpiece on a
+// TestTSpinDoubleThenBackToBackQuad plays the Guideline's showpiece on a
 // competitive board with guideline garbage: seed 0 deals a T then an I. The
 // T is turned vertical, soft-dropped into a T-slot and rotated into it —
 // the last move a rotation, three corners filled, both front corners: a
 // T-Spin Double, 1200 points and four rows of garbage. The I then drops
-// through the four-deep column left beside it: a Jetris right after a
+// through the four-deep column left beside it: a quad right after a
 // difficult clear — Back-to-Back (800 × 1.5) plus a combo of one, and the
-// Jetris' four rows of garbage plus the Back-to-Back bonus of two.
-func TestTSpinDoubleThenBackToBackJetris(t *testing.T) {
+// quad's four rows of garbage plus the Back-to-Back bonus of two.
+func TestTSpinDoubleThenBackToBackQuad(t *testing.T) {
 	gameID := "tspin-b2b"
 	js, engines := setupCompetitiveGameWith(t, gameID, 2,
 		func(m *config.GameMeta) { m.GuidelineGarbage = true; m.Seed = 0 }, nil)
@@ -140,7 +140,7 @@ func TestTSpinDoubleThenBackToBackJetris(t *testing.T) {
 	waitUntil(t, 5*time.Second, func() bool { return b.Playfield().AdversarialRowCount() == 4 }, "b's board to gain the T-spin double's four rows")
 	afterTSD := a.Score()
 
-	// The I: turned vertical it drops down column 5 — a Jetris, Back-to-Back
+	// The I: turned vertical it drops down column 5 — a quad, Back-to-Back
 	// after the T-spin, the second clear of the combo.
 	waitUntil(t, 3*time.Second, func() bool {
 		p := a.Playfield().ActivePieceForPlayer(0)

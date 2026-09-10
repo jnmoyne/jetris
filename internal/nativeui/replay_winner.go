@@ -509,7 +509,7 @@ func drawPrizePiece(ops *op.Ops, x0, y0, cell int, pt game.PieceType, fade float
 	shift := (previewCols-(maxC-minC+1))/2 - minC
 	ap := render.CellStyle(game.Cell{Occupied: true, PieceType: pt}, -1, false)
 	for _, rc := range cells {
-		drawCell(ops, x0+(rc[1]+shift)*cell, y0+(rc[0]-minR)*cell, cell, withAlpha(ap.Fill, fade), withAlpha(ap.Outline, fade), ap.OutlineW, ap.Bevel)
+		drawCell(ops, x0+(rc[1]+shift)*cell, y0+(rc[0]-minR)*cell, cell, withAlpha(ap.Fill, fade), withAlpha(ap.Outline, fade), ap.OutlineW, ap.Panels)
 	}
 }
 

@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,6 +23,26 @@ func TestPlayerNamesValid(t *testing.T) {
 				t.Errorf("%q: %v", prefix+n, err)
 			}
 		}
+	}
+}
+
+// The browser's join page (web/join.html) deals names from a copy of the
+// same list, in the same order: the two must not drift apart.
+func TestPlayerNamesMatchJoinPage(t *testing.T) {
+	page, err := os.ReadFile("../../web/join.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)const HANDLES = \[(.*?)\];`).FindSubmatch(page)
+	if m == nil {
+		t.Fatal("web/join.html: no HANDLES list")
+	}
+	var got []string
+	for _, q := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(m[1], -1) {
+		got = append(got, string(q[1]))
+	}
+	if strings.Join(got, ",") != strings.Join(playerNames, ",") {
+		t.Errorf("web/join.html HANDLES = %v\nwant playerNames = %v", got, playerNames)
 	}
 }
 

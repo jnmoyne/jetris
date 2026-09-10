@@ -24,10 +24,10 @@ func TestCellStyleDecisions(t *testing.T) {
 	}{
 		// Empty cell: board background with the plain grid line.
 		{"empty", game.Cell{}, 0, true, BoardBgHex, GridLineHex, 1},
-		// Own active I-piece: 90% cyan over #111111, white 2px outline.
-		{"active-own", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 0}, 0, true, "#02dada", OwnOutlineHex, 2},
+		// Own active I-piece: 90% of its color over #111111, white 2px outline.
+		{"active-own", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 0}, 0, true, blendHex(pieceColorHex(game.PieceI), BoardBgHex, 0.9), OwnOutlineHex, 2},
 		// Another player's active piece in a player's own view: no ownership outline.
-		{"active-other", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 1}, 0, true, "#02dada", GridLineHex, 1},
+		{"active-other", game.Cell{Active: true, PieceType: game.PieceI, PlayerIdx: 1}, 0, true, blendHex(pieceColorHex(game.PieceI), BoardBgHex, 0.9), GridLineHex, 1},
 		// Spectator view: every active piece gets a per-player outline.
 		{"active-spectator", game.Cell{Active: true, PieceType: game.PieceT, PlayerIdx: 2}, -1, true, blendHex(pieceColorHex(game.PieceT), BoardBgHex, 0.9), PlayerColorHex(2), 2},
 		// Locked cell: 70% piece color, owner-colored outline when shown.
@@ -60,7 +60,7 @@ func TestCellStyleDecisions(t *testing.T) {
 }
 
 // TestGhostStyle pins the hard-drop ghost appearance: a faint piece-color fill
-// inside a dimmed piece-color 2px frame, flat (no bevel) — dimmer than
+// inside a dimmed piece-color 2px frame, flat (no panels) — dimmer than
 // every committed-cell alpha so the preview can't be mistaken for a real cell.
 func TestGhostStyle(t *testing.T) {
 	for pt := game.PieceI; pt <= game.PieceL; pt++ {
@@ -74,8 +74,8 @@ func TestGhostStyle(t *testing.T) {
 		if app.OutlineW != 2 {
 			t.Errorf("piece %v: outline width = %d, want 2", pt, app.OutlineW)
 		}
-		if app.Bevel {
-			t.Errorf("piece %v: ghost must not bevel", pt)
+		if app.Panels {
+			t.Errorf("piece %v: ghost must stay flat", pt)
 		}
 	}
 }

@@ -105,7 +105,7 @@ func teamLetter(t int) string {
 // teamNames names n teams after the piece colours in piece order — the
 // GUI's default (meta team_names) when the creator renames none.
 func teamNames(n int) []string {
-	colors := []string{"Cyan", "Yellow", "Purple", "Green", "Red", "Blue", "Orange"}
+	colors := []string{"Green", "Blue", "Amber", "Violet", "Teal", "Coral", "Navy"}
 	out := make([]string, 0, n)
 	for t := 0; t < n; t++ {
 		out = append(out, colors[t%len(colors)])

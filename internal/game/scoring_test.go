@@ -14,7 +14,7 @@ func TestClearPointsTable(t *testing.T) {
 		{"single", Clear{Lines: 1}, 100},
 		{"double", Clear{Lines: 2}, 300},
 		{"triple", Clear{Lines: 3}, 500},
-		{"jetris", Clear{Lines: 4}, 800},
+		{"quad", Clear{Lines: 4}, 800},
 		{"mini t-spin no lines", Clear{Spin: TSpinMini}, 100},
 		{"t-spin no lines", Clear{Spin: TSpinFull}, 400},
 		{"mini t-spin single", Clear{Lines: 1, Spin: TSpinMini}, 200},
@@ -89,14 +89,14 @@ func TestClearAttackRows(t *testing.T) {
 		{"single", Clear{Lines: 1}, 0},
 		{"double", Clear{Lines: 2}, 1},
 		{"triple", Clear{Lines: 3}, 2},
-		{"jetris", Clear{Lines: 4}, 4},
+		{"quad", Clear{Lines: 4}, 4},
 		{"mini t-spin single", Clear{Lines: 1, Spin: TSpinMini}, 0},
 		{"mini t-spin double", Clear{Lines: 2, Spin: TSpinMini}, 1},
 		{"t-spin single", Clear{Lines: 1, Spin: TSpinFull}, 2},
 		{"t-spin double", Clear{Lines: 2, Spin: TSpinFull}, 4},
 		{"t-spin triple", Clear{Lines: 3, Spin: TSpinFull}, 6},
 		{"t-spin no lines", Clear{Spin: TSpinFull}, 0},
-		// Back-to-Back bonus: +1 MTSS/MTSD/TSS, +2 TSD/Jetris, +3 TST.
+		// Back-to-Back bonus: +1 MTSS/MTSD/TSS, +2 TSD/quad, +3 TST.
 		{"b2b mini t-spin single", Clear{Lines: 1, Spin: TSpinMini, BackToBack: true}, 1},
 		{"b2b mini t-spin double", Clear{Lines: 2, Spin: TSpinMini, BackToBack: true}, 2},
 		{"b2b t-spin single", Clear{Lines: 1, Spin: TSpinFull, BackToBack: true}, 3},
@@ -127,7 +127,7 @@ func TestClearName(t *testing.T) {
 	}{
 		{Clear{}, ""},
 		{Clear{Lines: 1}, "SINGLE"},
-		{Clear{Lines: 4}, "JETRIS"},
+		{Clear{Lines: 4}, "QUAD"},
 		{Clear{Spin: TSpinFull}, "T-SPIN"},
 		{Clear{Spin: TSpinMini}, "MINI T-SPIN"},
 		{Clear{Lines: 2, Spin: TSpinFull}, "T-SPIN DOUBLE"},
@@ -307,7 +307,7 @@ func TestRotateKickReportsTheKick(t *testing.T) {
 }
 
 // A 180 spin is scored, named and valued for garbage as a full T-spin, and
-// is as difficult for the Back-to-Back chain; four lines are a Jetris
+// is as difficult for the Back-to-Back chain; four lines are a quad
 // whatever turned the piece.
 func TestClear180Spin(t *testing.T) {
 	for _, c := range []struct {
@@ -321,7 +321,7 @@ func TestClear180Spin(t *testing.T) {
 		{Clear{Lines: 2, Spin: TSpin180}, 1200, "180 SPIN DOUBLE", 4},
 		{Clear{Lines: 3, Spin: TSpin180}, 1600, "180 SPIN TRIPLE", 6},
 		{Clear{Lines: 2, Spin: TSpin180, BackToBack: true}, 1800, "180 SPIN DOUBLE", 6},
-		{Clear{Lines: 4, Spin: TSpin180}, 800, "JETRIS", 4},
+		{Clear{Lines: 4, Spin: TSpin180}, 800, "QUAD", 4},
 	} {
 		if got := c.clear.Points(1); got != c.points {
 			t.Errorf("%+v: Points = %d, want %d", c.clear, got, c.points)

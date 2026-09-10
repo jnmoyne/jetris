@@ -53,14 +53,14 @@ func main() {
 	next := flag.Int("next", maxNextCount, "upcoming pieces the game reveals when creating a game (0-6, 0 = none)")
 	holes := flag.Int("holes", 0, "holes per garbage row when creating a competitive or teams game (0-4, 0 = solid rows that never clear)")
 	randomHoles := flag.Bool("random-holes", false, "every garbage row draws its own hole columns when creating a game (default: the rows of one attack share a draw)")
-	guideline := flag.Bool("guideline-garbage", false, "Guideline attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a Jetris 4 (default: one row per line)")
-	hold := flag.Bool("hold", false, "the Guideline hold queue when creating a game (the agent itself never holds; the humans in the game may)")
+	guideline := flag.Bool("guideline-garbage", false, "the modern attack table when creating a game: a single sends no garbage, a double 1 row, a triple 2, a quad 4 (default: one row per line)")
+	hold := flag.Bool("hold", false, "the hold queue when creating a game (the agent itself never holds; the humans in the game may)")
 	splitPieces := flag.Bool("split-pieces", false, "when creating a game whose playfields have two or more seats: deal the seven piece types out between the seats of a playfield, each playing only its own ration")
 	extraRows := flag.Int("extra-rows", 0, "shared-board height when creating a cooperative or teams game: rows every seat beyond the first adds below the standard 20 (0-10)")
 	lineGoal := flag.Int("line-goal", 0, "the game's length in lines when creating a game: the first playfield to clear this many wins (0 = until top out)")
 	individual := flag.Bool("individual", false, "when creating a cooperative game of two or more: score every seat on its own, the top score wins")
 	bag := flag.String("bag", "", "piece randomizer when creating a game: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
-	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Guideline preset — next 6, hold, the 7-bag, 1 hole per garbage row, Guideline attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
+	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Modern preset — next 6, hold, the 7-bag, 1 hole per garbage row, the modern attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
@@ -118,7 +118,7 @@ func main() {
 		host = &hosting{gameName: gameName(*gameNameFlag), mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag,
 			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual, pauseAlone: *pauseAlone}
 		if *preset {
-			// The same rules the GUI's "Guideline" radio picks (config.GuidelineRules).
+			// The same rules the GUI's "Modern" radio picks (config.ModernRules).
 			host.next, host.holes, host.random, host.guideline, host.hold, host.bag = maxNextCount, 1, false, true, true, bagSingle
 		}
 	}

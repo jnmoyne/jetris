@@ -14,7 +14,7 @@ func TestClearInfoPointsAndAttack(t *testing.T) {
 		{"single", clearInfo{lines: 1}, 100, 0},
 		{"double", clearInfo{lines: 2}, 300, 1},
 		{"triple", clearInfo{lines: 3}, 500, 2},
-		{"jetris", clearInfo{lines: 4}, 800, 4},
+		{"quad", clearInfo{lines: 4}, 800, 4},
 		{"b2b jetris", clearInfo{lines: 4, backToBack: true}, 1200, 6},
 		{"a single is never b2b", clearInfo{lines: 1, backToBack: true}, 100, 0},
 		{"combo 3 single", clearInfo{lines: 1, combo: 3}, 250, 0},
@@ -45,7 +45,7 @@ func TestClearInfoPointsAndAttack(t *testing.T) {
 	if got := dropPoints(3, 7); got != 17 {
 		t.Errorf("dropPoints(3, 7) = %d, want 17", got)
 	}
-	if got := (clearInfo{lines: 4, backToBack: true, combo: 2}).name(); got != "jetris, back-to-back, combo 2" {
+	if got := (clearInfo{lines: 4, backToBack: true, combo: 2}).name(); got != "quad, back-to-back, combo 2" {
 		t.Errorf("name = %q", got)
 	}
 }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Jetris: a real-time multiplayer, guideline-style cooperative/competitive block-stacking game — and a peer-to-peer blackboard system built with nothing but NATS.io JetStream. Play it in your browser.">
+  <meta name="description" content="Jetris: a real-time multiplayer, modern-rules cooperative/competitive block-stacking game — and a peer-to-peer blackboard system built with nothing but NATS.io JetStream. Play it in your browser.">
   <title>Jetris — play in your browser</title>
   <!-- The tab icon and the home-screen / bookmark icon iOS asks for (a
        bevelled J tetromino, scripts/gen-icons.go); without them Safari
@@ -78,7 +78,7 @@
 <body>
   <main id="landing">
     <h1>JETRIS</h1>
-    <p class="tagline">A real-time multiplayer, guideline-style cooperative/competitive block-stacking game — and a peer-to-peer distributed blackboard system built with nothing but <a href="https://nats.io">NATS</a> JetStream. If you like it, give it a ⭐ on GitHub!</p>
+    <p class="tagline">A real-time multiplayer, modern-rules cooperative/competitive block-stacking game — and a peer-to-peer distributed blackboard system built with nothing but <a href="https://nats.io">NATS</a> JetStream. If you like it, give it a ⭐ on GitHub!</p>
     <button id="play" type="button">▶ PLAY IN YOUR BROWSER</button>
     <p class="note">Runs as WebAssembly right here, nothing to install. <span id="note-https">This page is served over https, so the NATS server you pick on the login screen must speak <code>wss://</code> — the public <code>demo.nats.io</code> server is preselected.</span><span id="note-http" hidden>The NATS server you pick on the login screen must have a WebSocket listener (<code>ws://</code> or <code>wss://</code>).</span> For <code>nats://</code> servers, your NATS CLI contexts, or a LAN party with an embedded server, grab a <a href="https://github.com/jnmoyne/jetris/releases/latest">desktop build</a>.</p>
     <img class="shot" src="screenshot.png" alt="Spectating a 2v2 teams game of Jetris: Team A has just completed a line and the garbage line that clear sends is landing at the bottom of Team B's playfield.">

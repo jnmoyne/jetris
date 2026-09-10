@@ -654,12 +654,12 @@ func TestScreensLayoutWithoutPanic(t *testing.T) {
 		render(a.createWizardOverlay)
 		a.createJoinEnum.Value = "invite"
 		render(a.createWizardOverlay)
-		// Step 2 is the Guideline preset's read-only list or the custom
+		// Step 2 is the Modern preset's read-only list or the custom
 		// editors; both carry the garbage rules where several playfields
 		// raise garbage at each other and hide them on a single one, and
 		// the board's growth and the deal where a playfield has company.
 		a.createWizStep = wizStepRules
-		for _, rules := range []string{"guideline", "custom"} {
+		for _, rules := range []string{"modern", "custom"} {
 			a.rulesEnum.Value = rules
 			for _, length := range []string{"topout", "lines"} {
 				a.lengthEnum.Value = length

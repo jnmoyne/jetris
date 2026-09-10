@@ -8,7 +8,7 @@ package nativeui
 // Esc). It starts in the lobby the player is in — the bar's buttons, the
 // menu column's voice controls and legend, the panel's tabs — then walks the
 // create-game wizard through a fictional game (a co-op crew of one, on
-// Guideline rules, by invitation), the invitation picker over a made-up
+// modern rules, by invitation), the invitation picker over a made-up
 // roster in which the player is Player 1, and ends on the game screen of
 // that game: the playfield and what flanks it, the bar's buttons, and every
 // section of the menu column down to the NATS messages switch.
@@ -951,7 +951,7 @@ func (a *App) tutorialPickerView() pickerView {
 }
 
 // tutorialEngine is the game scene's engine: the tour's co-op game of one,
-// on Guideline rules — before its start, an empty board and an empty hold
+// on modern rules — before its start, an empty board and an empty hold
 // slot; started, a while in: a stack with a well down one side, a T on its
 // way down, an I set aside in the hold slot.
 func tutorialEngine(me string, started bool) *engine.Engine {
@@ -959,7 +959,7 @@ func tutorialEngine(me string, started bool) *engine.Engine {
 	if !started {
 		return engine.Offline(engine.OfflineGame{
 			GameID: tutGameID, PlayerID: me, Mode: config.ModeCooperative,
-			Board: pf, Rules: config.GuidelineRules(), Seed: 7,
+			Board: pf, Rules: config.ModernRules(), Seed: 7,
 		})
 	}
 	// The stack, bottom up, in piece letters; '.' is empty. Locked, all of
@@ -988,7 +988,7 @@ func tutorialEngine(me string, started bool) *engine.Engine {
 	held := game.PieceI
 	return engine.Offline(engine.OfflineGame{
 		GameID: tutGameID, PlayerID: me, Mode: config.ModeCooperative,
-		Board: pf, Rules: config.GuidelineRules(), Seed: 7, Held: &held,
+		Board: pf, Rules: config.ModernRules(), Seed: 7, Held: &held,
 	})
 }
 
@@ -1038,7 +1038,7 @@ func tutorialSteps() []tutStep {
 				a.countEd.SetText("1")
 			}
 			a.lengthEnum.Value = "topout"
-			a.rulesEnum.Value = "guideline"
+			a.rulesEnum.Value = "modern"
 			a.createJoinEnum.Value = "invite"
 		}
 	}
@@ -1115,14 +1115,14 @@ func tutorialSteps() []tutStep {
 				"Those are the defaults: click a line of the KEYS legend to swap any of its keys for another — one no other move has — and the game keeps your keys from then on. " +
 				"Touch: swipe left or right to move, tap the left or right half of the board to rotate, tap with two fingers to turn it half way round, drag down to soft-drop, flick down to hard-drop, swipe up to hold. The gestures cannot be changed."},
 		lobbyStep("CREATE A NEW GAME",
-			"This button opens the wizard that sets a game up, one choice at a time. Let's create one: a co-op game for a crew of one, on Guideline rules, by invitation.",
+			"This button opens the wizard that sets a game up, one choice at a time. Let's create one: a co-op game for a crew of one, on modern rules, by invitation.",
 			tutCreateBtn),
 		{scene: tutSceneWizard, title: "GAME TYPE", targets: []string{tutWizard}, prep: wizard(wizStepType),
 			body: "A single playfield: everyone plays one shared board — co-op, all scoring together, or competitive, each player scored on their own with the top score winning. Multiple playfields: a team on each, every team scoring together, every line a team clears sending garbage to the others, the last playfield standing winning; one player per playfield is a board each. " +
 				"Players is the seat count — per playfield, when there are several. One seat on a single playfield is a solo run for the high score, which is the game this tour creates."},
 		{scene: tutSceneWizard, title: "GAME RULES", targets: []string{tutWizard}, prep: wizard(wizStepRules),
-			body: "The game length: until someone tops out, or until a playfield has cleared a number of lines — forty, the classic sprint, unless you say otherwise. Then the rules. Guideline sets every one to its Guideline setting: six pieces shown in the NEXT well, the ghost that marks where a hard drop lands, and the hold queue. " +
-				"Custom lets you set each one yourself — how much wider and taller a shared board grows per player, the bag the pieces are dealt from: the 7-bag, a double bag of fourteen, or no bag at all — whether the hidden rows above the playfield show through smoked glass, and, with several playfields, how many holes a garbage row has, whether the rows of one attack line them up, and whether attacks follow the Guideline table: a single sends nothing, a double one row, a triple two, a Jetris four."},
+			body: "The game length: until someone tops out, or until a playfield has cleared a number of lines — forty, the classic sprint, unless you say otherwise. Then the rules. Modern sets every one to its modern setting: six pieces shown in the NEXT well, the ghost that marks where a hard drop lands, and the hold queue. " +
+				"Custom lets you set each one yourself — how much wider and taller a shared board grows per player, the bag the pieces are dealt from: the 7-bag, a double bag of fourteen, or no bag at all — whether the hidden rows above the playfield show through smoked glass, and, with several playfields, how many holes a garbage row has, whether the rows of one attack line them up, and whether attacks follow the modern attack table: a single sends nothing, a double one row, a triple two, a quad four."},
 		{scene: tutSceneWizard, title: "PLAYERS", targets: []string{tutWizard}, prep: wizard(wizStepPlayers),
 			body: "Invite only: you choose the players, and only they can take a seat; the game starts once every seat is filled and ready. Open: anyone in the lobby can take a free seat, and players can enter and leave at any time, while the game runs too — it starts as soon as every playfield has a ready player; whether agents may join, and how many, is decided right here. Choose players… creates the game and opens the invitation picker."},
 		{scene: tutScenePicker, title: "INVITE PLAYERS", targets: []string{tutPickerSelf}, prep: picker,

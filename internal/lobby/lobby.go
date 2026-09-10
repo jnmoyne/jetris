@@ -828,7 +828,7 @@ func (l *Lobby) emitUpdate(u LobbyUpdate) {
 // records: the meta is the rule book every peer — human UI and agent alike —
 // reads at Start, the listing tags the lobby row (next N, holes N, guideline
 // garbage, hold, double bag / no bag, N lines, board W×H — or plain
-// "guideline" when the rules are the Guideline preset). MaxAgents — how many
+// "modern" when the rules are the Modern preset). MaxAgents — how many
 // roster seats agent players may take, on each team of a teams game and in
 // the whole game elsewhere (0 = agents may not join) — is enforced
 // atomically by JoinGame's CAS loop; AgentsPauseAlone tells the agents of an

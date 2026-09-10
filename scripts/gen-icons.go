@@ -3,8 +3,8 @@
 // gen-icons draws the browser page's icons — web/apple-touch-icon.png (the
 // 180×180 home-screen / bookmark icon iOS asks for) and web/favicon.ico (a
 // 32×32 tab icon, a PNG in the ICO container every browser reads) — in the
-// game's 8-bit chrome: a bevelled J tetromino in its own blue on the page's
-// black. Run with `go run scripts/gen-icons.go` from the repo root; the
+// game's own look: a J tetromino in its coral, each cell split into the four
+// panels of the NATS mark (board.go's drawCell), on the page's black. Run with `go run scripts/gen-icons.go` from the repo root; the
 // results are committed, this keeps them reproducible.
 package main
 
@@ -20,10 +20,18 @@ import (
 
 var (
 	bg    = color.NRGBA{A: 0xff}
-	blue  = color.NRGBA{R: 0x00, G: 0x00, B: 0xf0, A: 0xff} // render.pieceColors[PieceJ]
-	light = color.NRGBA{R: 0x5c, G: 0x5c, B: 0xff, A: 0xff}
-	dark  = color.NRGBA{R: 0x00, G: 0x00, B: 0x90, A: 0xff}
-	gloss = color.NRGBA{R: 0xc8, G: 0xc8, B: 0xff, A: 0xff}
+	coral = color.NRGBA{R: 0xea, G: 0x5a, B: 0x47, A: 0xff} // render.pieceColors[PieceJ]
+)
+
+// lerp mixes c toward to by t (0..1) — board.go's lighten/darken.
+func lerp(c, to color.NRGBA, t float64) color.NRGBA {
+	mix := func(a, b uint8) uint8 { return uint8(float64(a) + (float64(b)-float64(a))*t) }
+	return color.NRGBA{R: mix(c.R, to.R), G: mix(c.G, to.G), B: mix(c.B, to.B), A: c.A}
+}
+
+var (
+	white = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	black = color.NRGBA{A: 0xff}
 )
 
 // The J piece in its spawn orientation (game.cellOffsets): (row, col).
@@ -38,21 +46,23 @@ func fill(img *image.NRGBA, r image.Rectangle, c color.NRGBA) {
 }
 
 // icon renders the piece centered on a size×size black square with cells of
-// cell px and a bevel of bevel px (board.go's drawCell: lighter top/left
-// strips, darker bottom/right, a gloss pixel in the corner).
-func icon(size, cell, bevel int) *image.NRGBA {
+// cell px, each a gap px black frame around the four panels of the NATS
+// mark in tints of the piece's colour (board.go's drawCell: lighter
+// top-left, the colour top-right, darker bottom-left, a touch lighter
+// bottom-right).
+func icon(size, cell, gap int) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 	fill(img, img.Rect, bg)
 	w, h := 3*cell, 2*cell
 	ox, oy := (size-w)/2, (size-h)/2
 	for _, rc := range jCells {
-		x, y := ox+rc[1]*cell, oy+rc[0]*cell
-		fill(img, image.Rect(x, y, x+cell, y+cell), blue)
-		fill(img, image.Rect(x, y, x+cell, y+bevel), light)                  // top
-		fill(img, image.Rect(x, y, x+bevel, y+cell), light)                  // left
-		fill(img, image.Rect(x, y+cell-bevel, x+cell, y+cell), dark)         // bottom
-		fill(img, image.Rect(x+cell-bevel, y, x+cell, y+cell), dark)         // right
-		fill(img, image.Rect(x+bevel, y+bevel, x+2*bevel, y+2*bevel), gloss) // gloss
+		x, y := ox+rc[1]*cell+gap, oy+rc[0]*cell+gap
+		in := cell - 2*gap
+		mx, my := x+in/2, y+in/2
+		fill(img, image.Rect(x, y, mx, my), lerp(coral, white, 0.28))
+		fill(img, image.Rect(mx, y, x+in, my), coral)
+		fill(img, image.Rect(x, my, mx, y+in), lerp(coral, black, 0.35))
+		fill(img, image.Rect(mx, my, x+in, y+in), lerp(coral, white, 0.12))
 	}
 	return img
 }
@@ -94,6 +104,6 @@ func writeICO(path string, img image.Image, size int) {
 }
 
 func main() {
-	writePNG("web/apple-touch-icon.png", icon(180, 44, 6))
+	writePNG("web/apple-touch-icon.png", icon(180, 44, 2))
 	writeICO("web/favicon.ico", icon(32, 8, 1), 32)
 }

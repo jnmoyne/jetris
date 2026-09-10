@@ -47,7 +47,7 @@ func TestWizardSnapshots(t *testing.T) {
 			a.setPlayfieldCount(3)
 			a.countEd.SetText("2")
 		}},
-		{"wizard_step2_guideline", func(a *App) { a.createWizStep = wizStepRules; a.countEd.SetText("3") }},
+		{"wizard_step2_modern", func(a *App) { a.createWizStep = wizStepRules; a.countEd.SetText("3") }},
 		{"wizard_step2_custom_lines", func(a *App) {
 			a.createWizStep, a.rulesEnum.Value, a.lengthEnum.Value, a.boardsEnum.Value = wizStepRules, "custom", "lines", "multiple"
 			a.countEd.SetText("2")

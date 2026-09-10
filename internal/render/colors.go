@@ -45,15 +45,18 @@ var playerColors = []string{
 }
 
 // pieceColors maps each tetromino type to its base fill color. Index matches
-// the game.PieceType iota (I, O, T, S, Z, J, L).
+// the game.PieceType iota (I, O, T, S, Z, J, L). The palette is NATS's: the
+// four panels of the nats.io "N" mark (its green, blue, teal and navy) and
+// three more in the same flat tone; the mirror pairs (S/Z, J/L) sit far apart
+// on the wheel so they never read as each other.
 var pieceColors = [...]string{
-	game.PieceI: "#00f0f0", // cyan
-	game.PieceO: "#f0f000", // yellow
-	game.PieceT: "#a000f0", // purple
-	game.PieceS: "#00f000", // green
-	game.PieceZ: "#f00000", // red
-	game.PieceJ: "#0000f0", // blue
-	game.PieceL: "#f0a000", // orange
+	game.PieceI: "#8dc63f", // green (NATS green)
+	game.PieceO: "#27aae1", // blue (NATS blue)
+	game.PieceT: "#f0b429", // amber
+	game.PieceS: "#9b6fd8", // violet
+	game.PieceZ: "#34a574", // teal
+	game.PieceJ: "#ea5a47", // coral
+	game.PieceL: "#375c93", // navy
 }
 
 // PlayerColorHex returns the player outline color as "#rrggbb" (cycled).
@@ -147,14 +150,14 @@ func appearanceHex(c game.Cell, localPlayerIdx int, showOutline bool) (fill, out
 // CellAppearance is the resolved visual of one square for native rendering.
 // OutlineW is 1 (grid line) or 2 (ownership/active outline). The native drawer
 // fills the cell with Fill, then strokes a 1px-inset border of width OutlineW
-// in Outline. Bevel marks filled cells (active, locked, adversarial): the
-// drawer shades them with the 8-bit top-left highlight / bottom-right shadow;
-// empty cells stay flat.
+// in Outline. Panels marks filled cells (active, locked, adversarial): the
+// drawer splits them into the four panels of the NATS mark, each a tint of
+// the fill; empty cells stay flat.
 type CellAppearance struct {
 	Fill     color.NRGBA
 	Outline  color.NRGBA
 	OutlineW int
-	Bevel    bool
+	Panels   bool
 }
 
 // CellStyle is the canonical appearance for native rendering.
@@ -164,13 +167,13 @@ func CellStyle(c game.Cell, localPlayerIdx int, showOutline bool) CellAppearance
 		Fill:     nrgbaFromHex(fill),
 		Outline:  nrgbaFromHex(outline),
 		OutlineW: outlineW,
-		Bevel:    c.Active || c.Occupied || c.Adversarial,
+		Panels:   c.Active || c.Occupied || c.Adversarial,
 	}
 }
 
 // GhostStyle is the appearance of one cell of the hard-drop ghost preview —
 // the falling piece's landing position, drawn only over empty squares: a faint
-// fill of the piece color inside a dimmed piece-color frame, no bevel (the
+// fill of the piece color inside a dimmed piece-color frame, no panels (the
 // 8-bit shading marks real cells; the ghost stays flat, a hollow shadow).
 func GhostStyle(pt game.PieceType) CellAppearance {
 	pc := pieceColorHex(pt)
@@ -178,7 +181,7 @@ func GhostStyle(pt game.PieceType) CellAppearance {
 		Fill:     nrgbaFromHex(blendHex(pc, BoardBgHex, ghostFillAlpha)),
 		Outline:  nrgbaFromHex(blendHex(pc, BoardBgHex, ghostOutlineAlpha)),
 		OutlineW: 2,
-		Bevel:    false,
+		Panels:   false,
 	}
 }
 

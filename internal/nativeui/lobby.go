@@ -1925,10 +1925,10 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 			extra += " · agents pause when alone"
 		}
 	}
-	// The play rules: one "guideline" tag for the wizard's preset, else each
+	// The play rules: one "modern" tag for the wizard's preset, else each
 	// rule that differs from the classic game.
-	if g.Rules().IsGuideline(g.Mode) {
-		extra += " · guideline"
+	if g.Rules().IsModern(g.Mode) {
+		extra += " · modern"
 	} else {
 		if g.NextCount > 0 {
 			extra += fmt.Sprintf(" · next %d", g.NextCount)
@@ -1954,7 +1954,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 			}
 		}
 		if g.GuidelineGarbage {
-			extra += " · guideline garbage"
+			extra += " · modern attacks"
 		}
 	}
 

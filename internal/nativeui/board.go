@@ -176,10 +176,13 @@ func darken(c color.NRGBA, t float64) color.NRGBA {
 // drawCell paints a single board square: the whole cell is filled with the
 // outline color, then an inner rectangle (inset by the outline width) is filled
 // with the cell color — giving a colored frame around the fill, matching the
-// web's outline-offset:-1px look. With bevel set (filled cells) the inner fill
-// gets the 8-bit block shading: a lighter strip along the top and left edges, a
-// darker strip along the bottom and right, and a gloss pixel in the top-left.
-func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW int, bevel bool) {
+// web's outline-offset:-1px look. With panels set (filled cells) the inner
+// fill is split the way the nats.io "N" mark is: four panels meeting at the
+// centre, each a tint of the cell's color — lighter top-left, the color
+// itself top-right, darker bottom-left, a touch lighter bottom-right — so a
+// stack reads as a mosaic of small NATS marks in the piece's color. Too small
+// a cell (compact opponent strips) stays a flat square.
+func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW int, panels bool) {
 	fillRect(ops, image.Rect(x, y, x+size, y+size), outline)
 	if outlineW < 0 {
 		outlineW = 0
@@ -189,22 +192,26 @@ func drawCell(ops *op.Ops, x, y, size int, fill, outline color.NRGBA, outlineW i
 		return
 	}
 	fillRect(ops, inner, fill)
-	bw := size / 8
-	if bw < 1 {
-		bw = 1
-	}
-	if !bevel || inner.Dx() <= 3*bw || inner.Dy() <= 3*bw {
+	if !panels || inner.Dx() < panelMinPx || inner.Dy() < panelMinPx {
 		return
 	}
-	hi, lo := lighten(fill, 0.4), darken(fill, 0.45)
-	// Lit from the upper-left: top + left highlight, bottom + right shadow.
-	fillRect(ops, image.Rect(inner.Min.X, inner.Min.Y, inner.Max.X-bw, inner.Min.Y+bw), hi)
-	fillRect(ops, image.Rect(inner.Min.X, inner.Min.Y, inner.Min.X+bw, inner.Max.Y-bw), hi)
-	fillRect(ops, image.Rect(inner.Min.X+bw, inner.Max.Y-bw, inner.Max.X, inner.Max.Y), lo)
-	fillRect(ops, image.Rect(inner.Max.X-bw, inner.Min.Y+bw, inner.Max.X, inner.Max.Y), lo)
-	// Gloss pixel just inside the highlight corner.
-	fillRect(ops, image.Rect(inner.Min.X+bw, inner.Min.Y+bw, inner.Min.X+2*bw, inner.Min.Y+2*bw), lighten(fill, 0.75))
+	mx, my := (inner.Min.X+inner.Max.X)/2, (inner.Min.Y+inner.Max.Y)/2
+	fillRect(ops, image.Rect(inner.Min.X, inner.Min.Y, mx, my), lighten(fill, panelTintTL))
+	fillRect(ops, image.Rect(mx, inner.Min.Y, inner.Max.X, my), fill)
+	fillRect(ops, image.Rect(inner.Min.X, my, mx, inner.Max.Y), darken(fill, panelShadeBL))
+	fillRect(ops, image.Rect(mx, my, inner.Max.X, inner.Max.Y), lighten(fill, panelTintBR))
 }
+
+// The four panels of a filled cell (drawCell), in the mark's arrangement:
+// how far the top-left and bottom-right panels lean toward white and the
+// bottom-left toward black (0..1), and the inner size under which a cell is
+// painted flat instead.
+const (
+	panelTintTL  = 0.28
+	panelShadeBL = 0.35
+	panelTintBR  = 0.12
+	panelMinPx   = 4
+)
 
 // emptyCellStyle is how an unoccupied square on this board is painted — what
 // the squares a vibrating piece juddered out of are filled with for the frame,
@@ -360,7 +367,7 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 				drawCell(gtx.Ops, x, y, cellPx, e.Fill, e.Outline, e.OutlineW, false)
 				continue
 			}
-			drawCell(gtx.Ops, x, y, cellPx, ap.Fill, outline, outlineW, ap.Bevel)
+			drawCell(gtx.Ops, x, y, cellPx, ap.Fill, outline, outlineW, ap.Panels)
 		}
 	}
 	if len(recoil) > 0 {
@@ -368,7 +375,7 @@ func drawBoard(gtx C, snap engine.BoardSnapshot, localIdx, cellPx int, showOutli
 		// into the well's frame rather than over it.
 		st := clip.Rect(image.Rect(fw, fw, w-fw, h-fw)).Push(gtx.Ops)
 		for _, rc := range recoil {
-			drawCell(gtx.Ops, rc.x+kick.X, rc.y+kick.Y, cellPx, rc.ap.Fill, rc.outline, rc.outlineW, rc.ap.Bevel)
+			drawCell(gtx.Ops, rc.x+kick.X, rc.y+kick.Y, cellPx, rc.ap.Fill, rc.outline, rc.outlineW, rc.ap.Panels)
 		}
 		st.Pop()
 	}

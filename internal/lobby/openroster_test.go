@@ -255,11 +255,11 @@ func TestTeamNamesOnTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.TeamName(0) != "Sharks" || meta.TeamName(1) != "Yellow" {
+	if meta.TeamName(0) != "Sharks" || meta.TeamName(1) != "Blue" {
 		t.Errorf("meta team names = %v", meta.TeamNames)
 	}
 	g := waitListing(t, b, gameID, "the listing", func(g GameListing) bool { return len(g.TeamNames) == 2 })
-	if g.TeamName(0) != "Sharks" || g.TeamName(1) != "Yellow" {
+	if g.TeamName(0) != "Sharks" || g.TeamName(1) != "Blue" {
 		t.Errorf("listing team names = %v", g.TeamNames)
 	}
 	if err := a.Invite(ctx, b.PlayerID(), gameID, 1); err != nil {
@@ -268,8 +268,8 @@ func TestTeamNamesOnTheWire(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if inv := b.InviteTo(gameID); inv != nil {
-			if inv.TeamName != "Yellow" {
-				t.Errorf("invitation names the team %q, want Yellow", inv.TeamName)
+			if inv.TeamName != "Blue" {
+				t.Errorf("invitation names the team %q, want Blue", inv.TeamName)
 			}
 			break
 		}

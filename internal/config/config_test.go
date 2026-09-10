@@ -435,7 +435,7 @@ func TestBagNormalized(t *testing.T) {
 // TestRulesBag: the bag rides the rules bundle — the meta's mirror hands it
 // back, normalizing folds an unknown kind into the 7-bag — and the Guideline
 // preset deals the 7-bag, so the preset with any other bag is custom rules
-// (the lobby row then tags the bag instead of "guideline").
+// (the lobby row then tags the bag instead of "modern").
 func TestRulesBag(t *testing.T) {
 	if got := (GameMeta{Bag: BagNone}).Rules().Bag; got != BagNone {
 		t.Errorf("meta bag none reads back as %q", got)
@@ -443,28 +443,28 @@ func TestRulesBag(t *testing.T) {
 	if got := (GameRules{Bag: "triple"}).Normalized(ModeCooperative).Bag; got != BagSingle {
 		t.Errorf("an unknown kind normalized to %q, want the 7-bag", got)
 	}
-	if GuidelineRules().Bag != BagSingle || !GuidelineRules().IsGuideline(ModeCompetitive) {
-		t.Fatal("the Guideline preset should deal the 7-bag")
+	if ModernRules().Bag != BagSingle || !ModernRules().IsModern(ModeCompetitive) {
+		t.Fatal("the Modern preset should deal the 7-bag")
 	}
 	for _, bag := range []Bag{BagDouble, BagNone} {
-		r := GuidelineRules()
+		r := ModernRules()
 		r.Bag = bag
-		if r.IsGuideline(ModeCompetitive) || r.IsGuideline(ModeCooperative) {
-			t.Errorf("the preset with bag %q still reads as the Guideline preset", bag)
+		if r.IsModern(ModeCompetitive) || r.IsModern(ModeCooperative) {
+			t.Errorf("the preset with bag %q still reads as the Modern preset", bag)
 		}
 	}
-	r := GuidelineRules()
+	r := ModernRules()
 	r.Bag = "triple"
-	if !r.IsGuideline(ModeCompetitive) {
+	if !r.IsModern(ModeCompetitive) {
 		t.Error("the preset with an unknown kind — the 7-bag once normalized — should still be the preset")
 	}
 }
 
 // TestRulesShowHeadroom: the hidden-rows setting rides the rules bundle —
 // the meta's mirror hands it back, normalizing leaves it alone in every mode
-// — and the Guideline preset hides the rows, so the preset with them shown
+// — and the Modern preset hides the rows, so the preset with them shown
 // is custom rules (the lobby row then tags "hidden rows" instead of
-// "guideline").
+// "modern").
 func TestRulesShowHeadroom(t *testing.T) {
 	if !(GameMeta{ShowHeadroom: true}).Rules().ShowHeadroom {
 		t.Error("a meta showing its headroom reads back hidden")
@@ -477,13 +477,13 @@ func TestRulesShowHeadroom(t *testing.T) {
 			t.Errorf("%s: normalizing dropped the hidden-rows setting", mode)
 		}
 	}
-	if GuidelineRules().ShowHeadroom {
-		t.Fatal("the Guideline preset should hide the headroom")
+	if ModernRules().ShowHeadroom {
+		t.Fatal("the Modern preset should hide the headroom")
 	}
-	r := GuidelineRules()
+	r := ModernRules()
 	r.ShowHeadroom = true
-	if r.IsGuideline(ModeCompetitive) || r.IsGuideline(ModeCooperative) {
-		t.Error("the preset with the hidden rows shown still reads as the Guideline preset")
+	if r.IsModern(ModeCompetitive) || r.IsModern(ModeCooperative) {
+		t.Error("the preset with the hidden rows shown still reads as the Modern preset")
 	}
 }
 
@@ -508,10 +508,10 @@ func TestGameSpecNormalized(t *testing.T) {
 			GameSpec{Mode: ModeCooperative, PlayerCount: 3, ExtraColumns: 5, ExtraRows: 2, Scoring: ScoringIndividual, SplitPieces: true, LineGoal: 40}},
 		{"teams: the total follows teams × size, a team of one cannot split, the teams are named",
 			GameSpec{Mode: ModeTeams, PlayerCount: 99, TeamCount: 3, TeamSize: 1, SplitPieces: true, Scoring: ScoringIndividual, ExtraRows: 11},
-			GameSpec{Mode: ModeTeams, PlayerCount: 3, TeamCount: 3, TeamSize: 1, ExtraRows: MaxExtraRows, TeamNames: []string{"Cyan", "Yellow", "Purple"}}},
+			GameSpec{Mode: ModeTeams, PlayerCount: 3, TeamCount: 3, TeamSize: 1, ExtraRows: MaxExtraRows, TeamNames: []string{"Green", "Blue", "Amber"}}},
 		{"teams of two split, the team count is normalized, a renamed team keeps its name",
 			GameSpec{Mode: ModeTeams, TeamCount: 0, TeamSize: 2, SplitPieces: true, TeamNames: []string{"  Sharks ", "", "Ignored"}},
-			GameSpec{Mode: ModeTeams, PlayerCount: 4, TeamCount: DefaultTeamCount, TeamSize: 2, SplitPieces: true, TeamNames: []string{"Sharks", "Yellow"}}},
+			GameSpec{Mode: ModeTeams, PlayerCount: 4, TeamCount: DefaultTeamCount, TeamSize: 2, SplitPieces: true, TeamNames: []string{"Sharks", "Blue"}}},
 		{"no teams, no team names",
 			GameSpec{Mode: ModeCooperative, PlayerCount: 2, TeamNames: []string{"Sharks"}},
 			GameSpec{Mode: ModeCooperative, PlayerCount: 2}},
@@ -523,7 +523,7 @@ func TestGameSpecNormalized(t *testing.T) {
 			GameSpec{Mode: ModeCompetitive, PlayerCount: 2}},
 		{"the agent policy is per team in teams mode: clamped to the players per team",
 			GameSpec{Mode: ModeTeams, TeamCount: 2, TeamSize: 2, MaxAgents: 3},
-			GameSpec{Mode: ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2, MaxAgents: 2, TeamNames: []string{"Cyan", "Yellow"}}},
+			GameSpec{Mode: ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2, MaxAgents: 2, TeamNames: []string{"Green", "Blue"}}},
 		{"agents pause when alone only in an open game",
 			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, AgentsPauseAlone: true, InviteOnly: true},
 			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, InviteOnly: true}},
@@ -542,7 +542,7 @@ func TestGameSpecNormalized(t *testing.T) {
 // and every screen that has no names — an old game, the history's tally
 // across games — falls back to the letters.
 func TestTeamNames(t *testing.T) {
-	if got := DefaultTeamNames(MaxTeamCount); !reflect.DeepEqual(got, []string{"Cyan", "Yellow", "Purple", "Green", "Red", "Blue"}) {
+	if got := DefaultTeamNames(MaxTeamCount); !reflect.DeepEqual(got, []string{"Green", "Blue", "Amber", "Violet", "Teal", "Coral"}) {
 		t.Errorf("DefaultTeamNames(6) = %v", got)
 	}
 	if got := DefaultTeamNames(0); len(got) != 0 {
@@ -562,7 +562,7 @@ func TestTeamNames(t *testing.T) {
 	}
 	long := strings.Repeat("x", MaxTeamNameLen+5)
 	got := NormalizeTeamNames([]string{"", long, "Jets"}, 4)
-	want := []string{"Cyan", strings.Repeat("x", MaxTeamNameLen), "Jets", "Green"}
+	want := []string{"Green", strings.Repeat("x", MaxTeamNameLen), "Jets", "Violet"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("NormalizeTeamNames = %v, want %v", got, want)
 	}
@@ -570,7 +570,7 @@ func TestTeamNames(t *testing.T) {
 		t.Error("no teams, but names")
 	}
 	meta := GameSpec{Mode: ModeTeams, TeamCount: 2, TeamSize: 1, TeamNames: []string{"Sharks"}}.Normalized().Meta("g", "c", 1, time.Time{})
-	if meta.TeamName(0) != "Sharks" || meta.TeamName(1) != "Yellow" {
+	if meta.TeamName(0) != "Sharks" || meta.TeamName(1) != "Blue" {
 		t.Errorf("meta names = %q / %q", meta.TeamName(0), meta.TeamName(1))
 	}
 	if rec := (ArchiveRecord{Mode: ModeTeams, TeamNames: []string{"Sharks", "Jets"}}); rec.TeamName(1) != "Jets" || (ArchiveRecord{}).TeamName(1) != "B" {

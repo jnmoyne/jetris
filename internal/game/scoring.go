@@ -20,7 +20,7 @@ type Clear struct {
 }
 
 // Difficult reports whether the clear is one the Guideline calls difficult
-// — a Jetris, or any T-spin that cleared lines — the clears that start and
+// — a quad, or any T-spin that cleared lines — the clears that start and
 // extend a Back-to-Back chain. Only a plain single, double or triple breaks
 // the chain; a lock that clears nothing leaves it as it was.
 func (c Clear) Difficult() bool {
@@ -33,7 +33,7 @@ func (c Clear) lines() int {
 }
 
 // spin is the spin the tables know: a spin's table stops at three lines (a
-// four-line clear is a Jetris, whatever turned the piece), and a three-line
+// four-line clear is a quad, whatever turned the piece), and a three-line
 // T-spin is always a full T-spin triple (there is no Mini one).
 func (c Clear) spin() TSpin {
 	if c.Spin == TSpinMini && c.Lines >= 3 {
@@ -55,7 +55,7 @@ func (c Clear) basePoints() int {
 	case TSpinMini:
 		return [3]int{100, 200, 400}[n] // Mini T-Spin no lines, Single, Double
 	}
-	return [5]int{0, 100, 300, 500, 800}[n] // nothing, Single, Double, Triple, Jetris
+	return [5]int{0, 100, 300, 500, 800}[n] // nothing, Single, Double, Triple, quad
 }
 
 // perfectPoints is the perfect-clear bonus, added on top of the clear.
@@ -91,10 +91,10 @@ func (c Clear) Points(level int) int {
 // AttackRows is the garbage the clear sends the opponents. Without the
 // guideline rule every cleared line sends one row (T-spins and perfect
 // clears count for nothing extra). With it, the Guideline table: a single
-// sends nothing, a double 1, a triple 2, a Jetris 4; a Mini T-Spin single
+// sends nothing, a double 1, a triple 2, a quad 4; a Mini T-Spin single
 // nothing and a Mini double 1; a T-Spin single 2, double 4, triple 6; a
 // Back-to-Back difficult clear adds 1 (Mini single/double, T-Spin single),
-// 2 (T-Spin double, Jetris) or 3 (T-Spin triple); a perfect clear adds 10.
+// 2 (T-Spin double, quad) or 3 (T-Spin triple); a perfect clear adds 10.
 func (c Clear) AttackRows(guideline bool) int {
 	if c.Lines <= 0 {
 		return 0
@@ -124,7 +124,7 @@ func (c Clear) AttackRows(guideline bool) int {
 	return rows
 }
 
-// Name is the Guideline's name for the clear — "JETRIS", "T-SPIN DOUBLE",
+// Name is the clear's name — "QUAD", "T-SPIN DOUBLE",
 // "MINI T-SPIN SINGLE", "180 SPIN TRIPLE", "T-SPIN" for a T-spin that
 // cleared nothing — and "" for a lock that neither cleared nor spun.
 func (c Clear) Name() string {
@@ -133,7 +133,7 @@ func (c Clear) Name() string {
 	if n == 0 {
 		return spin
 	}
-	name := [5]string{"", "SINGLE", "DOUBLE", "TRIPLE", "JETRIS"}[n]
+	name := [5]string{"", "SINGLE", "DOUBLE", "TRIPLE", "QUAD"}[n]
 	if spin == "" {
 		return name
 	}

@@ -71,7 +71,7 @@ func (e *Engine) armLockAward(p game.Piece) {
 // accountLock is the Guideline's account of a lock that cleared lines rows
 // and left the board as after (game.Clear): a clear counts towards the
 // combo — the run of consecutive clearing locks — and either extends or
-// breaks the Back-to-Back chain: a Jetris or a T-spin clear extends it, a
+// breaks the Back-to-Back chain: a quad or a T-spin clear extends it, a
 // plain single, double or triple breaks it. A lock that clears nothing ends
 // the combo and leaves the chain alone; a T-spin that cleared nothing still
 // scores. The points are the clear's at level (the 1-based level BEFORE the

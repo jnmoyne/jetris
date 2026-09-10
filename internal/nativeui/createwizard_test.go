@@ -7,8 +7,8 @@ import (
 	"jetris/internal/config"
 )
 
-// TestWizardRulesPreset pins the wizard's rules radio: "guideline" yields the
-// Guideline preset whatever the custom editors hold, "custom" reads them —
+// TestWizardRulesPreset pins the wizard's rules radio: "modern" yields the
+// Modern preset whatever the custom editors hold, "custom" reads them —
 // the hold checkbox included — and a cooperative game drops the garbage
 // rules either way.
 func TestWizardRulesPreset(t *testing.T) {
@@ -16,24 +16,24 @@ func TestWizardRulesPreset(t *testing.T) {
 	a.nextCountEd.SetText("2")
 	a.holesEd.SetText("3")
 	a.holdCb.Value = true
-	a.guidelineCb.Value = true
+	a.attackTableCb.Value = true
 
-	a.rulesEnum.Value = "guideline"
+	a.rulesEnum.Value = "modern"
 	if got, want := a.customRules().Normalized(config.ModeCompetitive), (config.GameRules{NextCount: 2, Ghost: true, Hold: true, GarbageHoles: 3, GuidelineGarbage: true}); got != want {
 		t.Fatalf("custom read-out = %+v, want %+v", got, want)
 	}
-	if !config.GuidelineRules().IsGuideline(config.ModeCompetitive) || !config.GuidelineRules().IsGuideline(config.ModeCooperative) {
-		t.Fatal("the Guideline preset should match itself in every mode")
+	if !config.ModernRules().IsModern(config.ModeCompetitive) || !config.ModernRules().IsModern(config.ModeCooperative) {
+		t.Fatal("the Modern preset should match itself in every mode")
 	}
-	if config.GuidelineRules().Normalized(config.ModeCooperative).GarbageHoles != 0 {
+	if config.ModernRules().Normalized(config.ModeCooperative).GarbageHoles != 0 {
 		t.Fatal("a cooperative game should store no garbage rules")
 	}
-	if got := a.wizardSpec().Rules; !got.IsGuideline(config.ModeCooperative) {
-		t.Fatalf("the guideline radio produced %+v", got)
+	if got := a.wizardSpec().Rules; !got.IsModern(config.ModeCooperative) {
+		t.Fatalf("the modern radio produced %+v", got)
 	}
 	custom := a.customRules()
-	if custom.IsGuideline(config.ModeCompetitive) {
-		t.Fatal("next 2 / holes 3 is not the Guideline preset")
+	if custom.IsModern(config.ModeCompetitive) {
+		t.Fatal("next 2 / holes 3 is not the Modern preset")
 	}
 	a.rulesEnum.Value = "custom"
 	a.boardsEnum.Value = "multiple"
@@ -42,26 +42,26 @@ func TestWizardRulesPreset(t *testing.T) {
 		t.Fatalf("the custom radio produced %+v, want the editors' %+v", got.Rules, custom)
 	}
 	// The custom read-out with the preset's own values IS the preset — the
-	// lobby row then tags it "guideline" like a preset-created game.
+	// lobby row then tags it "modern" like a preset-created game.
 	a.nextCountEd.SetText("6")
 	a.holesEd.SetText("1")
-	if !a.customRules().IsGuideline(config.ModeCompetitive) {
-		t.Fatalf("custom rules %+v should match the Guideline preset", a.customRules())
+	if !a.customRules().IsModern(config.ModeCompetitive) {
+		t.Fatalf("custom rules %+v should match the Modern preset", a.customRules())
 	}
 	a.holdCb.Value = false
-	if a.customRules().IsGuideline(config.ModeCompetitive) {
-		t.Fatal("without the hold the rules are not the Guideline preset")
+	if a.customRules().IsModern(config.ModeCompetitive) {
+		t.Fatal("without the hold the rules are not the Modern preset")
 	}
 }
 
-// TestGuidelineSummaryPerShape: the read-only preset list shows the garbage
+// TestModernSummaryPerShape: the read-only preset list shows the garbage
 // rules only where several playfields raise garbage at each other, and the
 // board and the deal only where a playfield has company.
-func TestGuidelineSummaryPerShape(t *testing.T) {
-	solo := guidelineSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}.Normalized())
-	crew := guidelineSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 3}.Normalized())
-	comp := guidelineSummary(config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2}.Normalized())
-	teams := guidelineSummary(config.GameSpec{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2}.Normalized())
+func TestModernSummaryPerShape(t *testing.T) {
+	solo := modernSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}.Normalized())
+	crew := modernSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 3}.Normalized())
+	comp := modernSummary(config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2}.Normalized())
+	teams := modernSummary(config.GameSpec{Mode: config.ModeTeams, TeamCount: 2, TeamSize: 2}.Normalized())
 	names := func(rows [][2]string) map[string]bool {
 		m := map[string]bool{}
 		for _, r := range rows {
@@ -103,7 +103,7 @@ func TestWizardSpecMapping(t *testing.T) {
 		{"solo", "single", "coop", 2, "1", config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}},
 		{"solo is solo whatever the kind radio says", "single", "competitive", 2, "1", config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}},
 		{"multiple × 1", "multiple", "coop", 3, "1", config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 3}},
-		{"multiple × 2", "multiple", "coop", 3, "2", config.GameSpec{Mode: config.ModeTeams, TeamCount: 3, TeamSize: 2, PlayerCount: 6, TeamNames: []string{"Cyan", "Yellow", "Purple"}}},
+		{"multiple × 2", "multiple", "coop", 3, "2", config.GameSpec{Mode: config.ModeTeams, TeamCount: 3, TeamSize: 2, PlayerCount: 6, TeamNames: []string{"Green", "Blue", "Amber"}}},
 	} {
 		a := newTestApp()
 		a.boardsEnum.Value, a.singleKindEnum.Value = tc.boards, tc.kind
@@ -112,7 +112,7 @@ func TestWizardSpecMapping(t *testing.T) {
 		got := a.wizardSpec()
 		want := tc.want
 		want.InviteOnly = true // the wizard's default
-		want.Rules = config.GuidelineRules()
+		want.Rules = config.ModernRules()
 		want.ExtraColumns, want.ExtraRows, want.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, false
 		want = want.Normalized()
 		if !reflect.DeepEqual(got, want) {
@@ -130,14 +130,14 @@ func TestWizardTeamNames(t *testing.T) {
 	a.boardsEnum.Value = "multiple"
 	a.setPlayfieldCount(3)
 	a.countEd.SetText("2")
-	if got := a.wizardSpec().TeamNames; !reflect.DeepEqual(got, []string{"Cyan", "Yellow", "Purple"}) {
+	if got := a.wizardSpec().TeamNames; !reflect.DeepEqual(got, []string{"Green", "Blue", "Amber"}) {
 		t.Fatalf("a fresh wizard names the teams %v, want the piece colours", got)
 	}
 	a.teamNameEds[0].SetText("  Sharks ")
 	a.teamNameEds[1].SetText("")
 	a.teamNameEds[2].SetText("A very long team name indeed")
 	got := a.wizardSpec().TeamNames
-	if len(got) != 3 || got[0] != "Sharks" || got[1] != "Yellow" || len([]rune(got[2])) != config.MaxTeamNameLen {
+	if len(got) != 3 || got[0] != "Sharks" || got[1] != "Blue" || len([]rune(got[2])) != config.MaxTeamNameLen {
 		t.Errorf("edited names = %v", got)
 	}
 	a.countEd.SetText("1")
@@ -228,7 +228,7 @@ func TestWizardPlayfieldCount(t *testing.T) {
 // honoured once checked on every playfield with company — a crew of two, a
 // team of two — and ignored where nobody shares a playfield, so no solo or
 // board-each game is ever created advertising a split that cannot happen.
-// The Guideline preset never deals the pieces out, whatever the box says.
+// The Modern preset never deals the pieces out, whatever the box says.
 func TestWizardSplitPieces(t *testing.T) {
 	a := newTestApp()
 	if a.splitPiecesCb.Value {
@@ -260,9 +260,9 @@ func TestWizardSplitPieces(t *testing.T) {
 		t.Error("an unchecked box split the pieces")
 	}
 	a.splitPiecesCb.Value = true
-	a.rulesEnum.Value = "guideline"
+	a.rulesEnum.Value = "modern"
 	if a.wizardSpec().SplitsPieces() {
-		t.Error("the Guideline preset dealt the pieces out")
+		t.Error("the Modern preset dealt the pieces out")
 	}
 }
 
@@ -296,7 +296,7 @@ func TestWizardLineGoal(t *testing.T) {
 // TestWizardExtraRows pins step 2's extra-rows knob: zero by default (the
 // Guideline playfield whatever the crew), clamped to the legal range, its
 // slider resting on whole rows, honoured on a shared playfield with company
-// under custom rules and dropped for a board each; the Guideline preset
+// under custom rules and dropped for a board each; the Modern preset
 // keeps the default.
 func TestWizardExtraRows(t *testing.T) {
 	a := newTestApp()
@@ -328,9 +328,9 @@ func TestWizardExtraRows(t *testing.T) {
 	}
 	a.boardsEnum.Value = "single"
 	a.countEd.SetText("3")
-	a.rulesEnum.Value = "guideline"
+	a.rulesEnum.Value = "modern"
 	if spec := a.wizardSpec(); spec.ExtraRows != config.DefaultExtraRows || spec.ExtraColumns != config.DefaultExtraColumns {
-		t.Errorf("the Guideline preset produced %d extra rows, %d columns; want the defaults", spec.ExtraRows, spec.ExtraColumns)
+		t.Errorf("the Modern preset produced %d extra rows, %d columns; want the defaults", spec.ExtraRows, spec.ExtraColumns)
 	}
 }
 
@@ -413,20 +413,20 @@ func TestWizardTypeStepRenders(t *testing.T) {
 	}
 }
 
-// TestWizardCustomDefaults: the custom rules open at the Guideline preset —
+// TestWizardCustomDefaults: the custom rules open at the Modern preset —
 // a fresh wizard's custom read-out IS the preset in every mode, so a creator
 // who switches the radio to custom starts from the Guideline and changes
 // only what they mean to.
 func TestWizardCustomDefaults(t *testing.T) {
 	a := newTestApp()
 	for _, mode := range []config.GameMode{config.ModeCooperative, config.ModeCompetitive, config.ModeTeams} {
-		if got, want := a.customRules().Normalized(mode), config.GuidelineRules().Normalized(mode); got != want {
-			t.Errorf("%s: a fresh wizard's custom rules = %+v, want the Guideline preset %+v", mode, got, want)
+		if got, want := a.customRules().Normalized(mode), config.ModernRules().Normalized(mode); got != want {
+			t.Errorf("%s: a fresh wizard's custom rules = %+v, want the Modern preset %+v", mode, got, want)
 		}
 	}
-	if a.nextCountEd.Text() != "6" || a.holesEd.Text() != "1" || !a.holdCb.Value || !a.guidelineCb.Value || a.bagEnum.Value != "single" {
+	if a.nextCountEd.Text() != "6" || a.holesEd.Text() != "1" || !a.holdCb.Value || !a.attackTableCb.Value || a.bagEnum.Value != "single" {
 		t.Errorf("the custom widgets do not show the preset: next %q, holes %q, hold %v, guideline garbage %v, bag %q",
-			a.nextCountEd.Text(), a.holesEd.Text(), a.holdCb.Value, a.guidelineCb.Value, a.bagEnum.Value)
+			a.nextCountEd.Text(), a.holesEd.Text(), a.holdCb.Value, a.attackTableCb.Value, a.bagEnum.Value)
 	}
 	// Blank editors fall back to the preset too.
 	a.nextCountEd.SetText("")
@@ -444,7 +444,7 @@ func TestWizardCustomDefaults(t *testing.T) {
 
 // TestWizardBag pins step 2's piece-bag radio: "single" — the default — is
 // the 7-bag, "double" and "none" the other two kinds, junk the 7-bag; the
-// custom read-out carries it, the Guideline preset's read-only list names
+// custom read-out carries it, the Modern preset's read-only list names
 // the 7-bag, and every kind explains itself in its own words.
 func TestWizardBag(t *testing.T) {
 	a := newTestApp()
@@ -458,13 +458,13 @@ func TestWizardBag(t *testing.T) {
 		}
 	}
 	found := false
-	for _, row := range guidelineSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}) {
+	for _, row := range modernSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}) {
 		if row[0] == "Piece bag" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("the Guideline preset's list does not name its bag")
+		t.Error("the Modern preset's list does not name its bag")
 	}
 	hints := map[string]bool{}
 	for _, bag := range []config.Bag{config.BagSingle, config.BagDouble, config.BagNone} {
@@ -476,7 +476,7 @@ func TestWizardBag(t *testing.T) {
 }
 
 // TestWizardHiddenRows pins step 2's "Show hidden rows" checkbox: off in a
-// fresh wizard, its value reaches the custom rules, the Guideline preset
+// fresh wizard, its value reaches the custom rules, the Modern preset
 // never shows the rows whatever the box says, and the preset's read-only
 // list says so.
 func TestWizardHiddenRows(t *testing.T) {
@@ -488,17 +488,17 @@ func TestWizardHiddenRows(t *testing.T) {
 	if !a.customRules().ShowHeadroom {
 		t.Error("the checkbox does not reach the custom rules")
 	}
-	if config.GuidelineRules().ShowHeadroom {
-		t.Error("the Guideline preset shows the hidden rows")
+	if config.ModernRules().ShowHeadroom {
+		t.Error("the Modern preset shows the hidden rows")
 	}
 	found := false
-	for _, row := range guidelineSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}) {
+	for _, row := range modernSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1}) {
 		if row[0] == "Hidden rows" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("the Guideline preset's list does not name the hidden rows")
+		t.Error("the Modern preset's list does not name the hidden rows")
 	}
 }
 

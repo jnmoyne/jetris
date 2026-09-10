@@ -16,13 +16,13 @@ import (
 // The create-game wizard: three steps, one choice at a time — the game's
 // name and type (a single playfield everyone shares, scored together or each
 // on their own, or several playfields with a team on each), its rules (how
-// long it runs, and the Guideline preset or every rule by hand), and its
+// long it runs, and the Modern preset or every rule by hand), and its
 // players (by invitation, or open to anyone at any time, agents included).
 // Every step reads into one config.GameSpec (wizardSpec), which the create
 // paths normalize and store.
 const (
 	wizStepType    = 1 // game type: one playfield or several, and the seats
-	wizStepRules   = 2 // the game's length, and the play rules: the Guideline preset, or custom
+	wizStepRules   = 2 // the game's length, and the play rules: the Modern preset, or custom
 	wizStepPlayers = 3 // invite-only or open (with the agent policy)
 	wizStepCount   = 3
 )
@@ -184,7 +184,7 @@ func (a *App) wizardLineGoal() int {
 // nothing at all, in which case the game is dealt a generated one. The game types map onto the modes like this: a single playfield is
 // a cooperative-mode board (scored together, or per seat — Scoring), several
 // playfields with one player each are competitive (a board each, the last
-// standing wins), with more a teams game. The Guideline preset keeps the
+// standing wins), with more a teams game. The Modern preset keeps the
 // board's growth and the deal at their defaults; custom rules set them.
 func (a *App) wizardSpec() config.GameSpec {
 	spec := config.GameSpec{
@@ -211,7 +211,7 @@ func (a *App) wizardSpec() config.GameSpec {
 		spec.Rules = a.customRules()
 		spec.ExtraColumns, spec.ExtraRows, spec.SplitPieces = a.extraCols, a.extraRows, a.splitPiecesCb.Value
 	} else {
-		spec.Rules = config.GuidelineRules()
+		spec.Rules = config.ModernRules()
 		spec.ExtraColumns, spec.ExtraRows, spec.SplitPieces = config.DefaultExtraColumns, config.DefaultExtraRows, false
 	}
 	// Agent policy (open games): how many seats idle agent players may take
@@ -245,7 +245,7 @@ func (a *App) finishCreateWizard() {
 }
 
 // setCustomRules loads the wizard's custom-rules widgets from a rules bundle
-// — the Guideline preset at startup (App.New), so custom rules begin as the
+// — the Modern preset at startup (App.New), so custom rules begin as the
 // preset and the creator changes only what they mean to change.
 func (a *App) setCustomRules(r config.GameRules) {
 	a.nextCountEd.SetText(strconv.Itoa(r.NextCount))
@@ -255,7 +255,7 @@ func (a *App) setCustomRules(r config.GameRules) {
 	a.headroomCb.Value = r.ShowHeadroom
 	a.holesEd.SetText(strconv.Itoa(r.GarbageHoles))
 	a.randomHolesCb.Value = r.RandomGarbageHoles
-	a.guidelineCb.Value = r.GuidelineGarbage
+	a.attackTableCb.Value = r.GuidelineGarbage
 }
 
 // bagRadio is the piece-bag radio's value for a bag kind (wizardBag read
@@ -273,16 +273,16 @@ func bagRadio(bag config.Bag) string {
 
 // customRules reads the wizard's custom-rules widgets. The upcoming-piece
 // preview is how many next pieces the game reveals to everyone (players,
-// spectators, agents): blank or junk falls back to the Guideline preset's
+// spectators, agents): blank or junk falls back to the Modern preset's
 // count. The ghost, the hold and the hidden rows are per-game rules like the
 // preview — the creator's checkboxes decide them for every seat — and so is
 // the bag the pieces are dealt from (wizardBag). Garbage holes are how many
 // empty cells every garbage row is raised with in the games that raise
 // garbage (blank or junk: the preset's one hole), with the random-positions
-// and Guideline-attack-table checkboxes beside it. Ranges are clamped by
+// and modern-attack-table checkboxes beside it. Ranges are clamped by
 // GameRules.Normalized.
 func (a *App) customRules() config.GameRules {
-	preset := config.GuidelineRules()
+	preset := config.ModernRules()
 	nextCount, err := strconv.Atoi(strings.TrimSpace(a.nextCountEd.Text()))
 	if err != nil {
 		nextCount = preset.NextCount
@@ -299,14 +299,14 @@ func (a *App) customRules() config.GameRules {
 		ShowHeadroom:       a.headroomCb.Value,
 		GarbageHoles:       holes,
 		RandomGarbageHoles: a.randomHolesCb.Value,
-		GuidelineGarbage:   a.guidelineCb.Value,
+		GuidelineGarbage:   a.attackTableCb.Value,
 	}
 }
 
 // wizardBag reads step 2's piece-bag radio (custom rules): the randomizer
 // every seat's sequence is dealt with — the standard 7-bag unless the creator
-// picked the double bag or no bag at all (config.Bag). The Guideline preset
-// never asks: the Guideline's randomizer is the 7-bag.
+// picked the double bag or no bag at all (config.Bag). The Modern preset
+// never asks: the modern randomizer is the 7-bag.
 func (a *App) wizardBag() config.Bag {
 	switch a.bagEnum.Value {
 	case "double":
@@ -328,7 +328,7 @@ func bagHint(bag config.Bag) string {
 	case config.BagNone:
 		return "Pure chance, the old-school way: every piece is drawn on its own, any type as likely as any other — three S's in a row and a forty-piece I drought are both fair game."
 	default:
-		return "The Guideline randomizer: every seven pieces are the seven types shuffled, so every type turns up in every seven and a drought never lasts more than twelve."
+		return "The 7-bag randomizer: every seven pieces are the seven types shuffled, so every type turns up in every seven and a drought never lasts more than twelve."
 	}
 }
 
@@ -604,8 +604,8 @@ func (a *App) wizardNameField(gtx C) D {
 // wizardRulesStep is step 2: how long the game runs — until someone tops
 // out, or until a playfield has cleared a number of lines — and the play
 // rules, fixed at creation, one setting for every seat: a single radio
-// picks the Guideline preset (every rule at the setting closest to the
-// Guideline, listed read-only) or custom rules, each its own control.
+// picks the Modern preset (every rule at the setting closest to modern
+// play, listed read-only) or custom rules, each its own control.
 func (a *App) wizardRulesStep(gtx C) D {
 	custom := a.rulesEnum.Value == "custom"
 	spec := a.wizardSpec()
@@ -637,27 +637,27 @@ func (a *App) wizardRulesStep(gtx C) D {
 		layout.Rigid(spacer(4)),
 		layout.Rigid(a.body(lengthHint, colMuted)),
 		layout.Rigid(spacer(12)),
-		layout.Rigid(a.wizardRadio(&a.rulesEnum, "guideline", "Guideline — every rule at its Guideline setting")),
+		layout.Rigid(a.wizardRadio(&a.rulesEnum, "modern", "Modern — every rule at its modern setting")),
 		layout.Rigid(a.wizardRadio(&a.rulesEnum, "custom", "Custom — set each rule yourself")),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(func(gtx C) D {
 			if custom {
 				return a.wizardCustomRules(gtx, spec)
 			}
-			return a.wizardGuidelineRules(gtx, spec)
+			return a.wizardModernRules(gtx, spec)
 		}),
 	)
 }
 
-// wizardGuidelineRules is the read-only view of the Guideline preset
-// (config.GuidelineRules) for the game being created: one line per rule, so
+// wizardModernRules is the read-only view of the Modern preset
+// (config.ModernRules) for the game being created: one line per rule, so
 // the creator sees exactly what the game will play by.
-func (a *App) wizardGuidelineRules(gtx C, spec config.GameSpec) D {
+func (a *App) wizardModernRules(gtx C, spec config.GameSpec) D {
 	kids := []layout.FlexChild{
-		layout.Rigid(a.body("The settings closest to the Guideline this game can offer:", colMuted)),
+		layout.Rigid(a.body("The modern preset, as close as this game can offer:", colMuted)),
 		layout.Rigid(spacer(8)),
 	}
-	for _, row := range guidelineSummary(spec) {
+	for _, row := range modernSummary(spec) {
 		label, value := row[0], row[1]
 		kids = append(kids, layout.Rigid(func(gtx C) D {
 			return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
@@ -674,12 +674,12 @@ func (a *App) wizardGuidelineRules(gtx C, spec config.GameSpec) D {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
 }
 
-// guidelineSummary lists the Guideline preset's rules as (rule, setting)
+// modernSummary lists the Modern preset's rules as (rule, setting)
 // pairs for the game being created — the board and the deal for a shared
 // playfield with company, the garbage rules only where several playfields
 // raise garbage at each other.
-func guidelineSummary(spec config.GameSpec) [][2]string {
-	r := config.GuidelineRules().Normalized(spec.Mode)
+func modernSummary(spec config.GameSpec) [][2]string {
+	r := config.ModernRules().Normalized(spec.Mode)
 	rows := [][2]string{
 		{"Next pieces", fmt.Sprintf("%d — the NEXT well, and how far agents may look ahead", r.NextCount)},
 		{"Ghost piece", "on — the landing preview of every player's piece"},
@@ -698,7 +698,7 @@ func guidelineSummary(spec config.GameSpec) [][2]string {
 	if spec.Playfields() > 1 {
 		rows = append(rows,
 			[2]string{"Garbage", fmt.Sprintf("%d hole per row, the rows of one attack lined up into a well", r.GarbageHoles)},
-			[2]string{"Attacks", "the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Jetris 4"},
+			[2]string{"Attacks", "the modern attack table — a single sends nothing, a double 1 row, a triple 2, a quad 4"},
 		)
 	}
 	return rows
@@ -731,20 +731,20 @@ func (a *App) wizardCustomRules(gtx C, spec config.GameSpec) D {
 		)
 	}
 	kids = append(kids,
-		layout.Rigid(a.wizardNumber(fmt.Sprintf("Next pieces (0–%d):", config.MaxNextCount), &a.nextCountEd, strconv.Itoa(config.GuidelineRules().NextCount), nil)),
+		layout.Rigid(a.wizardNumber(fmt.Sprintf("Next pieces (0–%d):", config.MaxNextCount), &a.nextCountEd, strconv.Itoa(config.ModernRules().NextCount), nil)),
 		layout.Rigid(spacer(4)),
 		layout.Rigid(a.body("The NEXT well every player sees — and exactly how far agents may look ahead. 0 hides it: nobody sees what's coming.", colMuted)),
 		layout.Rigid(spacer(10)),
-		layout.Rigid(a.wizardCheckBox(&a.holdCb, "Hold piece", "The Guideline hold: C or the HOLD button sets the falling piece aside and plays the next one, or swaps it back in later — once per piece.")),
+		layout.Rigid(a.wizardCheckBox(&a.holdCb, "Hold piece", "The hold queue: C or the HOLD button sets the falling piece aside and plays the next one, or swaps it back in later — once per piece.")),
 		layout.Rigid(spacer(10)),
 		layout.Rigid(a.wizardCheckBox(&a.ghostCb, "Show ghost piece", "Previews where each player's piece would hard-drop. Off, everyone eyeballs their drops.")),
 	)
 	if garbage {
 		kids = append(kids,
 			layout.Rigid(spacer(10)),
-			layout.Rigid(a.wizardCheckBox(&a.guidelineCb, "Guideline garbage", "Off: every cleared line sends one garbage row. On: the Guideline table — a single sends nothing, a double 1 row, a triple 2, a Jetris 4.")),
+			layout.Rigid(a.wizardCheckBox(&a.attackTableCb, "Modern attack table", "Off: every cleared line sends one garbage row. On: the modern table — a single sends nothing, a double 1 row, a triple 2, a quad 4.")),
 			layout.Rigid(spacer(10)),
-			layout.Rigid(a.wizardNumber(fmt.Sprintf("Garbage holes (0–%d):", config.MaxGarbageHoles), &a.holesEd, strconv.Itoa(config.GuidelineRules().GarbageHoles), nil)),
+			layout.Rigid(a.wizardNumber(fmt.Sprintf("Garbage holes (0–%d):", config.MaxGarbageHoles), &a.holesEd, strconv.Itoa(config.ModernRules().GarbageHoles), nil)),
 			layout.Rigid(spacer(4)),
 			layout.Rigid(a.body("Empty cells in every garbage row an attack sends. 0 raises solid rows that never clear; a holed row clears like any line once its holes are filled.", colMuted)),
 			layout.Rigid(spacer(10)),

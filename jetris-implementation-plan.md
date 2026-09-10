@@ -418,7 +418,7 @@ type Piece struct {
 func (p Piece) Cells() [][2]int
 ```
 
-Use the standard guideline-style piece shapes:
+Use the standard piece shapes:
 - I: horizontal line of 4
 - O: 2x2 square
 - T: T-shape
@@ -648,14 +648,14 @@ func CompletedRows(pf *Playfield) []int
 //   level = totalLinesCleared / 10  (capped at 19 for the speed curve)
 func Level(totalLinesCleared int) int
 
-// GravityInterval: the Guideline speed curve by level.
+// GravityInterval: the modern speed curve by level.
 //   seconds per row = (0.8 − (L − 1) × 0.007)^(L − 1), with L = level + 1
 //   Level 0: 1000ms, level 1: 793ms, ... level 12: 18ms; floored at one
 //   60 Hz frame (≈17ms) from level 13 on.
 func GravityInterval(level int) time.Duration
 ```
 
-Gravity intervals (Guideline, to the millisecond):
+Gravity intervals (the Guideline curve, tetris.wiki, to the millisecond):
 ```
 0:1000ms 1:793ms 2:618ms 3:473ms 4:355ms 5:262ms 6:190ms 7:135ms
 8:94ms 9:64ms 10:43ms 11:28ms 12:18ms 13+:17ms (one 60 Hz frame)
@@ -2545,10 +2545,9 @@ A Gio (`gioui.org`) desktop window — the sole front end. It reuses `engine`, `
   ~19% of the width, the countdown scales to the window's short side; the window
   enforces `app.MinSize(760, 720)` dp so it can't shrink below what the playfield,
   strip, and pad need.
-- `board.go` — board drawing via `internal/render.CellStyle` (RGBA). `drawCell` shades
-  filled cells with the 8-bit bevel (lighter top/left strips, darker bottom/right,
-  a gloss pixel in the corner — `CellAppearance.Bevel` gates it so empty squares stay
-  flat), `drawBoard` surrounds every playfield with a chunky `colBorder` arcade-well
+- `board.go` — board drawing via `internal/render.CellStyle` (RGBA). `drawCell` splits
+  filled cells into the four panels of the NATS mark, in tints of the cell's colour
+  (`CellAppearance.Panels` gates it so empty squares stay flat), `drawBoard` surrounds every playfield with a chunky `colBorder` arcade-well
   frame, `scanlines` is the subtle full-window CRT overlay painted last in
   `App.layout`, and `hardShadow` is the offset "sticker" drop shadow under
   buttons and dialogs.
@@ -2721,7 +2720,7 @@ countdown, game-over dialog, branding banner) renders in the embedded "Press Sta
 pixel face while body text stays in the Go faces; chrome corners are square everywhere
 (no rounded rects); panels and editors carry chunky 2 dp `colBorder` frames; buttons
 and the game-over dialog sit on `hardShadow`'s offset solid shadow; filled board cells
-get the classic bevel shading plus a corner gloss pixel; each playfield is wrapped in
+are split into the four panels of the NATS mark in tints of their colour; each playfield is wrapped in
 an arcade-well frame; and a subtle `scanlines` CRT overlay is painted over every frame.
 The palette is a dark blue-black (`colBg` #0d0d16, `colPanel` #16161a-ish) with the
 NATS brand blue (#27aae1) as the accent. The board's cell color math
@@ -2740,10 +2739,10 @@ window background.
 helper, `render.CellStyle(cell, localPlayerIdx, showOutline)`, which is the one source
 of truth used by every render path (own board, spectator boards, compact opponent
 boards). It returns a `CellAppearance` (fill, outline color, outline width, and a
-`Bevel` flag set for active/locked/adversarial cells); the
+`Panels` flag set for active/locked/adversarial cells); the
 native drawer fills the cell with `Fill`, strokes a 1px-inset border of width
-`OutlineW` in `Outline`, and — when `Bevel` is set — shades the fill with the 8-bit
-highlight/shadow bevel. Fill is the tetromino's base color composited over the board
+`OutlineW` in `Outline`, and — when `Panels` is set — splits the fill into the four
+panels of the NATS mark, each a tint of it. Fill is the tetromino's base color composited over the board
 background (`blendHex(fg, "#111111", alpha)`; active ≈0.9, locked ≈0.7, adversarial
 ≈0.8) so opacity layering becomes a concrete color. Outline rules: own active piece →
 white 2px; spectator → per-player color on active/locked; other player's active
@@ -3822,7 +3821,7 @@ line. `ProjectShrinkCascade(rowsToAdd, causerIdx, holes)` leaves the `holes`
 columns empty on each row of the raise (`holes[k]` per row); `RaiseHoles(width,
 holes, rows, random)` draws them via `RandomGarbageHoles(width, holes)` — one
 random, sorted, distinct column set shared by every row of the raise
-(Guideline-style "clean" garbage whose holes line up into a well), or one draw
+(modern "clean" garbage whose holes line up into a well), or one draw
 per row under the companion **`random_garbage_holes`** rule (a checkbox, unset
 by default, `GameMeta.RandomGarbageHoles`, mirrored on the listing, forced off
 at 0 holes: "messy" garbage whose holes wander) — clamped below the width so a
@@ -3863,16 +3862,16 @@ fill → clear → counter-attack flow with a pinned draw
 field on both records, the wizard step in every mode, and the agent's grid and
 live-board rule.
 
-## Phase 19 — Guideline Garbage (`guideline_garbage`)
+## Phase 19 — Modern attack table (`guideline_garbage`)
 
 **Goal:** a create-time rule (off by default) for the garbage-raising modes that
-sizes an attack by the Guideline table instead of one row per cleared
-line: a **single sends nothing**, a double 1 row, a triple 2, a Jetris 4.
+sizes an attack by the modern attack table instead of one row per cleared
+line: a **single sends nothing**, a double 1 row, a triple 2, a quad 4.
 Scoring and levels keep counting lines; only the rows owed change.
 
 **Data:** `GameMeta.GuidelineGarbage` (`guideline_garbage`, omitempty — absent
 and pre-field metas read as off), mirrored as `GameListing.GuidelineGarbage`
-for the lobby row's `guideline garbage` tag; `lobby.CreateGame` gains a
+for the lobby row's `modern attacks` tag; `lobby.CreateGame` gains a
 `guidelineGarbage` bool (after `randomHoles`).
 
 **Rule (`internal/game/attack.go`):** `AttackRows(lines, guideline)` — `lines`
@@ -3882,9 +3881,9 @@ bumps the victims' ledgers with `game.AttackRows(clearedLines, ...)`, and
 `bumpVictimLedgers` already no-ops at 0 — the ledger, the gate, and every
 consumer are untouched.
 
-**UI:** a "Guideline garbage" checkbox (`guidelineCb`) on the wizard's preview
+**UI:** a "Modern attack table" checkbox (`attackTableCb`) on the wizard's preview
 step for competitive/teams, threaded through both create paths; `gameRow` tags
-"· guideline garbage". **Agents:** `golang-mk1` reads the meta flag and sizes
+"· modern attacks". **Agents:** `golang-mk1` reads the meta flag and sizes
 its bump with `attackRows` (`--guideline-garbage` hosts such a game);
 `agents/example-python` does the same in `attack_rows`. The agent guide's §4.4
 attacking bullet and checklist carry the rule.
@@ -3899,7 +3898,7 @@ exactly one row (`TestGuidelineGarbageDoubleSendsOne`).
 
 **Goal:** a create-time play rule (the 7-bag by default) choosing the piece
 randomizer every seat's sequence is dealt with: the standard **7-bag** (one of
-each type shuffled, seven at a time — the Guideline's), the **double bag** (two
+each type shuffled, seven at a time — modern play's), the **double bag** (two
 of each shuffled together, fourteen at a time: fair over a longer stretch, two
 of a kind possible, droughts up to twenty-four), or **no bag** (every piece an
 independent uniform draw — the old-school randomizer). One rule for every seat;
@@ -3939,7 +3938,7 @@ ration and an unsplit game no bag (`TestDoubleBagReachesEverySeat`,
 
 ## Phase 21 — Hidden Rows (`show_headroom`)
 
-**Goal:** a create-time setting (off by default, off in the Guideline preset)
+**Goal:** a create-time setting (off by default, off in the Modern preset)
 that draws the hidden headroom rows above the playfield — the four rows a piece
 spawns in — on every board of the game, **behind smoked glass**: a dark
 translucent pane with a diagonal sheen and a lit lower edge where it meets the
@@ -3969,8 +3968,8 @@ mentions it; `gameRow` tags "· hidden rows". Docs: gameplays §1b, the agent
 guide's meta table, the project structure.
 
 **Custom defaults:** with this phase the wizard's custom rules open AT the
-Guideline preset (`setCustomRules(config.GuidelineRules())` in `App.New`: next 6,
-ghost and hold on, the 7-bag, hidden rows off, 1 clean hole, Guideline garbage)
+Modern preset (`setCustomRules(config.ModernRules())` in `App.New`: next 6,
+ghost and hold on, the 7-bag, hidden rows off, 1 clean hole, Modern attack table)
 and a blank editor reads as the preset's value, so switching the radio to custom
 is a starting point rather than a step back to the classic game
 (`TestWizardCustomDefaults`).

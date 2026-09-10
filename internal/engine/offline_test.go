@@ -19,7 +19,7 @@ func TestOffline(t *testing.T) {
 	held := game.PieceI
 	e := Offline(OfflineGame{
 		GameID: "demo", PlayerID: "p1", Mode: config.ModeCooperative,
-		Board: pf, Rules: config.GuidelineRules(), Seed: 7, Held: &held,
+		Board: pf, Rules: config.ModernRules(), Seed: 7, Held: &held,
 	})
 	if e.Started() {
 		t.Error("an offline engine reports itself started")
@@ -34,12 +34,12 @@ func TestOffline(t *testing.T) {
 	if echo := e.EchoSnapshot(); echo.VisibleStart != snap.VisibleStart || len(echo.Rows) != len(snap.Rows) {
 		t.Error("the echo snapshot is not the board")
 	}
-	rules := config.GuidelineRules()
+	rules := config.ModernRules()
 	if n := e.NextPieces(); len(n) != rules.NextCount {
 		t.Errorf("NEXT well shows %d pieces, want %d", len(n), rules.NextCount)
 	}
 	if !e.HoldEnabled() || !e.ShowGhost() {
-		t.Errorf("hold=%v ghost=%v, want both on under the Guideline preset", e.HoldEnabled(), e.ShowGhost())
+		t.Errorf("hold=%v ghost=%v, want both on under the Modern preset", e.HoldEnabled(), e.ShowGhost())
 	}
 	if h, ok := e.HeldPiece(); !ok || h != game.PieceI {
 		t.Errorf("hold slot %v/%v, want the I", h, ok)

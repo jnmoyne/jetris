@@ -14,12 +14,12 @@ Seven standard tetrominoes, each with 4 orientations (0-3):
 
 | Piece | Color   | Shape |
 |-------|---------|-------|
-| I     | Cyan    | 4-cell horizontal line |
-| O     | Yellow  | 2x2 square |
-| T     | Purple  | T-shape |
-| S     | Green   | S-skew |
-| Z     | Red     | Z-skew |
-| J     | Blue    | J-hook |
+| I     | Green   | 4-cell horizontal line |
+| O     | Blue    | 2x2 square |
+| T     | Amber   | T-shape |
+| S     | Violet  | S-skew |
+| Z     | Teal    | Z-skew |
+| J     | Coral   | J-hook |
 | L     | Orange  | L-hook |
 
 **Rotation:** Super Rotation System (SRS) with standard wall kick tables. Up to 5 kick offsets are tried per rotation attempt. The I-piece has its own kick table; the O-piece does not rotate. A **half turn** (180°, the Z key, `Rotate180`) uses SRS-X's 180 kicks — the rotation system the 180° twists of [harddrop.com/wiki/List_of_twists](https://harddrop.com/wiki/List_of_twists) are drawn for — up to 12 offsets, three cells sideways or up and down at the most, so a piece can twist into a slot or pass through a one-cell wall; the I has its own 180 table too (`internal/game/rotation.go`, every one of the wiki's 180 twists in `Test180Twists`).
@@ -33,16 +33,16 @@ Each player has a color associated with it: used for the outline color of the pi
 ## 1b. Piece Preview (the game's NEXT count), Ghost, Hold, Bag, Hidden Rows, Garbage — the play rules
 
 **Every play rule below is chosen on one step of the create-game wizard (step 2,
-GAME RULES) by a single radio.** **Guideline** — the default — plays every rule at
-the setting closest to the Guideline this game can offer
-(`config.GuidelineRules`): `next_count` 6, the ghost piece, the `hold` queue, the
+GAME RULES) by a single radio.** **Modern** — the default — plays every rule at
+the setting closest to modern play this game can offer
+(`config.ModernRules`): `next_count` 6, the ghost piece, the `hold` queue, the
 standard 7-bag, the hidden rows out of sight and, for the modes that raise garbage, `garbage_holes` 1 with the rows of one attack
 sharing their hole column and `guideline_garbage`; the lobby row tags such a game
-`guideline`. **Custom** exposes each rule as its own editor or checkbox — opening
+`modern`. **Custom** exposes each rule as its own editor or checkbox — opening
 at the preset's own settings, so the creator changes only what they mean to —
 and the row tags every rule that differs from the
 classic game (`next N`, `hold`, `double bag` / `no bag`, `hidden rows`, `holes N` / `random holes N`,
-`guideline garbage`).
+`modern attacks`).
 Whichever way they were chosen, the rules are stored in the game's meta record —
 the rule book every engine reads at start — and bind every seat equally.
 
@@ -73,9 +73,9 @@ destinations, so the ghost only levels the field for humans either way).
 
 **The hold queue is a per-game attribute on the same step**: `hold`
 (`GameMeta.Hold`; the custom checkbox "Hold piece", on by default as in the
-Guideline preset). With it on, **C** — or the control pad's HOLD button, or a tap
+Modern preset). With it on, **C** — or the control pad's HOLD button, or a tap
 on the HOLD box itself, or an upward swipe on the playfield — sets the falling piece
-aside, as in the Guideline: with
+aside, as in modern play: with
 the slot **empty**, the falling piece goes in and the **next piece of the queue
 comes out** at the spawn point in its spawn orientation, and the queue advances
 (`pieceIdx` +1 exactly as a lock-in would, so the NEXT well moves on); with a
@@ -121,32 +121,32 @@ and each row has to be cleared on its own terms. The lobby row tags such a game
 `random holes N`. Games created before the attribute — and 0-hole games — behave
 as unset.
 
-**Guideline garbage** is a third attribute on the same step (a checkbox, on by
+**Modern attack table** is a third attribute on the same step (a checkbox, on by
 default as in the preset): `guideline_garbage` (`GameMeta.GuidelineGarbage`). It sets **how much
 garbage a clear sends**. Unset, every cleared line owes one garbage row (the
 original Jetris rule), whatever the clear was. Set, the attack follows the
 Guideline table (`game.Clear.AttackRows`; tetris.wiki/Garbage, "General Garbage
-System in Guideline Games"):
+System in Guideline Games"), which the game calls the modern attack table:
 
 | Clear                             | Rows sent | Back-to-Back bonus |
 |-----------------------------------|---|--------------------|
-| Single / Double / Triple / Jetris | 0 / 1 / 2 / 4 | Jetris +2          |
+| Single / Double / Triple / Quad | 0 / 1 / 2 / 4 | Quad +2          |
 | Mini T-Spin Single / Double       | 0 / 1 | +1 / +1            |
 | T-Spin Single / Double / Triple   | 2 / 4 / 6 | +1 / +2 / +3       |
 | 180 Spin Single / Double / Triple | 2 / 4 / 6 | +1 / +2 / +3       |
 | Perfect clear                     | +10 on top of the clear's rows |                    |
 
-So a plain single attacks nothing, a Jetris is worth twice a triple, and the
+So a plain single attacks nothing, a quad is worth twice a triple, and the
 spins and chains the scoring rewards (§2 Scoring) attack hardest. Combos send
 nothing extra (the wiki lists no table for them). Scoring and levels are the
 same under both settings; only the rows owed change. Independent of the hole
-attributes. The lobby row tags such a game `guideline garbage`.
+attributes. The lobby row tags such a game `modern attacks`.
 
 **The bag** is a fourth attribute on the same step (a radio, the 7-bag by
 default): `bag` (`GameMeta.Bag`). It sets **how the pieces are dealt** — the
 randomizer every seat's sequence is drawn with:
 
-- **7-bag** (the field absent: the default, the Guideline's randomizer, and what
+- **7-bag** (the field absent: the default, the modern randomizer, and what
   every game created before the attribute plays) — every seven pieces are the
   seven types shuffled, so every type turns up in every seven and a drought of
   one type never lasts more than twelve pieces.
@@ -166,13 +166,13 @@ each seat's ration the same way — a double bag of the ration, two of each of
 its types, or independent draws from it. One rule for every seat, humans and
 agents alike (an agent reads `bag` from the meta and deals accordingly — agent
 guide §1.3). The lobby row tags such a game `double bag` or `no bag`; the
-Guideline preset always deals the 7-bag.
+Modern preset always deals the 7-bag.
 
 **The hidden rows** are a fifth attribute on the same step (the custom checkbox
-"Show hidden rows", off by default; off in the Guideline preset): `show_headroom`
+"Show hidden rows", off by default; off in the Modern preset): `show_headroom`
 (`GameMeta.ShowHeadroom`). Every board has `config.HeadroomRows` (4) rows above
 its 20 visible ones where a piece spawns (§2), normally out of sight — the
-Guideline playfield is the twenty rows and no more. With the setting on, **every
+standard playfield is the twenty rows and no more. With the setting on, **every
 board of the game draws its headroom rows above the playfield, behind smoked
 glass**: a dark translucent pane with a diagonal sheen and a lit lower edge where
 it meets the playfield, through which a piece shows dimly the moment it spawns
@@ -298,7 +298,7 @@ dispatch, so two keys bound to one move share one DAS/ARR machine per axis — A
 the same key held, not two keys racing — and what is fixed in the dispatch is what each
 move does, whatever key makes it.
 
-Ctrl and Shift are the Guideline's two modifier controls, and Gio delivers a modifier's
+Ctrl and Shift are the modern scheme's two modifier controls, and Gio delivers a modifier's
 own press *and release* as a `key.Event` named for it, so they are filtered as keys like
 any other. Every board key filter therefore carries `Optional: ModShift|ModCtrl` — a filter
 naming no modifier matches only an *unmodified* event, so without it holding Shift would
@@ -328,7 +328,7 @@ Detection: if `CanPlaceCoop` fails but `CanPlace` (which ignores all active cell
 
 ### Lock Delay
 
-The Guideline lock delay: **500 ms** (`config.LockDelay`). A piece that lands on locked cells or the floor — by gravity, by a soft drop, or because the stack rose to meet it — rests for the delay before it locks. Every successful shift or rotation made while it rests **restarts** the delay (move reset), at most **15 times** per piece (`config.LockDelayMoveResets`); the allowance is renewed whenever the piece falls to a new lowest row. A piece that leaves the stack (shifted over a hole, kicked upward by a rotation) stops the timer, which starts afresh when it lands again. A soft drop pressed against the floor is not a lock and does not restart the delay; only a **hard drop** locks a piece at once.
+The standard lock delay: **500 ms** (`config.LockDelay`). A piece that lands on locked cells or the floor — by gravity, by a soft drop, or because the stack rose to meet it — rests for the delay before it locks. Every successful shift or rotation made while it rests **restarts** the delay (move reset), at most **15 times** per piece (`config.LockDelayMoveResets`); the allowance is renewed whenever the piece falls to a new lowest row. A piece that leaves the stack (shifted over a hole, kicked upward by a rotation) stops the timer, which starts afresh when it lands again. A soft drop pressed against the floor is not a lock and does not restart the delay; only a **hard drop** locks a piece at once.
 
 The delay is timed by each player's own engine (`internal/engine/lockdelay.go`, on the same single goroutine as gravity and input): nothing about it is on the wire — the other peers simply see the piece's cells stay active until the lock batch commits.
 
@@ -361,29 +361,29 @@ Because the board is shared, a clear must be reflected on **every** player's scr
 
 ### Scoring
 
-Every mode scores by the Guideline (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — Jetris levels are 0-based (`totalLines / 10`, the gravity curve's index), so the Guideline's multiplier is `level + 1` — plus the piece's drop points, which are never multiplied:
+Every mode scores by the Guideline's scoring table (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — Jetris levels are 0-based (`totalLines / 10`, the gravity curve's index), so the table's multiplier is `level + 1` — plus the piece's drop points, which are never multiplied:
 
 | Action                                                             | Points × (level + 1)                                                               | Difficult   |
 |--------------------------------------------------------------------|------------------------------------------------------------------------------------|-------------|
-| Single / Double / Triple / Jetris                                  | 100 / 300 / 500 / 800                                                              | Jetris only |
+| Single / Double / Triple / Quad                                  | 100 / 300 / 500 / 800                                                              | Quad only |
 | Mini T-Spin, no lines / T-Spin, no lines                           | 100 / 400                                                                          | no          |
 | Mini T-Spin Single / Double                                        | 200 / 400                                                                          | yes         |
 | T-Spin Single / Double / Triple                                    | 800 / 1200 / 1600                                                                  | yes         |
 | 180 Spin, no lines / Single / Double / Triple                     | 400 / 800 / 1200 / 1600 (as a T-spin)                                              | yes (with lines) |
 | Back-to-Back difficult clear                                       | the action's points × 1.5                                                          |             |
 | Combo                                                              | + 50 × combo count (0 for the first clear of a run, 1 for the next…)               |             |
-| Perfect clear (no locked cell left on the board, garbage included) | + 800 / 1200 / 1800 / 2000 for 1 / 2 / 3 / 4 lines, 3200 for a Back-to-Back Jetris |             |
+| Perfect clear (no locked cell left on the board, garbage included) | + 800 / 1200 / 1800 / 2000 for 1 / 2 / 3 / 4 lines, 3200 for a Back-to-Back quad |             |
 | Soft drop / hard drop                                              | 1 / 2 per cell, not multiplied                                                     |             |
 
 A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when a quarter turn used the last SRS kick (the T-spin-triple kick — a half turn counts as a rotation but has no such kick, however far it went); otherwise a Mini (`game.DetectTSpin`). A **180 spin** is any piece whose last move was a half turn (the Z key) and which rests **immobile** — unable to shift left, right or up, the walls and the locked cells blocking it (the wiki's immobile-twist rule, [harddrop.com/wiki/List_of_twists](https://harddrop.com/wiki/List_of_twists) "Rewards for twists") — or a T the corner rule would call a full T-spin; it scores, attacks and chains exactly as a full T-spin and the banner says `180 SPIN DOUBLE` (`game.DetectSpin`, `TSpin180`). A hard drop of zero cells is not a move, so a piece turned into its slot and hard-dropped in place is still a spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Jetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
 
-Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a Jetris is 800 × (level + 1) whether one or six play.
+Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a quad is 800 × (level + 1) whether one or six play.
 
 ### Shared Score
 
 There is a single shared score visible to all players. When any player's piece locks and scores — a clear, a T-spin that cleared nothing, or just the drop's points:
 1. That player adds the points (and the cleared-line count) locally
-2. An `EventLineClear` is published to NATS with the `Score` (the lock's points), `LinesCleared` (0 for a lock that only earned drop points), the clear's Guideline names (`t_spin` 0/1/2/3 — none, Mini, T-spin, 180 spin — `back_to_back`, `combo`, `perfect`) and the sender's cumulative own totals (`total_score`, `total_lines`)
+2. An `EventLineClear` is published to NATS with the `Score` (the lock's points), `LinesCleared` (0 for a lock that only earned drop points), the clear's names (`t_spin` 0/1/2/3 — none, Mini, T-spin, 180 spin — `back_to_back`, `combo`, `perfect`) and the sender's cumulative own totals (`total_score`, `total_lines`)
 3. All other players (and spectators) receive the event and fold the delta against the last totals seen from that sender into their local score **and** `totalLines` — so the shared level stays in sync on every engine; a lock with no lines moves only the score
 4. All players' UIs update simultaneously, and the crew's HUD names the clear over the board (`alice: T-SPIN DOUBLE · B2B · COMBO 2` / `+2700`)
 
@@ -438,11 +438,13 @@ with a thin grid-line outline, so literally every square has an outline.
 - **Locked cells:** dimmed piece color with a 2px per-player outline (non-adversarial)
 - **Spectator view:** Per-player colored outlines on every active and locked cell (P0=cyan #00ffff, P1=magenta #ff00ff, P2=yellow #ffff00, P3=orange #ff8800, …)
 - **No divider:** The board is rendered as one seamless playfield with no visual separator between player sections
-- **8-bit block shading:** every filled square (active, locked, adversarial) is drawn
-  as a classic 8-bit block — a lighter bevel strip along its top and left edges, a
-  darker strip along the bottom and right, and a small gloss pixel in the top-left —
-  while empty squares stay flat (`CellAppearance.Bevel`). Each playfield sits inside a
-  chunky arcade-well frame.
+- **The NATS mark in every block:** every filled square (active, locked, adversarial)
+  is split the way the nats.io "N" logo is — four panels meeting at the centre, each a
+  tint of the cell's colour: lighter top-left, the colour itself top-right, darker
+  bottom-left, a touch lighter bottom-right — so a stack reads as a mosaic of small
+  NATS marks in the pieces' colours; empty squares stay flat (`CellAppearance.Panels`),
+  and a cell too small for panels (compact opponent strips) is a flat square. Each
+  playfield sits inside a chunky arcade-well frame.
 
 The whole UI shares this "modern 8-bit" look: display text (titles, headers, buttons,
 HUD stats, the countdown, the game-over dialog) is set in the embedded "Press Start 2P"
@@ -471,7 +473,7 @@ Each player gets their own piece spawn on their own independent playfield. Playe
 
 ### Movement
 
-Standard guideline-style movement. Collision detection is using CAS only.
+Standard modern-rules movement. Collision detection is using CAS only.
 
 ### Gravity
 
@@ -479,15 +481,15 @@ Standard gravity with the same lock delay as cooperative mode (see §3 Lock Dela
 
 ### Line Clears
 
-A row is complete when all 10 cells are occupied (locked). Standard guideline-style rules apply. When one player clears a line, every other player gets a line added at the bottom of their playfield, so all of their already-locked rows shift up by one. The currently falling piece does **not** rise with the stack — it holds its on-screen position and is simply dropped into place as the stack rises to meet it. Only if the rising stack (or the new garbage) would overlap the falling piece is the piece pushed up, and then only by the minimum number of rows needed to clear the conflict. If that upward push would run the piece off the top of the playfield, the player tops out and is eliminated (see Game Over). Once a line is cleared and added to the other player(s), that added line can never be removed or completed.
+A row is complete when all 10 cells are occupied (locked). Standard modern rules apply. When one player clears a line, every other player gets a line added at the bottom of their playfield, so all of their already-locked rows shift up by one. The currently falling piece does **not** rise with the stack — it holds its on-screen position and is simply dropped into place as the stack rises to meet it. Only if the rising stack (or the new garbage) would overlap the falling piece is the piece pushed up, and then only by the minimum number of rows needed to clear the conflict. If that upward push would run the piece off the top of the playfield, the player tops out and is eliminated (see Game Over). Once a line is cleared and added to the other player(s), that added line can never be removed or completed.
 
 ### Scoring
 
-Competitive scores by the same Guideline table (§2 Scoring): each player keeps their own score — their clears, T-spins, Back-to-Back, combos and drop points — multiplied by the level their **own** line total reaches (`lines / 10`, shown as the HUD's LEVEL; competitive gravity does not speed up with it). The score decides nothing: the winner is the last player left who has not topped out, and the score is kept for the leaderboard. No line-clear events are published in competitive; the score travels in the player's `game_over` event and the archive record.
+Competitive scores by the same modern scoring table (§2 Scoring): each player keeps their own score — their clears, T-spins, Back-to-Back, combos and drop points — multiplied by the level their **own** line total reaches (`lines / 10`, shown as the HUD's LEVEL; competitive gravity does not speed up with it). The score decides nothing: the winner is the last player left who has not topped out, and the score is kept for the leaderboard. No line-clear events are published in competitive; the score travels in the player's `game_over` event and the archive record.
 
 ### Shrink Attack
 
-When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the Guideline table: 0, 1, 2 or 4 rows for a single, double, triple or Jetris, 2/4/6 for a T-Spin single/double/triple, a Back-to-Back bonus and 10 more for a perfect clear (`game.Clear.AttackRows`; a plain single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
+When a player clears 1 or more lines, garbage rows are owed to **all** other players still in the game — one row per cleared line, or under the game's `guideline_garbage` attribute (§1b) the modern attack table: 0, 1, 2 or 4 rows for a single, double, triple or quad, 2/4/6 for a T-Spin single/double/triple, a Back-to-Back bonus and 10 more for a perfect clear (`game.Clear.AttackRows`; a plain single then owes nothing and no register is touched). The attack is delivered through each victim board's **garbage register** — a durable, cumulative rows-owed counter that the clearing player advances with a CAS-add (read the latest total, publish `total + lines` expecting the read sequence; on a lost race, refresh and re-add). Because the register is cumulative and its writes serialize on CAS, two players clearing at nearly the same instant both land — the totals **sum**, nothing is trimmed or lost — and a victim that is briefly behind (high RTT, a reconnect, a late join) reconciles the full amount owed the moment it catches up.
 
 - **Applying:** the victim applies its deficit (rows owed − rows applied) as one **txn-gated atomic batch** (§9): the locked stack shifts up, adversarial rows fill the bottom — solid in a 0-hole game, otherwise punched with the game's `garbage_holes` empty cells at one random set of columns shared by every row of the raise, or one draw per row in a `random_garbage_holes` game (§1b) — and the applied total recorded in the board's txn register advances — exactly once, regardless of duplicate signals or replays.
 - **Clearing garbage:** a solid garbage row is permanent. A garbage row raised with holes is an ordinary line once its holes are filled: it is detected by the same completed-row scan at the filler's lock-in, collapses with the same clear transform, scores, and owes garbage to the opponents like any other cleared line.
@@ -523,7 +525,7 @@ Coop rules per team: player at team slot N spawns centered in their section at c
 
 #### Split pieces (`split_pieces`)
 
-A teams game can be created with the pieces **dealt out between the teammates** instead of every seat running the same full bag: `split_pieces` (`GameMeta.SplitPieces`, the create wizard's step-2 custom-rules checkbox "Distribute the pieces between the players of a playfield", off by default and never set by the Guideline preset, mirrored on the lobby row as a `split pieces` tag). Each seat is dealt a **ration** of one or more piece types and its sequence is a bag of that ration alone — three types means those three, shuffled, forever; one type means that one piece, forever. The deal's rules:
+A teams game can be created with the pieces **dealt out between the teammates** instead of every seat running the same full bag: `split_pieces` (`GameMeta.SplitPieces`, the create wizard's step-2 custom-rules checkbox "Distribute the pieces between the players of a playfield", off by default and never set by the Modern preset, mirrored on the lobby row as a `split pieces` tag). Each seat is dealt a **ration** of one or more piece types and its sequence is a bag of that ration alone — three types means those three, shuffled, forever; one type means that one piece, forever. The deal's rules:
 
 - **Every one of the seven types goes to somebody, and nobody is left empty-handed.** The team between them still has the whole bag; it just has to co-operate to use it, because the teammate holding the I is the only one who can hand the board an I. With two seats one holds four types and the other three, with seven they hold one each, and past seven the types start doubling up (`rng.PieceSets`).
 - **The deal follows `meta.Seed`, so it is the same on every peer that computes it** — both teams' boards, a spectator's engine, an agent's own port of the function. In particular **team A's slot N holds exactly what team B's slot N holds**, which is what keeps the match fair, exactly as both teams have always seen one identical piece sequence.
@@ -537,13 +539,13 @@ Identical to cooperative mode, scoped to the team board: teammates' active piece
 
 ### Line Clears & Scoring
 
-Coop scoring within the team: a lock scores the Guideline's points (§2 Scoring, at the team's level) to the **team score**; every teammate folds the clearing player's points **and line count** from the line-clear event — a lock that only earned drop points announces itself the same way, with no lines — so the team's level (and gravity speed) stays in sync for all members. Other teams' clears do not affect your own team's score.
+Coop scoring within the team: a lock scores the table's points (§2 Scoring, at the team's level) to the **team score**; every teammate folds the clearing player's points **and line count** from the line-clear event — a lock that only earned drop points announces itself the same way, with no lines — so the team's level (and gravity speed) stays in sync for all members. Other teams' clears do not affect your own team's score.
 
 In addition to the own-team score, **every** engine — every team's players, eliminated players, and spectators — folds **every** team's line-clear events into a per-team scoreboard: a `TEAM A` / `TEAM B` / … score total **and** a per-team cleared-line total, from which each team's level is derived. Every team's score (and, for spectators, level) is therefore visible and live on every screen. Line-clear events live on per-sender subjects and carry the sender's **cumulative** totals, and receivers fold deltas against the last total seen from that sender — so a trimmed intermediate event is subsumed by the next one, and a spectator who joins mid-game reconstructs the full scoreboard from each sender's last retained event.
 
 ### Garbage Attack (team shrink)
 
-When a team clears N lines, N adversarial rows — or the Guideline table's rows in a `guideline_garbage` game (§1b: 0/1/2/4 for a plain clear, more for a T-spin, a Back-to-Back or a perfect clear) — are owed to **one opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost.
+When a team clears N lines, N adversarial rows — or the modern attack table's rows in a `guideline_garbage` game (§1b: 0/1/2/4 for a plain clear, more for a T-spin, a Back-to-Back or a perfect clear) — are owed to **one opposing team's** shared board, delivered through that board's garbage register exactly as in competitive (§4): the clearing player CAS-adds the cumulative rows-owed total, so overlapping attacks sum and none is ever lost.
 
 **Which opponent, past two teams.** In a duel there is only one answer and the rule never comes up. With three or more teams a raise still weighs exactly what it always did: it goes to **one** opponent, and each attacker **rotates** through the others — attack 1 to the next team up, attack 2 to the one after, wrapping around and skipping its own. (Giving every opponent the full raise would multiply the garbage in play by the number of teams and end a six-way game in a minute; rotating keeps a team both sending and receiving what it would in a duel.) The rotor is per **engine**, so a team's several players spread their own attacks independently, and over a game the raises land evenly across the opponents. Nothing on the wire changes: the victim reads its own garbage register and cannot tell — nor need it — which of its opponents was on rotation. The rows land solid (permanent) or punched with the game's `garbage_holes` (§1b) — one random column set per raise across the whole team-wide row, or one per row with `random_garbage_holes` — and a holed garbage row a teammate fills clears like any other team line. Application uses the same txn-gated transform, with three shared-board specifics:
 
@@ -632,8 +634,8 @@ board, every team scoring together (§5), the total seat count being playfields
 × per playfield.
 **2. game rules**: the **game length** — **until top out**, or **a number of
 lines** (default 40, the line goal of §2) — then a single radio: the
-**Guideline** preset — the default, listed read-only: the play rules at their
-Guideline settings, the board 4 columns wider per player and no taller, every
+**Modern** preset — the default, listed read-only: the play rules at their
+modern settings, the board 4 columns wider per player and no taller, every
 player of a playfield playing the same full bag — or **custom**, every rule
 opening at the preset's setting: for a playfield with company the
 **board-growth sliders** (**extra columns per player**, 4 to 10, default 4, so a
@@ -650,8 +652,8 @@ the next-piece count, 0-6, the "Hold piece" and "Show ghost piece" checkboxes,
 the garbage rules where several playfields raise garbage at each other, the
 piece bag and the hidden rows — see §1b.
 **3. players** (for a teams game first the **team names** — every
-playfield's team is called after a piece colour, Cyan, Yellow, Purple, Green,
-Red, Blue, unless the creator types another, 16 letters at most, stored as
+playfield's team is called after a piece colour, Green, Blue, Amber, Violet,
+Teal, Coral, unless the creator types another, 16 letters at most, stored as
 the meta's `team_names` and shown wherever a team is named; then **invite
 only** or **open**, and for an open game the agent policy below). Each step has Next/Back plus a Cancel that closes the wizard
 without creating anything, and the previous run's choices are the next run's
@@ -881,11 +883,11 @@ Lobby chat history is retained for 7 days; a game's chat messages are purged fro
 
 ## 7. Gravity Speed Curve
 
-The Guideline speed curve. With `L` the Guideline level (Jetris levels start at 0, so `L = level + 1`), the time a piece spends on each row is
+The modern speed curve. With `L` the curve's level (Jetris levels start at 0, so `L = level + 1`), the time a piece spends on each row is
 
     seconds per row = (0.8 − (L − 1) × 0.007) ^ (L − 1)
 
-rounded to the millisecond and floored at one 60 Hz frame (≈17 ms): the engine moves a piece one row per gravity tick and each tick is a JetStream batch, so the sub-frame intervals of the Guideline's highest levels cannot be honoured row by row (`game.GravityInterval`).
+rounded to the millisecond and floored at one 60 Hz frame (≈17 ms): the engine moves a piece one row per gravity tick and each tick is a JetStream batch, so the sub-frame intervals of the curve's highest levels cannot be honoured row by row (`game.GravityInterval`).
 
 | Level | Interval |
 |-------|----------|

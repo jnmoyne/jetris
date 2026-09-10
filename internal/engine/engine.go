@@ -234,7 +234,7 @@ type Engine struct {
 	// soft-dropped it. lockAward is the worth of the lock we published,
 	// consumed by handleLockIn. comboRun counts the consecutive locks that
 	// cleared lines (0: none running; the Guideline's combo count is one
-	// less), and b2bChain says the last clear was a difficult one (a Jetris
+	// less), and b2bChain says the last clear was a difficult one (a quad
 	// or a T-spin clear), so the next difficult clear is Back-to-Back.
 	spin          game.SpinState
 	softDropCells int
@@ -1640,7 +1640,7 @@ func (e *Engine) RandomGarbageHoles() bool { return e.randomGarbageHoles }
 
 // GuidelineGarbage reports whether this game's clears attack by the
 // Guideline table — a single sends nothing, a double 1 row, a triple 2, a
-// Jetris 4 (GameMeta.GuidelineGarbage; false = one row per cleared line).
+// quad 4 (GameMeta.GuidelineGarbage; false = one row per cleared line).
 func (e *Engine) GuidelineGarbage() bool { return e.guidelineGarbage }
 
 // Bag reports the piece randomizer this game's sequences are dealt with

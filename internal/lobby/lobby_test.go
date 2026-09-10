@@ -390,12 +390,12 @@ func TestLobbyCreateGameGuidelineGarbage(t *testing.T) {
 	}
 }
 
-// TestLobbyCreateGameHoldAndGuidelinePreset: the hold rule is written to both
-// records, off unless asked for; the Guideline preset lands intact (clamped
+// TestLobbyCreateGameHoldAndModernPreset: the hold rule is written to both
+// records, off unless asked for; the Modern preset lands intact (clamped
 // for a cooperative game, which stores no garbage rules) and reads back as
 // the preset from either record; a meta written before the field has no
 // hold.
-func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
+func TestLobbyCreateGameHoldAndModernPreset(t *testing.T) {
 	lb, js := setupLobby(t)
 	ctx := context.Background()
 
@@ -410,11 +410,11 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 	if meta.Hold {
 		t.Error("hold should be off unless asked for")
 	}
-	if meta.Rules().IsGuideline(config.ModeCompetitive) {
-		t.Error("next 1 / no hold is not the Guideline preset")
+	if meta.Rules().IsModern(config.ModeCompetitive) {
+		t.Error("next 1 / no hold is not the Modern preset")
 	}
 
-	guideline, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, Rules: config.GuidelineRules()})
+	guideline, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, Rules: config.ModernRules()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,21 +423,21 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !meta.Hold || meta.NextCount != config.MaxNextCount || meta.NoGhost || meta.GarbageHoles != 1 || meta.RandomGarbageHoles || !meta.GuidelineGarbage {
-		t.Errorf("Guideline preset meta = %+v", meta.Rules())
+		t.Errorf("Modern preset meta = %+v", meta.Rules())
 	}
-	if !meta.Rules().IsGuideline(config.ModeTeams) {
-		t.Error("the preset's meta should read back as the Guideline preset")
+	if !meta.Rules().IsModern(config.ModeTeams) {
+		t.Error("the preset's meta should read back as the Modern preset")
 	}
 	time.Sleep(300 * time.Millisecond)
 	g := lb.Games()[guideline]
 	if !g.Hold {
 		t.Error("hold should be mirrored on the listing")
 	}
-	if !g.Rules().IsGuideline(config.ModeTeams) {
-		t.Errorf("the preset's listing %+v should read back as the Guideline preset", g.Rules())
+	if !g.Rules().IsModern(config.ModeTeams) {
+		t.Errorf("the preset's listing %+v should read back as the Modern preset", g.Rules())
 	}
 
-	coop, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.GuidelineRules()})
+	coop, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 2, Rules: config.ModernRules()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,8 +448,8 @@ func TestLobbyCreateGameHoldAndGuidelinePreset(t *testing.T) {
 	if meta.GarbageHoles != 0 || meta.GuidelineGarbage || !meta.Hold {
 		t.Errorf("cooperative Guideline meta = %+v, want no garbage rules, hold on", meta.Rules())
 	}
-	if !meta.Rules().IsGuideline(config.ModeCooperative) {
-		t.Error("a cooperative preset game should still read as the Guideline preset")
+	if !meta.Rules().IsModern(config.ModeCooperative) {
+		t.Error("a cooperative preset game should still read as the Modern preset")
 	}
 
 	var legacy config.GameMeta
@@ -482,8 +482,8 @@ func TestLobbyCreateGameBag(t *testing.T) {
 			t.Errorf("meta bag = %q, want %q", meta.Bag, bag)
 		}
 		time.Sleep(300 * time.Millisecond)
-		if g := lb.Games()[id]; g.Bag != bag || g.Rules().Bag != bag || g.Rules().IsGuideline(g.Mode) {
-			t.Errorf("listing bag = %q (guideline: %v), want %q and not the preset", g.Bag, g.Rules().IsGuideline(g.Mode), bag)
+		if g := lb.Games()[id]; g.Bag != bag || g.Rules().Bag != bag || g.Rules().IsModern(g.Mode) {
+			t.Errorf("listing bag = %q (guideline: %v), want %q and not the preset", g.Bag, g.Rules().IsModern(g.Mode), bag)
 		}
 	}
 

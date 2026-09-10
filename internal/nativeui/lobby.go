@@ -1970,29 +1970,65 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		sep = " · "
 	}
 	confirming := abandoned && a.confirmDeleteID == g.GameID
+	// The game's line, in its dot-separated tokens: what it is, how it stands
+	// for this player, how it is set up, and whether it was left behind. Each
+	// is its own color, so each is its own label — packed along the line and
+	// wrapped onto the next where the column runs out, never squeezed. A Flex
+	// of the four turned them into four columns a letter wide on a phone.
 	infoCol := func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(func(gtx C) D {
-				return layout.Flex{}.Layout(gtx,
-					layout.Rigid(a.body(info, colFg)),
-					layout.Rigid(a.body(statusTxt, statusCol)),
-					layout.Rigid(func(gtx C) D {
-						if extra == "" {
-							return D{}
-						}
-						return a.body(extra, colFg)(gtx)
-					}),
-					layout.Rigid(func(gtx C) D {
-						if !abandoned {
-							return D{}
-						}
-						return a.body(" · abandoned", colErr)(gtx)
-					}),
-				)
-			}),
+		tokens := []layout.Widget{a.body(info, colFg), a.body(statusTxt, statusCol)}
+		if extra != "" {
+			tokens = append(tokens, a.body(extra, colFg))
+		}
+		if abandoned {
+			tokens = append(tokens, a.body(" · abandoned", colErr))
+		}
+		// No gap between them: the tokens carry their own " · " separators.
+		rows := flowRows(gtx, 0, tokens)
+		kids := make([]layout.FlexChild, 0, len(rows)+2)
+		for _, r := range rows {
+			kids = append(kids, layout.Rigid(r))
+		}
+		kids = append(kids,
 			layout.Rigid(a.body(strings.Join(names, sep), colMuted)),
 			layout.Rigid(func(gtx C) D { return a.inviteStatusRows(gtx, g, invites) }),
 		)
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+	}
+	// The row's actions, on whichever set of buttons is handed in: the real
+	// ones to draw, a throwaway set to measure with (so a measuring pass does
+	// not spend the real buttons' presses). They pack along one line and wrap
+	// onto further ones where the row has not the width for them.
+	actions := func(b *gameRowBtns) layout.Widget {
+		var items []layout.Widget
+		if canReinvite {
+			items = append(items, func(gtx C) D { return a.secondaryButton(gtx, &b.reinvite, "Invite") })
+		}
+		switch {
+		case rejoin:
+			// Back into the seat we already hold (any mode — the roster
+			// remembers our team).
+			items = append(items, func(gtx C) D { return a.primaryButton(gtx, &b.join, "Rejoin") })
+		case !canJoin:
+		case teams:
+			// One join button per team, each enabled while that team has room.
+			for t := 0; t < g.Teams(); t++ {
+				btn, team := &b.joinTeam[t], t
+				items = append(items, func(gtx C) D { return a.teamJoinButton(gtx, btn, g, team) })
+			}
+		default:
+			items = append(items, func(gtx C) D { return a.primaryButton(gtx, &b.join, "Join") })
+		}
+		if canSpectate {
+			items = append(items, func(gtx C) D { return a.secondaryButton(gtx, &b.spectate, "Spectate") })
+		}
+		if canShare {
+			items = append(items, func(gtx C) D { return a.secondaryButton(gtx, &b.share, "Share") })
+		}
+		if abandoned {
+			items = append(items, func(gtx C) D { return a.dangerButton(gtx, &b.del, "Delete") })
+		}
+		return func(gtx C) D { return buttonLine(gtx, gtx.Dp(6), items...) }
 	}
 	return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
 		// The delete confirmation replaces the row's action buttons (so a stray
@@ -2014,69 +2050,28 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 				}),
 			)
 		}
+		// The buttons sit beside the game's line where the row is wide enough
+		// for both — measured on a throwaway set, at the width they would
+		// take unwrapped — and take a line of their own under it where they
+		// are not. Rigid beside a flexed info column, a phone's buttons left
+		// the column too little to lay a word out in.
+		var mbtns gameRowBtns
+		m := gtx
+		m.Constraints.Min = image.Point{}
+		m.Constraints.Max.X = 1 << 20
+		rec := op.Record(gtx.Ops)
+		btnW := actions(&mbtns)(m).Size.X
+		rec.Stop() // measure only — discard the recorded ops
+		if btnW > 0 && a.bodyWidth(gtx, info)+gtx.Dp(8)+btnW > gtx.Constraints.Max.X {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(infoCol),
+				layout.Rigid(spacer(6)),
+				layout.Rigid(actions(btns)),
+			)
+		}
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, infoCol),
-			layout.Rigid(func(gtx C) D {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx C) D {
-						if !canReinvite {
-							return D{}
-						}
-						return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-							return a.secondaryButton(gtx, &btns.reinvite, "Invite")
-						})
-					}),
-					layout.Rigid(func(gtx C) D {
-						if rejoin {
-							// Back into the seat we already hold (any mode —
-							// the roster remembers our team).
-							return a.primaryButton(gtx, &btns.join, "Rejoin")
-						}
-						if !canJoin {
-							return D{}
-						}
-						if teams {
-							// One join button per team, each enabled while that team has room.
-							kids := make([]layout.FlexChild, 0, 2*g.Teams())
-							for t := 0; t < g.Teams(); t++ {
-								if t > 0 {
-									kids = append(kids, layout.Rigid(hSpacer(6)))
-								}
-								btn, team := &btns.joinTeam[t], t
-								kids = append(kids, layout.Rigid(func(gtx C) D {
-									return a.teamJoinButton(gtx, btn, g, team)
-								}))
-							}
-							return layout.Flex{}.Layout(gtx, kids...)
-						}
-						return a.primaryButton(gtx, &btns.join, "Join")
-					}),
-					layout.Rigid(func(gtx C) D {
-						if canSpectate {
-							return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-								return a.secondaryButton(gtx, &btns.spectate, "Spectate")
-							})
-						}
-						return D{}
-					}),
-					layout.Rigid(func(gtx C) D {
-						if !canShare {
-							return D{}
-						}
-						return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-							return a.secondaryButton(gtx, &btns.share, "Share")
-						})
-					}),
-					layout.Rigid(func(gtx C) D {
-						if !abandoned {
-							return D{}
-						}
-						return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-							return a.dangerButton(gtx, &btns.del, "Delete")
-						})
-					}),
-				)
-			}),
+			layout.Rigid(actions(btns)),
 		)
 	})
 }

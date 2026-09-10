@@ -242,3 +242,42 @@ func TestLoginTaglineWraps(t *testing.T) {
 		t.Errorf("the tagline is %d dp wide in a 340 dp card", narrow.Size.X)
 	}
 }
+
+// TestGameRowFitsAPhone: a lobby game row in a phone's column. The row's info
+// line was a horizontal Flex of four labels (the game, its status, its
+// settings, the abandoned tag) with the action buttons rigid beside them —
+// and where Gio ran out of room it squeezed each of them into a column a
+// letter wide, printing the settings string DOWN the screen. The line packs
+// and wraps now, and the buttons take a line of their own under it rather
+// than leaving it a column too narrow to lay a word out in.
+func TestGameRowFitsAPhone(t *testing.T) {
+	a := newTestApp()
+	a.lobby = lobby.New(nil, nil, "tester", "tester")
+	g := lobby.GameListing{
+		GameID:      "7ff7e353",
+		Mode:        config.ModeCooperative,
+		Status:      config.GameStatusCreated,
+		PlayerCount: 6,
+		CreatedAt:   time.Now(),
+	}
+	// A phone's screen, and the narrower columns the panel leaves a row
+	// inside it — a lobby with the menu or the players beside the panel.
+	for _, w := range []int{390, 340, 300, 260} {
+		gtx := looseCtx(w, 844)
+		line := a.body("x", colFg)(gtx).Size.Y
+		got := a.gameRow(gtx, g, false)
+		if got.Size.X > w {
+			t.Errorf("the row is %d dp wide in a %d dp column", got.Size.X, w)
+		}
+		if limit := 8 * line; got.Size.Y > limit {
+			t.Errorf("the row is %d dp tall in a %d dp column, past the %d dp (8 lines) it has any business taking: its text is wrapping a letter per line",
+				got.Size.Y, w, limit)
+		}
+	}
+	// A desktop keeps the buttons beside the line: one row of them, so the
+	// row is no taller than the info column on its own.
+	wide := looseCtx(1200, 844)
+	if got, line := a.gameRow(wide, g, false), a.body("x", colFg)(wide).Size.Y; got.Size.Y > 4*line {
+		t.Errorf("the row is %d dp tall in a 1200 dp column: the buttons dropped below the game's line", got.Size.Y)
+	}
+}

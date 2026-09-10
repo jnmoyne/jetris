@@ -438,6 +438,30 @@ func TestScreenSnapshots(t *testing.T) {
 		}
 	})
 
+	// The games list on a phone: every row's line packed and wrapped inside
+	// the column the panel leaves it, its actions on a line of their own
+	// under it. A Flex of the four info labels beside the buttons printed the
+	// settings string DOWN the screen, a letter per line.
+	t.Run("lobby_games_phone", func(t *testing.T) {
+		phone, err := headless.NewWindow(390, 620)
+		if err != nil {
+			t.Fatalf("headless window: %v", err)
+		}
+		defer phone.Release()
+		a := newTestApp()
+		a.lobby = lobby.New(nil, nil, "tester", "tester")
+		a.deviceHint, a.deviceHinted, a.touchUI = devicePhone, true, true
+		a.form = screenForm{device: devicePhone, w: 390, h: 620, portrait: true, compact: true}
+		snapshotPNGSized(t, phone, dir, "screen_lobby_games_phone", image.Pt(390, 620), func(gtx C) {
+			fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
+			layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+				return a.lobbyPanel(gtx, sampleLobbyGames(), map[string]bool{"gone-game-9999": true},
+					nil, sampleServerLog())
+			})
+			scanlines(gtx)
+		})
+	})
+
 	// A history row for a game with a replay archive: the Replay action next
 	// to View board.
 	t.Run("history_row_replay", func(t *testing.T) {

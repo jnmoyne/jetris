@@ -20,8 +20,10 @@ import (
 )
 
 // loginBackdropJPG is the login artwork: Team A's cyan board and Team B's
-// magenta board — each a neon-framed well with a few pieces in play —
-// standing on the NATS "N" logo.
+// magenta board — each a neon-framed well with a few pieces in play, drawn
+// by the game's own board drawer — standing on the NATS "N" logo. Rendered
+// by TestRenderLoginBackdrop (backdrop_render_test.go), so it follows the
+// look of the cells: re-run it whenever that changes.
 //
 //go:embed login-backdrop.jpg
 var loginBackdropJPG []byte

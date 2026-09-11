@@ -1247,11 +1247,10 @@ func (e *Engine) GameOutcome() (won, over bool) {
 // lock; Start spawns with the lock released) so the publish write-through can
 // avoid re-locking.
 func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
-	p := e.spawnPosition(e.seqNow().Piece(e.pieceIdx.Load()))
-
 	if !locked {
 		e.mu.Lock()
 	}
+	p := e.spawnPositionLocked(e.seqNow().Piece(e.pieceIdx.Load()))
 
 	// Check placement (shared boards check against other players' active pieces too)
 	var canPlace bool
@@ -1353,19 +1352,23 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	e.signalMoves()
 }
 
-// spawnPosition is where a piece of type pt enters play on this engine's
-// board: the standard spawn (game.SpawnPiece) offset, on a shared board, to
-// the player's own section — coop sections are laid out by playerIdx, team
-// boards by the slot within the team, both one extra-columns step apart
-// (config.SharedSpawnOffset, the same step the board's width is built from).
-// Shared by the queue spawn and the hold.
-func (e *Engine) spawnPosition(pt game.PieceType) game.Piece {
+// spawnPositionLocked is where a piece of type pt enters play on this
+// engine's board: the standard spawn (game.SpawnPiece) offset, on a shared
+// board, to the player's own spawn point among the seats PRESENT — coop
+// seats by playerIdx, a team's by the slot within the team, the seats one
+// extra-columns step apart (the same step the board's width is built from)
+// and the group centred on the board (config.SharedSpawnOffsetAmong). An
+// open game's roster changes at any time (SetRoster), so the point is read
+// off the roster at every spawn: the piece in play stays where it is, the
+// next one comes in where the company of the moment puts it — a player
+// left alone spawns in the middle of the board, not at its left edge. No
+// roster pushed (an invite game's engines, tests) is every seat: the
+// layout the board was built for. Shared by the queue spawn and the hold.
+// e.mu held.
+func (e *Engine) spawnPositionLocked(pt game.PieceType) game.Piece {
 	p := game.SpawnPiece(pt, config.StandardWidth)
-	switch e.gameMode {
-	case config.ModeCooperative:
-		p.Col += config.SharedSpawnOffset(e.playerIdx, e.extraCols)
-	case config.ModeTeams:
-		p.Col += config.SharedSpawnOffset(e.teamSlot, e.extraCols)
+	if e.sharedBoard() {
+		p.Col += config.SharedSpawnOffsetAmong(e.seatSlot(), e.presentSlotsLocked(), e.seatsPerBoard, e.extraCols)
 	}
 	return p
 }
@@ -1410,7 +1413,7 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 	if fromQueue {
 		incoming = e.seqNow().Piece(e.pieceIdx.Load() + 1)
 	}
-	np := e.spawnPosition(incoming)
+	np := e.spawnPositionLocked(incoming)
 	var canPlace bool
 	if e.sharedBoard() {
 		canPlace = game.CanPlaceCoop(np, e.playfield, e.playerIdx)

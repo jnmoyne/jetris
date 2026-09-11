@@ -39,7 +39,8 @@ type Game struct {
 	teamSlot  int // teams: section index on the team board
 	w         int // board width (competitive 10; a shared board 10 + extra_columns per seat beyond the first — sharedWidth)
 	h         int // board height, headroom included (competitive 24; a shared board 24 + extra_rows per seat beyond the first — sharedHeight)
-	spawnC    int // our spawn column (section-centered on shared boards)
+	spawnC    int // our spawn column: among the seats PRESENT on a shared board (spawnColumn), refreshed on every roster change
+	extra     int // shared boards: the extra columns per seat (extraColumns), the step between neighbouring spawn points
 	runCtx    context.Context
 
 	mu          sync.Mutex
@@ -1379,11 +1380,15 @@ func (g *Game) run(ctx context.Context) bool {
 	case modeCooperative:
 		g.w = sharedWidth(g.playerCount, extra)
 		g.h = sharedHeight(g.playerCount, extraR)
-		g.spawnC = g.idx*extra + spawnCol
+		g.extra = extra
 		// The piece split (gameplays §5) on the crew's board: the seven
 		// types dealt out between the seats off the game's seed, this seat
 		// playing only its own ration. A crew of one is dealt the whole bag.
 		g.seatsOnPF = g.playerCount
+		// Our spawn point among the seats present (gameplays §3): an open
+		// game's roster is whoever holds a seat right now, refreshed by
+		// onRoster as it changes.
+		g.spawnC = g.spawnColumn(g.presentSlots(g.roster))
 		if meta.boolv("split_pieces") && g.playerCount > 1 {
 			g.split = true
 			g.ration = pieceSetFor(g.metaSeed, g.playerCount, g.idx)
@@ -1399,12 +1404,15 @@ func (g *Game) run(ctx context.Context) bool {
 		teamSize := g.teamSize()
 		g.w = sharedWidth(teamSize, extra)
 		g.h = sharedHeight(teamSize, extraR)
-		g.spawnC = g.teamSlot*extra + spawnCol
+		g.extra = extra
 		// The piece split (gameplays §5): the seven types dealt out between
 		// the teammates off the game's seed, this seat playing only its own
 		// ration. A team of one has nobody to split with and is dealt the
 		// whole bag, so the deal is only read past that.
 		g.seatsOnPF = teamSize
+		// Our spawn point among the team's slots present (gameplays §5),
+		// refreshed by onRoster as the roster changes.
+		g.spawnC = g.spawnColumn(g.presentSlots(g.roster))
 		if meta.boolv("split_pieces") && teamSize > 1 {
 			g.split = true
 			g.ration = pieceSetFor(g.metaSeed, teamSize, g.teamSlot)
@@ -1539,10 +1547,10 @@ func (g *Game) playPieces(ctx context.Context) bool {
 func (g *Game) plan(p active) (placement, bool) {
 	g.mu.Lock()
 	gr := g.toGrid()
-	pieceIdx := g.pieceIdx
+	pieceIdx, spawnC := g.pieceIdx, g.spawnC
 	g.mu.Unlock()
 	upcoming := revealedPieces(g.metaSeed, g.ration, g.bag, pieceIdx, g.nextCount, g.a.tn.lookahead)
-	ranked := planPlacements(gr, p.pt, p.row, p.col, g.spawnC, upcoming)
+	ranked := planPlacements(gr, p.pt, p.row, p.col, spawnC, upcoming)
 	return choose(ranked, g.a.tn, g.a.rng)
 }
 
@@ -1791,12 +1799,15 @@ func (g *Game) aloneLocked() bool {
 }
 
 // onRoster takes the listing's roster as it changes — an open game's seats
-// come and go — for the deal (redeal) and the verdict (winCheck, teamDead:
-// a team, or a board, nobody holds any more is out).
+// come and go — for the spawn point (spawnColumn: the next piece comes in
+// where the company of the moment puts it, the piece in play stays), the
+// deal (redeal) and the verdict (winCheck, teamDead: a team, or a board,
+// nobody holds any more is out).
 func (g *Game) onRoster(players []playerSummary) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.roster = players
+	g.spawnC = g.spawnColumn(g.presentSlots(players))
 	for _, p := range players {
 		if p.PlayerID != g.a.name {
 			g.hadRivals = true

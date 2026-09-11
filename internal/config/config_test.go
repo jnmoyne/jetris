@@ -188,6 +188,67 @@ func TestSharedBoardWidth(t *testing.T) {
 	}
 }
 
+// An open game's seats come and go, and the spawn points follow the seats
+// present: ranked in slot order, one extra-columns step apart, the group
+// centred on the board. A full house is the layout SharedSpawnOffset gives;
+// a seat alone spawns in the middle of the board.
+func TestSharedSpawnOffsetAmong(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		slot         int
+		present      []int
+		seats, extra int
+		want         int
+	}{
+		{"alone on a board for three", 2, []int{2}, 3, 4, 4},                    // 18 wide: the middle 10 start at 4
+		{"alone, whichever seat", 0, []int{0}, 3, 4, 4},                         // the seat number does not matter alone
+		{"two of three sit either side of the middle", 0, []int{0, 2}, 3, 4, 2}, // boxes 2-11 and 6-15 on 18
+		{"two of three: the higher seat to the right", 2, []int{0, 2}, 3, 4, 6},
+		{"a full house is the historical layout", 2, []int{0, 1, 2}, 3, 4, 8},
+		{"no roster is every seat", 1, nil, 3, 4, 4},
+		{"a slot the roster lacks counts as present", 2, []int{0}, 3, 4, 6},
+		{"repeats and stray slots are ignored", 2, []int{0, 0, 7, -1, 2}, 3, 4, 6},
+		{"alone at the maximum width", 1, []int{1}, 4, 10, 15}, // 40 wide: the middle 10 start at 15
+		{"two of four at the maximum width", 3, []int{0, 3}, 4, 10, 20},
+		{"an odd margin rounds down", 1, []int{1}, 2, 5, 2}, // 15 wide: 5 spare columns, 2 left, 3 right
+		{"a board of one has nowhere to move", 0, []int{0}, 1, 4, 0},
+		{"the absent setting is a full section per seat", 1, []int{1}, 3, 0, 10},
+	} {
+		if got := SharedSpawnOffsetAmong(tc.slot, tc.present, tc.seats, tc.extra); got != tc.want {
+			t.Errorf("%s: SharedSpawnOffsetAmong(%d, %v, %d, %d) = %d, want %d", tc.name, tc.slot, tc.present, tc.seats, tc.extra, got, tc.want)
+		}
+	}
+	// Whatever the company, every spawn box lands wholly on the board, the
+	// neighbours sit one step apart, and the group is centred (to a column).
+	for _, extra := range []int{MinExtraColumns, 7, MaxExtraColumns} {
+		for seats := 2; seats <= 5; seats++ {
+			w := SharedBoardWidth(seats, extra)
+			for mask := 1; mask < 1<<seats; mask++ {
+				var present []int
+				for s := 0; s < seats; s++ {
+					if mask&(1<<s) != 0 {
+						present = append(present, s)
+					}
+				}
+				first, last := SharedSpawnOffsetAmong(present[0], present, seats, extra), 0
+				for i, s := range present {
+					off := SharedSpawnOffsetAmong(s, present, seats, extra)
+					if off < 0 || off+StandardWidth > w {
+						t.Errorf("seats %v of %d at extra %d: slot %d's box at %d is off the %d-wide board", present, seats, extra, s, off, w)
+					}
+					if i > 0 && off-last != extra {
+						t.Errorf("seats %v of %d at extra %d: slot %d spawns %d from its neighbour, want %d", present, seats, extra, s, off-last, extra)
+					}
+					last = off
+				}
+				if left, right := first, w-(last+StandardWidth); right-left < 0 || right-left > 1 {
+					t.Errorf("seats %v of %d at extra %d: %d columns left of the group, %d right of it", present, seats, extra, left, right)
+				}
+			}
+		}
+	}
+}
+
 func TestExtraColumnsPerPlayer(t *testing.T) {
 	for in, want := range map[int]int{0: MaxExtraColumns, -1: MaxExtraColumns, 1: MinExtraColumns, 4: 4, 7: 7, 10: 10, 11: MaxExtraColumns} {
 		if got := ExtraColumnsPerPlayer(in); got != want {

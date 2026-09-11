@@ -251,8 +251,9 @@ Players share the same RNG seed (`meta.Seed`) and produce the identical piece se
 
 Each player tracks their own `pieceIdx` independently.
 
-**Spawn position:** Each player's piece spawns centered in their section, but can immediately move anywhere:
-- Player N spawns at column `N * extraColumns + 3` — the seats are spaced one `extra_columns` step apart, the same step the board's width is built from, so the first seat spawns at the left edge and the last one's 10-wide spawn box ends exactly on the board's last column. (At the maximum of 10 this is the historical `N * 10 + 3`, the center of an own 10-column section; at the default of 4 the seats sit shoulder to shoulder — a horizontal I spans 4 columns, so no two spawn boxes ever overlap.)
+**Spawn position:** Each player's piece spawns at their own spawn point among the seats present, but can immediately move anywhere:
+- With every seat held, player N spawns at column `N * extraColumns + 3` — the seats are spaced one `extra_columns` step apart, the same step the board's width is built from, so the first seat spawns at the left edge and the last one's 10-wide spawn box ends exactly on the board's last column. (At the maximum of 10 this is the historical `N * 10 + 3`, the center of an own 10-column section; at the default of 4 the seats sit shoulder to shoulder — a horizontal I spans 4 columns, so no two spawn boxes ever overlap.)
+- **The spawn points follow the seats present.** An open game's seats come and go (§ Creating a Game), and a board laid out for every seat it could hold would leave a player alone spawning at its left edge with the rest of the board empty. So the players present — the seats the lobby's roster holds right now, ranked in seat order — are laid out for the company they have: still one `extra_columns` step apart (no two spawn boxes overlap), the group **centred on the board**. A player alone spawns in the middle of the board (column `(width − 4) / 2`), two sit either side of the middle, and a full house is exactly the layout above; on a board for three at the default of 4 (18 columns) that is column 7 alone, 5 and 9 for seats 0 and 2, 3/7/11 for all three. The point is read off the roster at every spawn (`config.SharedSpawnOffsetAmong`): a join or a leave never moves the piece in play, the **next** piece comes in where the company of the moment puts it. An invite game's seats are all held from the start, so its layout never changes.
 - Anchor row 2 for **all** piece types, so every piece's lowest cell sits at row 3 (just inside the headroom) and they all become visible after the same number of gravity ticks. (Spawning the I one row higher made it appear a tick later than the rest, so a player hard-dropping each piece on sight would drop the I before seeing it.)
 
 **Spawn blocked (shared boards):** the same distinction gravity makes applies at spawn time. If the spawn cells are held by **locked cells**, the player tops out. If they are covered **only by another player's active (falling) piece** — a transient obstacle that will itself fall away — the spawn does **not** top out: it is deferred and retried as soon as the shared board changes (every incoming cell message may be the blocker moving away — at agent speeds a piece crosses the spawn cells in milliseconds), with the gravity tick as the backstop, until it succeeds or the cells become locked (a genuine top-out). Detection mirrors movement: `CanPlaceCoop` fails but `CanPlace` (which ignores active cells) succeeds. Without this rule, a teammate's piece merely crossing the spawn area would spuriously eliminate the player (and in cooperative end the game for everyone). The engine also runs a piece-less **watchdog** on the same gravity tick: an alive player with no piece and no deferred spawn for two consecutive ticks gets a forced (re)spawn, healing a spawn whose publish was lost on a board that has since gone silent. Neither the deferral retry nor the watchdog runs before the game starts.
@@ -521,7 +522,7 @@ One shared board per team: width `10 + (teamSize − 1) × extraColumns` (§2 �
 
 ### Piece Spawning
 
-Coop rules per team: player at team slot N spawns centered in their section at column `N×extraColumns + 3`, anchor row 2. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so every team sees the identical, fair piece sequence.
+Coop rules per team: with every slot held, the player at team slot N spawns at column `N×extraColumns + 3`, anchor row 2 — and as on the crew's board (§3) the spawn points follow the team's slots present: the teammates seated right now, ranked in slot order, one `extra_columns` step apart and centred on the team board, so a lone teammate spawns in the middle of it and the next piece after a join or a leave comes in at the new point. Every player runs the full 7-bag sequence from the shared `meta.Seed` with an independent piece index (the coop scheme), so every team sees the identical, fair piece sequence.
 
 #### Split pieces (`split_pieces`)
 
@@ -678,11 +679,16 @@ the button reads **"Create game"**.
   takes the leaver's piece off the board and frees their seat. Seats are
   STABLE — the lowest free one is taken, a departed player's seat is the next
   one taken, nobody else's moves — so a cell's player index names one seat
-  for the whole game. A piece left behind by a player who crashed or dropped
-  off is vacated by the other players' engines once it has stood still for
-  10 s (a live piece never does), or the moment its seat is seen empty; and
-  with several playfields, a playfield nobody holds a seat on any more is
-  out — the last one left wins.
+  for the whole game. The seat's SPAWN POINT is not fixed, though: on a
+  shared playfield the players present are laid out for the company they
+  have — one `extra_columns` step apart, centred on the board, a player
+  alone in the middle of it (§3 Piece Spawning) — so a join or a leave
+  moves where everyone's NEXT piece comes in, never the pieces in play. A
+  piece left behind by a player who crashed or dropped off is vacated by
+  the other players' engines once it has stood still for 10 s (a live
+  piece never does), or the moment its seat is seen empty; and with several
+  playfields, a playfield nobody holds a seat on any more is out — the last
+  one left wins.
 - **Invite-only games** are joined by invitation only. Creating one opens an
   **invitee picker** over the lobby. There is no send button: **selecting a player
   sends their invitation at that moment**, and deselecting a still-pending player

@@ -1255,6 +1255,52 @@ func SharedSpawnOffset(section, extraCols int) int {
 	return max(section, 0) * ExtraColumnsPerPlayer(extraCols)
 }
 
+// SharedSpawnOffsetAmong is SharedSpawnOffset for a shared board with seats
+// to spare: the column offset the given slot spawns at while only the
+// present slots (0..seats-1, in any order, repeats ignored) hold a player.
+// An open game's seats come and go, and a board laid out for every seat it
+// could hold would leave a player alone spawning at its left edge with the
+// rest of the board empty. The players present are laid out for the company
+// they have instead: ranked in slot order, one extraCols step apart as ever
+// (no two spawn boxes overlap), and the group centred on the board — a
+// player alone spawns in the middle, two sit either side of it, and a full
+// house is exactly the layout SharedSpawnOffset gives, so a game whose
+// seats are all held is unchanged. A slot not among the present ones counts
+// as present (it is spawning, after all); no present slots at all — no
+// roster pushed yet — means every seat.
+func SharedSpawnOffsetAmong(slot int, present []int, seats, extraCols int) int {
+	if seats <= 1 || slot < 0 || slot >= seats {
+		return SharedSpawnOffset(slot, extraCols)
+	}
+	step := ExtraColumnsPerPlayer(extraCols)
+	seen := make(map[int]bool, len(present)+1)
+	ranked := make([]int, 0, len(present)+1)
+	for _, s := range present {
+		if s >= 0 && s < seats && !seen[s] {
+			seen[s] = true
+			ranked = append(ranked, s)
+		}
+	}
+	if len(ranked) == 0 {
+		return SharedSpawnOffset(slot, extraCols)
+	}
+	if !seen[slot] {
+		ranked = append(ranked, slot)
+	}
+	sort.Ints(ranked)
+	rank := 0
+	for i, s := range ranked {
+		if s == slot {
+			rank = i
+		}
+	}
+	// The group's spawn boxes span the standard width plus a step per
+	// player after the first; the board's columns beyond that — a step per
+	// empty seat — are split evenly to either side.
+	base := (seats - len(ranked)) * step / 2
+	return base + rank*step
+}
+
 // TeamBoardWidth returns the width of one team's shared board: the standard
 // 10 columns plus extraCols per teammate beyond the first, like the
 // cooperative board.

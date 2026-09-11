@@ -674,6 +674,45 @@ func (g *Game) mySlot() int {
 	return g.idx
 }
 
+// spawnColumn is our spawn column among the slots PRESENT on our playfield
+// (the GUI's config.SharedSpawnOffsetAmong, mirrored — gameplays §3/§5):
+// the seats present, ranked in slot order, spawn one extra-columns step
+// apart as ever, and the group is centred on the board, so alone we spawn
+// in the middle of it, two seats sit either side of the middle, and a full
+// house is the historical layout of slot × extra + spawnCol. A slot not in
+// the roster (ours, before the listing caught up with our join) counts as
+// present; no roster at all is every seat. Competitive boards, and a
+// shared board of one seat, spawn at the standard column.
+func (g *Game) spawnColumn(present []int) int {
+	seats, slot := g.seatsOnPF, g.mySlot()
+	if seats <= 1 {
+		return spawnCol
+	}
+	if slot < 0 || slot >= seats {
+		return max(slot, 0)*g.extra + spawnCol
+	}
+	seen := map[int]bool{}
+	var ranked []int
+	for _, s := range present {
+		if s >= 0 && s < seats && !seen[s] {
+			seen[s] = true
+			ranked = append(ranked, s)
+		}
+	}
+	if len(ranked) == 0 {
+		return slot*g.extra + spawnCol
+	}
+	if !seen[slot] {
+		ranked = append(ranked, slot)
+	}
+	sort.Ints(ranked)
+	// The group's spawn boxes span the standard width plus a step per seat
+	// after the first; the board's columns beyond that — a step per empty
+	// seat — are split evenly to either side.
+	base := (seats - len(ranked)) * g.extra / 2
+	return base + slices.Index(ranked, slot)*g.extra + spawnCol
+}
+
 // presentSlots is the slots seated on our playfield per a listing's roster:
 // every seat on the crew's board, our team's slots on a team's.
 func (g *Game) presentSlots(roster []playerSummary) []int {

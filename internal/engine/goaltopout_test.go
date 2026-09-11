@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetris/internal/config"
+	"jetris/internal/game"
 	natspkg "jetris/internal/nats"
 	"jetris/internal/testutil"
 )
@@ -187,4 +189,68 @@ func TestCoopTopOutFinishSurvivesTransientErrors(t *testing.T) {
 		return err == nil
 	}, "the topper's game_over on the stream")
 	waitMetaStatus(t, js, gameID, config.GameStatusFinished, 10*time.Second)
+}
+
+// blockSpawnDescent stacks the shared board up to the visible top — the two
+// rows under the headroom, every column but the last, so no row completes —
+// so a piece spawning in the headroom cannot fall: it locks where it
+// spawned and leaves the spawn cells taken for the piece after it.
+func blockSpawnDescent(t *testing.T, js jetstream.JetStream, gameID string, seats int) {
+	t.Helper()
+	width := config.SharedBoardWidth(seats, 4)
+	cells := make([]game.Cell, width)
+	for col := 0; col < width-1; col++ {
+		cells[col] = game.Cell{Occupied: true}
+	}
+	for row := config.VisibleRowStart; row < config.VisibleRowStart+2; row++ {
+		publishCoopRowCells(t, js, gameID, row, cells)
+	}
+}
+
+// The crew's last piece locks where it spawned, and the spawn that follows
+// finds its cells taken: that top-out is called from the spawn, under the
+// engine's lock, and must decide and finish the game like any other. Seen
+// on jetris-eu (2026-09-11, game ebc93724, a 2-seat crew with a 40-line
+// goal): the stack reached the headroom, each player's last piece locked at
+// its spawn cells, and neither engine published a game_over or the finish —
+// each had deadlocked taking its own lock a second time, and the game
+// stayed listed in progress until it was abandoned. A one-seat crew (the
+// journal's lock-in) takes the same path.
+func TestCoopGoalTopOutAtSpawnFinishesTheGame(t *testing.T) {
+	for _, seats := range []int{1, 2} {
+		t.Run("seats="+strconv.Itoa(seats), func(t *testing.T) {
+			js, gameID := startCoopGame(t, seats, 40, config.ScoringShared)
+			blockSpawnDescent(t, js, gameID, seats)
+			roster := []Seat{{PlayerID: "p0"}}
+			if seats > 1 {
+				roster = append(roster, Seat{PlayerID: "p1", Seat: 1})
+			}
+			a := startPlayer(t, js, gameID, "p0", 0, roster)
+			var finished atomic.Int32
+			a.OnGameFinished = func() { finished.Add(1) }
+
+			a.HardDrop() // nowhere to fall: the piece locks at its spawn cells
+
+			waitMetaStatus(t, js, gameID, config.GameStatusFinished, 10*time.Second)
+			stream, err := js.Stream(context.Background(), config.GameStream(gameID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stream.GetLastMsgForSubject(context.Background(), config.EventKindSubject(gameID, string(EventGameOver), "p0")); err != nil {
+				t.Fatalf("the topper's game_over is not on the stream: %v", err)
+			}
+			w, wt, decided := a.Winners()
+			if !decided || len(w) != 0 || wt != -1 {
+				t.Fatalf("Winners() = %v %d decided %v, want nobody, decided: the crew missed its goal", w, wt, decided)
+			}
+			if won, over := a.GameOutcome(); !over || won {
+				t.Fatalf("GameOutcome() = won %v over %v, want a loss", won, over)
+			}
+			waitUntil(t, 5*time.Second, func() bool { return finished.Load() == 1 }, "the topper's archive hook")
+			// A deadlocked engine never answers for its board again.
+			if a.Playfield() == nil {
+				t.Fatal("Playfield() = nil")
+			}
+		})
+	}
 }

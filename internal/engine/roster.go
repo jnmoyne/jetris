@@ -265,7 +265,7 @@ func (e *Engine) evaluateRosterOutcome(ctx context.Context) {
 		}
 	}
 	e.mu.Unlock()
-	if !e.decideOutcome(winners, winTeam) {
+	if !e.decideOutcome(winners, winTeam, false) {
 		return
 	}
 	if e.initialMode == ModePlayer && e.js != nil {

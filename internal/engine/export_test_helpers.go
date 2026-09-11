@@ -12,7 +12,7 @@ func (e *Engine) SetIndividualScoringForTest(on bool) { e.individual = on }
 
 // DecideOutcomeForTest records a verdict as the event stream would have.
 func (e *Engine) DecideOutcomeForTest(winners map[string]bool, winTeam int) {
-	e.decideOutcome(winners, winTeam)
+	e.decideOutcome(winners, winTeam, false)
 }
 
 // SetLineGoalForTest sets the game's length in lines as a meta would have

@@ -103,10 +103,20 @@ func (e *Engine) topScorers() map[string]bool {
 // verdict (won if it is among the winners), a spectator's simply ends, and
 // the UI learns the game is finished. The meta is not touched here: the
 // caller that owns the finish (the topper, the winners) transitions it.
-func (e *Engine) decideOutcome(winners map[string]bool, winTeam int) bool {
-	e.mu.Lock()
+// locked reports whether the caller already holds e.mu — spawnPiece's
+// top-out branch does, through handleTopOut. The mutex is not reentrant:
+// taking it again there froze both engines of a co-op goal game whose
+// crew topped out (jetris-eu, 2026-09-11) instead of ending the game.
+// The notifications below are lock-free (atomics and a non-blocking
+// send), so they run under the lock or off it alike.
+func (e *Engine) decideOutcome(winners map[string]bool, winTeam int, locked bool) bool {
+	if !locked {
+		e.mu.Lock()
+	}
 	if e.outcomeDecided {
-		e.mu.Unlock()
+		if !locked {
+			e.mu.Unlock()
+		}
 		return false
 	}
 	e.outcomeDecided = true
@@ -117,7 +127,9 @@ func (e *Engine) decideOutcome(winners map[string]bool, winTeam int) bool {
 		}
 	}
 	e.winTeam = winTeam
-	e.mu.Unlock()
+	if !locked {
+		e.mu.Unlock()
+	}
 	e.transitionToSpectator(winners[e.playerID])
 	e.emitUpdate(EngineUpdate{Kind: UpdateGameStatus, GameStatus: string(config.GameStatusFinished)})
 	return true

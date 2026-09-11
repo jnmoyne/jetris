@@ -81,7 +81,7 @@ func TestIndividualScoringTopOutRanks(t *testing.T) {
 	}
 
 	// A second decision is a no-op: the first verdict stands.
-	if tie.decideOutcome(map[string]bool{"nobody": true}, 3) {
+	if tie.decideOutcome(map[string]bool{"nobody": true}, 3, false) {
 		t.Fatal("decideOutcome decided twice")
 	}
 	if winners, winTeam, _ := tie.Winners(); winners["nobody"] || winTeam != -1 {

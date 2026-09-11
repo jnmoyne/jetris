@@ -641,7 +641,7 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 			// everyone, and the ranking is decided here — from the totals the
 			// ordered stream carried up to this very event, the topper's own
 			// echo included, so every engine crowns the same top scorer(s).
-			e.decideOutcome(e.topScorers(), -1)
+			e.decideOutcome(e.topScorers(), -1, false)
 			if ev.PlayerID != e.playerID {
 				e.finishCoopGame(ctx)
 			}
@@ -653,7 +653,7 @@ func (e *Engine) handleGameEvent(ctx context.Context, ev GameEvent) {
 				// a loss when the crew had a goal to reach (nobody wins),
 				// the end of the crew's run otherwise.
 				if e.lineGoal > 0 {
-					e.decideOutcome(map[string]bool{}, -1)
+					e.decideOutcome(map[string]bool{}, -1, false)
 				} else {
 					e.transitionToSpectator(false)
 				}

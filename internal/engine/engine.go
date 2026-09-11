@@ -1693,8 +1693,10 @@ func (e *Engine) handleTopOut(ctx context.Context, locked bool) {
 	case e.gameMode == config.ModeCooperative && e.lineGoal > 0:
 		// The crew set out to clear the goal and fell short: a loss, with
 		// nobody a winner — decided here, as every peer decides it from
-		// our game_over (handleGameEvent).
-		e.decideOutcome(map[string]bool{}, -1)
+		// our game_over (handleGameEvent). Under the lock we were handed
+		// when the spawn found its cells taken: the decision must not
+		// take e.mu a second time.
+		e.decideOutcome(map[string]bool{}, -1, locked)
 	default:
 		e.transitionToSpectator(false) // we topped out → we lost
 	}

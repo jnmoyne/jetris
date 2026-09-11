@@ -100,7 +100,7 @@ func (e *Engine) checkLineGoal(ctx context.Context, ev GameEvent) {
 	e.mu.Lock()
 	e.goalReached = true
 	e.mu.Unlock()
-	if !e.decideOutcome(winners, winTeam) {
+	if !e.decideOutcome(winners, winTeam, false) {
 		return
 	}
 	if e.initialMode == ModePlayer && e.js != nil {

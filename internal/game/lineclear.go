@@ -17,49 +17,36 @@ func CompletedRows(pf *Playfield) []int {
 	return rows
 }
 
-// Level returns the current level derived from total lines cleared.
-func Level(totalLinesCleared int) int {
-	l := totalLinesCleared / 10
-	if l > 19 {
-		return 19
-	}
-	return l
-}
-
-// minGravityInterval floors the speed curve at one 60 Hz frame. The engine
-// moves a piece one row per gravity tick and each tick is a JetStream batch,
-// so the Guideline's sub-frame intervals (its levels 14+: 11 ms, 7 ms, …)
-// cannot be honoured row by row; those levels all run at the floor.
-const minGravityInterval = time.Second / 60
-
-// gravityTable is the Guideline speed curve by Jetris level (0-based):
+// The level and the speed curve are Tetris Worlds', the game the Guideline
+// was drawn from (https://harddrop.com/wiki/Tetris_Worlds): the level starts
+// at 1 and rises every LinesPerLevel lines, in every game mode, and the time
+// a piece spends on each row at level L is
 //
 //	seconds per row = (0.8 − (L − 1) × 0.007)^(L − 1)
 //
-// with the Guideline's level L = level + 1, rounded to the millisecond and
-// floored at minGravityInterval. Level 0 is 1000 ms, then 793, 618, 473, 355,
-// 262, 190, 135, 94, 64, 43, 28, 18 ms, and one frame from level 13 on.
-var gravityTable = func() (t [20]time.Duration) {
-	for level := range t {
-		l := float64(level)
-		secs := math.Pow(0.8-l*0.007, l)
-		d := time.Duration(math.Round(secs*1000)) * time.Millisecond
-		if d < minGravityInterval {
-			d = minGravityInterval
-		}
-		t[level] = d
-	}
-	return t
-}()
+// up to MaxLevel — 1000 ms at level 1, then 793, 618, 473, 355, 262, 190,
+// 135, 94, 64, 43, 28, 18, 11 and 7 ms. The last two are faster than a 60 Hz
+// frame (1.46G and 2.36G in the page's units): the engine honours them by
+// moving the piece several rows in one batch when its clock owes more than
+// one row (engine/move.go).
+const (
+	MinLevel      = 1
+	MaxLevel      = 15
+	LinesPerLevel = 10
+)
+
+// Level returns the level a line total has reached: MinLevel until the
+// LinesPerLevel-th line, one more per LinesPerLevel after it, MaxLevel at
+// most.
+func Level(totalLinesCleared int) int {
+	return min(MinLevel+max(totalLinesCleared, 0)/LinesPerLevel, MaxLevel)
+}
 
 // GravityInterval returns the time a piece spends on each row at the given
-// level (see gravityTable).
+// level — the curve above, exactly. A level outside MinLevel..MaxLevel reads
+// as the nearer bound.
 func GravityInterval(level int) time.Duration {
-	if level < 0 {
-		level = 0
-	}
-	if level >= len(gravityTable) {
-		return gravityTable[len(gravityTable)-1]
-	}
-	return gravityTable[level]
+	level = min(max(level, MinLevel), MaxLevel)
+	l := float64(level - 1)
+	return time.Duration(math.Pow(0.8-l*0.007, l) * float64(time.Second))
 }

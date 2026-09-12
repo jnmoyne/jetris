@@ -555,6 +555,7 @@ func (l *Lobby) runArchiveConsumer(ctx context.Context) {
 			if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 				continue
 			}
+			rec.Normalize() // a record from before the 1-based levels reads as one written today
 			l.mu.Lock()
 			l.archives = append(l.archives, rec)
 			l.topRanked = config.ReplayTopRankedCut(l.archives)

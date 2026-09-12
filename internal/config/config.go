@@ -732,8 +732,21 @@ type PlayerResult struct {
 	Agent  bool `json:"agent,omitempty"` // seat was played by an agent (from the roster at archive time)
 }
 
+// ArchiveRecordVersion is the format of the archive records written now.
+// A record's Version says what its numbers mean:
+//
+//   - 1, or absent (every record written before the field): levels are
+//     0-based (`lines / 10`, 19 at most);
+//   - 2: levels are Tetris Worlds' (game.Level): 1 at the start, one more
+//     every ten lines, 15 at most.
+//
+// Normalize brings a record read from the stream up to date, so the readers
+// (the lobby's history, the replay viewer) see one meaning.
+const ArchiveRecordVersion = 2
+
 // ArchiveRecord is published to the archive stream when a game finishes.
 type ArchiveRecord struct {
+	Version      int            `json:"version,omitempty"` // the record's format (ArchiveRecordVersion); absent = 1
 	GameID       string         `json:"game_id"`
 	Mode         GameMode       `json:"mode"`
 	PlayerCount  int            `json:"player_count"`
@@ -755,6 +768,26 @@ type ArchiveRecord struct {
 	TeamLevels   []int          `json:"team_levels,omitempty"`   // teams mode: final level per team (indexed by team)
 	Boards       []BoardPicture `json:"boards,omitempty"`        // end-of-game playfield snapshot(s) for the lobby's history view
 	Chat         []ChatLine     `json:"chat,omitempty"`          // the game's chat history (last ArchiveChatCap lines), captured before the chat purge
+}
+
+// Normalize brings a record decoded from the archive stream up to
+// ArchiveRecordVersion: a record from before the field (Version 0 or 1)
+// carries 0-based levels, which read one lower than the same play would be
+// scored today — every level it holds moves up by one. Idempotent.
+func (r *ArchiveRecord) Normalize() {
+	if r.Version >= ArchiveRecordVersion {
+		return
+	}
+	for i := range r.Players {
+		r.Players[i].Level++
+	}
+	if r.Mode == ModeCooperative && !r.IndividualScoring() {
+		r.FinalLevel++
+	}
+	for t := range r.TeamLevels {
+		r.TeamLevels[t]++
+	}
+	r.Version = ArchiveRecordVersion
 }
 
 // Teams is the number of teams the archived game was played between,

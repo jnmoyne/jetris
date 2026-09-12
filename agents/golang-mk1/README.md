@@ -30,7 +30,9 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
   KV, the roster announcement, the ready toggle and (when its toggle completes the set) the
   5→0 countdown, its own engine — a bit-exact port of the game's PCG + 7-bag piece RNG
   (the double bag and no bag a game's `bag` may ask for included),
-  spawning, gravity, lock-in, line clears, garbage application, top-out — plus per-player
+  spawning, gravity (the Tetris Worlds curve at the level in every mode — its own lines'
+  in competitive — the rows a deadline owes moved as one batch, and a lost batch's rows
+  owed again at once), lock-in, line clears, garbage application, top-out — plus per-player
   game-over events, CAS-failure flashes, and, when it wins, the finish → archive → cleanup
   sequence.
 - Publishes every board change as an **atomic CAS batch** to its cell subjects

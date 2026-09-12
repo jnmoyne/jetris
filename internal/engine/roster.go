@@ -58,7 +58,7 @@ func (e *Engine) seatPresentLocked(seat int) bool {
 	return false
 }
 
-// vacateIdlePeers runs on the gravity tick of a playing engine on a shared
+// vacateIdlePeers runs on the housekeeping tick of a playing engine on a shared
 // board: every peer piece that has stood still for the idle threshold — a
 // live piece never does, gravity moves it and the lock delay's resets cap
 // well under the threshold — or whose seat nobody holds any more is

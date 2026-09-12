@@ -30,7 +30,6 @@ const (
 	presenceEvery   = 5 * time.Second
 	presenceTTL     = 5 * time.Minute // per-message TTL on presence writes: a crashed peer's entry self-deletes (config.PresenceTTL)
 	inviteTTL       = 120 * time.Second
-	gravity         = 1000 * time.Millisecond // fixed level-0 competitive gravity (gameplays §7)
 )
 
 // Atomic-batch publish headers (guide §4.3).

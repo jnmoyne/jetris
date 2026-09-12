@@ -57,8 +57,10 @@ import (
 //     goes out again as one batch — re-projected from the repaired board,
 //     with its actual sequences: nothing computed on the lost step's
 //     assumptions is ever sent again. A lost race costs the player exactly
-//     that move, as a dropped move always did, plus a repair round trip. (A
-//     gravity tick is not replayed: the timer keeps ticking.)
+//     that move, as a dropped move always did, plus a repair round trip. The
+//     rows of gravity a lost step carried (MoveGravity) are NOT paid for:
+//     they go to the head of the replay and fall again — a row of gravity is
+//     retried until it lands (or the piece rests, which makes it a no-op).
 //
 // Everything that is NOT a step — a hard drop, the lock, a hold, a garbage
 // raise, a spawn — is a BARRIER: it settles the pipeline first
@@ -245,10 +247,49 @@ func (e *Engine) coalescing() bool {
 // and a hold are barriers.
 func isStep(m MoveType) bool {
 	switch m {
-	case MoveLeft, MoveRight, MoveDown, RotateCW, RotateCCW, Rotate180:
+	case MoveLeft, MoveRight, MoveDown, MoveGravity, RotateCW, RotateCCW, Rotate180:
 		return true
 	}
 	return false
+}
+
+// gravityMoves is the rows of gravity among a step's moves — what a lost
+// step's replay keeps of it (resolveStep).
+func gravityMoves(moves []MoveType) []MoveType {
+	var out []MoveType
+	for _, m := range moves {
+		if m == MoveGravity {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// hasGravity reports whether a step carries a row of gravity: an
+// engine-driven step, which the sync mode commits with merge-retry on a
+// shared board (publishStep).
+func hasGravity(moves []MoveType) bool {
+	for _, m := range moves {
+		if m == MoveGravity {
+			return true
+		}
+	}
+	return false
+}
+
+// QueuedPlayerMoves is how many of the queued moves are the player's — the
+// rows of gravity queued alongside them (queueGravity) are the engine's and
+// take none of the room the gestures' buffer is measured by.
+func (e *Engine) QueuedPlayerMoves() int {
+	e.bufferedMu.Lock()
+	defer e.bufferedMu.Unlock()
+	n := 0
+	for _, m := range e.bufferedMoves {
+		if m != MoveGravity {
+			n++
+		}
+	}
+	return n
 }
 
 // barrierQueued reports whether a hard drop or a hold is waiting in the
@@ -359,10 +400,15 @@ type inflightStep struct {
 	cells map[game.CellPos]game.Cell // their committed content
 	pre   game.Piece                 // the piece before the step: where a lost pipeline rolls back to
 	piece game.Piece                 // where the piece wanted to be: the outline that flashes if the step is lost
-	moves []MoveType                 // the player moves the step carries — replayed if a step ahead of it is lost (nil for a gravity tick)
+	moves []MoveType                 // the moves the step carries — the player's and the rows of gravity (MoveGravity) — replayed if a step ahead of it is lost; a lost step's own rows of gravity are replayed too
 	t0    time.Time                  // when the commit was sent (RTT)
 	fut   *natspkg.BatchFuture       // the pending ack (nil for a sync step)
-	hook  func()                     // test seam: runs before the step resolves
+	// predEnd is the sequence the batch's LAST message was predicted to get
+	// when it was sent (0 for a sync or solo step): the ack tells where it
+	// really landed, and the guesses of the steps behind it are re-chained
+	// from there (resolveStep).
+	predEnd uint64
+	hook    func() // test seam: runs before the step resolves
 	// The outcome, once the ack is in (resolveStep): folded into the
 	// pipeline in SEND order, so a step whose ack goroutine got to the lock
 	// first waits here for the steps ahead of it.
@@ -417,7 +463,7 @@ func (e *Engine) projectionBase() *game.Playfield {
 // publishStep commits one step: cells is the batch (the diff against the
 // projection base), pre the piece before the step, target where it wants to
 // be, moves the player moves it carries (nil for an engine-driven step — a
-// gravity tick — which is never replayed). Sync mode is the game's classic
+// gravity, replayed by the repair if the step is lost). Sync mode is the game's classic
 // path — the publish blocks on the ack, a lost CAS race drops the step and
 // flashes — wrapped in an in-flight entry for the round trip so the UI's
 // intent outline never snaps back mid-flight; async mode pipelines
@@ -430,7 +476,7 @@ func (e *Engine) publishStep(ctx context.Context, cells map[game.CellPos]game.Ce
 		e.publishLocal(ctx, cells, false) // the journal: no guard, no wait, no rollback (solo.go)
 		return
 	}
-	internal := moves == nil
+	internal := hasGravity(moves)
 	if m := e.PublishMode(); m == PublishAsync || m == PublishOptimistic {
 		// The optimistic mode's guessed expectations are a SHARED board's:
 		// they guard a cell in flight against a teammate's write. On a
@@ -455,8 +501,9 @@ func (e *Engine) publishStep(ctx context.Context, cells map[game.CellPos]game.Ce
 	e.inflight = append(e.inflight, step)
 	e.mu.Unlock()
 	if internal && e.sharedBoard() {
-		// A gravity tick on a shared board keeps falling under contention:
-		// refetch + retry, flashing only if every retry is exhausted.
+		// A step carrying gravity on a shared board keeps falling under
+		// contention: refetch + retry, flashing only if every retry is
+		// exhausted.
 		e.publishProjectedCellsWithMergeRetry(ctx, cells, pre.Cells(), false)
 	} else {
 		e.publishProjectedCellsFlash(ctx, cells, pre.Cells(), target.Cells(), false)
@@ -496,6 +543,7 @@ func (e *Engine) publishStepAsync(ctx context.Context, cells map[game.CellPos]ga
 		e.inflightSeq[k] = base + uint64(i) + 1
 	}
 	e.pipePredictedEnd = base + uint64(len(keys))
+	step.predEnd = e.pipePredictedEnd
 	e.mu.Unlock()
 
 	if hook := e.testHookBeforeStepSend; hook != nil {
@@ -613,14 +661,38 @@ func (e *Engine) resolveStep(s *inflightStep, seq uint64, err error) {
 			for i, k := range x.keys {
 				e.playfield.Apply(k.Row, k.Col, x.cells[k], x.seq-uint64(n-1-i))
 			}
+			if x.predEnd != 0 && x.seq != x.predEnd {
+				// The ack says where the batch really landed, and the
+				// steps still in flight guessed their sequences off the
+				// wrong end. Re-chain them from the truth, in send order
+				// (the last writer of a cell wins, as when they were sent),
+				// so the next step's expectations on their cells — and
+				// its own guess — start from actual sequences.
+				end := x.seq
+				for _, s := range e.inflight {
+					for i, k := range s.keys {
+						e.inflightSeq[k] = end + uint64(i) + 1
+					}
+					end += uint64(len(s.keys))
+					s.predEnd = end
+				}
+				if len(e.inflight) > 0 {
+					e.pipePredictedEnd = end
+				}
+			}
 			landed = append(landed, x)
 			continue
 		}
 		if !poisoned {
-			// The loss itself: its move is the one the player pays for.
+			// The loss itself: its player moves are the ones the player
+			// pays for. The rows of gravity it carried are not: they head
+			// the replay and fall again, until they land.
 			e.pipeBroken = true
 			e.pipeRollback = x.pre
-			flashPre, flashTarget = x.pre.Cells(), x.piece.Cells()
+			e.pipeReplay = append(e.pipeReplay, gravityMoves(x.moves)...)
+			if len(gravityMoves(x.moves)) < len(x.moves) {
+				flashPre, flashTarget = x.pre.Cells(), x.piece.Cells()
+			}
 			// The scoring's account of the piece was kept along the
 			// predicted path: the lost step and the ones behind it are
 			// undone (the latter play again through noteStep), so a
@@ -993,7 +1065,7 @@ func stepPieceKick(p game.Piece, m MoveType, pf *game.Playfield, shared bool, pl
 		next = p
 		next.Col++
 		return next, 0, canPlace(next), false
-	case MoveDown:
+	case MoveDown, MoveGravity:
 		next = p
 		next.Row++
 		return next, 0, canPlace(next), false

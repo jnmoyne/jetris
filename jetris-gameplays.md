@@ -362,9 +362,9 @@ Because the board is shared, a clear must be reflected on **every** player's scr
 
 ### Scoring
 
-Every mode scores by the Guideline's scoring table (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — Jetris levels are 0-based (`totalLines / 10`, the gravity curve's index), so the table's multiplier is `level + 1` — plus the piece's drop points, which are never multiplied:
+Every mode scores by the Guideline's scoring table (tetris.wiki/Scoring, "Recent guideline compatible games"; `game.Clear`). A lock is worth the clear it made, multiplied by the **level before the clear** — the level gravity falls at, 1-based like the speed curve's (`1 + totalLines / 10`, 15 at most; §7), so the multiplier is the level itself — plus the piece's drop points, which are never multiplied:
 
-| Action                                                             | Points × (level + 1)                                                               | Difficult   |
+| Action                                                             | Points × level                                                                     | Difficult   |
 |--------------------------------------------------------------------|------------------------------------------------------------------------------------|-------------|
 | Single / Double / Triple / Quad                                  | 100 / 300 / 500 / 800                                                              | Quad only |
 | Mini T-Spin, no lines / T-Spin, no lines                           | 100 / 400                                                                          | no          |
@@ -378,7 +378,7 @@ Every mode scores by the Guideline's scoring table (tetris.wiki/Scoring, "Recent
 
 A **T-spin** is a T whose last successful move was a rotation, resting with at least three of the four corners of its 3×3 box filled — a locked cell, the floor or a wall; another player's falling piece is not a corner. It is a full T-spin when both corners on the side the T points to are filled, or when a quarter turn used the last SRS kick (the T-spin-triple kick — a half turn counts as a rotation but has no such kick, however far it went); otherwise a Mini (`game.DetectTSpin`). A **180 spin** is any piece whose last move was a half turn (the Z key) and which rests **immobile** — unable to shift left, right or up, the walls and the locked cells blocking it (the wiki's immobile-twist rule, [harddrop.com/wiki/List_of_twists](https://harddrop.com/wiki/List_of_twists) "Rewards for twists") — or a T the corner rule would call a full T-spin; it scores, attacks and chains exactly as a full T-spin and the banner says `180 SPIN DOUBLE` (`game.DetectSpin`, `TSpin180`). A hard drop of zero cells is not a move, so a piece turned into its slot and hard-dropped in place is still a spin; any shift, soft drop, gravity step or real fall forgets the rotation. **Back-to-Back**: a difficult clear — a Jetris, or any T-spin that cleared lines — right after another difficult clear scores one and a half times; only a plain single, double or triple breaks the chain, while a T-spin with no lines or a piece that clears nothing leaves it alone. **Combo**: consecutive locks that each cleared lines; a lock that clears nothing ends the run. The combo and the chain are per player: on a shared board each player's sequence is their own, and the points go to the shared score.
 
-Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a quad is 800 × (level + 1) whether one or six play.
+Cooperative: the crew shares one score and the multiplier is the shared level (`totalLines` counts every clear on the board). The score no longer scales with the seat count — a quad is 800 × level whether one or six play.
 
 ### Shared Score
 
@@ -410,7 +410,7 @@ never against a crew's shared run.
 
 ### Level Progression
 
-Level = `totalLinesCleared / 10`, capped at 19. Level affects gravity speed (see Section 7). Level is computed independently by each engine from its local `totalLines` counter, which increases on both local clears and received `EventLineClear` events.
+Level = `1 + totalLinesCleared / 10`: 1 at the start, one more every ten lines, 15 at most — the same rule in every mode (the crew's line total here, a team's in teams, a player's own lines in competitive). The level drives the gravity speed and the scoring multiplier (see Section 7). It is computed independently by each engine from its local `totalLines` counter, which increases on both local clears and received `EventLineClear` events, and the gravity clock takes the new speed the moment it changes.
 
 ### Game Over
 
@@ -478,7 +478,7 @@ Standard modern-rules movement. Collision detection is using CAS only.
 
 ### Gravity
 
-Standard gravity with the same lock delay as cooperative mode (see §3 Lock Delay). There is no "blocked by active piece" logic since there's only one piece per playfield: when a piece can't move down it has landed, and it locks when the lock delay expires (or at once on a hard drop).
+Standard gravity at the player's **own** level — `1 + lines / 10` of the lines their own pieces cleared, on the same curve as every other mode (§7) — with the same lock delay as cooperative mode (see §3 Lock Delay). There is no "blocked by active piece" logic since there's only one piece per playfield: when a piece can't move down it has landed, and it locks when the lock delay expires (or at once on a hard drop).
 
 ### Line Clears
 
@@ -486,7 +486,7 @@ A row is complete when all 10 cells are occupied (locked). Standard modern rules
 
 ### Scoring
 
-Competitive scores by the same modern scoring table (§2 Scoring): each player keeps their own score — their clears, T-spins, Back-to-Back, combos and drop points — multiplied by the level their **own** line total reaches (`lines / 10`, shown as the HUD's LEVEL; competitive gravity does not speed up with it). The score decides nothing: the winner is the last player left who has not topped out, and the score is kept for the leaderboard. No line-clear events are published in competitive; the score travels in the player's `game_over` event and the archive record.
+Competitive scores by the same modern scoring table (§2 Scoring): each player keeps their own score — their clears, T-spins, Back-to-Back, combos and drop points — multiplied by the level their **own** line total reaches (`1 + lines / 10`, shown as the HUD's LEVEL — the level their gravity falls at too). The score decides nothing: the winner is the last player left who has not topped out, and the score is kept for the leaderboard. No line-clear events are published in competitive; the score travels in the player's `game_over` event and the archive record.
 
 ### Shrink Attack
 
@@ -842,6 +842,7 @@ Published to `JETRIS_ARCHIVE` stream when a game finishes:
 
 ```json
 {
+  "version": 2,
   "game_id": "uuid",
   "mode": 0,
   "player_count": 2,
@@ -858,7 +859,7 @@ Published to `JETRIS_ARCHIVE` stream when a game finishes:
 }
 ```
 
-Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`), the `lines` the player's own pieces cleared (the same event's `total_lines`; absent in records written before the field) and an `agent` flag (from the roster at archive time) marking seats that were played by agents. Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
+The record's `version` says what its numbers mean: 2, the levels are the ones the game shows (1 at the start, §7); a record with no version was written when levels were 0-based, and every reader raises its levels by one on decode (`ArchiveRecord.Normalize`), so the history reads the same for old games and new. Each player result carries the `level` achieved at game end (derived from that engine's line total; sent in `EventGameOver`), the `lines` the player's own pieces cleared (the same event's `total_lines`; absent in records written before the field) and an `agent` flag (from the roster at archive time) marking seats that were played by agents. Cooperative records carry the shared `total_score` and `final_level`; the history list shows them plus per-player scores, and competitive history lines show each player's score and level.
 
 **History controls:** the lobby's GAME HISTORY header carries a sort selector — **By score** (headline score, the default) or **By date** (most recently finished first) — and an **"Agent games"** checkbox (checked by default); unchecking it hides every game that had at least one agent seat. Records from before the agent flag existed read as all-human. Each row's MODE column also carries a **crew line** telling the two kinds apart at a glance: **HUMANS** (green) for human-vs-human games, **WITH AGENTS** (orange) when any seat was an agent. When the listed history contains teams games, a **TEAMS OVERALL** standings line sits between the header and the table — each team's total wins (draws credit neither side) and summed points across those games (e.g. `TEAM A 3W · 12400 PTS — TEAM B 1W · 6100 PTS`), with the leading team (by wins, points as the tie-break) in gold; the agent filter applies to the standings too.
 
@@ -889,30 +890,31 @@ Lobby chat history is retained for 7 days; a game's chat messages are purged fro
 
 ## 7. Gravity Speed Curve
 
-The modern speed curve. With `L` the curve's level (Jetris levels start at 0, so `L = level + 1`), the time a piece spends on each row is
+The level and the speed curve are Tetris Worlds' ([harddrop.com/wiki/Tetris_Worlds](https://harddrop.com/wiki/Tetris_Worlds)), the same in every mode: the level starts at 1 and rises every 10 lines — the board's line total on a shared board, a player's own lines in competitive — up to level 15, and the time a piece spends on each row at level `L` is
 
     seconds per row = (0.8 − (L − 1) × 0.007) ^ (L − 1)
 
-rounded to the millisecond and floored at one 60 Hz frame (≈17 ms): the engine moves a piece one row per gravity tick and each tick is a JetStream batch, so the sub-frame intervals of the curve's highest levels cannot be honoured row by row (`game.GravityInterval`).
+exactly, neither rounded nor floored (`game.GravityInterval`; `game.Level` is the level rule). The top two levels are faster than a 60 Hz frame — more than 1G, in the page's units:
 
-| Level | Interval |
-|-------|----------|
-| 0 | 1000 ms |
-| 1 | 793 ms |
-| 2 | 618 ms |
-| 3 | 473 ms |
-| 4 | 355 ms |
-| 5 | 262 ms |
-| 6 | 190 ms |
-| 7 | 135 ms |
-| 8 | 94 ms |
-| 9 | 64 ms |
-| 10 | 43 ms |
-| 11 | 28 ms |
-| 12 | 18 ms |
-| 13+ | 17 ms (one frame) |
+| Level | Time per row | G |
+|-------|--------------|-------|
+| 1 | 1000 ms | 0.017 |
+| 2 | 793 ms | 0.021 |
+| 3 | 617.8 ms | 0.027 |
+| 4 | 472.7 ms | 0.035 |
+| 5 | 355.2 ms | 0.047 |
+| 6 | 262.0 ms | 0.064 |
+| 7 | 189.7 ms | 0.088 |
+| 8 | 134.7 ms | 0.124 |
+| 9 | 93.9 ms | 0.178 |
+| 10 | 64.2 ms | 0.260 |
+| 11 | 43.0 ms | 0.388 |
+| 12 | 28.2 ms | 0.591 |
+| 13 | 18.2 ms | 0.918 |
+| 14 | 11.4 ms | 1.457 |
+| 15 | 7.06 ms | 2.361 |
 
-Competitive mode stays at level 0 (1000 ms); shared boards (cooperative and teams) level up every 10 lines.
+**Gravity is a clock, not a round trip.** The engine's gameplay goroutine (`runInput`) keeps a fixed schedule — a row falls due every interval of the level, the next deadline measured from the last, never from "now" — and a wake-up that comes late (a sync round trip that blocked it, a repair, a burst of input) owes every row the schedule passed, at once. The rows are not published on the spot: each is queued as a step of its own kind (`MoveGravity`) into the same move queue as the player's steps, so the rows that come due while a batch is in flight wait behind it and go out **aggregated** — together with the player's steps around them, in order — as one atomic batch when the slot frees (the step pipeline, `engine/pipeline.go`). The optimistic display plays the queued rows at once, so the piece falls at the level's speed whatever the wire does, several rows per batch at the top levels. A batch of gravity lost to a CAS race is not dropped: the repair puts its rows at the head of the replay and they fall again, until they land. A row of gravity scores nothing (a soft drop's row scores 1). A row that cannot fall is never queued: a piece resting on the stack is the lock delay's business (§3), and a piece resting on **another player's falling piece** waits — the obstacle falls away, and the clock asks again at its next tick. A level change, a clear of yours or a teammate's, re-arms the clock at once.
 
 ---
 

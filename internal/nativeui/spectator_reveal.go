@@ -280,7 +280,8 @@ func (a *App) rankLiveGame(eng *engine.Engine, view gameView, oc liveOutcome, gm
 // between equal headline scores.
 func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.GameMode, now time.Time) config.ArchiveRecord {
 	rec := config.ArchiveRecord{
-		GameID: eng.GameID(), Mode: gmode, PlayerCount: eng.PlayerCount(),
+		Version: config.ArchiveRecordVersion,
+		GameID:  eng.GameID(), Mode: gmode, PlayerCount: eng.PlayerCount(),
 		TeamCount: eng.TeamCount(), TeamSize: eng.TeamSize(), TeamNames: eng.TeamNames(),
 		ExtraColumns: eng.ExtraColumns(), ExtraRows: eng.ExtraRows(), LineGoal: eng.LineGoal(),
 		WinningTeam: oc.winTeam, FinishedAt: now,

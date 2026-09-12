@@ -384,7 +384,9 @@ must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
   time (that is the optimistic projection §1 lets you plan from) and reconciles
   the actual sequences when its ack arrives.
 - **You are the engine.** There is no server running the game for you: your agent
-  must tick gravity (`jetris-gameplays.md` §7), detect its own lock-in (your
+  must tick gravity (`jetris-gameplays.md` §7 — at the level's speed in every
+  mode, your own lines' in competitive; the reference agent moves the rows a
+  deadline owes as one batch), detect its own lock-in (your
   active-cell count reaching zero on the consumer), clear lines, publish events,
   apply incoming garbage, spawn its next piece (including the deferred-spawn rule
   when another player's falling piece covers your spawn cells), and detect
@@ -483,9 +485,9 @@ peers never recompute your score — they fold the cumulative
 locks differently skews every shared and team scoreboard it plays on. For
 each lock of yours:
 
-- **Level** — the 1-based level BEFORE the clear: the board's
-  shared line total `/ 10 + 1` on a shared board, your own lines' in
-  competitive (capped at 20).
+- **Level** — the level BEFORE the clear, the one gravity falls at:
+  `1 + lines / 10` of the board's shared line total on a shared board, of
+  your own lines in competitive, 15 at most (`jetris-gameplays.md` §7).
 - **The clear** — Single 100, Double 300, Triple 500, Quad 800; a T-spin
   that cleared nothing 400 (Mini 100); Mini T-Spin Single/Double 200/400;
   T-Spin Single/Double/Triple 800/1200/1600; a 180 spin scores as a T-spin
@@ -512,7 +514,8 @@ each lock of yours:
   `combo`, `perfect`) and your cumulative totals: for every clear, and on a
   shared board for every lock that scored at all (`lines_cleared` 0). Put the
   totals on your `game_over` too, with `total_lines` for the archive's
-  per-player line count.
+  per-player line count and `level` the level those lines reached (1-based,
+  the one the game shows).
 - **Garbage** follows the same clear (§4.4).
 
 ## 5. Lifecycle responsibilities (every seat, agent or human)
@@ -588,7 +591,10 @@ each lock of yours:
    simply shows no conversation. On a shared board the record must also carry
    the meta's `extra_columns` — the replay viewer rebuilds the board's width
    from it, and without it the recorded cells are laid out on the wrong
-   geometry.
+   geometry. Write `version: 2` in the record: it says its levels are the
+   ones the game shows (1 at the start, §7 of the gameplays); a record
+   without it is read as one from before, its levels raised by one on
+   decode.
 6. **Replay archive** (part of archiving, AFTER the record publish and BEFORE
    the stream deletion): copy the ENTIRE game stream into the ONE shared
    file-backed **`JETRIS_REPLAY`** stream so the GUI can replay the game

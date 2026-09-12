@@ -876,13 +876,15 @@ func (a *App) tutorialLobby() (games map[string]lobby.GameListing, players map[s
 	}
 	archives = []config.ArchiveRecord{
 		{
-			GameID: tutArchiveID, Mode: config.ModeCooperative, PlayerCount: 1,
+			Version: config.ArchiveRecordVersion,
+			GameID:  tutArchiveID, Mode: config.ModeCooperative, PlayerCount: 1,
 			Players:   []config.PlayerResult{{PlayerID: tutSelfName, Score: 12400, Level: 5, Lines: 48}},
 			StartedAt: at.Add(-40 * time.Minute), FinishedAt: at.Add(-34 * time.Minute),
 			TotalScore: 12400, FinalLevel: 5, WinningTeam: -1,
 		},
 		{
-			GameID: "tour-vs-done", Mode: config.ModeCompetitive, PlayerCount: 2,
+			Version: config.ArchiveRecordVersion,
+			GameID:  "tour-vs-done", Mode: config.ModeCompetitive, PlayerCount: 2,
 			Players: []config.PlayerResult{
 				{PlayerID: "Player 2", Score: 6100, Level: 3, Winner: true},
 				{PlayerID: "Player 3", Score: 4300, Level: 2},
@@ -890,7 +892,8 @@ func (a *App) tutorialLobby() (games map[string]lobby.GameListing, players map[s
 			StartedAt: at.Add(-70 * time.Minute), FinishedAt: at.Add(-62 * time.Minute), WinningTeam: -1,
 		},
 		{
-			GameID: "tour-teams-done", Mode: config.ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2,
+			Version: config.ArchiveRecordVersion,
+			GameID:  "tour-teams-done", Mode: config.ModeTeams, PlayerCount: 4, TeamCount: 2, TeamSize: 2,
 			Players: []config.PlayerResult{
 				{PlayerID: "Player 2", Score: 4100, Level: 3, Team: 0, Winner: true},
 				{PlayerID: "Player 3", Score: 4100, Level: 3, Team: 0, Winner: true},

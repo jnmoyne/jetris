@@ -297,6 +297,10 @@ func (a *App) moveGlyph(m engine.MoveType, size unit.Dp, col colorN) layout.Widg
 		return glyphWidget(glyphRight, size, col)
 	case engine.MoveDown:
 		return glyphWidget(glyphDown, size, col)
+	case engine.MoveGravity:
+		// A row of gravity queued among the player's moves: the soft
+		// drop's arrow, faded — the engine's step, not a press.
+		return glyphWidget(glyphDown, size, withAlpha(col, 0.45))
 	case engine.MoveHardDrop:
 		return glyphWidget(glyphDrop, size, col)
 	case engine.RotateCW:

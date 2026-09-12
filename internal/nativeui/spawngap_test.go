@@ -143,7 +143,7 @@ func TestFarServerSpacePressedBehindTheDropDropsTheNextPiece(t *testing.T) {
 	tap(a, r, key.NameSpace)
 	time.Sleep(40 * time.Millisecond) // inside the drop's round trip
 	tap(a, r, key.NameSpace)
-	// Gravity alone (a row a second at level 0) cannot lock a piece in this
+	// Gravity alone (a row a second at level 1) cannot lock a piece in this
 	// time: only the second drop can bring the index to 2.
 	if !frames(a, r, 3*time.Second, func() bool { return e.PieceIdx() >= 2 }) {
 		t.Fatalf("the drop pressed behind the drop was lost: piece index %d, want 2", e.PieceIdx())

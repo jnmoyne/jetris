@@ -644,21 +644,25 @@ func CompletedRows(pf *Playfield) []int
 // handleLockIn): cooperative adds playerCount×lines, competitive adds the line
 // count. There is no separate guideline-score helper. See jetris-gameplays.md.
 
-// Level: increases every 10 lines cleared.
-//   level = totalLinesCleared / 10  (capped at 19 for the speed curve)
+// Level: 1 at the start, one more every 10 lines cleared, 15 at most —
+// the Tetris Worlds rule (game.MinLevel, MaxLevel, LinesPerLevel), the
+// same in every mode.
+//   level = min(1 + totalLinesCleared / 10, 15)
 func Level(totalLinesCleared int) int
 
-// GravityInterval: the modern speed curve by level.
-//   seconds per row = (0.8 − (L − 1) × 0.007)^(L − 1), with L = level + 1
-//   Level 0: 1000ms, level 1: 793ms, ... level 12: 18ms; floored at one
-//   60 Hz frame (≈17ms) from level 13 on.
+// GravityInterval: the Tetris Worlds speed curve at the (1-based) level,
+// exactly — neither rounded nor floored; the top two levels are faster
+// than a 60 Hz frame and the engine moves several rows per batch there.
+//   seconds per row = (0.8 − (L − 1) × 0.007)^(L − 1)
+//   Level 1: 1000ms, level 2: 793ms, ... level 13: 18.2ms, level 14: 11.4ms,
+//   level 15: 7.06ms.
 func GravityInterval(level int) time.Duration
 ```
 
-Gravity intervals (the Guideline curve, tetris.wiki, to the millisecond):
+Gravity intervals (the Tetris Worlds curve, harddrop.com/wiki/Tetris_Worlds, exact — shown to the tenth of a millisecond):
 ```
-0:1000ms 1:793ms 2:618ms 3:473ms 4:355ms 5:262ms 6:190ms 7:135ms
-8:94ms 9:64ms 10:43ms 11:28ms 12:18ms 13+:17ms (one 60 Hz frame)
+1:1000ms 2:793ms 3:617.8ms 4:472.7ms 5:355.2ms 6:262.0ms 7:189.7ms 8:134.7ms
+9:93.9ms 10:64.2ms 11:43.0ms 12:28.2ms 13:18.2ms 14:11.4ms 15:7.06ms
 ```
 
 **Tests for `internal/game`:**
@@ -668,7 +672,7 @@ Gravity intervals (the Guideline curve, tetris.wiki, to the millisecond):
 - `HardDropDestination` lands on the correct row with a tower of occupied cells.
 - `Rotate` applies SRS kicks correctly — every kick of both tables re-derived from the Guideline's published (x, y) table, plus a T-spin triple and an I floor kick as behavioural checks (the 4th/5th kicks).
 - `CompletedRows` correctly identifies full rows. (Mode scoring is not a `game` function; it is computed inline in `handleLockIn` — competitive adds the line count, cooperative adds `playerCount` per line. See `jetris-gameplays.md`.)
-- `GravityInterval(0)==1000ms`, `GravityInterval(1)==793ms`, … `GravityInterval(12)==18ms`; every higher level is the one-frame floor.
+- `GravityInterval(1)==1000ms`, `GravityInterval(2)==793ms`, … `GravityInterval(15)==7.059ms` (to the microsecond); a level outside 1..15 reads as the nearer bound; `Level(0)==1`, `Level(10)==2`, `Level(200)==15`.
 - `Cell.Marshal()` and `UnmarshalCell()` round-trip correctly for occupied and active cells, and the empty cell encodes as exactly `{}` (the vacate payload) and decodes back to the zero `Cell`.
 - `ActivePieceForPlayer()` returns only the piece matching the given playerIdx on a shared playfield with two active pieces (and nil when no active piece for that player is present).
 - `SetActivePieceForPlayer()` clears only the matching player's active cells before placing new ones, leaving the other player's active cells intact.
@@ -2021,70 +2025,53 @@ flashes that were otherwise visible during competitive play.
 
 ```go
 func (e *Engine) runInput(ctx context.Context) {
-    level := 0
-    timer := time.NewTimer(game.GravityInterval(level))
-    defer timer.Stop()
+    // Gravity is a clock: a row falls due every GravityInterval of the level
+    // (e.Level(): the same rule in every mode), on a fixed schedule.
+    interval := game.GravityInterval(e.Level())
+    next := time.Now().Add(interval)
+    gravity := time.NewTimer(interval)
+    housekeeping := time.NewTicker(housekeepingInterval) // 1 s: the chores that used to ride the tick
     for {
         select {
         case <-ctx.Done():
             return
         case <-e.moveReady:
-            move, ok, more := e.takeBufferedMove() // leaves the MOVE BUFFER strip now
-            if !ok { continue }
-            if more { e.signalMoves() } // one move per wake-up: the other cases get their turn
-            if e.mode != ModePlayer { continue }
-            // Player input — drop+flash on CAS failure (internal=false).
-            _ = e.attemptMove(ctx, move, false)
-        case <-e.applyGarbage:
-            if e.mode != ModePlayer { continue }
-            // Apply owed garbage on THIS goroutine: the raise then never races
-            // our own move/gravity publishes (they're serialized behind it),
-            // and its NoCAS cells override whatever in-flight move a remote
-            // writer had — the "raise overrides the move" rule.
-            e.applyOwedGarbage(ctx)
-        case <-timer.C:
-            if e.mode != ModePlayer { return } // became a spectator
-            // internal=true: gravity is engine-driven, not player input. In coop
-            // this routes to merge-retry on CAS conflict (the piece keeps
-            // falling); it flashes only if the tick is ultimately dropped. The
-            // return value is ignored — lock-in is handled by the consumer's
-            // lock-in detector, not here. Serialized with the moves arm above.
-            _ = e.attemptMove(ctx, MoveDown, true)
-            // A spawn deferred behind another player's active piece retries
-            // here, at the blocker's own cadence (doubles as the piece-less
-            // watchdog).
-            e.retrySpawnIfPending(ctx)
-            // Garbage backstop: if rows are still owed (a signal was consumed
-            // by an attempt that lost its gate, or arrived before runInput
-            // started), re-arm the application at gravity cadence.
+            // The queue's next group: the run of steps at its head — the
+            // player's moves AND the rows of gravity queued among them, in
+            // order — as ONE batch (takeMoveGroup, attemptMoves), held
+            // while the pipeline is full (the rows keep piling up).
+            ...
+        case <-e.levelChanged:
+            // A clear moved the level: the new interval applies at once.
+            interval = game.GravityInterval(e.Level())
+            next = time.Now().Add(interval)
+            gravity.Reset(interval) // after stop-and-drain
+        case now := <-gravity.C:
+            if e.getMode() != ModePlayer { return } // became a spectator
+            // The rows the schedule owes: this one, plus one per interval
+            // the wake-up is late by; the phase is kept.
+            owed := 1 + int(now.Sub(next)/interval)
+            next = next.Add(time.Duration(owed) * interval)
+            gravity.Reset(next.Sub(now))
+            // Queued as MoveGravity steps — as many as the piece can fall
+            // (never into the stack, never into another player's falling
+            // piece), none behind a drop or a hold, none while the next
+            // piece is on its way. A lost batch replays them (pipeline.go).
+            if e.queueGravity(owed) == 0 {
+                e.updateLockDelay(pieceSnapshot{})
+            }
+        case <-housekeeping.C:
+            if e.getMode() != ModePlayer { return }
+            e.retrySpawnIfPending(ctx) // the deferred-spawn backstop (the consumer retries on every board change)
+            e.vacateIdlePeers(ctx)
+            // Garbage backstop: rows still owed re-arm the application.
             if e.gameMode != config.ModeCooperative {
                 if deficit := e.garbageOwed - e.txnApplied; deficit > 0 { // under e.mu
                     e.signalGarbageApply()
                 }
             }
-            // Recompute level from the running line total on shared boards.
-            if e.sharedBoard() {
-                if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {
-                    level = newLevel
-                }
-            }
-            timer.Reset(game.GravityInterval(level))
         }
     }
-}
-
-// attemptMove takes the lock, then dispatches to the board-shape-specific
-// handler: sharedBoard() is true for cooperative AND teams (both are
-// multi-writer shared boards), so teams play routes through the same
-// attemptMoveCoop path. internal=true marks an engine-driven move (gravity
-// ticks); on shared boards those use merge-retry on CAS failure so the piece
-// keeps falling under contention.
-func (e *Engine) attemptMove(ctx context.Context, move MoveType, internal bool) error {
-    e.mu.Lock()
-    if e.sharedBoard() { // coop || teams
-        return e.attemptMoveCoop(ctx, move, internal)
-    }
-    return e.attemptMoveStandard(ctx, move, internal)
 }
 ```
 
@@ -3643,9 +3630,7 @@ The agent plays cooperative and teams as well as competitive:
   archive records the winning team); planner unit tests for shared-board collision
   (no placement overlaps a teammate's piece; drops rest on top of it).
 
-**Known accepted quirks:** competitive gravity never leaves level 0 (`runInput`
-refreshes the level only on shared boards) — the agent benefits but does not depend on
-it; the auto-join guard cannot close the pre-existing last-slot join race (for agent
+**Known accepted quirks:** the auto-join guard cannot close the pre-existing last-slot join race (for agent
 seats specifically, JoinGame's CAS-loop policy check does close it); UnjoinGame's
 meta check and listing CAS are not atomic, so an un-join racing the exact start
 instant can still slip through — accepted because the agent only un-joins after a long

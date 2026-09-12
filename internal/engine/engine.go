@@ -141,17 +141,17 @@ type Engine struct {
 
 	// gameStarted flips true when this engine learns the game is in_progress
 	// (at Start, or from the meta consumer). The piece-less watchdog is gated
-	// on it: runInput's gravity ticker runs from engine start — during the
-	// pre-game countdown — and an ungated watchdog would force-spawn pieces
-	// and start the game mid-countdown.
+	// on it: runInput's housekeeping ticker runs from engine start — during
+	// the pre-game countdown — and an ungated watchdog would force-spawn
+	// pieces and start the game mid-countdown.
 	gameStarted atomic.Bool
 	// started: Start has run (the engine's goroutines are up and the board
 	// is live). Off for an engine that was only constructed — the UI tests'
 	// transport-less ones.
 	started atomic.Bool
 	// watchdogSpawns counts the spawns the piece-less watchdog had to force
-	// (retrySpawnIfPending): each one is a piece that came a gravity tick or
-	// two late. A diagnostic (the browser page's touch badge shows it).
+	// (retrySpawnIfPending): each one is a piece that came a second or two
+	// late. A diagnostic (the browser page's touch badge shows it).
 	watchdogSpawns atomic.Int64
 
 	// wonGame records the engine's game-over verdict (0 = not over, 1 = won,
@@ -245,12 +245,12 @@ type Engine struct {
 	teamScores        [config.MaxTeamCount]atomic.Int64 // teams: per-team score totals, folded from line-clear events on EVERY engine (every team's players and spectators); only the game's first teamCount entries are ever read
 	teamLines         [config.MaxTeamCount]atomic.Int64 // teams: per-team cleared-line totals, folded like teamScores; drives the per-team level display
 	hadActivePiece    bool                              // guarded by e.mu (plus one pre-goroutine write in Start); written by the own-rows consumer, spawnPiece, and handleTeamTopOut
-	spawnPending      bool                              // shared boards: spawn deferred because another player's ACTIVE piece covers the spawn cells; guarded by e.mu; retried from runInput's gravity tick (retrySpawnIfPending). Never set in competitive mode.
+	spawnPending      bool                              // shared boards: spawn deferred because another player's ACTIVE piece covers the spawn cells; guarded by e.mu; retried on every board change (consumer) and from runInput's housekeeping tick (retrySpawnIfPending). Never set in competitive mode.
 	awaitSpawn        bool                              // the player's own hard drop took their piece off the board and the next has not landed on it yet: the moves queued meanwhile are that piece's and wait for it (runInput, noteDropGap); guarded by e.mu; cleared by spawnPiece
 	spawning          bool                              // the lock-in is between its lock and its spawn's commit, off the lock (handleLockIn): the piece-less watchdog must not count the gap, let alone spawn into it (retrySpawnIfPending); guarded by e.mu
 	lockInFlight      bool                              // the engine's own lock — a hard drop's, the lock delay's — is written through and its lock-in is on its way back on the echo (noteLockSent, cleared by handleLockIn): the watchdog leaves the piece-less board alone meanwhile, up to lockEchoGrace; guarded by e.mu
 	lockSentAt        time.Time                         // when lockInFlight was set; guarded by e.mu
-	pieceLessTicks    int                               // consecutive gravity ticks spent alive with NO active piece and NO pending spawn; guarded by e.mu; at 2 the piece-less watchdog forces a spawn (see retrySpawnIfPending)
+	pieceLessTicks    int                               // consecutive housekeeping ticks (a second apart) spent alive with NO active piece and NO pending spawn; guarded by e.mu; at 2 the piece-less watchdog forces a spawn (see retrySpawnIfPending)
 	eliminatedPlayers map[string]bool                   // players who have topped out (competitive/teams); guarded by e.mu
 	eliminatedTeam    map[string]int                    // teams: eliminated player → team; guarded by e.mu
 	teamOutcomeDone   bool                              // teams: win/loss/draw already decided; guarded by e.mu
@@ -298,6 +298,9 @@ type Engine struct {
 	// has something for it.
 	moveReady   chan struct{}
 	cellUpdated chan struct{}
+	// levelChanged (cap 1) tells runInput the level moved (refreshLevel), so
+	// the gravity clock takes the new interval at once.
+	levelChanged chan struct{}
 
 	// applyGarbage (cap 1) signals runInput to run one garbage-application
 	// attempt against the own board (competitive/teams). Signaled by the
@@ -399,6 +402,7 @@ func New(
 		Updates:            make(chan EngineUpdate, 64),
 		js:                 js,
 		moveReady:          make(chan struct{}, 1),
+		levelChanged:       make(chan struct{}, 1),
 		cellUpdated:        make(chan struct{}, 1),
 		applyGarbage:       make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
@@ -418,6 +422,7 @@ func New(
 		pipeRepair:         make(chan struct{}, 1),
 	}
 	e.ackedField = e.playfield
+	e.level.Store(game.MinLevel) // the level starts at 1 (game.Level): the HUD's stat and the gravity clock read it before any clear
 	e.setMode(mode)
 	e.inflightLimit.Store(DefaultInflightLimit)
 	return e
@@ -899,14 +904,20 @@ func (e *Engine) AchievedLevel() int {
 	return game.Level(int(e.totalLines.Load()))
 }
 
-// refreshLevel recomputes the level from the (shared) line total, stores it,
-// and notifies the UI when it changed. Called after any fold into totalLines —
-// our own clear or another shared-board player's line-clear event.
+// refreshLevel recomputes the level from the line total (this player's own
+// in competitive, the board's on a shared board), stores it, and notifies
+// the UI and the gravity clock (runInput, through levelChanged) when it
+// changed. Called after any fold into totalLines — our own clear or another
+// shared-board player's line-clear event — from any goroutine; never blocks.
 func (e *Engine) refreshLevel() {
 	newLevel := game.Level(int(e.totalLines.Load()))
 	if int64(newLevel) != e.level.Load() {
 		e.level.Store(int64(newLevel))
 		e.emitUpdate(EngineUpdate{Kind: UpdateLevel, Level: newLevel})
+		select {
+		case e.levelChanged <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -1263,7 +1274,8 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 			// spuriously eliminate the player (in teams permanently; in coop
 			// it would end the game for everyone) just because a teammate's
 			// piece happened to cross the spawn area. Defer instead:
-			// runInput's gravity tick retries via retrySpawnIfPending until
+			// the consumer retries on every board change, and runInput's
+			// housekeeping tick via retrySpawnIfPending, until
 			// the blocker falls clear (spawn succeeds) or locks into the
 			// spawn cells (a genuine top-out on the next attempt).
 			if !e.spawnPending {
@@ -1344,11 +1356,13 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	}
 	e.hadActivePiece = true
 	// The next piece is on the board: the moves held for it behind the
-	// player's own drop (awaitSpawn) go out now.
+	// player's own drop (awaitSpawn) go out now — the rows of gravity still
+	// queued were the last piece's and must not fall on this one.
 	e.awaitSpawn = false
 	if !locked {
 		e.mu.Unlock()
 	}
+	e.dropQueuedGravity()
 	e.signalMoves()
 }
 
@@ -1439,8 +1453,8 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 	e.heldPiece, e.hasHeld, e.holdUsed = outgoing, true, true
 	e.spawnGen.Add(1)
 	e.resetPieceScoring()
-
 	e.mu.Unlock()
+	e.dropQueuedGravity() // the rows queued were the swapped-out piece's
 	if fromQueue {
 		e.pieceIdx.Add(1)
 		go e.publishPieceIdxUpdate(e.pieceIdx.Load())
@@ -1451,18 +1465,18 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 
 // retrySpawnIfPending re-attempts a spawn that was deferred because another
 // player's active piece covered the spawn cells (spawnPending), and doubles
-// as the piece-less WATCHDOG. Called from runInput's gravity tick — the
-// engine's single gameplay-write goroutine — so it never races the player's
-// own input publishes, and its cadence matches the physics: the blocking
-// piece only moves on gravity ticks.
+// as the piece-less WATCHDOG. Called from runInput's housekeeping tick (a
+// second apart) — the engine's single gameplay-write goroutine — so it never
+// races the player's own input publishes; the consumer retries the deferred
+// spawn on every board change besides, so this is the backstop.
 //
 // The watchdog covers the stalls the consumer's lock-in edge detector cannot:
 // that edge only fires when a message arrives on the board's consumer, so a
 // player whose spawn publish was dropped wholesale (merge-retry exhausted
 // under contention), or whose edge was missed, stays piece-less FOREVER once
 // the board goes silent (e.g. the last teammate was eliminated and nobody
-// writes the shared board anymore). Two consecutive piece-less gravity ticks
-// (≥0.8s) is far beyond the normal lock→echo→respawn window, and the
+// writes the shared board anymore). Two consecutive piece-less housekeeping
+// ticks (1–2 s) is far beyond the normal lock→echo→respawn window, and the
 // ActivePieceForPlayer guard under e.mu keeps the forced spawn idempotent.
 // The watchdog does not advance pieceIdx — it respawns the piece that never
 // materialized.

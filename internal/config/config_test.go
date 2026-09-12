@@ -797,3 +797,44 @@ func TestArchiveIndividualScoring(t *testing.T) {
 		t.Error("only a cooperative-mode board scores individually")
 	}
 }
+
+// A record from before the version field carries 0-based levels: Normalize
+// raises every level it holds by one and stamps the version, once; a
+// current record is left alone.
+func TestArchiveRecordNormalizeLegacyLevels(t *testing.T) {
+	legacy := ArchiveRecord{
+		Mode:       ModeCooperative,
+		Players:    []PlayerResult{{PlayerID: "a", Level: 0}, {PlayerID: "b", Level: 3}},
+		FinalLevel: 3,
+		TeamLevels: []int{2, 0},
+	}
+	legacy.Normalize()
+	if legacy.Version != ArchiveRecordVersion {
+		t.Fatalf("version = %d, want %d", legacy.Version, ArchiveRecordVersion)
+	}
+	if legacy.Players[0].Level != 1 || legacy.Players[1].Level != 4 {
+		t.Fatalf("player levels = %d/%d, want 1/4", legacy.Players[0].Level, legacy.Players[1].Level)
+	}
+	if legacy.FinalLevel != 4 {
+		t.Fatalf("final level = %d, want 4", legacy.FinalLevel)
+	}
+	if legacy.TeamLevels[0] != 3 || legacy.TeamLevels[1] != 1 {
+		t.Fatalf("team levels = %v, want [3 1]", legacy.TeamLevels)
+	}
+	before := legacy
+	legacy.Normalize()
+	if legacy.Players[0].Level != before.Players[0].Level || legacy.FinalLevel != before.FinalLevel {
+		t.Fatal("a second Normalize changed a current record")
+	}
+
+	individual := ArchiveRecord{Mode: ModeCooperative, Scoring: ScoringIndividual, FinalLevel: 0, Players: []PlayerResult{{PlayerID: "a", Level: 2}}}
+	individual.Normalize()
+	if individual.FinalLevel != 0 || individual.Players[0].Level != 3 {
+		t.Fatalf("individual-scoring record: final level %d (want untouched 0), player level %d (want 3)", individual.FinalLevel, individual.Players[0].Level)
+	}
+	current := ArchiveRecord{Version: ArchiveRecordVersion, Mode: ModeCompetitive, Players: []PlayerResult{{PlayerID: "a", Level: 5}}}
+	current.Normalize()
+	if current.Players[0].Level != 5 {
+		t.Fatalf("a current record's level moved to %d", current.Players[0].Level)
+	}
+}

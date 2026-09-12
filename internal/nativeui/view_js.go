@@ -117,7 +117,7 @@ func (a *App) touchDebugFrame() {
 	}
 	queued, watchdog := 0, int64(0)
 	if eng := a.getEngine(); eng != nil {
-		queued = len(eng.BufferedMoves())
+		queued = eng.QueuedPlayerMoves()
 		watchdog = eng.WatchdogSpawns()
 	}
 	js.Global().Set("jetrisTouch", map[string]any{

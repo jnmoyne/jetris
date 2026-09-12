@@ -33,6 +33,8 @@ func (e *Engine) noteStep(move MoveType, internal bool, kick int) {
 		if !internal {
 			e.softDropCells++
 		}
+	case MoveGravity:
+		e.spin.Rotated = false // a row of gravity: the piece fell, no point for it
 	case MoveLeft, MoveRight:
 		e.spin.Rotated = false
 	}

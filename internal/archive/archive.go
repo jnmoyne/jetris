@@ -208,6 +208,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	}
 
 	record := config.ArchiveRecord{
+		Version:      config.ArchiveRecordVersion,
 		GameID:       eng.GameID(),
 		Mode:         meta.Mode,
 		PlayerCount:  meta.PlayerCount,

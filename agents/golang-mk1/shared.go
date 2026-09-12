@@ -113,32 +113,42 @@ func teamNames(n int) []string {
 	return out
 }
 
-// gravityInterval is the guideline speed curve (gameplays §7): seconds per
-// row = (0.8 − (L − 1) × 0.007)^(L − 1) with L = level + 1, to the
-// millisecond, floored at one 60 Hz frame. Shared boards level up as lines
-// accumulate; competitive stays at level 0 forever.
-func gravityInterval(level int) time.Duration {
-	if level < 0 {
-		level = 0
-	}
-	l := float64(level)
-	d := time.Duration(math.Round(math.Pow(0.8-l*0.007, l)*1000)) * time.Millisecond
-	if d < time.Second/60 {
-		return time.Second / 60
-	}
-	return d
+// The level and the speed curve are Tetris Worlds' (gameplays §7,
+// https://harddrop.com/wiki/Tetris_Worlds), the same in every mode: the
+// level starts at 1 and rises every ten lines, 15 at most.
+const (
+	minLevel      = 1
+	maxLevel      = 15
+	linesPerLevel = 10
+)
+
+// levelOf is the level a line total has reached.
+func levelOf(lines int) int {
+	return min(minLevel+max(lines, 0)/linesPerLevel, maxLevel)
 }
 
-// level is the shared-progression level for gravity: cooperative counts every
-// clear on the board, teams counts the OWN team's; competitive never leaves 0.
+// gravityInterval is the speed curve, exactly: seconds per row =
+// (0.8 − (L − 1) × 0.007)^(L − 1) at level L — 1000 ms at level 1 down to
+// 7 ms at level 15, the top two levels faster than a 60 Hz frame (execute
+// moves the rows a deadline owes as one batch). A level outside
+// minLevel..maxLevel reads as the nearer bound.
+func gravityInterval(level int) time.Duration {
+	level = min(max(level, minLevel), maxLevel)
+	l := float64(level - 1)
+	return time.Duration(math.Pow(0.8-l*0.007, l) * float64(time.Second))
+}
+
+// level is the level gravity falls at and the next clear is scored at: this
+// seat's own lines in competitive, every clear on the board in cooperative,
+// the OWN team's in teams.
 func (g *Game) level() int {
 	switch g.mode {
 	case modeCooperative:
-		return min(g.totalLines/10, 19)
+		return levelOf(g.totalLines)
 	case modeTeams:
-		return min(g.teamLines[g.team]/10, 19)
+		return levelOf(g.teamLines[g.team])
 	default:
-		return 0
+		return levelOf(g.lines)
 	}
 }
 

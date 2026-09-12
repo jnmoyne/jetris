@@ -504,7 +504,7 @@ func (a *App) handleGestures(gtx C, eng *engine.Engine, active bool) {
 	g := &a.gest
 	room := 0
 	if active {
-		room = max(0, gestureBufferCap-len(eng.BufferedMoves()))
+		room = max(0, gestureBufferCap-eng.QueuedPlayerMoves())
 	}
 	// Between a lock and the next spawn — a NATS round trip — the board has
 	// no piece and a move dispatched now is a no-op. The moves a gesture

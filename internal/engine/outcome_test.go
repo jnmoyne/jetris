@@ -20,8 +20,8 @@ func TestIndividualScoringKeepsOwnScore(t *testing.T) {
 	if e.Score() != 0 {
 		t.Fatalf("score = %d, want 0: another seat's points are not ours", e.Score())
 	}
-	if e.Level() != 1 {
-		t.Fatalf("level = %d, want 1 after folding 10 shared lines", e.Level())
+	if e.Level() != 2 {
+		t.Fatalf("level = %d, want 2 after folding 10 shared lines", e.Level())
 	}
 	if got := e.PlayerScores()["other"]; got != 20 {
 		t.Fatalf("PlayerScores()[other] = %d, want 20", got)

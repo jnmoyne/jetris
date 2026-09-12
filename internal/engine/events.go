@@ -116,6 +116,7 @@ const (
 	RotateCW
 	RotateCCW
 	MoveHardDrop
-	MoveHold  // the Guideline hold (Engine.Hold); a no-op unless the game has the hold rule
-	Rotate180 // a half turn (Engine.Rotate180): game.Turn180, on its own kick tables
+	MoveHold    // the Guideline hold (Engine.Hold); a no-op unless the game has the hold rule
+	Rotate180   // a half turn (Engine.Rotate180): game.Turn180, on its own kick tables
+	MoveGravity // a row of gravity: the engine's own step down (runInput's clock), never a soft-drop point, replayed until it lands if its batch is lost
 )

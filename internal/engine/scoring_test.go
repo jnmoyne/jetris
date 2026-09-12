@@ -163,10 +163,11 @@ func TestTSpinDoubleThenBackToBackQuad(t *testing.T) {
 		t.Fatalf("own lines = %d, want 6", lines)
 	}
 	// Its level: the clear was scored at level 1 (two lines before it), and
-	// the six lines since leave a competitive player at level 0 — the HUD's
-	// stat now follows the player's own lines in competitive too.
-	if a.Level() != 0 || a.AchievedLevel() != 0 {
-		t.Fatalf("level = %d/%d, want 0 after 6 lines", a.Level(), a.AchievedLevel())
+	// the six lines since still leave a competitive player at level 1 — the
+	// HUD's stat, and the gravity, follow the player's own lines in
+	// competitive too (the level rises at ten).
+	if a.Level() != 1 || a.AchievedLevel() != 1 {
+		t.Fatalf("level = %d/%d, want 1 after 6 lines", a.Level(), a.AchievedLevel())
 	}
 
 	waitUntil(t, 5*time.Second, func() bool { return b.Playfield().AdversarialRowCount() == 10 }, "b's board to gain the jetris' four rows and the back-to-back bonus of two")
@@ -236,7 +237,7 @@ func TestScoreOnlyLockReachesTeammate(t *testing.T) {
 		t.Fatalf("a cleared %d lines, want none", a.OwnLines())
 	}
 	waitUntil(t, 3*time.Second, func() bool { return b.Score() == a.Score() }, "b to fold a's drop points off the score-only line_clear event")
-	if b.Level() != 0 || a.Level() != 0 {
-		t.Fatalf("levels = %d/%d, want 0/0: no line was cleared", a.Level(), b.Level())
+	if b.Level() != 1 || a.Level() != 1 {
+		t.Fatalf("levels = %d/%d, want 1/1: no line was cleared", a.Level(), b.Level())
 	}
 }

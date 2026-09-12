@@ -274,9 +274,9 @@ func softInterval(sdf, level int) time.Duration {
 }
 
 // softARR is the soft drop's interval right now: the knob at the engine's
-// level. eng may be nil (a frame with no engine): level 0 stands in.
+// level. eng may be nil (a frame with no engine): level 1 stands in.
 func (a *App) softARR(eng *engine.Engine) time.Duration {
-	level := 0
+	level := game.MinLevel
 	if eng != nil {
 		level = eng.Level()
 	}
@@ -422,7 +422,7 @@ func (a *App) handleAutoShift(gtx C, eng *engine.Engine, active bool) {
 	if a.shift.dir == 0 && a.soft.dir == 0 {
 		return
 	}
-	room := max(0, gestureBufferCap-len(eng.BufferedMoves()))
+	room := max(0, gestureBufferCap-eng.QueuedPlayerMoves())
 	var wake time.Time
 	everyFrame := false
 	// step runs one machine, at its own repeat rate and on the room left

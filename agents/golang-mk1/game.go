@@ -87,6 +87,15 @@ type Game struct {
 	txnApplied  int
 	txnSeq      uint64
 
+	// The gravity clock (execute): nextGravity is when the piece's next row
+	// falls due — set by the spawn, then advanced a step per row owed, so a
+	// late turn of the loop owes every row the schedule passed and the
+	// piece falls at the level's speed whatever the wire does; gravityDebt
+	// is the rows a lost batch did not deliver (a CAS race, a repair that
+	// put the piece back up), owed again at once. Guarded by mu.
+	nextGravity time.Time
+	gravityDebt int
+
 	metaSeed    uint64
 	playerCount int
 	nextCount   int
@@ -691,7 +700,9 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 	}
 	p := n
 	g.piece = &p
-	return time.Now(), true, false
+	spawnT = time.Now()
+	g.nextGravity, g.gravityDebt = spawnT.Add(g.gravityNow()), 0
+	return spawnT, true, false
 }
 
 // lockPiece settles the piece at dest (authoritative NoCAS), runs line clears,
@@ -880,16 +891,12 @@ func (g *Game) attackRows(lines int) int {
 	return clearInfo{lines: lines}.attackRows(g.guideline)
 }
 
-// scoreLevel is the Guideline's 1-based level the next clear is scored at
-// (the level BEFORE the clear): the shared progression's on a shared board
-// (level), and in competitive the one this seat's own lines reach — the
-// level the GUI's HUD shows there; competitive gravity stays at level 0
-// regardless (gravityInterval).
+// scoreLevel is the level the next clear is scored at (the level BEFORE the
+// clear): the one gravity falls at (level) — the shared progression's on a
+// shared board, this seat's own lines' in competitive, the level the GUI's
+// HUD shows.
 func (g *Game) scoreLevel() int {
-	if g.mode == modeCompetitive {
-		return min(g.lines/10, 19) + 1
-	}
-	return g.level() + 1
+	return g.level()
 }
 
 // scoreLock is the Guideline's account of the lock that just settled
@@ -1584,12 +1591,11 @@ func (g *Game) toGrid() *grid {
 // out on it (gameplays §3).
 func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 	g.mu.Lock()
-	step := gravity
-	if g.shared() {
-		step = g.gravityNow()
+	if g.nextGravity.IsZero() {
+		// A piece adopted before any spawn of ours set the clock.
+		g.nextGravity = spawnT.Add(g.gravityNow())
 	}
 	g.mu.Unlock()
-	nextGravity := spawnT.Add(step)
 	lastProgress := time.Now()
 	var lastPos active
 	for {
@@ -1621,13 +1627,31 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return
 		}
 		locked := false
-		if !time.Now().Before(nextGravity) {
-			down := active{p.pt, p.orient, p.row + 1, p.col}
-			dcs := pieceCells(down.pt, down.orient, down.row, down.col)
+		now := time.Now()
+		if g.gravityDebt > 0 || !now.Before(g.nextGravity) {
+			// The rows gravity owes: the ones a lost batch did not deliver,
+			// and one per interval of the level the schedule has passed —
+			// several when the loop was busy (a walk's round trip, a
+			// repair) or the level is faster than the loop. They fall as
+			// ONE batch, as far as the board allows; the schedule keeps
+			// its phase, the next deadline measured from the last.
+			owed := g.gravityDebt
+			g.gravityDebt = 0
+			if !now.Before(g.nextGravity) {
+				step := g.gravityNow()
+				ticks := min(1+int(now.Sub(g.nextGravity)/step), g.h)
+				owed += ticks
+				g.nextGravity = g.nextGravity.Add(time.Duration(ticks) * step)
+			}
+			to, fell, transient := g.fallRows(p, owed)
 			switch {
-			case g.canMove(dcs):
-				g.publishPieceMove(ctx, down)
-			case g.canPlace(dcs):
+			case fell > 0:
+				if !g.publishPieceMove(ctx, to) {
+					// Lost on the wire (the board re-adopted from the
+					// stream): the rows are owed again, at once.
+					g.gravityDebt += fell
+				}
+			case transient:
 				// blocked only by another falling piece: wait, don't lock
 			default:
 				if g.settleForLock(ctx, p) {
@@ -1637,10 +1661,6 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 				g.lockPiece(ctx, p)
 				locked = true
 			}
-			if g.shared() {
-				step = g.gravityNow()
-			}
-			nextGravity = nextGravity.Add(step)
 		} else if p.orient != plan.orient || p.col != plan.col {
 			// The whole walk to the plan — the rotations, then the shifts —
 			// as ONE batch: every step is validated on the local board, and
@@ -1690,6 +1710,24 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return
 		}
 	}
+}
+
+// fallRows is the piece p fallen up to n rows on the local board: as far as
+// canMove allows, and — when it stopped short — whether the blocker is
+// another player's falling piece (transient: worth waiting for) rather than
+// the stack or the floor. Call with g.mu held.
+func (g *Game) fallRows(p active, n int) (to active, fell int, transient bool) {
+	to = p
+	for fell < n {
+		down := active{to.pt, to.orient, to.row + 1, to.col}
+		cs := pieceCells(down.pt, down.orient, down.row, down.col)
+		if !g.canMove(cs) {
+			return to, fell, g.canPlace(cs)
+		}
+		to = down
+		fell++
+	}
+	return to, fell, false
 }
 
 // walk is the path from p to the plan's orientation and column played out
@@ -1939,7 +1977,7 @@ func (g *Game) publishGameOver(ctx context.Context) {
 	// our last locks may never have been announced (a drop's are carried by
 	// the next event), and every peer's shared score converges on them.
 	ev := event{Kind: "game_over", PlayerID: g.a.name, PlayerIdx: g.idx, Team: g.team,
-		Score: g.score, Level: min(g.lines/10, 19), PieceCount: g.pieceIdx,
+		Score: g.score, Level: levelOf(g.lines), PieceCount: g.pieceIdx,
 		TotalScore: g.score, TotalLines: g.lines}
 	b, _ := json.Marshal(ev)
 	// The announcement is what every peer's game over (coop) or the
@@ -2012,6 +2050,7 @@ func (g *Game) archive(ctx context.Context) {
 		return // someone else won the archive CAS
 	}
 	record := map[string]any{
+		"version": 2, // the archive record format: levels are 1-based (config.ArchiveRecordVersion)
 		"game_id": g.id, "mode": g.mode, "player_count": meta.int("player_count"),
 		"players":      g.playerResults(),
 		"started_at":   firstNonEmpty(meta.str("started_at"), meta.str("created_at")),
@@ -2038,14 +2077,14 @@ func (g *Game) archive(ctx context.Context) {
 			record["scoring"] = "individual"
 		} else {
 			record["total_score"] = g.sharedScore
-			record["final_level"] = min(g.totalLines/10, 19)
+			record["final_level"] = levelOf(g.totalLines)
 		}
 		g.mu.Unlock()
 	case modeTeams:
 		g.mu.Lock()
 		levels := make([]int, len(g.teamLines))
 		for t, l := range g.teamLines {
-			levels[t] = min(l/10, 19)
+			levels[t] = levelOf(l)
 		}
 		record["team_count"] = g.teams()
 		record["team_size"] = g.teamSize()
@@ -2100,13 +2139,13 @@ func (g *Game) playerResults() []map[string]any {
 	for _, p := range g.roster {
 		var score, level, lines, pieces int
 		if p.PlayerID == g.a.name {
-			score, level, lines, pieces = g.score, min(g.lines/10, 19), g.lines, g.pieceIdx
+			score, level, lines, pieces = g.score, levelOf(g.lines), g.lines, g.pieceIdx
 		} else if ev, ok := g.results[p.PlayerID]; ok {
 			score, level, lines, pieces = ev.Score, ev.Level, ev.TotalLines, ev.PieceCount
 		} else if tot, ok := g.senderTotals[p.PlayerID]; ok {
 			// Never topped out (a coop survivor, an alive teams winner):
 			// their cumulative line-clear totals are the best record we have.
-			score, level, lines = tot[0], min(tot[1]/10, 19), tot[1]
+			score, level, lines = tot[0], levelOf(tot[1]), tot[1]
 		}
 		r := map[string]any{"player_id": p.PlayerID, "score": score, "piece_count": pieces}
 		if level != 0 {

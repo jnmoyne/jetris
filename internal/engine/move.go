@@ -9,21 +9,44 @@ import (
 )
 
 // runInput is the engine's single gameplay-write goroutine: it processes player
-// input, drives the gravity ticker AND times the lock delay. Running all of it
-// on one goroutine is deliberate — a player's own gravity drop, a player move
+// input, drives the gravity clock AND times the lock delay. Running all of it
+// on one goroutine is deliberate — a player's own gravity step, a player move
 // and the piece's lock can never publish to their cell subjects concurrently,
 // so they can never lose the per-subject CAS race against each other (which
 // would drop the step and flash the piece outline). This applies to both
 // competitive and cooperative modes.
+//
+// Gravity is a clock, not a round trip: a row falls due every
+// game.GravityInterval of the level (e.Level(): this player's own lines in
+// competitive, the board's on a shared board — the same level in every
+// mode), on a fixed schedule, and a wake-up that comes late — the goroutine
+// was blocked in a sync round trip, a repair, a burst of input — owes every
+// row the schedule passed meanwhile, at once. The rows are QUEUED
+// (queueGravity), not published here: they take the move queue like the
+// player's steps, so they wait behind the batch in flight, go out
+// aggregated — the rows that came due during a round trip, and the player's
+// steps around them, as ONE batch (takeMoveGroup, attemptMoves) — and are
+// replayed by the repair if that batch is lost (pipeline.go): a row of
+// gravity is retried until it lands. The optimistic display plays the
+// queued rows at once (IntentPiece), so the piece falls at the level's speed
+// whatever the wire does; at the top levels that is more than a row per
+// frame. A row that cannot fall — the piece rests on the stack, or on
+// another player's falling piece — is not queued at all: the first is the
+// lock delay's business, the second waits for the next tick.
 //
 // A blocked downward step (gravity or soft drop) never locks the piece by
 // itself: landing arms the lock delay (lockdelay.go) and the piece locks when
 // that timer fires, unless a shift or rotation restarted it. Only a hard drop
 // locks at once.
 func (e *Engine) runInput(ctx context.Context) {
-	level := 0
-	timer := time.NewTimer(game.GravityInterval(level))
-	defer timer.Stop()
+	interval := game.GravityInterval(e.Level()) // a rejoin starts at the level it had
+	next := time.Now().Add(interval)            // when the next row falls due
+	gravity := time.NewTimer(interval)
+	defer gravity.Stop()
+	// The housekeeping that used to ride the gravity tick keeps a cadence
+	// of its own: at the top levels gravity is due 140 times a second.
+	housekeeping := time.NewTicker(housekeepingInterval)
+	defer housekeeping.Stop()
 	defer e.lockState.disarm()
 
 	for {
@@ -41,7 +64,8 @@ func (e *Engine) runInput(ctx context.Context) {
 			// flight holds the moves in the queue instead, and when a slot
 			// frees (resolveStep re-arms the wake-up) takes the run of steps
 			// at the queue's head as ONE batch — the moves that piled up
-			// while it waited go out together (pipeline.go). Unless a hard
+			// while it waited, the rows of gravity that came due among them,
+			// go out together (pipeline.go). Unless a hard
 			// drop (or a hold) is waiting: the piece's fate is decided, so the
 			// steps ahead of it go out now, as one batch, and the barrier
 			// commits right behind them.
@@ -74,7 +98,8 @@ func (e *Engine) runInput(ctx context.Context) {
 			if e.getMode() != ModePlayer {
 				continue
 			}
-			// Player input — drop+flash on CAS failure.
+			// Player input and gravity — drop+flash on CAS failure (a row of
+			// gravity is replayed instead, pipeline.go).
 			before := e.activePieceSnapshot()
 			e.attemptMoves(ctx, moves)
 			e.updateLockDelay(before)
@@ -113,23 +138,50 @@ func (e *Engine) runInput(ctx context.Context) {
 			// it), and its NoCAS cells override whatever in-flight move a
 			// remote writer had — the "raise overrides the move" rule.
 			e.applyOwedGarbage(ctx)
-		case <-timer.C:
+		case <-e.levelChanged:
+			// The level moved (a clear — this player's, or a teammate's on a
+			// shared board): the new speed applies from now, not one old
+			// interval later.
+			if e.getMode() != ModePlayer {
+				continue
+			}
+			interval = game.GravityInterval(e.Level())
+			next = time.Now().Add(interval)
+			if !gravity.Stop() {
+				select {
+				case <-gravity.C:
+				default:
+				}
+			}
+			gravity.Reset(interval)
+		case now := <-gravity.C:
 			if e.getMode() != ModePlayer {
 				return // became a spectator: stop gravity (and this loop)
 			}
-			// internal=true: engine-driven gravity tick. In coop this routes to
-			// merge-retry on CAS conflict so the piece keeps falling under
-			// contention; it flashes only if the tick is ultimately dropped.
-			// Serialized with player input above (same goroutine), so it never
-			// races our own moves.
-			e.settleIfBroken(ctx)
-			before := e.activePieceSnapshot()
-			_ = e.attemptMove(ctx, MoveDown, true)
-			e.updateLockDelay(before)
-
+			// The rows the schedule owes: this one, and one more per
+			// interval the wake-up is late by. The schedule keeps its
+			// phase — the next deadline is measured from the last, never
+			// from now.
+			owed := 1 + int(now.Sub(next)/interval)
+			if owed < 1 {
+				owed = 1
+			}
+			next = next.Add(time.Duration(owed) * interval)
+			gravity.Reset(max(next.Sub(now), time.Millisecond))
+			if e.queueGravity(owed) == 0 {
+				// Nothing to fall: the piece rests, or waits on a
+				// teammate's piece — keep the lock delay's view of it
+				// current, as the tick always did.
+				e.updateLockDelay(pieceSnapshot{})
+			}
+		case <-housekeeping.C:
+			if e.getMode() != ModePlayer {
+				return // became a spectator: stop (this loop, gravity with it)
+			}
 			// A spawn deferred because another player's active piece covered
 			// the spawn cells is retried here, on the same single-write
-			// goroutine and at the same cadence the blocker falls at.
+			// goroutine (the consumer retries it on every board change too;
+			// this is the backstop).
 			e.retrySpawnIfPending(ctx)
 
 			// A peer's piece left behind — by a player gone from the seat,
@@ -141,7 +193,7 @@ func (e *Engine) runInput(ctx context.Context) {
 
 			// Garbage backstop: if rows are still owed (a signal was consumed
 			// by an attempt that lost its gate, or arrived before runInput
-			// started), re-arm the application at gravity cadence.
+			// started), re-arm the application.
 			if e.gameMode != config.ModeCooperative {
 				e.mu.Lock()
 				deficit := e.garbageOwed - e.txnApplied
@@ -150,14 +202,89 @@ func (e *Engine) runInput(ctx context.Context) {
 					e.signalGarbageApply()
 				}
 			}
-
-			if e.sharedBoard() {
-				if newLevel := game.Level(int(e.totalLines.Load())); newLevel != level {
-					level = newLevel
-				}
-			}
-			timer.Reset(game.GravityInterval(level))
 		}
+	}
+}
+
+// housekeepingInterval is the cadence of runInput's periodic chores — the
+// deferred-spawn backstop, the idle-peer vacate, the garbage backstop —
+// which used to ride the gravity tick.
+const housekeepingInterval = time.Second
+
+// queueGravity puts n rows of gravity (MoveGravity) into the move queue — as
+// many of them as the piece can still fall, at most — and reports how many
+// it queued. Nothing is queued while the piece's fate is decided (a hard
+// drop or a hold queued, or being committed: rows behind it would fall on
+// the NEXT piece), while the next piece is still on its way (AwaitingSpawn),
+// or for the rows the piece cannot take: measured from the piece as it is
+// headed (IntentPiece, the queued moves played out) against the optimistic
+// board, a row into the stack is the lock delay's business and a row into
+// another player's falling piece waits — the next tick asks again. So a row
+// that queues can only be lost on the wire, where the repair replays it.
+// Runs on runInput.
+func (e *Engine) queueGravity(n int) int {
+	if n <= 0 || e.AwaitingSpawn() || e.PieceCommitting() || e.barrierQueued() {
+		return 0
+	}
+	p, ok := e.IntentPiece()
+	if !ok {
+		return 0
+	}
+	e.mu.Lock()
+	base := e.projectionBase()
+	shared := e.sharedBoard()
+	room := 0
+	for room < n {
+		down := p
+		down.Row += room + 1
+		var fits bool
+		if shared {
+			fits = game.CanPlaceCoop(down, base, e.playerIdx)
+		} else {
+			fits = game.CanPlace(down, base)
+		}
+		if !fits {
+			break
+		}
+		room++
+	}
+	e.mu.Unlock()
+	if room == 0 {
+		return 0
+	}
+	e.bufferedMu.Lock()
+	for range room {
+		e.bufferedMoves = append(e.bufferedMoves, MoveGravity)
+	}
+	e.bufferedMu.Unlock()
+	e.signalMoves()
+	e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
+	return room
+}
+
+// dropQueuedGravity forgets the rows of gravity still queued: they were owed
+// to a piece that is gone — locked, or swapped out by a hold — and must not
+// fall on the one that takes its place. Called where a piece enters play
+// (spawnPiece) or is swapped (attemptHold); takes bufferedMu only, so it is
+// safe under e.mu.
+func (e *Engine) dropQueuedGravity() {
+	e.bufferedMu.Lock()
+	dropped := 0
+	kept := e.bufferedMoves[:0]
+	for _, m := range e.bufferedMoves {
+		if m == MoveGravity {
+			dropped++
+			continue
+		}
+		kept = append(kept, m)
+	}
+	e.bufferedMoves = kept
+	if len(kept) == 0 {
+		e.bufferedMoves = nil
+	}
+	e.bufferedMu.Unlock()
+	if dropped > 0 {
+		e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
 	}
 }
 
@@ -202,7 +329,7 @@ func (e *Engine) attemptMoves(ctx context.Context, moves []MoveType) {
 			e.freezePiece(moves[0])
 			defer e.freezePiece(MoveDown)
 		}
-		_ = e.attemptMove(ctx, moves[0], false)
+		_ = e.attemptMove(ctx, moves[0], moves[0] == MoveGravity)
 		return
 	}
 	e.mu.Lock()
@@ -217,7 +344,7 @@ func (e *Engine) attemptMoves(ctx context.Context, moves []MoveType) {
 	for _, m := range moves {
 		if next, kick, ok, last := stepPieceKick(cur, m, base, shared, e.playerIdx); ok && !last {
 			cur = next
-			e.noteStep(m, false, kick) // the scoring's account of the piece: a rotation, a shift, a soft drop
+			e.noteStep(m, m == MoveGravity, kick) // the scoring's account of the piece: a rotation, a shift, a soft drop — or a row of gravity, which scores nothing
 		}
 	}
 
@@ -283,7 +410,7 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 		newPiece = *p
 		newPiece.Col++
 		valid = game.CanPlace(newPiece, base)
-	case MoveDown:
+	case MoveDown, MoveGravity:
 		newPiece = *p
 		newPiece.Row++
 		valid = game.CanPlace(newPiece, base)
@@ -313,7 +440,7 @@ func (e *Engine) attemptMoveStandard(ctx context.Context, move MoveType, interna
 	// before the vacated ones, so the piece never transiently vanishes
 	// mid-relocate (single-row horizontal I included). publishStep commits it
 	// the way the player's PublishMode says (pipeline.go).
-	e.publishStep(ctx, cells, pre, newPiece, playerMoves(move, internal))
+	e.publishStep(ctx, cells, pre, newPiece, stepMoves(move))
 	return nil
 }
 
@@ -343,7 +470,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 		newPiece = *p
 		newPiece.Col++
 		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
-	case MoveDown:
+	case MoveDown, MoveGravity:
 		newPiece = *p
 		newPiece.Row++
 		valid = game.CanPlaceCoop(newPiece, base, e.playerIdx)
@@ -382,7 +509,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 	// either way (pipeline.go). orderedCellKeys writes the new active cells
 	// before the vacated ones, so a single-row (horizontal I) piece never
 	// transiently vanishes mid-move and triggers a spurious lock-in.
-	e.publishStep(ctx, cells, pre, newPiece, playerMoves(move, internal))
+	e.publishStep(ctx, cells, pre, newPiece, stepMoves(move))
 	return nil
 }
 
@@ -454,13 +581,10 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 	return nil
 }
 
-// playerMoves is the move list a step carries for the replay: the player's
-// move, or nil for an engine-driven step (a gravity tick), which is never
-// played again — the timer keeps ticking.
-func playerMoves(m MoveType, internal bool) []MoveType {
-	if internal {
-		return nil
-	}
+// stepMoves is the move list a single-move step carries for the replay —
+// the move itself, a row of gravity (MoveGravity) included: a lost row is
+// played again by the repair (pipeline.go).
+func stepMoves(m MoveType) []MoveType {
 	return []MoveType{m}
 }
 

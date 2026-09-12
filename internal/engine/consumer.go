@@ -133,10 +133,10 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 				e.hadActivePiece = hasActive
 				// A deferred spawn (blocked only by another player's active
 				// piece) retries the moment the shared board CHANGES — this
-				// very message may be the blocker moving away. The gravity
+				// very message may be the blocker moving away. The housekeeping
 				// tick's retry remains as the backstop, but at agent speeds a
 				// blocking piece slides across the spawn cells in milliseconds
-				// and waiting a full gravity tick (a second at level 0) per
+				// and waiting a full housekeeping tick (a second) per
 				// attempt starves the deferred player down to a piece every
 				// few seconds.
 				if e.spawnPending && !hasActive && e.getMode() == ModePlayer && e.gameStarted.Load() {
@@ -184,7 +184,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	e.lockInFlight = false
 	e.spawning = true
 	defer func() { e.spawning = false }()
-	level := game.Level(int(e.totalLines.Load())) + 1
+	level := game.Level(int(e.totalLines.Load()))
 
 	// Detect completed rows on the live replica. Cooperative publishes the
 	// collapse with merge-retry (no garbage in coop, no gate); competitive
@@ -257,7 +257,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	}
 	// The level follows the line total in every mode — the crew's on a
 	// shared board, this player's own in competitive: the multiplier the
-	// HUD's LEVEL names. Gravity reads it on shared boards only (runInput).
+	// HUD's LEVEL names, and the speed runInput's gravity clock falls at.
 	e.refreshLevel()
 
 	if clearedLines > 0 {

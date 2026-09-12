@@ -259,7 +259,17 @@ func (g *Game) repairPipeline(ctx context.Context) {
 			log.Printf("repair: %v", err)
 			return
 		}
+		before := -1
+		if g.piece != nil {
+			before = g.piece.row
+		}
 		g.foldSnapshot(snap)
+		if g.piece != nil && before > g.piece.row {
+			// The stream's truth has the piece higher than the lost
+			// batches had taken it: the rows of gravity among them are
+			// owed again, at once (execute).
+			g.gravityDebt += before - g.piece.row
+		}
 		var own map[cell]bool
 		if g.piece != nil {
 			own = cellSet(pieceCells(g.piece.pt, g.piece.orient, g.piece.row, g.piece.col))

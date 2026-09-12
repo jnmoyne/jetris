@@ -137,6 +137,7 @@ func fetchArchiveRecords(ctx context.Context, js jetstream.JetStream) ([]config.
 			}
 			var rec config.ArchiveRecord
 			if json.Unmarshal(msg.Data(), &rec) == nil && rec.GameID != "" {
+				rec.Normalize()
 				if i, dup := seen[rec.GameID]; dup {
 					out[i] = rec
 				} else {

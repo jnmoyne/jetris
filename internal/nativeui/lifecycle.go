@@ -20,6 +20,7 @@ import (
 	"jetris/internal/cleanup"
 	"jetris/internal/config"
 	"jetris/internal/engine"
+	"jetris/internal/game"
 	"jetris/internal/lobby"
 	natspkg "jetris/internal/nats"
 	"jetris/internal/prefs"
@@ -799,7 +800,7 @@ func (a *App) startGameScreen(e *engine.Engine, engCtx context.Context, engCance
 		}
 	}
 	a.score = 0
-	a.level = 0
+	a.level = game.MinLevel
 	a.teamScores, a.teamLevels = nil, nil
 	a.rtt = 0
 	a.gameStatus = status
@@ -1002,7 +1003,7 @@ func (a *App) returnToLobby() {
 	a.confirmLeave = false
 	a.countdown = -1
 	a.score = 0
-	a.level = 0
+	a.level = game.MinLevel
 	a.teamScores, a.teamLevels = nil, nil
 	a.rtt = 0
 	a.gameStatus = ""

@@ -684,11 +684,11 @@ func TestHardDropOncePerPress(t *testing.T) {
 func TestSoftDropAutoRepeat(t *testing.T) {
 	a := newTestApp()
 	// Pinned: DAS 150 (which ↓ must ignore), ARR 20 (which is the shift's
-	// and not the soft drop's), SDF 20 — 20x the level-0 gravity of 1000ms,
+	// and not the soft drop's), SDF 20 — 20x the level-1 gravity of 1000ms,
 	// so one row every 50ms.
 	a.SetHandling(150, 20, 20, defaultDropGuardMs)
 	if got := a.softARR(nil); got != 50*ms {
-		t.Fatalf("soft drop interval = %v, want 50ms (level 0 gravity / SDF 20)", got)
+		t.Fatalf("soft drop interval = %v, want 50ms (level 1 gravity / SDF 20)", got)
 	}
 	a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	// High on an empty board: rows to spare below it.
@@ -810,23 +810,23 @@ func TestSoftARRFollowsGravity(t *testing.T) {
 		sdf, level int
 		want       time.Duration
 	}{
-		{sdf: 20, level: 0, want: 50 * ms},       // 1000ms gravity / 20
-		{sdf: 10, level: 0, want: 100 * ms},      // the same level, half the factor
-		{sdf: 1, level: 0, want: 1000 * ms},      // the slowest setting: gravity itself
-		{sdf: 20, level: 5, want: 262 * ms / 20}, // the curve carried through
-		{sdf: 20, level: 19, want: 1 * ms},       // the fastest level: floored, never 0
-		{sdf: maxSDF, level: 0, want: 0},         // MAX: the machine's instant slide
-		{sdf: maxSDF, level: 19, want: 0},        //
+		{sdf: 20, level: 1, want: 50 * ms},                      // 1000ms gravity / 20
+		{sdf: 10, level: 1, want: 100 * ms},                     // the same level, half the factor
+		{sdf: 1, level: 1, want: 1000 * ms},                     // the slowest setting: gravity itself
+		{sdf: 20, level: 6, want: game.GravityInterval(6) / 20}, // the curve carried through
+		{sdf: 20, level: game.MaxLevel, want: 1 * ms},           // the fastest level (7 ms a row): floored, never 0
+		{sdf: maxSDF, level: 1, want: 0},                        // MAX: the machine's instant slide
+		{sdf: maxSDF, level: game.MaxLevel, want: 0},            //
 	} {
 		if got := softInterval(c.sdf, c.level); got != c.want {
 			t.Errorf("SDF %d at level %d: interval %v, want %v", c.sdf, c.level, got, c.want)
 		}
 	}
-	// No engine yet (a frame before the game): level 0 stands in.
+	// No engine yet (a frame before the game): level 1 stands in.
 	a := newTestApp()
 	a.SetHandling(defaultDASMs, defaultARRMs, 20, defaultDropGuardMs)
 	if got := a.softARR(nil); got != 50*ms {
-		t.Errorf("with no engine: interval %v, want the level-0 rate 50ms", got)
+		t.Errorf("with no engine: interval %v, want the level-1 rate 50ms", got)
 	}
 }
 

@@ -119,7 +119,7 @@ func TestSpawnGapHardDropLandsOnNextPiece(t *testing.T) {
 		e.HardDrop()
 		time.Sleep(farOneWay / 2)                   // inside the drop's round trip
 		e.HardDrop()                                // the next piece's, pressed a round trip early
-		deadline := time.Now().Add(2 * time.Second) // gravity alone (1 s a row at level 0) cannot lock a piece in this time
+		deadline := time.Now().Add(2 * time.Second) // gravity alone (1 s a row at level 1) cannot lock a piece in this time
 		for time.Now().Before(deadline) && e.PieceIdx() < 2*i+2 {
 			time.Sleep(10 * time.Millisecond)
 		}

@@ -25,11 +25,11 @@ func TestTeamStatsFoldOnAllEngines(t *testing.T) {
 	if got, want := e.TeamScores(), []int{0, 20}; !slices.Equal(got, want) {
 		t.Fatalf("TeamScores = %v, want %v", got, want)
 	}
-	if got, want := e.TeamLevels(), []int{0, 1}; !slices.Equal(got, want) {
+	if got, want := e.TeamLevels(), []int{1, 2}; !slices.Equal(got, want) {
 		t.Fatalf("TeamLevels = %v, want %v", got, want)
 	}
-	if e.Score() != 0 || e.Level() != 0 {
-		t.Fatalf("own score/level = %d/%d, want 0/0 (other team's clear)", e.Score(), e.Level())
+	if e.Score() != 0 || e.Level() != 1 {
+		t.Fatalf("own score/level = %d/%d, want 0/1 (other team's clear)", e.Score(), e.Level())
 	}
 }
 
@@ -53,7 +53,7 @@ func TestTeamStatsFoldPastTwoTeams(t *testing.T) {
 	if got, want := e.TeamScores(), []int{0, 0, 40}; !slices.Equal(got, want) {
 		t.Fatalf("TeamScores = %v, want %v", got, want)
 	}
-	if got, want := e.TeamLevels(), []int{0, 0, 1}; !slices.Equal(got, want) {
+	if got, want := e.TeamLevels(), []int{1, 1, 2}; !slices.Equal(got, want) {
 		t.Fatalf("TeamLevels = %v, want %v", got, want)
 	}
 }
@@ -72,10 +72,10 @@ func TestCoopLineClearFoldsLinesAndLevel(t *testing.T) {
 	if e.Score() != 20 {
 		t.Fatalf("score = %d, want 20", e.Score())
 	}
-	if e.Level() != 1 {
-		t.Fatalf("level = %d, want 1 after folding 10 shared lines", e.Level())
+	if e.Level() != 2 {
+		t.Fatalf("level = %d, want 2 after folding 10 shared lines", e.Level())
 	}
-	if e.AchievedLevel() != 1 {
-		t.Fatalf("AchievedLevel = %d, want 1", e.AchievedLevel())
+	if e.AchievedLevel() != 2 {
+		t.Fatalf("AchievedLevel = %d, want 2", e.AchievedLevel())
 	}
 }

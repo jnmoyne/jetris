@@ -113,15 +113,15 @@ func TestCompletedRows(t *testing.T) {
 	}
 }
 
+// Level starts at MinLevel and rises every LinesPerLevel lines, up to
+// MaxLevel (Tetris Worlds: levels 1 to 15).
 func TestLevel(t *testing.T) {
-	if Level(0) != 0 {
-		t.Error("Level(0) should be 0")
-	}
-	if Level(10) != 1 {
-		t.Error("Level(10) should be 1")
-	}
-	if Level(200) != 19 {
-		t.Error("Level(200) should be capped at 19")
+	for _, tc := range []struct{ lines, want int }{
+		{-5, 1}, {0, 1}, {9, 1}, {10, 2}, {19, 2}, {20, 3}, {139, 14}, {140, 15}, {200, 15},
+	} {
+		if got := Level(tc.lines); got != tc.want {
+			t.Errorf("Level(%d) = %d, want %d", tc.lines, got, tc.want)
+		}
 	}
 }
 

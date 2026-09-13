@@ -15,6 +15,9 @@ func TestSurvivalCurveParity(t *testing.T) {
 		level int
 		want  time.Duration
 	}{
+		{"too_easy", 1, ms(20000)}, {"too_easy", 8, ms(14000)}, {"too_easy", 15, ms(8000)},
+		{"super_easy", 1, ms(10000)}, {"super_easy", 8, ms(7000)}, {"super_easy", 15, ms(4000)},
+		{"very_easy", 1, ms(5000)}, {"very_easy", 8, ms(3500)}, {"very_easy", 15, ms(2000)},
 		{"easy", 1, ms(2500)}, {"easy", 8, ms(1750)}, {"easy", 15, ms(1000)},
 		{"normal", 1, ms(3000)}, {"normal", 8, ms(2250)}, {"normal", 15, ms(1500)},
 		{"hard", 1, ms(5000)}, {"hard", 8, ms(3000)}, {"hard", 15, ms(1000)},
@@ -24,12 +27,13 @@ func TestSurvivalCurveParity(t *testing.T) {
 			t.Errorf("survivalInterval(%q, %d) = %v, want %v", tc.tier, tc.level, got, tc.want)
 		}
 	}
-	if normalizeSurvival("hard") != "hard" || normalizeSurvival("Hard") != "" || normalizeSurvival("") != "" {
+	if normalizeSurvival("hard") != "hard" || normalizeSurvival("too_easy") != "too_easy" ||
+		normalizeSurvival("Hard") != "" || normalizeSurvival("very easy") != "" || normalizeSurvival("") != "" {
 		t.Error("normalizeSurvival misreads a tier")
 	}
 }
 
-// The rows a raise brings: Easy one, Hard four, Normal the GUI's seeded draw
+// The rows a raise brings: Easy and below one, Hard four, Normal the GUI's seeded draw
 // — the twenty raises of seed 42 as internal/game deals them.
 func TestSurvivalRowsParity(t *testing.T) {
 	want := []int{4, 4, 3, 4, 4, 3, 4, 1, 1, 2, 2, 1, 1, 3, 1, 1, 3, 2, 2, 4}
@@ -37,8 +41,13 @@ func TestSurvivalRowsParity(t *testing.T) {
 		if got := survivalRaiseRows("normal", 42, raise+1); got != n {
 			t.Errorf("normal raise %d (seed 42) brings %d rows, want %d", raise+1, got, n)
 		}
-		if survivalRaiseRows("easy", 42, raise+1) != 1 || survivalRaiseRows("hard", 42, raise+1) != 4 {
-			t.Errorf("raise %d: easy/hard rows are not 1/4", raise+1)
+		for _, tier := range []string{"too_easy", "super_easy", "very_easy", "easy"} {
+			if survivalRaiseRows(tier, 42, raise+1) != 1 {
+				t.Errorf("raise %d: %s rows are not 1", raise+1, tier)
+			}
+		}
+		if survivalRaiseRows("hard", 42, raise+1) != 4 {
+			t.Errorf("raise %d: hard rows are not 4", raise+1)
 		}
 	}
 	if survivalRaiseRows("", 42, 1) != 0 {

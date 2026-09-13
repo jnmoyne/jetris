@@ -40,7 +40,7 @@ func main() {
 	extraRows := flag.Int("extra-rows", config.DefaultExtraRows, "shared-board height: rows every seat beyond the first adds below the standard 20 (0-10)")
 	lineGoal := flag.Int("line-goal", 0, "the game's length in lines: the first playfield to clear this many wins (0 = until top out)")
 	individual := flag.Bool("individual", false, "cooperative: score every seat on its own (the top score wins) instead of the crew together")
-	survival := flag.String("survival", "", "cooperative: the rising floor and its tier — easy, normal or hard (garbage rows rise on a clock that quickens with the level until the crew tops out; no line goal)")
+	survival := flag.String("survival", "", "cooperative: the rising floor and its tier — too_easy, super_easy, very_easy, easy, normal or hard (garbage rows rise on a clock that quickens with the level until the crew tops out; no line goal)")
 	name := flag.String("name", "", "name the game: the name becomes its ID, so its stream is JETRIS_GAME_<name> (empty = a generated ID)")
 	flag.Parse()
 

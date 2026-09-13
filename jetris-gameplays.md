@@ -240,9 +240,17 @@ nanoseconds so every peer computes the same duration):
 
 | Tier | Rows per raise | Level 1 | Level 8 | Level 15 |
 |------|----------------|---------|---------|----------|
+| Too easy | 1 | every 20.0 s | 14.0 s | 8.0 s |
+| Super easy | 1 | every 10.0 s | 7.0 s | 4.0 s |
+| Very easy | 1 | every 5.0 s | 3.5 s | 2.0 s |
 | Easy | 1 | every 2.5 s | 1.75 s | 1.0 s |
 | Normal (the default) | 1 to 4, a seeded draw per raise | every 3.0 s | 2.25 s | 1.5 s |
 | Hard | 4 | every 5.0 s | 3.0 s | 1.0 s |
+
+The three tiers below Easy extrapolate it: a raise brings no fewer than one row,
+so each rises half as often as the tier above it — its interval twice as long at
+every level. On the wire the tier is `too_easy`, `super_easy`, `very_easy`,
+`easy`, `normal` or `hard`.
 
 **The holes make a well that moves every 4 rows.** Every raised row has an
 ordinal — the board's count of rows raised so far — and the rows sharing
@@ -709,7 +717,8 @@ board, every team scoring together (§5), the total seat count being playfields
 **2. game rules**: the **game length** — **until top out**, **a number of
 lines** (default 40, the line goal of §2), or, on a single playfield only,
 **survival** (§2: the floor rises until the crew tops out, the time survived the
-result) with its tier under it — **Easy / Normal / Hard**, Normal by default,
+result) with its tier under it — **Too easy / Super easy / Very easy / Easy /
+Normal / Hard**, Normal by default,
 each line naming its pace — then a single radio: the
 **Modern** preset — the default, listed read-only: the play rules at their
 modern settings, the board 4 columns wider per player and no taller, every

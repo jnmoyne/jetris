@@ -15,14 +15,17 @@ import (
 // The rising floor of a survival game (gameplays §2 "Survival", guide §4.4):
 // garbage rows rise from the bottom of the crew's board on a clock of their
 // own, whatever the players do, and the game ends at the first top-out — the
-// time survived is the result. Three tiers set the pace, every one of them
+// time survived is the result. Six tiers set the pace, every one of them
 // quickening with the level (levelOf: the board's lines, a raised row
 // clearing like any line once its holes are filled): the interval shrinks in
 // a straight line from the tier's start at level 1 to its end at level 15.
 //
-//	easy    a row every 2.5 s → 1.0 s, one row at a time
-//	normal  every 3.0 s → 1.5 s, one to four rows at a time (a seeded draw)
-//	hard    every 5.0 s → 1.0 s, four rows at a time
+//	too_easy    a row every 20 s → 8 s, one row at a time
+//	super_easy  every 10 s → 4 s, one row at a time
+//	very_easy   every 5 s → 2 s, one row at a time
+//	easy        every 2.5 s → 1.0 s, one row at a time
+//	normal      every 3.0 s → 1.5 s, one to four rows at a time (a seeded draw)
+//	hard        every 5.0 s → 1.0 s, four rows at a time
 //
 // Everything about a raise is a function of the game's seed, so every engine
 // on the board — this agent, the GUI's, a replay — agrees on it with nothing
@@ -46,11 +49,11 @@ const (
 	survivalHoleStream uint64 = 0x53757276206f6c65
 )
 
-// normalizeSurvival reads a recorded tier: the three tiers as themselves,
+// normalizeSurvival reads a recorded tier: the six tiers as themselves,
 // anything else — absent, an unknown word — as no rising floor.
 func normalizeSurvival(s string) string {
 	switch s {
-	case "easy", "normal", "hard":
+	case "too_easy", "super_easy", "very_easy", "easy", "normal", "hard":
 		return s
 	}
 	return ""
@@ -66,6 +69,12 @@ type survivalPace struct {
 
 func survivalPaceOf(tier string) survivalPace {
 	switch normalizeSurvival(tier) {
+	case "too_easy":
+		return survivalPace{20 * time.Second, 8 * time.Second, 1, 1}
+	case "super_easy":
+		return survivalPace{10 * time.Second, 4 * time.Second, 1, 1}
+	case "very_easy":
+		return survivalPace{5 * time.Second, 2 * time.Second, 1, 1}
 	case "easy":
 		return survivalPace{2500 * time.Millisecond, time.Second, 1, 1}
 	case "normal":

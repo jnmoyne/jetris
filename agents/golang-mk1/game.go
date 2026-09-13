@@ -68,7 +68,7 @@ type Game struct {
 	senderTotals map[string][2]int // last cumulative {score,lines} folded per sender
 	senderTeams  map[string]int    // the team each sender announced, for the line goal's per-playfield count
 	lineGoal     int               // meta line_goal: the game ends when a playfield has cleared this many lines (0 = until top out)
-	survival     string            // meta survival, cooperative only: the rising floor's tier ("easy" / "normal" / "hard"; "" = the floor stays put) — garbage rows rise on the crew's board on a clock that quickens with the level (survival.go)
+	survival     string            // meta survival, cooperative only: the rising floor's tier ("too_easy" / "super_easy" / "very_easy" / "easy" / "normal" / "hard"; "" = the floor stays put) — garbage rows rise on the crew's board on a clock that quickens with the level (survival.go)
 	goalDecided  bool              // the goal was reached (the verdict is in goalWon)
 	goalWon      bool              // we are on the playfield that reached it (or the top scorer of a board scored per seat)
 

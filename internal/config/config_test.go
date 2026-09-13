@@ -719,24 +719,28 @@ func TestGameSpecMetaRoundTrip(t *testing.T) {
 	}
 }
 
-// The rising floor: the three tiers read as themselves and anything else as
+// The rising floor: the six tiers read as themselves and anything else as
 // no floor; only a cooperative-mode board plays it, whatever the record
 // says; the meta round-trips it; and the rules of a survival game keep
 // clearable holes and no attack table — the Modern preset included, which
 // the lobby row still tags as the preset.
 func TestSurvivalTier(t *testing.T) {
-	for in, want := range map[Survival]Survival{"easy": SurvivalEasy, "normal": SurvivalNormal, "hard": SurvivalHard, "": SurvivalNone, "lunatic": SurvivalNone} {
+	for in, want := range map[Survival]Survival{
+		"too_easy": SurvivalTooEasy, "super_easy": SurvivalSuperEasy, "very_easy": SurvivalVeryEasy,
+		"easy": SurvivalEasy, "normal": SurvivalNormal, "hard": SurvivalHard,
+		"": SurvivalNone, "lunatic": SurvivalNone, "very easy": SurvivalNone,
+	} {
 		if got := in.Normalized(); got != want {
 			t.Errorf("Survival(%q).Normalized() = %q, want %q", in, got, want)
 		}
 	}
-	if got := SurvivalTiers(); len(got) != 3 || got[0] != SurvivalEasy || got[2] != SurvivalHard {
-		t.Errorf("SurvivalTiers() = %v", got)
+	if got := SurvivalTiers(); !reflect.DeepEqual(got, []Survival{SurvivalTooEasy, SurvivalSuperEasy, SurvivalVeryEasy, SurvivalEasy, SurvivalNormal, SurvivalHard}) {
+		t.Errorf("SurvivalTiers() = %v, want easiest first", got)
 	}
-	if SurvivalNormal.String() != "Normal" || SurvivalNone.String() != "" || Survival("x").String() != "" {
+	if SurvivalNormal.String() != "Normal" || SurvivalSuperEasy.String() != "Super easy" || SurvivalNone.String() != "" || Survival("x").String() != "" {
 		t.Error("String() misnames a tier")
 	}
-	if SurvivalHard.Label() != "survival (hard)" || SurvivalNone.Label() != "" {
+	if SurvivalHard.Label() != "survival (hard)" || SurvivalVeryEasy.Label() != "survival (very easy)" || SurvivalNone.Label() != "" {
 		t.Error("Label() misnames a tier")
 	}
 	for _, tc := range []struct {

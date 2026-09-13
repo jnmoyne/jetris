@@ -70,7 +70,7 @@ type hosting struct {
 	extraRows  int    // shared boards: rows every seat beyond the first adds below the standard 20 (clamped 0..10; meta extra_rows)
 	lineGoal   int    // the game's length in lines (meta line_goal; 0 = until top out)
 	single     bool   // cooperative: score every seat on its own, the top score wins (meta scoring "individual")
-	survival   string // cooperative: the rising floor's tier (meta survival: "easy", "normal" or "hard"; "" = no floor) — no line goal with it, at least one hole per row
+	survival   string // cooperative: the rising floor's tier (meta survival: "too_easy", "super_easy", "very_easy", "easy", "normal" or "hard"; "" = no floor) — no line goal with it, at least one hole per row
 	pauseAlone bool   // open games: an agent left as the only player waits for company instead of playing on (listing agents_pause_alone)
 }
 

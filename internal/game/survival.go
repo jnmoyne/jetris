@@ -11,15 +11,22 @@ import (
 // The rising floor of a survival game (config.Survival): garbage rows rise
 // from the bottom of the crew's board on a clock of their own, whatever the
 // players do, and the game ends at the first top-out — the time survived is
-// the result. Three tiers set the pace; every one of them quickens with the
+// the result. Six tiers set the pace; every one of them quickens with the
 // level (Level: one more every ten lines, the same level gravity follows —
 // a raised row clears like any line once its holes are filled, so digging
 // out is what speeds the floor up), the interval shrinking in a straight
 // line from the tier's start at level 1 to its end at MaxLevel:
 //
-//	Easy    a row every 2.5 s → 1.0 s, one row at a time
-//	Normal  every 3.0 s → 1.5 s, one to four rows at a time (a seeded draw)
-//	Hard    every 5.0 s → 1.0 s, four rows at a time
+//	Too easy    a row every 20 s → 8 s, one row at a time
+//	Super easy  every 10 s → 4 s, one row at a time
+//	Very easy   every 5 s → 2 s, one row at a time
+//	Easy        every 2.5 s → 1.0 s, one row at a time
+//	Normal      every 3.0 s → 1.5 s, one to four rows at a time (a seeded draw)
+//	Hard        every 5.0 s → 1.0 s, four rows at a time
+//
+// The three tiers below Easy extrapolate it: a raise brings no fewer than
+// one row, so each rises half as often as the tier above it — its start and
+// its end twice as long.
 //
 // Everything about a raise is a pure function of the game's seed, so every
 // engine, every agent and a replay agree on it without a word on the wire
@@ -54,6 +61,12 @@ type SurvivalPace struct {
 // SurvivalPaceOf is the pace of a tier; the zero pace for no rising floor.
 func SurvivalPaceOf(tier config.Survival) SurvivalPace {
 	switch tier.Normalized() {
+	case config.SurvivalTooEasy:
+		return SurvivalPace{Start: 20 * time.Second, End: 8 * time.Second, MinRows: 1, MaxRows: 1}
+	case config.SurvivalSuperEasy:
+		return SurvivalPace{Start: 10 * time.Second, End: 4 * time.Second, MinRows: 1, MaxRows: 1}
+	case config.SurvivalVeryEasy:
+		return SurvivalPace{Start: 5 * time.Second, End: 2 * time.Second, MinRows: 1, MaxRows: 1}
 	case config.SurvivalEasy:
 		return SurvivalPace{Start: 2500 * time.Millisecond, End: time.Second, MinRows: 1, MaxRows: 1}
 	case config.SurvivalNormal:

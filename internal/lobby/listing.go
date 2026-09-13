@@ -31,7 +31,7 @@ type GameListing struct {
 	ExtraRows          int               `json:"extra_rows,omitempty"`           // shared boards: rows per seat beyond the first; mirrors GameMeta.ExtraRows for the lobby row's board-size tag
 	LineGoal           int               `json:"line_goal,omitempty"`            // the game's length in lines (0 = until top out); mirrors GameMeta.LineGoal for the lobby row's "N lines" tag
 	Scoring            config.Scoring    `json:"scoring,omitempty"`              // single playfield: "individual" when every seat is scored on its own; mirrors GameMeta.Scoring for the lobby row's game-type word
-	Survival           config.Survival   `json:"survival,omitempty"`             // single playfield: the rising floor's tier ("easy" / "normal" / "hard"); mirrors GameMeta.Survival for the lobby row's "survival (tier)" tag and the rules the row tags (a survival game has garbage holes)
+	Survival           config.Survival   `json:"survival,omitempty"`             // single playfield: the rising floor's tier ("too_easy" / "super_easy" / "very_easy" / "easy" / "normal" / "hard"); mirrors GameMeta.Survival for the lobby row's "survival (tier)" tag and the rules the row tags (a survival game has garbage holes)
 	InviteOnly         bool              `json:"invite_only,omitempty"`          // players join by invitation only (creator excepted); auto-joining agents skip it. An OPEN game (unset) lets players join and leave at any time, mid-game included
 	CreatorID          string            `json:"creator_id,omitempty"`           // who created (and may always join) the game
 	Players            []PlayerSummary   `json:"players"`

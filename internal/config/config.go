@@ -358,21 +358,26 @@ func (s Scoring) Normalized() Scoring {
 type Survival string
 
 const (
-	SurvivalNone   Survival = ""       // the floor stays put: the default, and every meta written before the field
-	SurvivalEasy   Survival = "easy"   // one row at a time, every 2.5 s at level 1 and every second by level 15
-	SurvivalNormal Survival = "normal" // one to four rows at a time, every 3 s at level 1 and every 1.5 s by level 15
-	SurvivalHard   Survival = "hard"   // four rows at a time, every 5 s at level 1 and every second by level 15
+	SurvivalNone      Survival = ""           // the floor stays put: the default, and every meta written before the field
+	SurvivalTooEasy   Survival = "too_easy"   // one row at a time, every 20 s at level 1 and every 8 s by level 15
+	SurvivalSuperEasy Survival = "super_easy" // one row at a time, every 10 s at level 1 and every 4 s by level 15
+	SurvivalVeryEasy  Survival = "very_easy"  // one row at a time, every 5 s at level 1 and every 2 s by level 15
+	SurvivalEasy      Survival = "easy"       // one row at a time, every 2.5 s at level 1 and every second by level 15
+	SurvivalNormal    Survival = "normal"     // one to four rows at a time, every 3 s at level 1 and every 1.5 s by level 15
+	SurvivalHard      Survival = "hard"       // four rows at a time, every 5 s at level 1 and every second by level 15
 )
 
 // SurvivalTiers lists the tiers a creator can choose, easiest first.
-func SurvivalTiers() []Survival { return []Survival{SurvivalEasy, SurvivalNormal, SurvivalHard} }
+func SurvivalTiers() []Survival {
+	return []Survival{SurvivalTooEasy, SurvivalSuperEasy, SurvivalVeryEasy, SurvivalEasy, SurvivalNormal, SurvivalHard}
+}
 
-// Normalized reads a recorded tier: the three tiers as themselves, anything
-// else — absent, the zero value, every meta written before the field — as no
+// Normalized reads a recorded tier: every tier as itself, anything else —
+// absent, the zero value, every meta written before the field — as no
 // rising floor.
 func (s Survival) Normalized() Survival {
 	switch s {
-	case SurvivalEasy, SurvivalNormal, SurvivalHard:
+	case SurvivalTooEasy, SurvivalSuperEasy, SurvivalVeryEasy, SurvivalEasy, SurvivalNormal, SurvivalHard:
 		return s
 	default:
 		return SurvivalNone
@@ -380,9 +385,16 @@ func (s Survival) Normalized() Survival {
 }
 
 // String names the tier the way the wizard, the HUD and the history show it:
-// "Easy", "Normal" or "Hard" — nothing for no rising floor.
+// "Too easy", "Super easy", "Very easy", "Easy", "Normal" or "Hard" —
+// nothing for no rising floor.
 func (s Survival) String() string {
 	switch s.Normalized() {
+	case SurvivalTooEasy:
+		return "Too easy"
+	case SurvivalSuperEasy:
+		return "Super easy"
+	case SurvivalVeryEasy:
+		return "Very easy"
 	case SurvivalEasy:
 		return "Easy"
 	case SurvivalNormal:
@@ -395,12 +407,12 @@ func (s Survival) String() string {
 }
 
 // Label names the game length the way the lobby row tags it: "survival
-// (normal)" — nothing for no rising floor.
+// (normal)", "survival (very easy)" — nothing for no rising floor.
 func (s Survival) Label() string {
 	if s.Normalized() == SurvivalNone {
 		return ""
 	}
-	return "survival (" + string(s.Normalized()) + ")"
+	return "survival (" + strings.ToLower(s.String()) + ")"
 }
 
 type GameStatus string
@@ -434,7 +446,7 @@ type GameMeta struct {
 	ExtraRows          int        `json:"extra_rows,omitempty"`           // shared boards (cooperative, teams): rows every seat beyond the first adds to the board's standard VisibleRows (MinExtraRows..MaxExtraRows) — the board grows downwards, the headroom and the spawn rows stay where they are (see SharedBoardHeight). Absent — the zero value, and every meta written before the field — adds nothing: the standard 20-row playfield whatever the seat count. Meaningless in competitive, like ExtraColumns
 	LineGoal           int        `json:"line_goal,omitempty"`            // the game's length in lines: the game ends the moment a playfield has cleared this many lines in total — on a single playfield the game is over (the crew is done, or in individual scoring the top score wins); across several the first playfield there wins. Absent — the zero value, and every meta written before the field — the game runs until someone tops out (NormalizeLineGoal)
 	Scoring            Scoring    `json:"scoring,omitempty"`              // how the seats of a single shared playfield are scored (Scoring): "individual" for every seat on its own; absent — the default, and every meta written before the field — the crew's one shared score. Only meaningful on a cooperative-mode board with more than one seat (IndividualScoring)
-	Survival           Survival   `json:"survival,omitempty"`             // the rising floor of a single shared playfield (Survival): "easy", "normal" or "hard" — garbage rows rise from the bottom on a clock that quickens with the level, the game ends at the first top-out, and the time survived is the result; absent — the default, and every meta written before the field — the floor stays put. Only meaningful on a cooperative-mode board (SurvivalTier); such a game has no line goal, and its garbage holes are at least one (GameRules.Normalized)
+	Survival           Survival   `json:"survival,omitempty"`             // the rising floor of a single shared playfield (Survival): "too_easy", "super_easy", "very_easy", "easy", "normal" or "hard" — garbage rows rise from the bottom on a clock that quickens with the level, the game ends at the first top-out, and the time survived is the result; absent — the default, and every meta written before the field — the floor stays put. Only meaningful on a cooperative-mode board (SurvivalTier); such a game has no line goal, and its garbage holes are at least one (GameRules.Normalized)
 	Seed               uint64     `json:"seed"`
 	Status             GameStatus `json:"status"`
 	CreatorID          string     `json:"creator_id"`

@@ -316,6 +316,10 @@ func TestWizardSurvival(t *testing.T) {
 	if spec := a.wizardSpec(); spec.Survival != config.SurvivalHard {
 		t.Errorf("hard tier read as %q", spec.Survival)
 	}
+	a.survivalEnum.Value = "too_easy"
+	if spec := a.wizardSpec(); spec.Survival != config.SurvivalTooEasy {
+		t.Errorf("too easy tier read as %q", spec.Survival)
+	}
 	a.survivalEnum.Value = "lunatic"
 	if spec := a.wizardSpec(); spec.Survival != config.SurvivalNormal {
 		t.Errorf("a stale tier read as %q, want normal", spec.Survival)
@@ -362,6 +366,9 @@ func TestWizardSurvival(t *testing.T) {
 		t.Errorf("tier label = %q", got)
 	}
 	if got := survivalTierLabel(config.SurvivalHard); got != "Hard — 4 rows every 5 s at level 1, every 1 s by level 15" {
+		t.Errorf("tier label = %q", got)
+	}
+	if got := survivalTierLabel(config.SurvivalTooEasy); got != "Too easy — one row every 20 s at level 1, every 8 s by level 15" {
 		t.Errorf("tier label = %q", got)
 	}
 	if rows := modernSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1, Survival: config.SurvivalEasy}); rows[len(rows)-1][0] != "Garbage" {

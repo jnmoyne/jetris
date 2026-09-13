@@ -2,6 +2,7 @@ package game
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -18,6 +19,9 @@ func TestSurvivalInterval(t *testing.T) {
 		level int
 		want  time.Duration
 	}{
+		{config.SurvivalTooEasy, 1, ms(20000)}, {config.SurvivalTooEasy, 8, ms(14000)}, {config.SurvivalTooEasy, 15, ms(8000)},
+		{config.SurvivalSuperEasy, 1, ms(10000)}, {config.SurvivalSuperEasy, 8, ms(7000)}, {config.SurvivalSuperEasy, 15, ms(4000)},
+		{config.SurvivalVeryEasy, 1, ms(5000)}, {config.SurvivalVeryEasy, 8, ms(3500)}, {config.SurvivalVeryEasy, 15, ms(2000)},
 		{config.SurvivalEasy, 1, ms(2500)}, {config.SurvivalEasy, 8, ms(1750)}, {config.SurvivalEasy, 15, ms(1000)},
 		{config.SurvivalNormal, 1, ms(3000)}, {config.SurvivalNormal, 8, ms(2250)}, {config.SurvivalNormal, 15, ms(1500)},
 		{config.SurvivalHard, 1, ms(5000)}, {config.SurvivalHard, 8, ms(3000)}, {config.SurvivalHard, 15, ms(1000)},
@@ -38,12 +42,31 @@ func TestSurvivalInterval(t *testing.T) {
 	}
 }
 
-// Rows per raise: Easy one, Hard four, Normal a seeded draw of one to four
-// that every peer repeats and that does vary from raise to raise.
+// The tiers below Easy extrapolate it: one row a raise, like Easy, each
+// rising half as often as the tier above it — start and end twice as long.
+func TestSurvivalEasierTiers(t *testing.T) {
+	tiers := config.SurvivalTiers()
+	easy := slices.Index(tiers, config.SurvivalEasy)
+	if easy != 3 {
+		t.Fatalf("SurvivalTiers() = %v, want three tiers below easy", tiers)
+	}
+	for i := easy - 1; i >= 0; i-- {
+		p, above := SurvivalPaceOf(tiers[i]), SurvivalPaceOf(tiers[i+1])
+		if p.Start != 2*above.Start || p.End != 2*above.End || p.MinRows != 1 || p.MaxRows != 1 {
+			t.Errorf("%s: pace %+v, want one row a raise at twice %s's intervals %+v", tiers[i], p, tiers[i+1], above)
+		}
+	}
+}
+
+// Rows per raise: Easy and the tiers below it one, Hard four, Normal a
+// seeded draw of one to four that every peer repeats and that does vary
+// from raise to raise.
 func TestSurvivalRaiseRows(t *testing.T) {
 	for raise := 1; raise <= 50; raise++ {
-		if got := SurvivalRaiseRows(config.SurvivalEasy, 42, raise); got != 1 {
-			t.Fatalf("easy raise %d brings %d rows", raise, got)
+		for _, tier := range []config.Survival{config.SurvivalTooEasy, config.SurvivalSuperEasy, config.SurvivalVeryEasy, config.SurvivalEasy} {
+			if got := SurvivalRaiseRows(tier, 42, raise); got != 1 {
+				t.Fatalf("%s raise %d brings %d rows", tier, raise, got)
+			}
 		}
 		if got := SurvivalRaiseRows(config.SurvivalHard, 42, raise); got != 4 {
 			t.Fatalf("hard raise %d brings %d rows", raise, got)

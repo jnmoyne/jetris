@@ -416,7 +416,7 @@ type App struct {
 	singleKindEnum widget.Enum                        // wizard step 1, single playfield: "coop" (scored together) or "competitive" (each seat on its own — config.ScoringIndividual)
 	lengthEnum     widget.Enum                        // wizard step 2: "topout" (until someone tops out), "lines" (the lineGoalEd number of lines — config.GameSpec.LineGoal) or "survival" (the rising floor — config.GameSpec.Survival, the survivalEnum tier; a single playfield only)
 	lineGoalEd     widget.Editor                      // wizard step 2: the line goal (blank = config.DefaultLineGoal)
-	survivalEnum   widget.Enum                        // wizard step 2, survival: the rising floor's tier — "easy", "normal" or "hard" (config.Survival)
+	survivalEnum   widget.Enum                        // wizard step 2, survival: the rising floor's tier — "too_easy", "super_easy", "very_easy", "easy", "normal" or "hard" (config.Survival)
 	wizBackBtn     widget.Clickable                   // wizard: back one step
 	wizNextBtn     widget.Clickable                   // wizard: Next / Choose players… / Create game
 	wizCancelBtn   widget.Clickable                   // wizard: close without creating

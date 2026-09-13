@@ -60,7 +60,7 @@ func main() {
 	extraRows := flag.Int("extra-rows", 0, "shared-board height when creating a cooperative or teams game: rows every seat beyond the first adds below the standard 20 (0-10)")
 	lineGoal := flag.Int("line-goal", 0, "the game's length in lines when creating a game: the first playfield to clear this many wins (0 = until top out)")
 	individual := flag.Bool("individual", false, "when creating a cooperative game of two or more: score every seat on its own, the top score wins")
-	survival := flag.String("survival", "", "when creating a cooperative game: the rising floor and its tier — easy, normal or hard — garbage rows rise on a clock that quickens with the level until the crew tops out, the time survived the result (no line goal; at least one hole per row)")
+	survival := flag.String("survival", "", "when creating a cooperative game: the rising floor and its tier — too_easy, super_easy, very_easy, easy, normal or hard — garbage rows rise on a clock that quickens with the level until the crew tops out, the time survived the result (no line goal; at least one hole per row)")
 	bag := flag.String("bag", "", "piece randomizer when creating a game: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
 	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Modern preset — next 6, hold, the 7-bag, 1 hole per garbage row, the modern attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
@@ -107,7 +107,7 @@ func main() {
 			os.Exit(2)
 		}
 		if normalizeSurvival(*survival) != *survival {
-			fmt.Fprintf(os.Stderr, "--survival %q is not a tier: use easy, normal or hard, or leave it unset\n", *survival)
+			fmt.Fprintf(os.Stderr, "--survival %q is not a tier: use too_easy, super_easy, very_easy, easy, normal or hard, or leave it unset\n", *survival)
 			os.Exit(2)
 		}
 		if *survival != "" && mode != modeCooperative {

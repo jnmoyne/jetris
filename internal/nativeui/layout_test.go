@@ -14,6 +14,7 @@ import (
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
+	"jetris/internal/gamepad"
 	"jetris/internal/lobby"
 	"jetris/internal/prefs"
 	"jetris/internal/voice"
@@ -26,6 +27,8 @@ func newTestApp() *App {
 	a.th = newUITheme()
 	// No test opens the machine's speakers: the voice chat runs on a fake.
 	a.voiceDevice = func() voice.Device { return &voice.FakeDevice{} }
+	// Nor a controller: the pad is a fake the test presses (gamepad_test.go).
+	a.gamepad = &gamepad.FakeSource{}
 	return a
 }
 

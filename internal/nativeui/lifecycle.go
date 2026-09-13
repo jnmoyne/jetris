@@ -1108,6 +1108,7 @@ func (a *App) teardown() {
 	srv := a.embSrv
 	web := a.webSrv
 	v := a.voice
+	gp := a.gamepad // kept, not cleared: the frame reads it unlocked, and Stop is idempotent
 	a.eng = nil
 	a.lobby = nil
 	a.nc = nil
@@ -1124,6 +1125,9 @@ func (a *App) teardown() {
 	}
 	if v != nil {
 		v.Stop()
+	}
+	if gp != nil {
+		gp.Stop()
 	}
 	if lb != nil {
 		// Remove our presence before draining so watchers see us leave at once.

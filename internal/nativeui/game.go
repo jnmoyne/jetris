@@ -239,6 +239,11 @@ func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
 	if mode == engine.ModePlayer && started && live {
 		a.handleKeys(gtx, eng)
 	}
+	// The game controller (gamepad.go), on the keyboard's gate and not the
+	// chat's: a pad cannot type, so it keeps the piece while the player
+	// types. Drained every frame so a press made before the start dies
+	// here rather than firing once the game begins.
+	a.handleGamepad(gtx, eng, mode == engine.ModePlayer && started && live)
 	// The screen's own chrome first (gamescreen.go — the bar's switches), so
 	// a column shown or hidden this frame is already in the layout the pad
 	// and the gestures measure.
@@ -874,6 +879,11 @@ func (a *App) controlsSections(hold, editable bool) []controlsSection {
 	}
 	if a.touchUI {
 		sections[0], sections[1] = sections[1], sections[0]
+	}
+	// The controller's, last, once one has been seen (gamepad.go): a
+	// keyboard player never reads about a pad they do not have.
+	if a.gamepadSeen {
+		sections = append(sections, controlsSection{header: "GAMEPAD", rows: gamepadRows(hold)})
 	}
 	return sections
 }

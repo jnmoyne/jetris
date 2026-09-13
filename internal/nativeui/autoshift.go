@@ -417,6 +417,7 @@ func (a *App) handleAutoShift(gtx C, eng *engine.Engine, active bool) {
 		a.soft.reset()
 		a.dropHeld = false
 		a.holdArmed = false
+		a.gamepadReset()
 		return
 	}
 	if a.shift.dir == 0 && a.soft.dir == 0 {

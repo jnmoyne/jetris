@@ -11,6 +11,7 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	github.com/synadia-io/orbit.go/jetstreamext v0.3.2
 	github.com/synadia-io/orbit.go/natscontext v0.1.3
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -28,7 +29,6 @@ require (
 	golang.org/x/exp/shiny v0.0.0-20260824195058-e88cd73687aa // indirect
 	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )

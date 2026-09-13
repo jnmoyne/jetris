@@ -30,6 +30,7 @@ import (
 
 	"jetris/internal/config"
 	"jetris/internal/engine"
+	"jetris/internal/gamepad"
 	"jetris/internal/lobby"
 	natspkg "jetris/internal/nats"
 	"jetris/internal/prefs"
@@ -686,6 +687,22 @@ type App struct {
 	dropGuard                           dropGuard
 	dropGuardMs                         int
 	dropGuardFloat                      widget.Float
+	// The game controller (gamepad.go): gamepad is the platform's Source,
+	// opened by Run through gamepadOpen (gamepad.Open; a test's returns a
+	// gamepad.FakeSource, and sets a.gamepad itself since it never calls
+	// Run — guarded by mu for teardown's sake, which may run off the UI
+	// goroutine). gamepadHeld counts, per move, the pad's buttons holding
+	// it — the D-pad's left and the stick's are two buttons for one move,
+	// and the machine hears one press and one release. gamepadDropHeld is
+	// the pad's hard-drop button down (one drop per press, as the space
+	// bar's dropHeld), and gamepadSeen that a pad has spoken or is attached:
+	// the legend's GAMEPAD section shows from then on. UI goroutine only
+	// bar gamepad itself.
+	gamepad         gamepad.Source
+	gamepadOpen     func() gamepad.Source
+	gamepadHeld     map[prefs.KeyAction]int
+	gamepadDropHeld bool
+	gamepadSeen     bool
 	// heldMoves are gesture moves made while the board had no piece (the
 	// lock-to-spawn gap), dispatched the moment the next piece appears
 	// (handleGestures). UI goroutine only. pieceGapStart/spawnGapLast/
@@ -787,6 +804,7 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.setDefaultPanels() // every panel on until a saved set says otherwise
 	a.SetVoice(prefs.DefaultVoice())
 	a.voiceDevice = voice.NewDevice
+	a.gamepadOpen = gamepad.Open
 	a.voiceChanEnum.Value = voiceChanTeam
 	// The name is one word: a plain keyboard on a phone, no corrections or
 	// predictions over it (hintPlain). The numeric fields get a number pad,
@@ -1041,6 +1059,13 @@ func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 	a.win = new(app.Window)
 	a.win.Option(app.Title("Jetris"), app.Size(unit.Dp(1280), unit.Dp(820)), app.MinSize(minWinW, minWinH))
+	// The game controller, woken through invalidate (gamepad.go); stopped
+	// by teardown.
+	gp := a.gamepadOpen()
+	a.mu.Lock()
+	a.gamepad = gp
+	a.mu.Unlock()
+	gp.Start(a.invalidate)
 
 	a.th = newUITheme()
 

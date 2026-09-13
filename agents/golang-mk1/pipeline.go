@@ -145,6 +145,7 @@ func (g *Game) publishBatchAsync(ctx context.Context, cells []cellUpd, flashCell
 	}
 	g.pipePredictedEnd = base + uint64(n)
 	g.inflight++
+	g.noteOwnWrites(cells) // the optimistic projection; a lost batch resyncs
 	go g.awaitBatch(ctx, fut, keys, flashCells)
 	return true
 }

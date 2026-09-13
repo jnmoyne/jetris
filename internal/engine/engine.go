@@ -131,13 +131,26 @@ type Engine struct {
 	// roster is who is seated, as the lobby last pushed it (SetRoster); nil
 	// until then. Guarded by e.mu.
 	roster []Seat
-	// peerPieces is every other seat's falling piece on the own shared
-	// board as last seen, with its idle clock (roster.go); idleVacateAfter
-	// is the threshold a peer's piece may stand still before this engine
-	// vacates it (config.IdlePieceVacateAfter; tests shorten it). Guarded
+	// peerCells is every other seat's active cell on the own shared board
+	// as last delivered, with its idle clock (roster.go); idleVacateAfter
+	// is the threshold a piece's cells may go unwritten before this engine
+	// vacates them (config.IdlePieceVacateAfter; tests shorten it). Guarded
 	// by e.mu.
-	peerPieces      map[int]peerPiece
+	peerCells       map[game.CellPos]peerCell
 	idleVacateAfter time.Duration
+	// A spawn deferred behind another seat's active cells (spawnPending)
+	// keeps an account: spawnDeferredSince is when the deferral began,
+	// spawnBlock the blocking cells at the sequences they were last written
+	// and since when those same cells, unchanged, have blocked. Past
+	// spawnBlockedAfter (config.SpawnBlockedVacateAfter; tests shorten it)
+	// they are nobody's live piece and the engine vacates them; past
+	// spawnHoldRelease (config.SpawnHoldRelease) the moves held behind the
+	// player's own drop (awaitSpawn) are let go (deferSpawnLocked). Guarded
+	// by e.mu.
+	spawnDeferredSince time.Time
+	spawnBlock         spawnBlocker
+	spawnBlockedAfter  time.Duration
+	spawnHoldRelease   time.Duration
 
 	// gameStarted flips true when this engine learns the game is in_progress
 	// (at Start, or from the meta consumer). The piece-less watchdog is gated
@@ -153,6 +166,10 @@ type Engine struct {
 	// (retrySpawnIfPending): each one is a piece that came a second or two
 	// late. A diagnostic (the browser page's touch badge shows it).
 	watchdogSpawns atomic.Int64
+	// spawnUnblocks counts the spawn boxes this engine had to clear of
+	// another seat's cells nobody moved (deferSpawnLocked): each one a
+	// piece that came seconds late, behind a stale piece. A diagnostic too.
+	spawnUnblocks atomic.Int64
 
 	// wonGame records the engine's game-over verdict (0 = not over, 1 = won,
 	// 2 = lost) as set by transitionToSpectator; in teams an eliminated
@@ -312,6 +329,12 @@ type Engine struct {
 	// race tests use to interleave a competing write and assert the gate
 	// rejects and the recompute converges. Nil in production.
 	testHookBeforeGatedCommit func(op string)
+	// testHookBeforeCoopClearPublish, when set by a test, runs between the
+	// crew board's collapse projection off the live replica and its first
+	// publish (publishCoopTransform), off the lock — the seam a race test
+	// uses to move a crewmate's piece under the projection and assert the
+	// collapse is projected again rather than merged. Nil in production.
+	testHookBeforeCoopClearPublish func()
 
 	// lockDelay is this engine's lock delay (config.LockDelay; tests shorten
 	// it) and lockState times the current piece's lock — see lockdelay.go.
@@ -411,8 +434,10 @@ func New(
 		garbageRaiseHoles:  game.RaiseHoles,
 		eventTotals:        make(map[string]struct{ score, lines, team int }),
 		winTeam:            -1,
-		peerPieces:         make(map[int]peerPiece),
+		peerCells:          make(map[game.CellPos]peerCell),
 		idleVacateAfter:    config.IdlePieceVacateAfter,
+		spawnBlockedAfter:  config.SpawnBlockedVacateAfter,
+		spawnHoldRelease:   config.SpawnHoldRelease,
 		rttPending:         make(map[uint64]time.Time),
 		lockDelay:          config.LockDelay,
 		inflightCells:      make(map[game.CellPos]int),
@@ -548,10 +573,10 @@ func (e *Engine) Start() error {
 			if e.ackedField != e.playfield {
 				e.ackedField.Apply(c.Row, c.Col, data, c.Seq)
 			}
-			// A peer's piece found on the board starts its idle clock now:
-			// one left behind by a player who is gone is vacated a
+			// A peer's cells found on the board start their idle clock now:
+			// a piece left behind by a player who is gone is vacated a
 			// threshold from here (roster.go).
-			e.notePeerCellLocked(data, time.Now())
+			e.notePeerCell(game.CellPos{Row: c.Row, Col: c.Col}, data, c.Seq, time.Now())
 		}
 
 		// Check if there's already an active piece for this player
@@ -638,6 +663,11 @@ func (e *Engine) Started() bool { return e.started.Load() }
 // WatchdogSpawns is how many pieces the piece-less watchdog had to force so
 // far — pieces that came late (retrySpawnIfPending).
 func (e *Engine) WatchdogSpawns() int64 { return e.watchdogSpawns.Load() }
+
+// SpawnUnblocks is how many times this engine's spawn box had to be cleared
+// of another seat's cells nobody moved for config.SpawnBlockedVacateAfter
+// (deferSpawnLocked) — pieces that came seconds late, behind a stale piece.
+func (e *Engine) SpawnUnblocks() int64 { return e.spawnUnblocks.Load() }
 
 // AwaitingSpawn reports the lock-to-spawn gap behind the player's OWN hard
 // drop: their piece is off the board because they dropped it, and the next
@@ -1275,31 +1305,31 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 			// it would end the game for everyone) just because a teammate's
 			// piece happened to cross the spawn area. Defer instead:
 			// the consumer retries on every board change, and runInput's
-			// housekeeping tick via retrySpawnIfPending, until
-			// the blocker falls clear (spawn succeeds) or locks into the
-			// spawn cells (a genuine top-out on the next attempt).
-			if !e.spawnPending {
-				log.Printf("engine %s: spawn deferred (cells covered by another player's active piece)", e.playerID)
+			// housekeeping tick via retrySpawnIfPending, until the blocker
+			// falls clear (spawn succeeds), locks into the spawn cells (a
+			// genuine top-out on the next attempt), or turns out to be
+			// nobody's live piece and is vacated (deferSpawnLocked).
+			if e.deferSpawnLocked(ctx, p) {
+				if !locked {
+					e.mu.Unlock()
+				}
+				return
 			}
-			e.spawnPending = true
-			if !locked {
-				e.mu.Unlock()
-			}
-			return
+			canPlace = true // the stale blockers are gone: the spawn goes on
 		}
 	} else {
 		canPlace = game.CanPlace(p, e.playfield)
 	}
 	if !canPlace {
 		// e.mu is held here in both cases (acquired above when !locked).
-		e.spawnPending = false
+		e.endSpawnDeferralLocked()
 		e.handleTopOut(ctx, true)
 		if !locked {
 			e.mu.Unlock()
 		}
 		return
 	}
-	e.spawnPending = false
+	e.endSpawnDeferralLocked()
 	// A piece from the queue renews the hold allowance (one hold per piece)
 	// and is a fresh piece for the lock delay.
 	e.holdUsed = false
@@ -1318,6 +1348,7 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 			affected = append(affected, c[0])
 		}
 	}
+	affected = e.sweepRowsLocked(e.playfield, affected) // a cell of ours left behind goes with the spawn, vacated
 	rows := e.playfield.ProjectMove(affected, &p, e.playerIdx)
 	cells := diffCells(e.playfield.Rows, rows)
 	// Cells to flash if this spawn is ultimately dropped by CAS.
@@ -1333,7 +1364,26 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 		// merge-retry on CAS failure: refetch the latest cells from the
 		// stream, keep ours where allowed, retry. This is the only
 		// CAS path in the engine that retries; player moves never do.
-		e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, locked)
+		if !e.publishProjectedCellsWithMergeRetry(ctx, cells, flashCells, locked) {
+			// The spawn did not land: under another player's piece by the
+			// time it reached the stream, or lost to the wire. Deferred,
+			// like a spawn blocked on the replica — the consumer's next
+			// board change and the housekeeping tick try again
+			// (retrySpawnIfPending) — and NOT marked as on the board: an
+			// optimistic hadActivePiece here made the next echo fire a
+			// lock-in for a piece that never was, and skip it.
+			if !locked {
+				e.mu.Lock()
+			}
+			if !e.spawnPending {
+				log.Printf("engine %s: spawn deferred (its publish did not land)", e.playerID)
+				e.spawnPending, e.spawnDeferredSince = true, time.Now()
+			}
+			if !locked {
+				e.mu.Unlock()
+			}
+			return
+		}
 	} else {
 		// Competitive: each player writes their own subjects, so a race is
 		// extremely unlikely, but if CAS ever does reject the spawn we flash too.
@@ -1364,6 +1414,123 @@ func (e *Engine) spawnPiece(ctx context.Context, locked bool) {
 	}
 	e.dropQueuedGravity()
 	e.signalMoves()
+}
+
+// spawnBlocker is the account of a deferred spawn's blockers: the other
+// seats' active cells under the spawn cells, at the stream sequences they
+// were last written, and since when those same cells at those same
+// sequences have been there.
+type spawnBlocker struct {
+	cells map[game.CellPos]uint64
+	since time.Time
+}
+
+// deferSpawnLocked keeps a spawn deferred behind another player's active
+// cells (spawnPending) and reports whether it still is. Two clocks run on
+// the deferral. The blockers': the same cells at the same sequences — not
+// rewritten since — for spawnBlockedAfter are nobody's live piece (a
+// falling piece is rewritten every row it falls, one resting on the stack
+// locks a lock delay after its last shift, every shift a rewrite) but cells
+// left behind — a crashed crewmate's, a copy of a piece an older client's
+// stale collapse stranded — and they are vacated, at those sequences (a
+// cell rewritten meanwhile fails the batch, and the next retry looks
+// again), so the seat can play on; false then, and the caller spawns. The
+// hold's: the moves queued behind the player's own hard drop wait for the
+// next piece (awaitSpawn) for one round trip, which a spawn deferred past
+// spawnHoldRelease is not: the hold ends, the moves are let go with a flash
+// on the spawn cells, and the queue stops growing at a board with no piece
+// on it. e.mu held; the vacate's round trip runs under it, like the spawn
+// publish the consumer makes under it.
+func (e *Engine) deferSpawnLocked(ctx context.Context, p game.Piece) bool {
+	now := time.Now()
+	if !e.spawnPending {
+		log.Printf("engine %s: spawn deferred (cells covered by another player's active piece)", e.playerID)
+		e.spawnPending, e.spawnDeferredSince = true, now
+	}
+	blockers := foreignActiveUnder(p, e.playfield, e.playerIdx)
+	if !sameBlockers(e.spawnBlock.cells, blockers) {
+		e.spawnBlock = spawnBlocker{cells: blockers, since: now}
+	} else if held := now.Sub(e.spawnBlock.since); held >= e.spawnBlockedAfter && len(blockers) > 0 {
+		vac := e.stalePieceCellsLocked(blockers)
+		log.Printf("engine %s: spawn box held %s by %d cell(s) nobody has moved: vacating their piece, %d cell(s)", e.playerID, held.Round(time.Millisecond), len(blockers), len(vac))
+		e.spawnUnblocks.Add(1)
+		e.spawnBlock = spawnBlocker{} // whatever blocks next starts a fresh account
+		if e.vacateCells(ctx, vac, true) && game.CanPlaceCoop(p, e.playfield, e.playerIdx) {
+			return false
+		}
+	}
+	if e.awaitSpawn && now.Sub(e.spawnDeferredSince) >= e.spawnHoldRelease {
+		e.awaitSpawn = false
+		if n := e.dropQueuedPlayerMoves(); n > 0 {
+			log.Printf("engine %s: spawn deferred for %s: %d held move(s) let go", e.playerID, now.Sub(e.spawnDeferredSince).Round(time.Millisecond), n)
+			e.emitCASFlash(p.Cells(), nil)
+		}
+	}
+	return true
+}
+
+// endSpawnDeferralLocked closes a deferred spawn's account: the piece is on
+// the board, or the seat topped out. e.mu held.
+func (e *Engine) endSpawnDeferralLocked() {
+	e.spawnPending = false
+	e.spawnDeferredSince = time.Time{}
+	e.spawnBlock = spawnBlocker{}
+}
+
+// stalePieceCellsLocked returns, for cells that block the spawn box, every
+// cell on the board of the pieces they belong to — seat and anchor — so a
+// piece nobody moves is vacated whole, not only where it covers the box.
+// e.mu held.
+func (e *Engine) stalePieceCellsLocked(blockers map[game.CellPos]uint64) map[game.CellPos]game.Cell {
+	pieces := make(map[game.Cell]bool, len(blockers))
+	for pos := range blockers {
+		pieces[pieceKey(e.playfield.Rows[pos.Row].Cells[pos.Col])] = true
+	}
+	out := make(map[game.CellPos]game.Cell, 4*len(pieces))
+	for r, row := range e.playfield.Rows {
+		for col, c := range row.Cells {
+			if c.Active && c.PlayerIdx != e.playerIdx && pieces[pieceKey(c)] {
+				out[game.CellPos{Row: r, Col: col}] = game.Cell{}
+			}
+		}
+	}
+	return out
+}
+
+// pieceKey is the piece an active cell claims to be part of: its seat, type,
+// orientation and anchor — what groups a seat's cells into pieces.
+func pieceKey(c game.Cell) game.Cell {
+	return game.Cell{Active: true, PieceType: c.PieceType, Orientation: c.Orientation, AnchorRow: c.AnchorRow, AnchorCol: c.AnchorCol, PlayerIdx: c.PlayerIdx}
+}
+
+// foreignActiveUnder returns the cells of p that other seats' active cells
+// cover on pf, each at the stream sequence it was last written.
+func foreignActiveUnder(p game.Piece, pf *game.Playfield, own int) map[game.CellPos]uint64 {
+	out := make(map[game.CellPos]uint64, 4)
+	for _, c := range p.Cells() {
+		r, col := c[0], c[1]
+		if r < 0 || r >= pf.Height || col < 0 || col >= pf.Width {
+			continue
+		}
+		if cell := pf.Rows[r].Cells[col]; cell.Active && cell.PlayerIdx != own {
+			out[game.CellPos{Row: r, Col: col}] = pf.CellLastSeq(r, col)
+		}
+	}
+	return out
+}
+
+// sameBlockers reports whether two blocker accounts name the same cells at
+// the same sequences.
+func sameBlockers(a, b map[game.CellPos]uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
 }
 
 // spawnPositionLocked is where a piece of type pt enters play on this
@@ -1438,7 +1605,7 @@ func (e *Engine) attemptHold(ctx context.Context) error {
 		e.mu.Unlock()
 		return nil
 	}
-	affected := affectedRowsUnion(p, &np)
+	affected := e.sweepRowsLocked(e.playfield, affectedRowsUnion(p, &np))
 	rows := e.playfield.ProjectMove(affected, &np, e.playerIdx)
 	cells := diffCells(e.playfield.Rows, rows)
 	flashCells := p.Cells()
@@ -1490,7 +1657,7 @@ func (e *Engine) retrySpawnIfPending(ctx context.Context) {
 		return
 	}
 	if e.playfield.ActivePieceForPlayer(e.playerIdx) != nil {
-		e.spawnPending = false // another path already spawned meanwhile
+		e.endSpawnDeferralLocked() // another path already spawned meanwhile
 		e.pieceLessTicks = 0
 		return
 	}
@@ -2022,18 +2189,20 @@ func (e *Engine) publishProjectedCellsNoCAS(ctx context.Context, cells map[game.
 // (locked) — to give a race-free CAS expectation. The publish helpers run with
 // e.mu released except spawn/clear (which pass locked=true).
 func (e *Engine) buildBatchUpdates(keys []game.CellPos, cells map[game.CellPos]game.Cell, locked bool) ([]natspkg.CellUpdate, error) {
-	expect := make([]uint64, len(keys))
 	if !locked {
 		e.mu.Lock()
+		defer e.mu.Unlock()
 	}
-	for i, k := range keys {
-		expect[i] = e.playfield.CellLastSeq(k.Row, k.Col)
-	}
-	if !locked {
-		e.mu.Unlock()
-	}
+	return e.buildBatchUpdatesFrom(e.playfield, keys, cells)
+}
+
+// buildBatchUpdatesFrom is buildBatchUpdates off any board: the live replica
+// (with e.mu held), or a detached server-side snapshot (fetchBoardSnapshot),
+// which needs no lock — every expectation is the board's own sequence for
+// the cell.
+func (e *Engine) buildBatchUpdatesFrom(pf *game.Playfield, keys []game.CellPos, cells map[game.CellPos]game.Cell) ([]natspkg.CellUpdate, error) {
 	updates := make([]natspkg.CellUpdate, 0, len(keys))
-	for i, k := range keys {
+	for _, k := range keys {
 		data, err := cells[k].Marshal()
 		if err != nil {
 			return nil, err
@@ -2041,7 +2210,7 @@ func (e *Engine) buildBatchUpdates(keys []game.CellPos, cells map[game.CellPos]g
 		updates = append(updates, natspkg.CellUpdate{
 			Subject:       e.cellSubject(k.Row, k.Col),
 			Payload:       data,
-			ExpectLastSeq: expect[i],
+			ExpectLastSeq: pf.CellLastSeq(k.Row, k.Col),
 		})
 	}
 	return updates, nil
@@ -2058,22 +2227,26 @@ func (e *Engine) buildBatchUpdates(keys []game.CellPos, cells map[game.CellPos]g
 // is effectively dropped, so we flash flashCells (precomputed by the caller under
 // e.mu) — same feedback the player gets for any other dropped CAS write.
 //
-// In coop this path is used for ALL engine-driven shared-cell writes (spawn,
-// gravity, lock, hard-drop, line-clear) so a stale local snapshot can never
-// clobber the other player's mid-flight piece: CAS rejects a stale batch, and
-// the merge keeps our cells except where the latest stream state holds the
-// other player's active piece. Per-cell CAS makes contention much rarer than
-// the old per-row scheme (two pieces in the same row no longer conflict — only
-// writes to the SAME cell do), but the retry still guards spawn races and
-// clear-vs-move races.
-func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool) {
+// In coop this path is used for the engine-driven writes of the SEAT'S OWN
+// cells (spawn, gravity, lock, hard-drop, the pipeline's repair) so a stale
+// local snapshot can never clobber the other player's mid-flight piece: CAS
+// rejects a stale batch, and the merge keeps our cells except where the
+// latest stream state holds the other player's active piece — and drops
+// the whole step when that is where our PIECE was going (never a piece
+// published in part). Per-cell CAS makes contention much rarer than the old
+// per-row scheme (two pieces in the same row no longer conflict — only
+// writes to the SAME cell do), but the retry still guards spawn races. The
+// crew's line-clear collapse, which carries the OTHER seats' pieces, is not
+// merged this way: it is projected again off a server snapshot
+// (publishCoopTransform). Reports whether the batch committed.
+func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells map[game.CellPos]game.Cell, flashCells [][2]int, locked bool) bool {
 	if len(cells) == 0 {
-		return
+		return true
 	}
 	if e.solo() {
 		// A crew of one shares its board with nobody: the journal (solo.go).
 		e.publishLocal(ctx, cells, locked)
-		return
+		return true
 	}
 
 	// First attempt uses in-memory LastSeq.
@@ -2081,7 +2254,7 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 	updates, err := e.buildBatchUpdates(keys, cells, locked)
 	if err != nil {
 		log.Printf("build batch: %v", err)
-		return
+		return false
 	}
 	t0 := time.Now()
 	seq, err := natspkg.PublishMoveAtomically(ctx, e.js, updates)
@@ -2089,10 +2262,10 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 		// First-attempt commit: write through the cells we published.
 		e.trackRTT(t0, seq, len(updates))
 		e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return cells[k] }, seq, locked)
-		return
+		return true
 	} else if !errors.Is(err, natspkg.ErrCASFailure) {
 		log.Printf("publish batch: %v", err)
-		return
+		return false
 	}
 
 	const maxRetries = 16
@@ -2111,16 +2284,22 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 			}
 			time.Sleep(backoff)
 		}
-		merged, mergedCells, mergedKeys, ok := e.refetchAndMerge(ctx, keys, cells)
+		merged, mergedCells, mergedKeys, blocked, ok := e.refetchAndMerge(ctx, keys, cells)
 		if !ok {
-			return
+			return false
+		}
+		if blocked {
+			// A cell our piece was going to is under the other player's
+			// mid-flight piece: a piece is published whole or not at all
+			// (three cells of a four-cell piece on the wire is a piece no
+			// engine can follow), so the step is dropped — a move or a
+			// lock for the player to make again, a spawn for its retry.
+			log.Printf("engine %s: publish batch: our cells are under another player's piece, step dropped", e.playerID)
+			e.emitCASFlash(flashCells, nil)
+			return false
 		}
 		if len(merged) == 0 {
-			// Every cell we wanted to write is currently covered by the other
-			// player's mid-flight piece — nothing we may publish. Drop the step.
-			log.Printf("publish batch: all cells blocked by other player's piece, step dropped")
-			e.emitCASFlash(flashCells, nil)
-			return
+			return true // the stream holds every cell as we wanted it already
 		}
 		t0 := time.Now()
 		seq, err := natspkg.PublishMoveAtomically(ctx, e.js, merged)
@@ -2128,16 +2307,17 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 			// Retry commit: write through the cells that actually committed.
 			e.trackRTT(t0, seq, len(merged))
 			e.applyPublishedCells(mergedKeys, func(k game.CellPos) game.Cell { return mergedCells[k] }, seq, locked)
-			return
+			return true
 		}
 		if !errors.Is(err, natspkg.ErrCASFailure) {
 			log.Printf("publish batch retry: %v", err)
-			return
+			return false
 		}
 	}
 	log.Printf("publish batch: gave up after %d retries", maxRetries)
 	// Step dropped after exhausting retries — flash the local player.
 	e.emitCASFlash(flashCells, nil)
+	return false
 }
 
 // refetchAndMerge fetches the latest stream message for every cell in keys (one
@@ -2145,54 +2325,190 @@ func (e *Engine) publishProjectedCellsWithMergeRetry(ctx context.Context, cells 
 // CAS expectations. Used by the merge-retry path.
 //
 // The merge is per cell and therefore much simpler than the old per-row
-// overlay: a cell's new content is wholly ours, EXCEPT where the latest stream
-// state holds the OTHER player's mid-flight (active) cell — those cells are
-// skipped entirely (we neither overwrite nor vacate their piece; this matters
-// for line clears, whose shift would otherwise drop a locked cell onto their
-// piece). A cell with no stream message yet is an empty cell with CAS
-// expectation 0. The returned key order preserves the caller's category order
-// minus the skipped cells.
-func (e *Engine) refetchAndMerge(ctx context.Context, keys []game.CellPos, cells map[game.CellPos]game.Cell) ([]natspkg.CellUpdate, map[game.CellPos]game.Cell, []game.CellPos, bool) {
+// overlay: a cell's new content is wholly ours, EXCEPT
+//
+//   - where the latest stream state holds the OTHER player's mid-flight
+//     (active) cell: the cell is skipped — we neither overwrite nor vacate
+//     their piece — and if it is a cell of OUR piece (or its lock) that was
+//     going there, the step is reported blocked, for the caller to drop
+//     whole rather than publish a piece in part;
+//   - where the batch would write another seat's ACTIVE cell — a copy of
+//     their piece carried over from the projection the batch was built
+//     on: their piece is wherever the stream has it now, and a copy beside
+//     it duplicated the piece on the wire (the crewmate adopted the copy,
+//     its real cells stayed behind as a ghost nobody vacated — jetris-eu,
+//     2026-09-12, game 0ca68b24). Such a cell is dropped from the batch;
+//   - where the stream already holds what we would write: a no-op write
+//     would only bump the subject under a crewmate's expectations.
+//
+// A cell with no stream message yet is an empty cell with CAS expectation
+// 0. The returned key order preserves the caller's category order minus the
+// skipped cells.
+func (e *Engine) refetchAndMerge(ctx context.Context, keys []game.CellPos, cells map[game.CellPos]game.Cell) (merged []natspkg.CellUpdate, mergedCells map[game.CellPos]game.Cell, mergedKeys []game.CellPos, blocked, ok bool) {
 	subjects := make([]string, len(keys))
 	for i, k := range keys {
 		subjects[i] = e.cellSubject(k.Row, k.Col)
 	}
 	msgs, err := natspkg.FetchPlayfieldState(ctx, e.js, e.gameID, subjects)
 	if err != nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, false, false
 	}
 	latest := make(map[game.CellPos]game.Cell, len(msgs))
 	latestSeq := make(map[game.CellPos]uint64, len(msgs))
 	for _, m := range msgs {
 		c, uErr := game.UnmarshalCell(m.Payload)
 		if uErr != nil {
-			return nil, nil, nil, false
+			return nil, nil, nil, false, false
 		}
 		pos := game.CellPos{Row: m.Row, Col: m.Col}
 		latest[pos] = c
 		latestSeq[pos] = m.Seq
 	}
 
-	merged := make([]natspkg.CellUpdate, 0, len(keys))
-	mergedCells := make(map[game.CellPos]game.Cell, len(keys))
-	mergedKeys := make([]game.CellPos, 0, len(keys))
+	merged = make([]natspkg.CellUpdate, 0, len(keys))
+	mergedCells = make(map[game.CellPos]game.Cell, len(keys))
+	mergedKeys = make([]game.CellPos, 0, len(keys))
 	for _, k := range keys {
-		if lc := latest[k]; lc.Active && lc.PlayerIdx != e.playerIdx {
-			continue // never overwrite (or vacate) the other player's mid-flight piece
+		lc, want := latest[k], cells[k]
+		if lc.Active && lc.PlayerIdx != e.playerIdx {
+			// never overwrite (or vacate) the other player's mid-flight piece
+			if want != (game.Cell{}) {
+				blocked = true
+			}
+			continue
 		}
-		data, mErr := cells[k].Marshal()
+		if want.Active && want.PlayerIdx != e.playerIdx {
+			log.Printf("engine %s: merge dropped a copy of seat %d's piece at (%d,%d)", e.playerID, want.PlayerIdx, k.Row, k.Col)
+			continue
+		}
+		if want == lc {
+			continue
+		}
+		data, mErr := want.Marshal()
 		if mErr != nil {
-			return nil, nil, nil, false
+			return nil, nil, nil, false, false
 		}
 		merged = append(merged, natspkg.CellUpdate{
 			Subject:       e.cellSubject(k.Row, k.Col),
 			Payload:       data,
 			ExpectLastSeq: latestSeq[k],
 		})
-		mergedCells[k] = cells[k]
+		mergedCells[k] = want
 		mergedKeys = append(mergedKeys, k)
 	}
-	return merged, mergedCells, mergedKeys, true
+	return merged, mergedCells, mergedKeys, blocked, true
+}
+
+// coopTransformMaxAttempts bounds a crew-board transform's recomputes after
+// a lost CAS race — each one a full-board fetch and a projection off it,
+// paced by gatedRetryBackoff: a crewmate moving every few milliseconds (a
+// hard agent) keeps bumping the cells the collapse carries their piece
+// through, and the transform must ride the burst out. Giving up is not
+// free: an abandoned collapse leaves the rows full — for the next lock-in,
+// anyone's, to find — and this lock scores nothing.
+const coopTransformMaxAttempts = 12
+
+// coopProjection projects a bulk transform of the crew's board off a board
+// — the live replica, or a server-side snapshot — and returns the rows as
+// the transform leaves them, or ok=false when there is nothing left to do
+// (the rows are no longer complete: another seat's lock-in collapsed them
+// first).
+type coopProjection func(pf *game.Playfield) (rows []game.Row, ok bool)
+
+// publishCoopTransform publishes a bulk transform of the crew's board — the
+// collapse of its complete rows — as one CAS batch: projected off the live
+// replica first and, when a crewmate's write beats it to a cell, projected
+// AGAIN off a full server-side snapshot (fetchBoardSnapshot) with every
+// expectation taken from that snapshot, up to coopTransformMaxAttempts
+// times. It is never merged cell by cell from the projection the race was
+// lost on: a collapse carries the other seats' falling pieces down with the
+// stack, and the stale copy of a piece that had moved meanwhile, merged in
+// beside the piece's live cells, duplicated the piece on the wire — the
+// crewmate adopted the copy, its real cells stayed behind as a ghost nobody
+// vacated, and the ghost held the spawn box for the rest of the game
+// (jetris-eu, 2026-09-12, game 0ca68b24). Off a snapshot every cell of the
+// batch — a crewmate's piece shifted with the stack, the locked cell that
+// lands under it — is projected from where things stand NOW, in one atomic
+// batch; a crewmate who moves between the fetch and the commit fails the
+// exact expectations on their cells, and the next attempt projects again.
+//
+// Reports whether a batch committed, with the rows it left; a solo crew
+// journals the first projection (solo.go). flashCells flash the local
+// player if every attempt is lost. locked reports whether the caller holds
+// e.mu; the round trips run off it either way.
+func (e *Engine) publishCoopTransform(ctx context.Context, project coopProjection, flashCells [][2]int, locked bool) (bool, []game.Row) {
+	if !locked {
+		e.mu.Lock()
+	}
+	rows, ok := project(e.playfield)
+	if !ok {
+		if !locked {
+			e.mu.Unlock()
+		}
+		return false, nil
+	}
+	cells := changedCells(e.playfield.Rows, rows, 0, e.playfield.Height)
+	if e.solo() {
+		if !locked {
+			e.mu.Unlock()
+		}
+		e.publishLocal(ctx, cells, locked)
+		return true, rows
+	}
+	keys := orderedCellKeys(cells)
+	updates, err := e.buildBatchUpdatesFrom(e.playfield, keys, cells)
+	if !locked {
+		e.mu.Unlock()
+	}
+	if err != nil {
+		log.Printf("engine %s: coop transform: build batch: %v", e.playerID, err)
+		return false, nil
+	}
+	if hook := e.testHookBeforeCoopClearPublish; hook != nil {
+		hook()
+	}
+	for attempt := 0; attempt < coopTransformMaxAttempts; attempt++ {
+		if attempt > 0 {
+			// Let the winning write's echo settle before projecting again.
+			select {
+			case <-time.After(gatedRetryBackoff(attempt)):
+			case <-ctx.Done():
+				return false, nil
+			}
+			snap, _, _, _, fErr := e.fetchBoardSnapshot(ctx)
+			if fErr != nil {
+				log.Printf("engine %s: coop transform: refetch: %v", e.playerID, fErr)
+				return false, nil
+			}
+			if rows, ok = project(snap); !ok {
+				return false, nil
+			}
+			cells = changedCells(snap.Rows, rows, 0, snap.Height)
+			if len(cells) == 0 {
+				return false, nil
+			}
+			keys = orderedCellKeys(cells)
+			if updates, err = e.buildBatchUpdatesFrom(snap, keys, cells); err != nil {
+				log.Printf("engine %s: coop transform: build batch: %v", e.playerID, err)
+				return false, nil
+			}
+		}
+		t0 := time.Now()
+		seq, pErr := natspkg.PublishMoveAtomically(ctx, e.js, updates)
+		if pErr == nil {
+			e.trackRTT(t0, seq, len(updates))
+			committed := cells
+			e.applyPublishedCells(keys, func(k game.CellPos) game.Cell { return committed[k] }, seq, locked)
+			return true, rows
+		}
+		if !errors.Is(pErr, natspkg.ErrCASFailure) {
+			log.Printf("engine %s: coop transform: %v", e.playerID, pErr)
+			return false, nil
+		}
+	}
+	log.Printf("engine %s: coop transform: gave up after %d attempts", e.playerID, coopTransformMaxAttempts)
+	e.emitCASFlash(flashCells, nil)
+	return false, nil
 }
 
 // emitCASFlash signals the LOCAL player that a write was rejected by per-subject

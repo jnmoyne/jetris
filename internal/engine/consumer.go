@@ -75,13 +75,16 @@ func (e *Engine) runConsumer(ctx context.Context, pf *game.Playfield, filterSubj
 
 			e.mu.Lock()
 			pf.Apply(rowIdx, colIdx, cell, seq)
-			if !isOpponent && e.echoField != nil {
-				// The echo-only replica (EchoSnapshot): what the stream has
-				// delivered, and nothing the engine wrote through ahead of it.
-				e.echoField.Apply(rowIdx, colIdx, cell, seq)
-				// A peer's piece seen somewhere new restarts its idle clock
-				// (roster.go: a piece left behind is vacated a threshold on).
-				e.notePeerCellLocked(cell, time.Now())
+			if !isOpponent {
+				if e.echoField != nil {
+					// The echo-only replica (EchoSnapshot): what the stream
+					// has delivered, and nothing the engine wrote through
+					// ahead of it.
+					e.echoField.Apply(rowIdx, colIdx, cell, seq)
+				}
+				// A peer's cell delivered anew restarts its idle clock
+				// (roster.go: cells left behind are vacated a threshold on).
+				e.notePeerCell(game.CellPos{Row: rowIdx, Col: colIdx}, cell, seq, time.Now())
 			}
 
 			if isOpponent {
@@ -198,27 +201,39 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	var after []game.Row  // the board as the committed collapse leaves it — a perfect clear leaves nothing locked on it
 	if completed := game.CompletedRows(e.playfield); len(completed) > 0 {
 		if e.gameMode == config.ModeCooperative {
-			// Compute the cleared/shifted projection without mutating
-			// e.playfield; remaining active cells get their AnchorRow shifted
-			// by len(completed) so other players' pieces land in the right
-			// anchor position. The diff covers the FULL row range including
-			// the headroom — a truncated diff used to strand duplicated or
-			// orphaned cells in rows 0-3.
-			projected := e.playfield.ProjectClearRows(completed, true)
-			changed := changedCells(e.playfield.Rows, projected, 0, e.playfield.Height)
-			// Shared board: CAS+merge-retry so the shift can't clobber another
-			// player's mid-flight piece with our snapshot. orderedCellKeys
-			// applies another player's shifted (active) piece cells before its
-			// old positions are vacated, so its active-cell count never hits
-			// zero and no spurious lock + respawn fires on their engine.
-			// Off the lock for the round trip (above); the merge-retry
-			// refetches on a lost race either way.
+			// The crew's board has no gate: the collapse is one CAS batch
+			// of the cells it changes — the projection covers the FULL row
+			// range, headroom included (a truncated diff used to strand
+			// duplicated or orphaned cells in rows 0-3), and remaining
+			// active cells get their AnchorRow shifted by the rows cleared
+			// below them, so other players' pieces land in the right anchor
+			// position; orderedCellKeys applies another player's shifted
+			// piece cells before its old positions are vacated, so its
+			// active-cell count never hits zero and no spurious lock +
+			// respawn fires on their engine. A crewmate's write beating the
+			// batch to a cell has it projected AGAIN off a server snapshot
+			// (publishCoopTransform) — never merged cell by cell from the
+			// stale projection, which duplicated a piece that had moved.
+			// Off the lock for the round trips (above). The lines and the
+			// score follow the collapse that COMMITTED: one that never did
+			// leaves the rows full for the next lock-in to find.
+			var cleared []int
 			e.mu.Unlock()
-			e.publishProjectedCellsWithMergeRetry(ctx, changed, nil, false)
+			committed, projected := e.publishCoopTransform(ctx, func(pf *game.Playfield) ([]game.Row, bool) {
+				rows := game.CompletedRows(pf)
+				if len(rows) == 0 {
+					return nil, false
+				}
+				cleared = rows
+				after = pf.ProjectClearRows(rows, true)
+				return after, true
+			}, nil, false)
 			e.mu.Lock()
-			clearedLines = len(completed)
-			clearedRows = completed
-			after = projected
+			if committed {
+				clearedLines = len(cleared)
+				clearedRows = cleared
+				after = projected
+			}
 		} else {
 			shiftAnchors := e.sharedBoard()
 			var cleared []int

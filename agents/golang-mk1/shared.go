@@ -261,13 +261,19 @@ func (g *Game) handleBoardMsg(m jetstream.Msg) {
 	if !ok {
 		return
 	}
-	at := cell{r, c}
 	var wc wireCell
 	if len(m.Data()) > 0 {
 		_ = json.Unmarshal(m.Data(), &wc)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.foldCell(cell{r, c}, wc, seq)
+}
+
+// foldCell folds one delivered cell into the board — handleBoardMsg's cell
+// branch, on its own so the adoption rule below is testable without a
+// stream. Caller holds mu.
+func (g *Game) foldCell(at cell, wc wireCell, seq uint64) {
 	if seq <= g.seqs[at] {
 		return // our own write-through (or older) — already accounted
 	}
@@ -275,28 +281,50 @@ func (g *Game) handleBoardMsg(m jetstream.Msg) {
 	switch {
 	case wc.A:
 		delete(g.locked, at)
-		if wc.Pi == g.idx {
-			// Our own piece, moved by someone else's committed transform
-			// (a clear shifting it down, a cascade lifting it): adopt — but
-			// not while our own batches are in flight: then the echo is just
-			// the stream catching up to the projection, and adopting it would
-			// snap the piece back mid-pipeline (a real external transform
-			// rejects an in-flight batch, and the repair adopts its truth).
-			if g.inflight == 0 && (g.piece == nil || g.piece.row != wc.Ar || g.piece.col != wc.Ac || g.piece.orient != wc.R) {
-				g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
-			}
+		if !g.shared() || wc.Pi == g.idx {
+			p := active{wc.T, wc.R, wc.Ar, wc.Ac}
+			g.ownAct[at] = p
 			delete(g.othersAct, at)
+			g.adoptOwnPiece(p)
 		} else {
+			delete(g.ownAct, at)
 			g.othersAct[at] = wc.Pi
 			g.othersPiece[wc.Pi] = active{wc.T, wc.R, wc.Ar, wc.Ac}
 		}
 	case wc.O:
+		delete(g.ownAct, at)
 		g.dropOwner(at)
 		g.locked[at] = wc
 	default:
+		delete(g.ownAct, at)
 		delete(g.locked, at)
 		g.dropOwner(at)
 	}
+}
+
+// adoptOwnPiece adopts p as our piece once the stream holds it WHOLE: a
+// committed transform of a crewmate's (a clear shifting it down, a cascade
+// lifting it) moved our piece, and we play on from where it put it. Not
+// while our own batches are in flight — then the echo is just the stream
+// catching up to the projection, and adopting it would snap the piece back
+// mid-pipeline (a real external transform rejects an in-flight batch, and
+// the repair adopts its truth). And never from a part of a piece: a stale
+// collapse of an older client's, merged cell by cell, once copied three
+// cells of our piece beside its live four; adopting the copy orphaned the
+// piece, and its cells sat on the board as a ghost for the rest of the game
+// (jetris-eu, 2026-09-12, game 0ca68b24). Whatever the adoption leaves
+// behind is a stray, swept with our next write (strayOwnCells). Caller
+// holds mu.
+func (g *Game) adoptOwnPiece(p active) {
+	if g.inflight > 0 || (g.piece != nil && *g.piece == p) {
+		return
+	}
+	for _, c := range pieceCells(p.pt, p.orient, p.row, p.col) {
+		if q, ok := g.ownAct[c]; !ok || q != p {
+			return
+		}
+	}
+	g.piece = &p
 }
 
 // dropOwner removes a cell from the other-actives map; when that was the

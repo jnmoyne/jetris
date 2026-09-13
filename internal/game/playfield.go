@@ -89,22 +89,66 @@ func (pf *Playfield) Apply(row, col int, cell Cell, seq uint64) {
 	pf.LastSeq[idx] = seq
 }
 
-// ActivePieceForPlayer returns the active piece belonging to the given playerIdx.
-// Used in cooperative mode where two players' pieces coexist on the same playfield.
+// ActivePieceForPlayer returns the active piece belonging to the given
+// playerIdx, reconstructed from the anchor its cells carry. Used in
+// cooperative mode where two players' pieces coexist on the same playfield.
+// Should the player's cells claim more than one anchor — a copy of the
+// piece stranded beside it by a stale collapse — the anchor with the most
+// cells is the piece (the whole one over a part), ties to the top-most; the
+// rest are strays for the player's next write to sweep.
 func (pf *Playfield) ActivePieceForPlayer(playerIdx int) *Piece {
+	var seen [4]struct {
+		p Piece
+		n int
+	}
+	k := 0
 	for _, row := range pf.Rows {
 		for _, c := range row.Cells {
-			if c.Active && c.PlayerIdx == playerIdx {
-				return &Piece{
-					Type:        c.PieceType,
-					Orientation: c.Orientation,
-					Row:         c.AnchorRow,
-					Col:         c.AnchorCol,
+			if !c.Active || c.PlayerIdx != playerIdx {
+				continue
+			}
+			p := Piece{Type: c.PieceType, Orientation: c.Orientation, Row: c.AnchorRow, Col: c.AnchorCol}
+			i := 0
+			for i < k && seen[i].p != p {
+				i++
+			}
+			if i == k {
+				if k == len(seen) {
+					continue // anchors beyond counting: the first ones stand
 				}
+				seen[k].p, seen[k].n = p, 0
+				k++
+			}
+			seen[i].n++
+		}
+	}
+	if k == 0 {
+		return nil
+	}
+	best := 0
+	for i := 1; i < k; i++ {
+		if seen[i].n > seen[best].n {
+			best = i
+		}
+	}
+	p := seen[best].p
+	return &p
+}
+
+// ActiveRowsForPlayer returns every row holding an active cell of playerIdx,
+// top to bottom — the rows a write of the player's piece re-projects so no
+// cell of theirs is left behind anywhere on the board.
+func (pf *Playfield) ActiveRowsForPlayer(playerIdx int) []int {
+	var out []int
+	for r, row := range pf.Rows {
+		for _, c := range row.Cells {
+			if c.Active && c.PlayerIdx == playerIdx {
+				out = append(out, r)
+				break
 			}
 		}
 	}
-	return nil
+	return out
 }
 
 // SetActivePieceForPlayer clears only active cells with matching PlayerIdx

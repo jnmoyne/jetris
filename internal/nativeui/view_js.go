@@ -115,16 +115,18 @@ func (a *App) touchDebugFrame() {
 	if !a.touchDebug {
 		return
 	}
-	queued, watchdog := 0, int64(0)
+	queued, watchdog, unblocks := 0, int64(0), int64(0)
 	if eng := a.getEngine(); eng != nil {
 		queued = eng.QueuedPlayerMoves()
 		watchdog = eng.WatchdogSpawns()
+		unblocks = eng.SpawnUnblocks()
 	}
 	js.Global().Set("jetrisTouch", map[string]any{
 		"presses": a.touchPresses, "frames": a.frames, "queued": queued,
-		// Moves of ours the server rejected (the rainbow flash) and pieces
-		// the watchdog had to force: a delivered input that did nothing.
-		"casDrops": a.casFlashes.Load(), "watchdogSpawns": watchdog,
+		// Moves of ours the server rejected (the rainbow flash), pieces
+		// the watchdog had to force, and spawn boxes cleared of a stale
+		// piece: a delivered input that did nothing, a piece that came late.
+		"casDrops": a.casFlashes.Load(), "watchdogSpawns": watchdog, "spawnUnblocks": unblocks,
 		// The lock-to-spawn gap (handleGestures): the board without a piece,
 		// the moves held for the next one.
 		"spawnGapLast": a.spawnGapLast.Milliseconds(), "spawnGapMax": a.spawnGapMax.Milliseconds(),

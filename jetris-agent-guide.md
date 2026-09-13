@@ -555,15 +555,28 @@ each lock of yours:
    everyone reads that the game is on. Skip this and the game never starts.
 4. **Play** by the mode rules (`jetris-gameplays.md` §3–§5). Never touch cells
    that aren't yours to change — with one exception on a shared board: a
-   peer's falling piece that has stood still for 10 s (`IdlePieceVacateAfter`
-   — a live piece never does; gravity moves it and the lock delay's resets
-   cap well under), or whose seat the listing no longer holds, was left
-   behind by a player who crashed or walked out, and any PLAYING peer may
+   peer's falling piece none of whose cells has been rewritten for 10 s
+   (`IdlePieceVacateAfter` — a live piece never stands that long; gravity
+   rewrites it every row it falls and the lock delay's resets cap well
+   under), or whose seat the listing no longer holds, was left behind by a
+   player who crashed or walked out — or is a copy of a piece an older
+   client's stale collapse stranded beside it — and any PLAYING peer may
    vacate it: on a team board the txn-gated `vacate` transform, on the
    crew's board one atomic batch emptying its cells with CAS expectations at
    their last-seen sequences (a piece that moved fails the CAS — look again
-   next tick; two vacates commit one). The GUI's engines do this; an agent
-   may, never a spectator. Watch the listing while you play: the roster it
+   next tick; two vacates commit one). Keep the clock PER CELL and group the
+   cells by the anchor they claim (seat, type, orientation, anchor): a clock
+   per seat never runs out while the seat keeps playing, and the stray stays
+   forever. A piece that has held YOUR spawn box, unmoved at the same
+   sequences, for `SpawnBlockedVacateAfter` (3 s) is the same case: vacate
+   it whole and spawn. The GUI's engines do both; an agent may, never a
+   spectator. And keep your OWN cells straight: track them off the stream,
+   adopt a new anchor of yours (a crewmate's collapse shifted your piece)
+   only once all four of its cells are there — never a copy in part — and
+   let every move, lock and spawn of yours vacate any cell of yours that is
+   no part of the piece you hold, in the same batch: a stray of your own is
+   an obstacle nobody else may clear for 10 s, and it held a crewmate's spawn
+   box for the rest of a game once. Watch the listing while you play: the roster it
    holds is who is seated — a seat gone means that player's piece may go,
    the deal may change (`split_pieces`), and a playfield nobody holds a seat
    on any more is OUT of a multi-playfield game (the last one left wins; a

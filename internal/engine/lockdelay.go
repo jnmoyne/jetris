@@ -152,6 +152,9 @@ func (e *Engine) lockPieceIfGrounded(ctx context.Context) {
 	e.armLockAward(*p) // the lock's worth: its T-spin and drop points (award.go)
 	affected := affectedRowsUnion(p, nil)
 	rows := e.playfield.ProjectLock(affected, e.playerIdx)
+	for r, row := range e.playfield.ProjectMove(e.strayRowsLocked(e.playfield, affected), nil, e.playerIdx) {
+		rows[r] = row // a cell of ours left elsewhere goes with the lock's batch, vacated
+	}
 
 	cells := diffCells(e.playfield.Rows, rows)
 	flashCells := p.Cells()

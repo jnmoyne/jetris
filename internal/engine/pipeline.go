@@ -918,6 +918,9 @@ func (e *Engine) repairPipeline(ctx context.Context) {
 	for _, c := range p.Cells() {
 		rows[c[0]] = true
 	}
+	for _, r := range e.playfield.ActiveRowsForPlayer(e.playerIdx) {
+		rows[r] = true // a cell of ours anywhere the episode did not touch (a crewmate's collapse moved it) is swept too
+	}
 	affected := make([]int, 0, len(rows))
 	for r := range rows {
 		affected = append(affected, r)

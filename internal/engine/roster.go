@@ -19,29 +19,34 @@ import (
 // only one still has players: the roster the lobby pushes (SetRoster) is
 // what the counting follows (alivePlayfields).
 
-// peerPiece is another seat's falling piece as this engine last saw it, and
-// since when it has stood there.
-type peerPiece struct {
-	piece game.Piece
-	since time.Time
+// peerCell is a foreign active cell of the own shared board as this engine
+// last had it delivered: the stream sequence of that write, and when it
+// arrived — its idle clock. Kept per cell, not per piece: a seat's cells can
+// sit at more than one anchor (a copy of its piece stranded by a stale
+// collapse, beside the piece it plays on), and a clock kept per seat never
+// ran out while the seat kept playing — the live piece and the stray took
+// turns being "the" piece every tick, and each turn restarted it.
+type peerCell struct {
+	seq uint64
+	at  time.Time
 }
 
-// notePeerCellLocked records a foreign active cell applied to the own board:
-// a piece seen at a new place (or for the first time) restarts its idle
-// clock. e.mu held.
-func (e *Engine) notePeerCellLocked(c game.Cell, now time.Time) {
-	if !c.Active || c.PlayerIdx == e.playerIdx || !e.sharedBoard() {
+// notePeerCell records a cell delivered to the own board: a foreign active
+// cell at a new sequence — its owner rewrote it — restarts its clock;
+// anything else at the position (a cell of ours, a locked one, an empty one)
+// forgets it. e.mu held.
+func (e *Engine) notePeerCell(pos game.CellPos, c game.Cell, seq uint64, now time.Time) {
+	if !e.sharedBoard() {
 		return
 	}
-	p := game.Piece{Type: c.PieceType, Orientation: c.Orientation, Row: c.AnchorRow, Col: c.AnchorCol}
-	if cur, ok := e.peerPieces[c.PlayerIdx]; ok && samePiece(cur.piece, p) {
+	if !c.Active || c.PlayerIdx == e.playerIdx {
+		delete(e.peerCells, pos)
 		return
 	}
-	e.peerPieces[c.PlayerIdx] = peerPiece{piece: p, since: now}
-}
-
-func samePiece(a, b game.Piece) bool {
-	return a.Type == b.Type && a.Orientation == b.Orientation && a.Row == b.Row && a.Col == b.Col
+	if cur, ok := e.peerCells[pos]; ok && cur.seq == seq {
+		return
+	}
+	e.peerCells[pos] = peerCell{seq: seq, at: now}
 }
 
 // seatPresentLocked reports whether anyone holds the given seat per the
@@ -58,36 +63,68 @@ func (e *Engine) seatPresentLocked(seat int) bool {
 	return false
 }
 
-// vacateIdlePeers runs on the housekeeping tick of a playing engine on a shared
-// board: every peer piece that has stood still for the idle threshold — a
-// live piece never does, gravity moves it and the lock delay's resets cap
-// well under the threshold — or whose seat nobody holds any more is
-// vacated. A piece found elsewhere than recorded has moved and restarts its
-// clock; one gone from the board is forgotten.
+// vacateIdlePeers runs on the housekeeping tick of a playing engine on a
+// shared board: the other seats' active cells are grouped by the piece they
+// claim to be — seat, type, orientation, anchor — and a group none of whose
+// cells has been rewritten for the idle threshold, or whose seat nobody
+// holds any more, is vacated: one batch per group, at the cells' last-seen
+// sequences, so a seat's live piece moving elsewhere never voids it. A live
+// piece never stands still that long — gravity rewrites it every row it
+// falls, and the lock delay's resets end well short of the threshold — so
+// what the clock runs out on is a piece left behind (its player crashed, or
+// walked away without vacating it) or a copy of one a stale collapse
+// stranded.
 func (e *Engine) vacateIdlePeers(ctx context.Context) {
 	if !e.sharedBoard() || e.solo() || e.getMode() != ModePlayer {
 		return
 	}
 	now := time.Now()
+	type group struct {
+		seat   int
+		cells  map[game.CellPos]game.Cell
+		newest time.Time
+	}
 	e.mu.Lock()
-	var stale []int
-	for idx, pp := range e.peerPieces {
-		cur := e.playfield.ActivePieceForPlayer(idx)
-		if cur == nil {
-			delete(e.peerPieces, idx)
-			continue
+	for pos := range e.peerCells {
+		if c := e.playfield.Rows[pos.Row].Cells[pos.Col]; !c.Active || c.PlayerIdx == e.playerIdx {
+			delete(e.peerCells, pos) // gone from the board: forgotten
 		}
-		if !samePiece(*cur, pp.piece) {
-			e.peerPieces[idx] = peerPiece{piece: *cur, since: now}
-			continue
+	}
+	groups := map[game.Cell]*group{}
+	for r, row := range e.playfield.Rows {
+		for col, c := range row.Cells {
+			if !c.Active || c.PlayerIdx == e.playerIdx {
+				continue
+			}
+			pos := game.CellPos{Row: r, Col: col}
+			pc, ok := e.peerCells[pos]
+			if !ok {
+				// On the board with no delivery noted — written through by
+				// a collapse of ours ahead of its echo: its clock starts now.
+				pc = peerCell{seq: e.playfield.CellLastSeq(r, col), at: now}
+				e.peerCells[pos] = pc
+			}
+			key := pieceKey(c)
+			g := groups[key]
+			if g == nil {
+				g = &group{seat: c.PlayerIdx, cells: map[game.CellPos]game.Cell{}}
+				groups[key] = g
+			}
+			g.cells[pos] = game.Cell{}
+			if pc.at.After(g.newest) {
+				g.newest = pc.at
+			}
 		}
-		if !e.seatPresentLocked(idx) || now.Sub(pp.since) >= e.idleVacateAfter {
-			stale = append(stale, idx)
+	}
+	var stale []*group
+	for _, g := range groups {
+		if !e.seatPresentLocked(g.seat) || now.Sub(g.newest) >= e.idleVacateAfter {
+			stale = append(stale, g)
 		}
 	}
 	e.mu.Unlock()
-	for _, idx := range stale {
-		e.vacatePiece(ctx, idx, false)
+	for _, g := range stale {
+		e.vacateCells(ctx, g.cells, false)
 	}
 }
 
@@ -98,9 +135,7 @@ func (e *Engine) vacateIdlePeers(ctx context.Context) {
 // it) are serialized by the board's txn gate, and the loser recomputes from
 // converged state. The crew's board has no gate; there the vacate is one
 // atomic batch with per-cell CAS expectations at the piece's last-seen
-// sequences — a piece that moved since fails the CAS and nothing happens
-// (the next tick looks again), two engines vacating the same piece commit
-// exactly one batch. locked reports whether the caller holds e.mu.
+// sequences (vacateCells). locked reports whether the caller holds e.mu.
 func (e *Engine) vacatePiece(ctx context.Context, idx int, locked bool) bool {
 	if e.gameMode == config.ModeTeams {
 		return e.publishGatedTransform(ctx, txnOpVacate, locked, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
@@ -126,8 +161,40 @@ func (e *Engine) vacatePiece(ctx context.Context, idx int, locked bool) bool {
 	if !locked {
 		e.mu.Unlock()
 	}
+	return e.vacateCells(ctx, cells, locked)
+}
+
+// vacateCells empties the given cells of other seats' pieces — a stale
+// group of one (vacateIdlePeers), the cells holding a spawn box
+// (deferSpawnLocked), a whole piece (vacatePiece). On a team board the
+// vacate is a gated transform (txnOpVacate) that empties, of the given
+// cells, those the converged snapshot still shows as another seat's active
+// cells — racing bulk transforms are serialized by the board's txn gate.
+// The crew's board has no gate; there the vacate is one atomic batch with
+// per-cell CAS expectations at the cells' last-seen sequences — a cell
+// rewritten since fails the CAS and nothing happens (the next tick looks
+// again), two engines vacating the same cells commit exactly one batch.
+// Reports whether a batch committed. locked reports whether the caller
+// holds e.mu.
+func (e *Engine) vacateCells(ctx context.Context, cells map[game.CellPos]game.Cell, locked bool) bool {
 	if len(cells) == 0 {
 		return false
+	}
+	if e.gameMode == config.ModeTeams {
+		return e.publishGatedTransform(ctx, txnOpVacate, locked, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
+			clone := pf.Clone()
+			found := false
+			for pos := range cells {
+				if c := &clone.Rows[pos.Row].Cells[pos.Col]; c.Active && c.PlayerIdx != e.playerIdx {
+					*c = game.Cell{}
+					found = true
+				}
+			}
+			if !found {
+				return nil, TxnRegister{}, false // already gone (a shrink topped it, or a prior attempt landed)
+			}
+			return clone.Rows, TxnRegister{Applied: txn.Applied}, true
+		})
 	}
 	return e.publishProjectedCells(ctx, cells, nil, locked)
 }

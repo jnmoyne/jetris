@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"jetris/internal/config"
@@ -288,6 +289,33 @@ func (e *Engine) dropQueuedGravity() {
 	}
 }
 
+// dropQueuedPlayerMoves lets go of the player's moves still queued — held
+// for a next piece that is not coming for now (a spawn deferred past
+// config.SpawnHoldRelease, deferSpawnLocked) — and keeps the rows of
+// gravity, which dropQueuedGravity accounts for on its own. Reports how many
+// moves went. Takes bufferedMu only, so it is safe under e.mu.
+func (e *Engine) dropQueuedPlayerMoves() int {
+	e.bufferedMu.Lock()
+	dropped := 0
+	kept := e.bufferedMoves[:0]
+	for _, m := range e.bufferedMoves {
+		if m != MoveGravity {
+			dropped++
+			continue
+		}
+		kept = append(kept, m)
+	}
+	e.bufferedMoves = kept
+	if len(kept) == 0 {
+		e.bufferedMoves = nil
+	}
+	e.bufferedMu.Unlock()
+	if dropped > 0 {
+		e.emitUpdate(EngineUpdate{Kind: UpdateBufferedMoves})
+	}
+	return dropped
+}
+
 // attemptMove runs a move. internal=true marks the move as engine-driven (e.g.
 // gravity ticks): on CAS failure such moves use merge-retry in coop mode so the
 // piece keeps falling under contention. internal=false is for player input and
@@ -352,12 +380,41 @@ func (e *Engine) attemptMoves(ctx context.Context, moves []MoveType) {
 		e.mu.Unlock()
 		return // every step blocked: nothing to publish
 	}
-	affected := affectedRowsUnion(p, &cur)
+	affected := e.sweepRowsLocked(base, affectedRowsUnion(p, &cur))
 	rows := base.ProjectMove(affected, &cur, e.playerIdx)
 	cells := diffCells(base.Rows, rows)
 	pre := *p
 	e.mu.Unlock()
 	e.publishStep(ctx, cells, pre, cur, moves)
+}
+
+// strayRowsLocked returns the rows of a shared board holding an active cell
+// of this seat's outside the rows a write already re-projects (affected):
+// cells left behind — a copy of the piece a crewmate's stale collapse
+// stranded (publishCoopTransform) — which the write's projection then
+// vacates in the same atomic batch as the piece (sweepRowsLocked). Only off
+// a converged board, nothing in flight: a stray on a cell an un-acked step
+// wrote would go out with no expectation (buildStepUpdates) and poison the
+// step; the barriers — a hard drop, a hold, a lock — settle the pipeline
+// first and sweep every time. Nothing on a private board, where nobody
+// else writes the seat's cells. e.mu held.
+func (e *Engine) strayRowsLocked(base *game.Playfield, affected []int) []int {
+	if !e.sharedBoard() || len(e.inflight) > 0 {
+		return nil
+	}
+	var out []int
+	for _, r := range base.ActiveRowsForPlayer(e.playerIdx) {
+		if !slices.Contains(affected, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// sweepRowsLocked widens the rows a write re-projects to the rows holding a
+// stray cell of this seat's (strayRowsLocked). e.mu held.
+func (e *Engine) sweepRowsLocked(base *game.Playfield, affected []int) []int {
+	return append(affected, e.strayRowsLocked(base, affected)...)
 }
 
 // affectedRowsUnion returns the union of row indices touched by oldPiece and
@@ -491,7 +548,7 @@ func (e *Engine) attemptMoveCoop(ctx context.Context, move MoveType, internal bo
 	}
 	e.noteStep(move, internal, kick)
 
-	affected := affectedRowsUnion(p, &newPiece)
+	affected := e.sweepRowsLocked(base, affectedRowsUnion(p, &newPiece))
 
 	rows := base.ProjectMove(affected, &newPiece, e.playerIdx)
 	cells := diffCells(base.Rows, rows)
@@ -565,7 +622,7 @@ func (e *Engine) publishHardDropCoop(ctx context.Context) error {
 	landedOnActivePiece := game.CanPlace(below, e.playfield)
 	e.noteHardDrop(*p, dest, !landedOnActivePiece) // the lock's worth: its T-spin and drop points (award.go)
 
-	affected := affectedRowsUnion(p, &dest)
+	affected := e.sweepRowsLocked(e.playfield, affectedRowsUnion(p, &dest))
 
 	rows := e.playfield.ProjectHardDrop(affected, dest, e.playerIdx, !landedOnActivePiece)
 	cells := diffCells(e.playfield.Rows, rows)

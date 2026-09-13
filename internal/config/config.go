@@ -1223,6 +1223,28 @@ const (
 	// LockDelay), so a piece on the stack locks first.
 	IdlePieceVacateAfter = 10 * time.Second
 
+	// SpawnBlockedVacateAfter is how long the SAME cells of another seat's
+	// falling piece — at the same stream sequences, that is, not rewritten
+	// since — may cover a seat's spawn box before the engine waiting on them
+	// vacates them and spawns. A live piece never stands that long: off the
+	// stack gravity rewrites it every row it falls (one a second at the
+	// first level, and the box is two rows tall), and on the stack it
+	// locks LockDelay after its last shift, every shift a rewrite. Cells
+	// that do are a piece nobody plays — left behind by a crewmate who
+	// crashed, or a copy of a piece an older client's stale collapse
+	// stranded (publishCoopTransform) — and they held a seat's spawn box
+	// for the rest of a game once.
+	SpawnBlockedVacateAfter = 3 * time.Second
+
+	// SpawnHoldRelease is how long the moves pressed behind a player's own
+	// hard drop — the next piece's, held for it while its lock and spawn
+	// round-trip (engine.awaitSpawn) — keep waiting once that spawn is
+	// DEFERRED behind another seat's piece. The hold was made for one round
+	// trip; a spawn box blocked longer is not one, and the held moves are
+	// let go, with a flash on the spawn cells, rather than piling up unseen
+	// while the player taps at a board with no piece on it.
+	SpawnHoldRelease = time.Second
+
 	LobbyKVBucket     = "JETRIS_LOBBY"
 	ChatStream        = "JETRIS_CHAT"
 	LobbyChatGameID   = "lobby"         // reserved chat "game ID" for the lobby chat; no game may be named it (GameNameReserved), and a generated game ID never is

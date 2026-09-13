@@ -47,8 +47,9 @@ type Game struct {
 	locked      map[cell]wireCell // settled cells (stack + garbage)
 	seqs        map[cell]uint64   // per-cell CAS expectation (last stream seq)
 	piece       *active
-	othersAct   map[cell]int   // shared boards: other players' active cells → owner idx
-	othersPiece map[int]active // shared boards: other players' pieces by owner idx
+	ownAct      map[cell]active // our active cells as the stream has them (foldCell, the write-throughs), by the anchor each carries: the piece we hold, and any stray of ours left behind (strayOwnCells)
+	othersAct   map[cell]int    // shared boards: other players' active cells → owner idx
+	othersPiece map[int]active  // shared boards: other players' pieces by owner idx
 	pieceIdx    int
 	score       int // OWN cumulative score (line_clear events carry it)
 	lines       int // OWN cumulative cleared lines
@@ -137,7 +138,7 @@ type Game struct {
 func newGame(a *Agent, id string, idx int) *Game {
 	g := &Game{
 		a: a, id: id, idx: idx,
-		locked: map[cell]wireCell{}, seqs: map[cell]uint64{},
+		locked: map[cell]wireCell{}, seqs: map[cell]uint64{}, ownAct: map[cell]active{},
 		othersAct: map[cell]int{}, othersPiece: map[int]active{}, senderTotals: map[string][2]int{},
 		eliminated: map[string]bool{}, results: map[string]event{},
 		inflightCells: map[cell]int{}, inflightSeq: map[cell]uint64{},
@@ -345,6 +346,7 @@ func (g *Game) publishBatch(ctx context.Context, cells []cellUpd, cas bool) erro
 		}
 		g.noteStreamSeq(seq)
 		g.seqs[u.at] = seq
+		g.noteOwnWrites(cells)
 		return nil
 	}
 	batchID := randID(22)
@@ -378,7 +380,74 @@ func (g *Game) publishBatch(ctx context.Context, cells []cellUpd, cas bool) erro
 	for i, u := range cells { // write-through
 		g.seqs[u.at] = commitSeq - uint64(n-1-i)
 	}
+	g.noteOwnWrites(cells)
 	return nil
+}
+
+// noteOwnWrites writes a batch of ours through to ownAct: the cells it made
+// active cells of ours are ours there now, the rest — locked, vacated — no
+// longer. Caller holds mu.
+func (g *Game) noteOwnWrites(cells []cellUpd) {
+	for _, u := range cells {
+		if u.c != nil && u.c.A && (!g.shared() || u.c.Pi == g.idx) {
+			g.ownAct[u.at] = active{u.c.T, u.c.R, u.c.Ar, u.c.Ac}
+		} else {
+			delete(g.ownAct, u.at)
+		}
+	}
+}
+
+// ownActiveCells returns every active cell of ours as the stream has it —
+// the piece we hold, and any stray of ours (strayOwnCells) — for a write of
+// the piece to vacate whatever it leaves: the piece's old cells, and the
+// strays with them.
+func (g *Game) ownActiveCells() []cell {
+	return append(g.activeCells(), g.strayOwnCells()...)
+}
+
+// strayOwnCells returns the active cells of ours on the stream that are no
+// part of the piece we hold — every one of them while we hold none — a copy
+// of the piece an older client's stale collapse stranded beside it, left
+// out of our vacates until now because they followed the piece alone. The
+// cells an un-acked batch is still writing are not strays: theirs is the
+// batch's to settle. Ordered top to bottom, left to right.
+func (g *Game) strayOwnCells() []cell {
+	var own map[cell]bool
+	if g.piece != nil {
+		own = cellSet(pieceCells(g.piece.pt, g.piece.orient, g.piece.row, g.piece.col))
+	}
+	var out []cell
+	for at := range g.ownAct {
+		if own[at] || g.inflightCells[at] > 0 {
+			continue
+		}
+		out = append(out, at)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].r != out[j].r {
+			return out[i].r < out[j].r
+		}
+		return out[i].c < out[j].c
+	})
+	return out
+}
+
+// bestOwnPiece is the piece our active cells on the stream make: the anchor
+// the most of them carry (a whole piece over a copy of it in part), ties to
+// the top-most; nil while we have none. Caller holds mu.
+func (g *Game) bestOwnPiece() *active {
+	counts := map[active]int{}
+	for _, p := range g.ownAct {
+		counts[p]++
+	}
+	var best *active
+	for p, n := range counts {
+		q := p
+		if best == nil || n > counts[*best] || (n == counts[*best] && (q.row < best.row || (q.row == best.row && q.col < best.col))) {
+			best = &q
+		}
+	}
+	return best
 }
 
 // txnReg is the per-board transaction register that gates bulk transforms.
@@ -536,7 +605,7 @@ func (g *Game) resync(ctx context.Context) {
 func (g *Game) foldSnapshot(snap map[cell]boardMsg) {
 	g.locked = map[cell]wireCell{}
 	g.seqs = map[cell]uint64{}
-	g.piece = nil
+	g.ownAct = map[cell]active{}
 	if g.shared() {
 		g.othersAct = map[cell]int{}
 		g.othersPiece = map[int]active{}
@@ -546,7 +615,7 @@ func (g *Game) foldSnapshot(snap map[cell]boardMsg) {
 		wc := m.wc
 		switch {
 		case wc.A && (!g.shared() || wc.Pi == g.idx):
-			g.piece = &active{wc.T, wc.R, wc.Ar, wc.Ac}
+			g.ownAct[at] = active{wc.T, wc.R, wc.Ar, wc.Ac}
 		case wc.A:
 			g.othersAct[at] = wc.Pi
 			g.othersPiece[wc.Pi] = active{wc.T, wc.R, wc.Ar, wc.Ac}
@@ -554,6 +623,9 @@ func (g *Game) foldSnapshot(snap map[cell]boardMsg) {
 			g.locked[at] = wc
 		}
 	}
+	// Our piece is the anchor most of our cells carry: a copy of it in
+	// part, stranded beside it, is a stray for the next write to sweep.
+	g.piece = g.bestOwnPiece()
 }
 
 func (g *Game) refreshRegisters(ctx context.Context) {
@@ -596,18 +668,7 @@ type garbageReg struct {
 // on — a loss surfaces later and settles the pipeline (pipeline.go). Sync
 // mode blocks on the ack; a dropped write flashes and resyncs.
 func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
-	old := g.activeCells()
-	newCells := pieceCells(to.pt, to.orient, to.row, to.col)
-	newSet := cellSet(newCells)
-	var cells []cellUpd
-	for _, c := range newCells {
-		cells = append(cells, cellUpd{at: c, c: g.activePayload(to)})
-	}
-	for _, c := range old {
-		if !newSet[c] {
-			cells = append(cells, cellUpd{at: c})
-		}
-	}
+	cells, old := g.moveBatch(to)
 	if g.a.pub != pubSync {
 		if !g.publishBatchAsync(ctx, cells, old) {
 			g.settlePipeline(ctx)
@@ -629,6 +690,25 @@ func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
 	p := to
 	g.piece = &p
 	return true
+}
+
+// moveBatch is the batch that moves our piece to `to`: its cells there,
+// and — vacated — every active cell of ours it leaves: the piece's old
+// cells, and any stray of ours (ownActiveCells), which is also what
+// flashes if the batch is lost. Caller holds mu.
+func (g *Game) moveBatch(to active) (cells []cellUpd, old []cell) {
+	old = g.ownActiveCells() // the piece's cells, and any stray of ours: swept with the move
+	newCells := pieceCells(to.pt, to.orient, to.row, to.col)
+	newSet := cellSet(newCells)
+	for _, c := range newCells {
+		cells = append(cells, cellUpd{at: c, c: g.activePayload(to)})
+	}
+	for _, c := range old {
+		if !newSet[c] {
+			cells = append(cells, cellUpd{at: c})
+		}
+	}
+	return cells, old
 }
 
 func (g *Game) activeCells() []cell {
@@ -689,6 +769,9 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 	for _, c := range cs {
 		cells = append(cells, cellUpd{at: c, c: g.activePayload(n)})
 	}
+	for _, c := range g.strayOwnCells() {
+		cells = append(cells, cellUpd{at: c}) // a cell of ours left behind goes with the spawn, vacated
+	}
 	if err := g.publishBatch(ctx, cells, true); err != nil {
 		if errors.Is(err, errCAS) {
 			g.flash(cs[:])
@@ -708,7 +791,7 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 // lockPiece settles the piece at dest (authoritative NoCAS), runs line clears,
 // bumps the piece index.
 func (g *Game) lockPiece(ctx context.Context, dest active) {
-	old := g.activeCells()
+	old := g.ownActiveCells() // the piece's cells, and any stray of ours: swept with the lock
 	// The hard drop's fall, two points a cell (scoreLock): from where the
 	// piece stood to where it settles — nothing when gravity landed it there.
 	fell := 0
@@ -1511,12 +1594,24 @@ func (g *Game) playPieces(ctx context.Context) bool {
 			// never falls away is a stale ghost (a lock we mis-tracked):
 			// rebuild from the stream rather than wedge forever.
 			deferrals++
+			g.mu.Lock()
+			if strays := g.strayOwnCells(); len(strays) > 0 {
+				// Cells of ours left behind hold a crewmate's spawn box as
+				// surely as theirs hold ours: swept now, not at our next
+				// write, which waits on this spawn.
+				vac := make([]cellUpd, 0, len(strays))
+				for _, c := range strays {
+					vac = append(vac, cellUpd{at: c})
+				}
+				if err := g.publishBatch(ctx, vac, true); err != nil && errors.Is(err, errCAS) {
+					g.resyncShared(ctx)
+				}
+			}
 			if deferrals%30 == 0 {
-				g.mu.Lock()
 				g.settlePipeline(ctx)
 				g.resyncShared(ctx)
-				g.mu.Unlock()
 			}
+			g.mu.Unlock()
 			if !g.wait(ctx, 100*time.Millisecond) {
 				break
 			}

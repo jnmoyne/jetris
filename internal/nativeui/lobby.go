@@ -1484,12 +1484,17 @@ func (a *App) archiveHistoryCells(gtx C, rec config.ArchiveRecord, btn, replayBt
 // archiveScoreCell is the headline SCORE (gold pixel numerals) over a small
 // achieved-level line — the game's most important figure, so the largest —
 // and, for a game in its bucket's top 10, a gold TOP 10 tag beneath; a game
-// whose replay is pinned gets a green PINNED tag there too.
+// whose replay is pinned gets a green PINNED tag there too. A survival
+// game's headline is the time it survived, its tier under it.
 func (a *App) archiveScoreCell(r config.ArchiveRecord, top, pinned bool) layout.Widget {
 	return func(gtx C) D {
+		headline, sub := strconv.Itoa(r.HeadlineScore()), fmt.Sprintf("LVL %d", archiveHeadlineLevel(r))
+		if r.IsSurvival() {
+			headline, sub = formatSurvived(r.Duration()), strings.ToUpper(r.SurvivalTier().String())
+		}
 		children := []layout.FlexChild{
-			layout.Rigid(a.pixel(unit.Sp(13), strconv.Itoa(r.HeadlineScore()), colGold).Layout),
-			layout.Rigid(a.caption(fmt.Sprintf("LVL %d", archiveHeadlineLevel(r)), colMuted)),
+			layout.Rigid(a.pixel(unit.Sp(13), headline, colGold).Layout),
+			layout.Rigid(a.caption(sub, colMuted)),
 		}
 		if top {
 			children = append(children, layout.Rigid(func(gtx C) D {
@@ -1531,6 +1536,10 @@ func (a *App) archiveModeCell(r config.ArchiveRecord) layout.Widget {
 			sub = "1 PLAYER" // a solo co-op game, played for the high score
 		}
 		switch r.Mode {
+		case config.ModeCooperative:
+			if r.IsSurvival() {
+				name = "SURVIVAL · " + strings.ToUpper(r.SurvivalTier().String())
+			}
 		case config.ModeCompetitive:
 			name = "COMPETITIVE"
 		case config.ModeTeams:
@@ -1891,9 +1900,12 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 		}
 		extra += " · " + strings.Join(shape, "v")
 	}
-	// The game's length in lines, when it has one (config.GameMeta.LineGoal).
+	// The game's length in lines, when it has one (config.GameMeta.LineGoal),
+	// or the rising floor and its tier (config.GameMeta.Survival).
 	if g.LineGoal > 0 {
 		extra += fmt.Sprintf(" · %d lines", g.LineGoal)
+	} else if label := g.Survival.Label(); label != "" {
+		extra += " · " + label
 	}
 	// Shared boards are as big as their seat count and the creator's
 	// board-growth settings make them (config.SharedBoardWidth and
@@ -1927,7 +1939,7 @@ func (a *App) gameRow(gtx C, g lobby.GameListing, abandoned bool) D {
 	}
 	// The play rules: one "modern" tag for the wizard's preset, else each
 	// rule that differs from the classic game.
-	if g.Rules().IsModern(g.Mode) {
+	if g.Rules().IsModern(g.Mode, g.Survival) {
 		extra += " · modern"
 	} else {
 		if g.NextCount > 0 {

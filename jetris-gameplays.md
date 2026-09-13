@@ -95,7 +95,8 @@ it. Games created before the attribute have no hold. Agents may hold under the
 same rule; the reference agent does not.
 
 **Garbage holes are a per-game attribute on the same wizard step** (shown for the
-modes that raise garbage — competitive and teams): `garbage_holes`, an integer 0-4
+modes that raise garbage — competitive and teams, and a survival game, whose floor
+raises them; there the count is at least 1, §2): `garbage_holes`, an integer 0-4
 (the custom editor opens at the preset's 1; `config.MaxGarbageHoles`), stored in the meta (`GameMeta.GarbageHoles`)
 and mirrored on the lobby row as a `holes N` tag. It is how many **empty cells every
 garbage row is raised with**:
@@ -221,6 +222,76 @@ that **tops out before its goal has lost**: the game ends as at any top-out
 engine alike, the box reads GAME OVER over `GOAL MISSED · YOU LOST`, no name
 is crowned, the high-score fireworks stay dark, and the archive record marks
 no winner.
+
+**Survival (`meta.survival`):** the third game length, a **single playfield's**
+only (the wizard offers it for one board — solo, co-op or competitive-on-one-board
+— never for several, which raise garbage at each other instead): the **floor
+rises**. Garbage rows rise from the bottom of the crew's board on a clock of their
+own, whatever the players do — asynchronously, a raise landing mid-piece like an
+attack's would — and the game ends at the first top-out, as any co-op game does;
+**the time survived is the result**. There is no line goal in a survival game (the
+two are one radio), and its `garbage_holes` is **at least 1** — a raised row must
+be clearable, and a cleared one counts as a line, scores, and raises the level like
+any other. The value is the **difficulty tier**, which sets the pace, and every
+tier **quickens with the level** (§7's level — a raised row dug out is what speeds
+the floor up): the interval between raises shrinks in a straight line from the
+tier's start at level 1 to its end at level 15 (`game.SurvivalInterval`, in whole
+nanoseconds so every peer computes the same duration):
+
+| Tier | Rows per raise | Level 1 | Level 8 | Level 15 |
+|------|----------------|---------|---------|----------|
+| Easy | 1 | every 2.5 s | 1.75 s | 1.0 s |
+| Normal (the default) | 1 to 4, a seeded draw per raise | every 3.0 s | 2.25 s | 1.5 s |
+| Hard | 4 | every 5.0 s | 3.0 s | 1.0 s |
+
+**The holes make a well that moves every 4 rows.** Every raised row has an
+ordinal — the board's count of rows raised so far — and the rows sharing
+`ordinal / 4` share one draw of hole columns, whichever raises they came up in, so
+the holes line up into a well an I stood in clears as a quad, and the well moves
+once four rows have come through it; with `random_garbage_holes` every row draws
+its own. Both draws, and Normal's rows-per-raise draw, are pure functions of the
+game's `seed` and the ordinal (PCG streams mixed from the seed —
+`game.SurvivalHoles`, `game.SurvivalRaiseRows`), so every engine, every agent and
+a replay agree on a raise without a word on the wire beyond the count of raises.
+
+**On the wire** the crew's board carries the competitive board's two registers
+(§9: `…playfield.garbage` and `…playfield.txn`) — a cooperative board has them in
+a survival game only. Every player's engine runs the same clock, re-armed from the
+game's start and from **every raise's echo** on the garbage register, so the clocks
+keep phase with the stream, not with themselves; when a clock fires, the engine
+publishes ONE write to the register — the next raise's rows added to the total
+owed, the register's `raises` count advanced — under a per-subject CAS at the
+register's last-seen sequence. Of the engines whose clocks fire together **exactly
+one raise lands**; a lost race is not retried (the explicit contrast with an
+attack's CAS-add, where every attacker's rows must land) — the winner's echo is
+what every clock re-arms on, the loser's included — and a tick that finds the
+register moved since its clock was armed is a no-op. The rows are then applied by
+whichever engine's txn-gated shrink wins (§4's transform, holes per the rule
+above), exactly once, every falling piece pushed up only as far as the risen stack
+demands (§5); a piece pushed off the top, or a stack pushed past it, is the top-out
+that ends the game for everyone. Because a NoCAS shrink must never race a
+merge-retry write made from a stale snapshot, **the crew's line clears and its
+idle-piece vacates take the txn gate too** in a survival game, exactly as a team's
+do. A **crew of one** has no register to advance and no gate to win: its engine
+raises the floor on the local board and journals the rows like any move (§3's
+solo journal), the same rows and holes a crew's board would draw on the same
+seed. A late joiner reads the registers off its Start snapshot; spectators never
+raise.
+
+**The result.** The HUD shows the tier (`SURVIVAL  NORMAL`) and a running
+`SURVIVED 1:23` clock from the moment the game went in progress; raised rows strobe
+and shake the board as landed garbage does in competitive play. The game-over box
+reads `SURVIVED 3:42 · NORMAL` above the score (an individually scored survival
+board still crowns its top scorer; the time is the crew's). The archive record
+carries `survival` with the tier, and such a game is **ranked by the time it
+survived**: in the lobby's GAME HISTORY the survival games rank behind every game
+played for the score, the longest run first with the score breaking a tie, the SCORE
+cell showing the time in gold over the tier, the MODE cell `SURVIVAL · NORMAL`; they
+sit in replay buckets of their own, one per tier (`SameReplayBucket`), so an easy
+floor never ranks against a hard one. The co-op fireworks fire when the crew's time
+strictly beats the best archived survival time **for the same tier and seat count**
+(never a zero time, never the game's own record). The lobby row tags such a game
+`survival (normal)`.
 
 **Cell states:**
 
@@ -422,6 +493,8 @@ When **any** player tops out (newly spawned piece cannot be placed **on locked c
 The overlay shows the team's final result — `Score: N (level L)`, the shared total — above the "Back to Lobby" button.
 
 A solo game ends the same way at its one player's top-out (there is nobody else to end it), and its score is the shared total it competes with.
+
+In a survival game (§2) a top-out can also be the floor's doing: a raise that pushes a player's falling piece off the top of the board, or the locked stack past it, ends the game for everyone exactly as a spawn into locked cells does — the applier of the raise tops out on the spot, a crewmate whose piece the raise squeezed off learns it from the txn register's `topped` list ahead of the vacating cells, and every seated engine finishes the game. There is no goal to miss: the box reads GAME OVER over the time survived.
 
 **High-score fireworks:** if the crew's shared score strictly beats the best archived co-op score **for the same number of players** (the `TotalScore` of past cooperative games in the lobby's GAME HISTORY; the very first co-op game at a seat count sets the first record, though a zero score never counts — so a solo game competes only with solo games), every crew member's screen plays the same victory fireworks show a competitive winner gets — a new best is a win for the whole crew. Ties don't count, and the finished game never competes against its own just-written archive record.
 
@@ -633,8 +706,11 @@ number of players per playfield: one per playfield is competitive mode (a board
 each, the last standing wins, §4), two or more a teams game, a team on each
 board, every team scoring together (§5), the total seat count being playfields
 × per playfield.
-**2. game rules**: the **game length** — **until top out**, or **a number of
-lines** (default 40, the line goal of §2) — then a single radio: the
+**2. game rules**: the **game length** — **until top out**, **a number of
+lines** (default 40, the line goal of §2), or, on a single playfield only,
+**survival** (§2: the floor rises until the crew tops out, the time survived the
+result) with its tier under it — **Easy / Normal / Hard**, Normal by default,
+each line naming its pace — then a single radio: the
 **Modern** preset — the default, listed read-only: the play rules at their
 modern settings, the board 4 columns wider per player and no taller, every
 player of a playfield playing the same full bag — or **custom**, every rule
@@ -650,8 +726,9 @@ unless the creator checks it, and then the seven piece types are dealt out
 between the seats of a playfield, each seat only ever playing its own ration,
 §5), then
 the next-piece count, 0-6, the "Hold piece" and "Show ghost piece" checkboxes,
-the garbage rules where several playfields raise garbage at each other, the
-piece bag and the hidden rows — see §1b.
+the garbage rules where several playfields raise garbage at each other (the
+holes alone — at least 1 — and their random positions where the floor rises),
+the piece bag and the hidden rows — see §1b.
 **3. players** (for a teams game first the **team names** — every
 playfield's team is called after a piece colour, Green, Blue, Amber, Violet,
 Teal, Coral, unless the creator types another, 16 letters at most, stored as
@@ -919,6 +996,8 @@ exactly, neither rounded nor floored (`game.GravityInterval`; `game.Level` is th
 | 15 | 7.06 ms | 2.361 |
 
 **Gravity is a clock, not a round trip.** The engine's gameplay goroutine (`runInput`) keeps a fixed schedule — a row falls due every interval of the level, the next deadline measured from the last, never from "now" — and a wake-up that comes late (a sync round trip that blocked it, a repair, a burst of input) owes every row the schedule passed, at once. The rows are not published on the spot: each is queued as a step of its own kind (`MoveGravity`) into the same move queue as the player's steps, so the rows that come due while a batch is in flight wait behind it and go out **aggregated** — together with the player's steps around them, in order — as one atomic batch when the slot frees (the step pipeline, `engine/pipeline.go`). The optimistic display plays the queued rows at once, so the piece falls at the level's speed whatever the wire does, several rows per batch at the top levels. A batch of gravity lost to a CAS race is not dropped: the repair puts its rows at the head of the replay and they fall again, until they land. A row of gravity scores nothing (a soft drop's row scores 1). A row that cannot fall is never queued: a piece resting on the stack is the lock delay's business (§3), and a piece resting on **another player's falling piece** waits — the obstacle falls away, and the clock asks again at its next tick. A level change, a clear of yours or a teammate's, re-arms the clock at once.
+
+A survival game (§2) runs a **second clock** on the same goroutine, the rising floor's: a raise falls due `game.SurvivalInterval` of the level after the last one landed, armed by the game's start and by every raise's echo on the board's garbage register, re-timed from the last raise when the level changes, and a housekeeping backstop re-arms it if two intervals pass without a raise landing (a publish lost with no echo). On a shared board the tick publishes the raise under a write-once CAS (off the goroutine — the register write touches no cell) and does not re-arm itself: the raise's echo does; a crew of one raises on the journal and re-arms at once.
 
 ---
 

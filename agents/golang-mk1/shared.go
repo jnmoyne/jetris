@@ -223,11 +223,21 @@ func (g *Game) handleBoardMsg(m jetstream.Msg) {
 			g.garbageOwed = reg.Total
 		}
 		g.garbageBy = reg.By
+		if seq > g.garbageSeq {
+			g.garbageSeq, g.survivalRaises = seq, reg.Raises
+		}
 		need := g.garbageOwed > g.txnApplied && !g.dead
 		g.mu.Unlock()
-		if need && g.mode == modeTeams {
+		if need && (g.mode == modeTeams || g.survival != "") {
 			// Any alive member may apply; the txn gate admits exactly one.
 			go g.applyOwedGarbage(g.runCtx)
+		}
+		if g.survival != "" {
+			// A raise landed (ours or a crewmate's): the clock re-arms from it.
+			select {
+			case g.survivalKick <- struct{}{}:
+			default:
+			}
 		}
 		return
 	}

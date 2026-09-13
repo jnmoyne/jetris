@@ -68,6 +68,7 @@ type Game struct {
 	senderTotals map[string][2]int // last cumulative {score,lines} folded per sender
 	senderTeams  map[string]int    // the team each sender announced, for the line goal's per-playfield count
 	lineGoal     int               // meta line_goal: the game ends when a playfield has cleared this many lines (0 = until top out)
+	survival     string            // meta survival, cooperative only: the rising floor's tier ("easy" / "normal" / "hard"; "" = the floor stays put) — garbage rows rise on the crew's board on a clock that quickens with the level (survival.go)
 	goalDecided  bool              // the goal was reached (the verdict is in goalWon)
 	goalWon      bool              // we are on the playfield that reached it (or the top scorer of a board scored per seat)
 
@@ -83,10 +84,13 @@ type Game struct {
 	// (nextGarbageTarget). Guarded by mu.
 	attackRotor int
 
-	garbageOwed int
-	garbageBy   int
-	txnApplied  int
-	txnSeq      uint64
+	garbageOwed    int
+	garbageBy      int
+	garbageSeq     uint64        // the own board's garbage register's last stream sequence — the write-once CAS expectation of a survival raise (runSurvivalClock)
+	survivalRaises int           // survival: the register's count of raises (the next raise's rows are drawn from it, survivalRaiseRows)
+	survivalKick   chan struct{} // survival: a raise landed on the register (or the game started) — the clock re-arms from it
+	txnApplied     int
+	txnSeq         uint64
 
 	// The gravity clock (execute): nextGravity is when the piece's next row
 	// falls due — set by the spawn, then advanced a step per row owed, so a
@@ -142,7 +146,7 @@ func newGame(a *Agent, id string, idx int) *Game {
 		othersAct: map[cell]int{}, othersPiece: map[int]active{}, senderTotals: map[string][2]int{},
 		eliminated: map[string]bool{}, results: map[string]event{},
 		inflightCells: map[cell]int{}, inflightSeq: map[cell]uint64{},
-		started: make(chan struct{}), ended: make(chan struct{}),
+		started: make(chan struct{}), ended: make(chan struct{}), survivalKick: make(chan struct{}, 1),
 	}
 	g.pipeCond = sync.NewCond(&g.mu)
 	return g
@@ -202,11 +206,29 @@ func (g *Game) garbageSubject(pid string) string {
 func (g *Game) teamGarbageSubject(t int) string {
 	return fmt.Sprintf("jetris.game.%s.team.%d.playfield.garbage", g.id, t)
 }
-func (g *Game) txnSubject() string {
-	if g.mode == modeTeams {
-		return fmt.Sprintf("jetris.game.%s.team.%d.playfield.txn", g.id, g.team)
+
+// ownGarbageSubject is OUR board's garbage register: our private board's in
+// competitive, our team's in teams, the crew's in a survival game (the one
+// its clock advances, guide §4.4).
+func (g *Game) ownGarbageSubject() string {
+	switch g.mode {
+	case modeCooperative:
+		return fmt.Sprintf("jetris.game.%s.playfield.garbage", g.id)
+	case modeTeams:
+		return g.teamGarbageSubject(g.team)
+	default:
+		return g.garbageSubject(g.a.name)
 	}
-	return fmt.Sprintf("jetris.game.%s.player.%s.playfield.txn", g.id, g.a.name)
+}
+func (g *Game) txnSubject() string {
+	switch g.mode {
+	case modeCooperative:
+		return fmt.Sprintf("jetris.game.%s.playfield.txn", g.id)
+	case modeTeams:
+		return fmt.Sprintf("jetris.game.%s.team.%d.playfield.txn", g.id, g.team)
+	default:
+		return fmt.Sprintf("jetris.game.%s.player.%s.playfield.txn", g.id, g.a.name)
+	}
 }
 
 // ---- cell payloads -------------------------------------------------------
@@ -629,8 +651,8 @@ func (g *Game) foldSnapshot(snap map[cell]boardMsg) {
 }
 
 func (g *Game) refreshRegisters(ctx context.Context) {
-	if g.mode == modeCooperative {
-		return
+	if g.mode == modeCooperative && g.survival == "" {
+		return // the crew's board carries registers only when its floor rises
 	}
 	if raw, err := g.stream.GetLastMsgForSubject(ctx, g.txnSubject()); err == nil {
 		g.txnSeq = raw.Sequence
@@ -642,11 +664,7 @@ func (g *Game) refreshRegisters(ctx context.Context) {
 	} else {
 		g.txnSeq, g.txnApplied = 0, 0
 	}
-	ownGarbage := g.garbageSubject(g.a.name)
-	if g.mode == modeTeams {
-		ownGarbage = g.teamGarbageSubject(g.team)
-	}
-	if raw, err := g.stream.GetLastMsgForSubject(ctx, ownGarbage); err == nil {
+	if raw, err := g.stream.GetLastMsgForSubject(ctx, g.ownGarbageSubject()); err == nil {
 		var reg garbageReg
 		if len(raw.Data) > 0 {
 			_ = json.Unmarshal(raw.Data, &reg)
@@ -655,12 +673,16 @@ func (g *Game) refreshRegisters(ctx context.Context) {
 			g.garbageOwed = reg.Total
 		}
 		g.garbageBy = reg.By
+		if raw.Sequence > g.garbageSeq {
+			g.garbageSeq, g.survivalRaises = raw.Sequence, reg.Raises
+		}
 	}
 }
 
 type garbageReg struct {
-	Total int `json:"total"`
-	By    int `json:"by"`
+	Total  int `json:"total"`
+	By     int `json:"by"`
+	Raises int `json:"raises,omitempty"` // survival: how many times the floor has risen (guide §4.4)
 }
 
 // publishPieceMove CAS-batches the diff between the current active cells and
@@ -860,13 +882,16 @@ func (g *Game) completedRows() []int {
 
 // clearRows collapses completed rows: competitive and teams as a GATED
 // transform (teams also shifting teammates' pieces down with the stack), coop
-// as a CAS merge-retry batch; then scores the clear, announces it, and routes
-// the attack (competitive: every surviving opponent; teams: the opposing
-// board; coop: nobody).
+// as a CAS merge-retry batch — unless the crew's floor rises (survival),
+// when the crew's board carries the gate and the clear takes it like a
+// team's, so it can never race the floor's NoCAS shrink from a stale
+// snapshot; then scores the clear, announces it, and routes the attack
+// (competitive: every surviving opponent; teams: the opposing board; coop:
+// nobody).
 func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 	clearedRows := append([]int(nil), rows...)
 	cleared := 0
-	if g.mode == modeCooperative {
+	if g.mode == modeCooperative && g.survival == "" {
 		cleared = g.clearRowsCoop(ctx, rows)
 	} else {
 		for attempt := 0; attempt < 3; attempt++ {
@@ -882,7 +907,7 @@ func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 				}
 			}
 			var diff []cellUpd
-			if g.mode == modeTeams {
+			if g.shared() {
 				newLocked, moved := g.clearProjection(rows)
 				diff = g.diffCells(newLocked)
 				for pi, np := range moved {
@@ -1143,9 +1168,24 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 				newLocked[cell{c.r - n, c.c}] = v
 			}
 		}
+		// The floor's holes follow the seed and the rows' ordinals — the
+		// board's count of rows applied so far — so the well moves every
+		// four rows whichever raises the rows came in, and a recompute after
+		// a lost gate draws exactly the same (survivalHoles); an attack's
+		// rows draw at random, once per raise or once per row.
+		var floor [][]int
+		if g.survival != "" {
+			floor = survivalHoles(g.w, g.holes, g.txnApplied, n, g.randomHoles, g.metaSeed)
+		}
 		var holes map[int]bool
 		for r := h - n; r < h; r++ {
-			if holes == nil || g.randomHoles {
+			switch {
+			case floor != nil:
+				holes = map[int]bool{}
+				for _, c := range floor[r-(h-n)] {
+					holes[c] = true
+				}
+			case holes == nil || g.randomHoles:
 				holes = g.garbageHoleColumns()
 			}
 			for c := 0; c < g.w; c++ {
@@ -1437,12 +1477,21 @@ func (g *Game) run(ctx context.Context) bool {
 	if g.lineGoal > 0 {
 		log.Printf("line goal: the first playfield to clear %d lines wins", g.lineGoal)
 	}
+	if g.mode == modeCooperative {
+		g.survival = normalizeSurvival(meta.str("survival")) // absent (pre-field meta, any other mode) = the floor stays put
+	}
+	if g.survival != "" {
+		log.Printf("survival: the floor rises on the %s tier until the crew tops out", g.survival)
+	}
 	if g.individual {
 		log.Printf("scoring: every seat on its own — the top score wins")
 	}
 	g.teamCount = normalizeTeamCount(meta.int("team_count")) // absent (pre-field meta) = the historical two
 	g.nextCount = meta.int("next_count")
 	g.holes = min(max(meta.int("garbage_holes"), 0), maxGarbageHoles) // absent (pre-field meta) = 0: solid rows
+	if g.survival != "" {
+		g.holes = max(g.holes, minSurvivalHoles) // a row the floor raises must be clearable
+	}
 	g.randomHoles = meta.boolv("random_garbage_holes") && g.holes > 0
 	g.guideline = meta.boolv("guideline_garbage")
 	g.bag = normalizeBag(meta.str("bag")) // absent (pre-field meta) = the 7-bag
@@ -1550,6 +1599,9 @@ func (g *Game) run(ctx context.Context) bool {
 	}
 	g.a.mu.Unlock()
 	log.Printf("game started with %s", g.opponentNames())
+	if g.survival != "" {
+		go g.runSurvivalClock(ctx) // the rising floor's clock, beside the piece loop (survival.go)
+	}
 
 	won := g.playPieces(ctx)
 	g.mu.Lock()
@@ -2164,6 +2216,9 @@ func (g *Game) archive(ctx context.Context) {
 	}
 	if goal := meta.int("line_goal"); goal > 0 {
 		record["line_goal"] = goal
+	}
+	if tier := normalizeSurvival(meta.str("survival")); tier != "" && g.mode == modeCooperative {
+		record["survival"] = tier // the record's rank is the time survived (gameplays §2 Survival)
 	}
 	switch g.mode {
 	case modeCooperative:

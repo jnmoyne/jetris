@@ -75,6 +75,14 @@ func TestWizardSnapshots(t *testing.T) {
 			a.countEd.SetText("2")
 			a.teamNameEds[1].SetText("Sharks")
 		}},
+		{"wizard_step2_survival_modern", func(a *App) {
+			a.createWizStep, a.lengthEnum.Value = wizStepRules, "survival"
+			a.countEd.SetText("2")
+		}},
+		{"wizard_step2_survival_custom", func(a *App) {
+			a.createWizStep, a.rulesEnum.Value, a.lengthEnum.Value, a.survivalEnum.Value = wizStepRules, "custom", "survival", "hard"
+			a.countEd.SetText("1")
+		}},
 	} {
 		a := stage(c.prep)
 		snapshotPNGSized(t, w, dir, c.name, size, func(gtx C) { a.layout(gtx) })

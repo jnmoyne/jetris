@@ -15,8 +15,9 @@ import (
 // cumulative makes application idempotent across duplicate signals, replays,
 // and reconnects.
 type GarbageRegister struct {
-	Total int `json:"total"`
-	By    int `json:"by"` // playerIdx of the most recent attacker (UI attribution)
+	Total  int `json:"total"`
+	By     int `json:"by"`               // playerIdx of the most recent attacker (UI attribution); in a survival game, the engine whose clock won the raise
+	Raises int `json:"raises,omitempty"` // survival games: how many times the floor has risen — the next raise's row count is drawn from it (game.SurvivalRaiseRows); absent elsewhere
 }
 
 // TxnRegister is the payload of a board's txn register — the FIRST message of
@@ -78,11 +79,17 @@ func (e *Engine) handleGarbageRegisterEcho(boardKey string, isOpponent bool, pay
 		e.garbageOwed = reg.Total
 		e.garbageOwedBy = reg.By
 		e.garbageOwedSeq = seq
+		e.survivalRaises = reg.Raises
 	}
 	deficit := e.garbageOwed - e.txnApplied
 	e.mu.Unlock()
 	if deficit > 0 {
 		e.signalGarbageApply()
+	}
+	if e.survival != config.SurvivalNone {
+		// A raise landed: every clock on the board re-arms from it
+		// (runInput), whichever engine's won it.
+		e.kickSurvival()
 	}
 }
 

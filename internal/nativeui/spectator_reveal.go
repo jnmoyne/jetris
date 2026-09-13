@@ -289,6 +289,12 @@ func liveRecord(eng *engine.Engine, view gameView, oc liveOutcome, gmode config.
 	if eng.IndividualScoring() {
 		rec.Scoring = config.ScoringIndividual
 	}
+	if tier := eng.Survival(); tier != config.SurvivalNone {
+		// A survival game's rank IS its duration: the time the engine kept,
+		// laid out as a start against the finish.
+		rec.Survival = tier
+		rec.StartedAt = now.Add(-eng.Survived())
+	}
 	for _, p := range view.players {
 		rec.Players = append(rec.Players, config.PlayerResult{
 			PlayerID: p.PlayerID, Score: oc.scores[p.PlayerID], Team: p.Team, Agent: p.Agent, Winner: oc.winners[p.PlayerID],

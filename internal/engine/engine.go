@@ -290,6 +290,25 @@ type Engine struct {
 	toppedByShrink  bool
 	opponentGarbage map[string]opponentLedger
 
+	// The rising floor of a survival game (GameMeta.SurvivalTier at Start;
+	// none in any other game). survivalRaises mirrors the own board's
+	// garbage register's count of raises (GarbageRegister.Raises) — what the
+	// next raise's row count is drawn from (game.SurvivalRaiseRows); guarded
+	// by e.mu. survivalKick wakes runInput's raise clock: the game's start
+	// and every register echo re-arm it, so the clock keeps phase with the
+	// stream rather than with itself (ledger.go). soloRaises and soloRaised
+	// are the solo journal's own count of raises and of rows raised (solo.go;
+	// runInput only). startedAt is when the game went in progress, as the
+	// meta says (unix nanoseconds; 0 until known), survivalEnd when it ended
+	// for this engine: the time survived is the span between them (Survived).
+	survival       config.Survival
+	survivalRaises int
+	survivalKick   chan struct{}
+	soloRaises     int
+	soloRaised     int
+	startedAt      atomic.Int64
+	survivalEnd    atomic.Int64
+
 	// eventTotals tracks, per sender, the last cumulative line_clear totals
 	// folded from the events stream, so handleGameEvent folds deltas — a
 	// full-history replay (mid-game spectator) or a missed intermediate event
@@ -428,6 +447,7 @@ func New(
 		levelChanged:       make(chan struct{}, 1),
 		cellUpdated:        make(chan struct{}, 1),
 		applyGarbage:       make(chan struct{}, 1),
+		survivalKick:       make(chan struct{}, 1),
 		eliminatedPlayers:  make(map[string]bool),
 		eliminatedTeam:     make(map[string]int),
 		opponentGarbage:    make(map[string]opponentLedger),
@@ -483,6 +503,11 @@ func (e *Engine) Start() error {
 	e.showHeadroom = meta.ShowHeadroom
 	e.hold = meta.Hold
 	e.garbageHoles = min(max(meta.GarbageHoles, 0), config.MaxGarbageHoles)
+	e.survival = meta.SurvivalTier()
+	if e.survival != config.SurvivalNone {
+		// A row the floor raises must be clearable (config.MinSurvivalHoles).
+		e.garbageHoles = max(e.garbageHoles, config.MinSurvivalHoles)
+	}
 	e.randomGarbageHoles = meta.RandomGarbageHoles && e.garbageHoles > 0
 	e.guidelineGarbage = meta.GuidelineGarbage
 	e.bag = meta.Bag.Normalized()
@@ -627,7 +652,7 @@ func (e *Engine) Start() error {
 	// never publish to their cell subjects concurrently and lose the per-subject
 	// CAS race (in either game mode).
 	if meta.Status == config.GameStatusInProgress {
-		e.gameStarted.Store(true)
+		e.noteGameStarted(meta)
 	}
 	if e.getMode() == ModePlayer {
 		// If game is already in progress and no active piece, spawn immediately
@@ -1066,11 +1091,15 @@ func (e *Engine) cellSubject(row, col int) string {
 
 // cellFilterSubject returns the wildcard filter for this engine's own-board
 // consumer. Competitive and teams filter the whole playfield namespace
-// (cells + the garbage/txn registers); cooperative has no registers and
-// filters cells only.
+// (cells + the garbage/txn registers); so does the crew's board when its
+// floor rises through registers (survivalRegisters); any other cooperative
+// board has no registers and filters cells only.
 func (e *Engine) cellFilterSubject() string {
 	switch e.gameMode {
 	case config.ModeCooperative:
+		if e.survivalRegisters() {
+			return config.CoopPlayfieldFilter(e.gameID)
+		}
 		return config.CoopCellSubjectFilter(e.gameID)
 	case config.ModeTeams:
 		return config.TeamPlayfieldFilter(e.gameID, e.teamIdx)
@@ -1079,7 +1108,8 @@ func (e *Engine) cellFilterSubject() string {
 }
 
 // boardRegisterSubjects returns the garbage/txn register subjects for this
-// engine's own board (empty in coop — no garbage there).
+// engine's own board (empty on a crew's board without a rising floor — no
+// garbage there).
 func (e *Engine) boardRegisterSubjects() []string {
 	switch e.gameMode {
 	case config.ModeCompetitive:
@@ -1092,8 +1122,97 @@ func (e *Engine) boardRegisterSubjects() []string {
 			config.TeamGarbageSubject(e.gameID, e.teamIdx),
 			config.TeamTxnSubject(e.gameID, e.teamIdx),
 		}
+	case config.ModeCooperative:
+		if e.survivalRegisters() {
+			return []string{
+				config.CoopGarbageSubject(e.gameID),
+				config.CoopTxnSubject(e.gameID),
+			}
+		}
 	}
 	return nil
+}
+
+// garbageSubject is the own board's garbage (rows-owed) register subject —
+// the one a survival game's clock advances (publishSurvivalRaise).
+func (e *Engine) garbageSubject() string {
+	switch e.gameMode {
+	case config.ModeCooperative:
+		return config.CoopGarbageSubject(e.gameID)
+	case config.ModeTeams:
+		return config.TeamGarbageSubject(e.gameID, e.teamIdx)
+	}
+	return config.CompetitiveGarbageSubject(e.gameID, e.playerID)
+}
+
+// survivalRegisters reports whether this engine's board carries the crew's
+// garbage and txn registers: a survival game's shared board with company —
+// the rising floor is raised through the garbage register and applied
+// through the gate, exactly once among the engines sharing the board, and
+// the crew's clears and vacates take the gate too (a NoCAS shrink must never
+// race a merge-retry write made from a stale snapshot). A crew of one raises
+// its floor on the journal instead (solo.go), and a spectator of that game
+// reads the journal like any board: the seat count decides, not whether
+// this engine is the writer.
+func (e *Engine) survivalRegisters() bool {
+	return e.survival != config.SurvivalNone && e.gameMode == config.ModeCooperative && e.playerCount > 1
+}
+
+// noteGameStarted records that the game is in progress, from a meta that
+// says so: the moment it started (the meta's StartedAt, or now for a meta
+// without one), kept once — the first word is the truth — and, the first
+// time, the rising floor's clock kicked (runInput). Called from Start and
+// from every in-progress meta echo.
+func (e *Engine) noteGameStarted(meta config.GameMeta) {
+	first := e.gameStarted.CompareAndSwap(false, true)
+	at := meta.StartedAt
+	if at.IsZero() {
+		at = time.Now()
+	}
+	e.startedAt.CompareAndSwap(0, at.UnixNano())
+	if first && e.survival != config.SurvivalNone {
+		e.kickSurvival()
+	}
+}
+
+// kickSurvival wakes the rising floor's clock: runInput re-arms the next
+// raise from now. Non-blocking, at most one kick pending, and a kick sent
+// before runInput starts (the Start snapshot's register) is retained.
+func (e *Engine) kickSurvival() {
+	select {
+	case e.survivalKick <- struct{}{}:
+	default:
+	}
+}
+
+// Survival is the rising floor's tier (config.Survival): none in any game
+// but a survival game.
+func (e *Engine) Survival() config.Survival { return e.survival }
+
+// SurvivalRaises is how many times the floor has risen so far, as the
+// board's register counts them (a crew of one counts its own).
+func (e *Engine) SurvivalRaises() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.solo() {
+		return e.soloRaises
+	}
+	return e.survivalRaises
+}
+
+// Survived is how long the game has been running: from the moment it went
+// in progress until now, or until it ended for this engine — the time
+// survived, a survival game's result. Zero before the game starts.
+func (e *Engine) Survived() time.Duration {
+	start := e.startedAt.Load()
+	if start == 0 {
+		return 0
+	}
+	end := e.survivalEnd.Load()
+	if end == 0 {
+		end = time.Now().UnixNano()
+	}
+	return max(time.Duration(end-start), 0)
 }
 
 // cellSubjects returns the subjects for every cell of this engine's own
@@ -1264,6 +1383,7 @@ func (e *Engine) transitionToSpectator(won bool) {
 	} else {
 		e.wonGame.Store(2)
 	}
+	e.survivalEnd.CompareAndSwap(0, time.Now().UnixNano()) // the clock stops here (Survived)
 	e.setMode(ModeGameOver)
 	e.emitUpdate(EngineUpdate{Kind: UpdateGameOver, Won: won})
 }

@@ -15,6 +15,7 @@
 //	golang-mk1 --create --mode teams --players 2              # host a 2v2 teams game
 //	golang-mk1 --create --mode teams --teams 3 --players 2    # ...or a three-way, 2 per team
 //	golang-mk1 --create --mode cooperative --pause-alone      # host a co-op game and wait, paused, for company
+//	golang-mk1 --create --mode cooperative --survival normal  # host a survival game: the floor rises until the crew tops out
 //	golang-mk1 --create --game-name friday-night              # host a NAMED game: its ID, its lobby row and its stream
 //	golang-mk1 --difficulty hard --once                       # play a single game, then exit
 //	golang-mk1 --selftest                                     # offline conformance checks
@@ -59,6 +60,7 @@ func main() {
 	extraRows := flag.Int("extra-rows", 0, "shared-board height when creating a cooperative or teams game: rows every seat beyond the first adds below the standard 20 (0-10)")
 	lineGoal := flag.Int("line-goal", 0, "the game's length in lines when creating a game: the first playfield to clear this many wins (0 = until top out)")
 	individual := flag.Bool("individual", false, "when creating a cooperative game of two or more: score every seat on its own, the top score wins")
+	survival := flag.String("survival", "", "when creating a cooperative game: the rising floor and its tier — easy, normal or hard — garbage rows rise on a clock that quickens with the level until the crew tops out, the time survived the result (no line goal; at least one hole per row)")
 	bag := flag.String("bag", "", "piece randomizer when creating a game: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
 	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Modern preset — next 6, hold, the 7-bag, 1 hole per garbage row, the modern attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
@@ -104,6 +106,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "--bag %q is not a bag kind: use double, none, or leave it unset for the 7-bag\n", *bag)
 			os.Exit(2)
 		}
+		if normalizeSurvival(*survival) != *survival {
+			fmt.Fprintf(os.Stderr, "--survival %q is not a tier: use easy, normal or hard, or leave it unset\n", *survival)
+			os.Exit(2)
+		}
+		if *survival != "" && mode != modeCooperative {
+			fmt.Fprintln(os.Stderr, "--survival is a single playfield's game: use it with --mode cooperative")
+			os.Exit(2)
+		}
 		// A name is the game's ID, so it has to be one: something a stream
 		// name, a subject and a KV key all take (gameName), and not "lobby",
 		// which the chat stream and the voice rooms keep for the lobby's own
@@ -116,7 +126,7 @@ func main() {
 			os.Exit(2)
 		}
 		host = &hosting{gameName: gameName(*gameNameFlag), mode: mode, players: *players, teams: *teams, extraCols: *extraCols, maxAgents: *maxAgents, next: *next, holes: *holes, random: *randomHoles, guideline: *guideline, hold: *hold, split: *splitPieces, bag: *bag,
-			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual, pauseAlone: *pauseAlone}
+			extraRows: *extraRows, lineGoal: *lineGoal, single: *individual, survival: *survival, pauseAlone: *pauseAlone}
 		if *preset {
 			// The same rules the GUI's "Modern" radio picks (config.ModernRules).
 			host.next, host.holes, host.random, host.guideline, host.hold, host.bag = maxNextCount, 1, false, true, true, bagSingle

@@ -133,11 +133,13 @@ func (e *Engine) vacateIdlePeers(ctx context.Context) {
 // is a gated transform (txnOpVacate): racing bulk transforms (a garbage
 // application projecting the piece from a stale snapshot would resurrect
 // it) are serialized by the board's txn gate, and the loser recomputes from
-// converged state. The crew's board has no gate; there the vacate is one
-// atomic batch with per-cell CAS expectations at the piece's last-seen
-// sequences (vacateCells). locked reports whether the caller holds e.mu.
+// converged state — and so is the crew's board's when its floor rises
+// through the registers (survivalRegisters), for the same reason. Any other
+// crew's board has no gate; there the vacate is one atomic batch with
+// per-cell CAS expectations at the piece's last-seen sequences
+// (vacateCells). locked reports whether the caller holds e.mu.
 func (e *Engine) vacatePiece(ctx context.Context, idx int, locked bool) bool {
-	if e.gameMode == config.ModeTeams {
+	if e.gameMode == config.ModeTeams || e.survivalRegisters() {
 		return e.publishGatedTransform(ctx, txnOpVacate, locked, func(pf *game.Playfield, owed GarbageRegister, txn TxnRegister) ([]game.Row, TxnRegister, bool) {
 			if pf.ActivePieceForPlayer(idx) == nil {
 				return nil, TxnRegister{}, false // already gone (a shrink topped it, or a prior attempt landed)

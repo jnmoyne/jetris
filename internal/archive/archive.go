@@ -222,6 +222,7 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 		ExtraRows:    meta.ExtraRows,
 		LineGoal:     meta.LineGoal,
 		Scoring:      meta.Scoring,
+		Survival:     meta.SurvivalTier(),
 		BoardRows:    meta.BoardHeight(),
 		WinningTeam:  winningTeam,
 		Chat:         gameChatHistory(lb, eng.GameID()),

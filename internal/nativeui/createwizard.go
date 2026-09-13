@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"gioui.org/layout"
 	"gioui.org/unit"
@@ -11,6 +12,7 @@ import (
 	"gioui.org/widget/material"
 
 	"jetris/internal/config"
+	"jetris/internal/game"
 )
 
 // The create-game wizard: three steps, one choice at a time — the game's
@@ -164,8 +166,24 @@ func (a *App) wizardPlayfieldCount() int {
 	return config.NormalizeTeamCount(a.playfieldCount)
 }
 
-// wizardLineGoal reads step 2's game-length choice: 0 for "until top out",
-// else the lines editor's number — blank or junk is the classic forty.
+// wizardSurvival reads step 2's game-length choice as the rising floor: the
+// tier radio's choice when the length is "survival" on a single playfield,
+// none otherwise — several playfields raise garbage at each other, so the
+// choice is never offered there and a stale one is ignored.
+func (a *App) wizardSurvival() config.Survival {
+	if a.wizardMultiple() || a.lengthEnum.Value != "survival" {
+		return config.SurvivalNone
+	}
+	tier := config.Survival(a.survivalEnum.Value).Normalized()
+	if tier == config.SurvivalNone {
+		tier = config.SurvivalNormal
+	}
+	return tier
+}
+
+// wizardLineGoal reads step 2's game-length choice: 0 for "until top out"
+// and for the rising floor, else the lines editor's number — blank or junk
+// is the classic forty.
 func (a *App) wizardLineGoal() int {
 	if a.lengthEnum.Value != "lines" {
 		return 0
@@ -190,6 +208,7 @@ func (a *App) wizardSpec() config.GameSpec {
 	spec := config.GameSpec{
 		Name:       a.gameNameEd.Text(),
 		LineGoal:   a.wizardLineGoal(),
+		Survival:   a.wizardSurvival(),
 		InviteOnly: a.createJoinEnum.Value == "invite",
 	}
 	count := a.wizardCount()
@@ -602,25 +621,32 @@ func (a *App) wizardNameField(gtx C) D {
 }
 
 // wizardRulesStep is step 2: how long the game runs — until someone tops
-// out, or until a playfield has cleared a number of lines — and the play
-// rules, fixed at creation, one setting for every seat: a single radio
-// picks the Modern preset (every rule at the setting closest to modern
+// out, until a playfield has cleared a number of lines, or, on a single
+// playfield, until the rising floor wins (survival, with its tier) — and
+// the play rules, fixed at creation, one setting for every seat: a single
+// radio picks the Modern preset (every rule at the setting closest to modern
 // play, listed read-only) or custom rules, each its own control.
 func (a *App) wizardRulesStep(gtx C) D {
 	custom := a.rulesEnum.Value == "custom"
+	if a.wizardMultiple() && a.lengthEnum.Value == "survival" {
+		// The floor rises on a single playfield only: several playfields
+		// raise garbage at each other. A choice made for one board falls
+		// back to the classic length when the creator goes back for more.
+		a.lengthEnum.Value = "topout"
+	}
 	spec := a.wizardSpec()
 	lengthHint := "The game runs until a playfield tops out."
-	if spec.LineGoal > 0 {
-		switch {
-		case spec.Playfields() > 1:
-			lengthHint = fmt.Sprintf("The first playfield to clear %d lines wins.", spec.LineGoal)
-		case spec.IndividualScoring():
-			lengthHint = fmt.Sprintf("The game ends once the board has cleared %d lines; the top score wins.", spec.LineGoal)
-		default:
-			lengthHint = fmt.Sprintf("The game ends once the crew has cleared %d lines.", spec.LineGoal)
-		}
+	switch {
+	case spec.Survival != config.SurvivalNone:
+		lengthHint = "Garbage rises from the floor on a clock that quickens with the level; the game ends when the board tops out — the time survived is the result."
+	case spec.LineGoal > 0 && spec.Playfields() > 1:
+		lengthHint = fmt.Sprintf("The first playfield to clear %d lines wins.", spec.LineGoal)
+	case spec.LineGoal > 0 && spec.IndividualScoring():
+		lengthHint = fmt.Sprintf("The game ends once the board has cleared %d lines; the top score wins.", spec.LineGoal)
+	case spec.LineGoal > 0:
+		lengthHint = fmt.Sprintf("The game ends once the crew has cleared %d lines.", spec.LineGoal)
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	kids := []layout.FlexChild{
 		layout.Rigid(a.body("Game length:", colMuted)),
 		layout.Rigid(a.wizardRadio(&a.lengthEnum, "topout", "Until top out")),
 		layout.Rigid(func(gtx C) D {
@@ -634,6 +660,16 @@ func (a *App) wizardRulesStep(gtx C) D {
 				}),
 			)
 		}),
+	}
+	if !a.wizardMultiple() {
+		kids = append(kids, layout.Rigid(a.wizardRadio(&a.lengthEnum, "survival", "Survival — the floor rises until you top out")))
+		if spec.Survival != config.SurvivalNone {
+			for _, tier := range config.SurvivalTiers() {
+				kids = append(kids, layout.Rigid(a.wizardSubRadio(&a.survivalEnum, string(tier), survivalTierLabel(tier))))
+			}
+		}
+	}
+	kids = append(kids,
 		layout.Rigid(spacer(4)),
 		layout.Rigid(a.body(lengthHint, colMuted)),
 		layout.Rigid(spacer(12)),
@@ -647,6 +683,27 @@ func (a *App) wizardRulesStep(gtx C) D {
 			return a.wizardModernRules(gtx, spec)
 		}),
 	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, kids...)
+}
+
+// survivalTierLabel is a tier's radio line: its name and its pace — how
+// often the floor rises at level 1 and by level 15, and by how many rows
+// (game.SurvivalPaceOf).
+func survivalTierLabel(tier config.Survival) string {
+	p := game.SurvivalPaceOf(tier)
+	rows := "one row"
+	switch {
+	case p.MinRows == p.MaxRows && p.MinRows > 1:
+		rows = fmt.Sprintf("%d rows", p.MinRows)
+	case p.MinRows != p.MaxRows:
+		rows = fmt.Sprintf("%d to %d rows", p.MinRows, p.MaxRows)
+	}
+	return fmt.Sprintf("%s — %s every %s at level 1, every %s by level 15", tier, rows, secondsLabel(p.Start), secondsLabel(p.End))
+}
+
+// secondsLabel is a duration in seconds for a wizard line: "2.5 s", "3 s".
+func secondsLabel(d time.Duration) string {
+	return strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.1f", d.Seconds()), "0"), ".") + " s"
 }
 
 // wizardModernRules is the read-only view of the Modern preset
@@ -677,9 +734,9 @@ func (a *App) wizardModernRules(gtx C, spec config.GameSpec) D {
 // modernSummary lists the Modern preset's rules as (rule, setting)
 // pairs for the game being created — the board and the deal for a shared
 // playfield with company, the garbage rules only where several playfields
-// raise garbage at each other.
+// raise garbage at each other, or where the floor rises.
 func modernSummary(spec config.GameSpec) [][2]string {
-	r := config.ModernRules().Normalized(spec.Mode)
+	r := config.ModernRules().Normalized(spec.Mode, spec.Survival)
 	rows := [][2]string{
 		{"Next pieces", fmt.Sprintf("%d — the NEXT well, and how far agents may look ahead", r.NextCount)},
 		{"Ghost piece", "on — the landing preview of every player's piece"},
@@ -700,6 +757,10 @@ func modernSummary(spec config.GameSpec) [][2]string {
 			[2]string{"Garbage", fmt.Sprintf("%d hole per row, the rows of one attack lined up into a well", r.GarbageHoles)},
 			[2]string{"Attacks", "the modern attack table — a single sends nothing, a double 1 row, a triple 2, a quad 4"},
 		)
+	} else if spec.Survival != config.SurvivalNone {
+		rows = append(rows,
+			[2]string{"Garbage", fmt.Sprintf("%d hole per row the floor raises, the holes lined up into a well that moves every %d rows", r.GarbageHoles, game.SurvivalWellSpan)},
+		)
 	}
 	return rows
 }
@@ -707,10 +768,12 @@ func modernSummary(spec config.GameSpec) [][2]string {
 // wizardCustomRules is the custom half of step 2: every rule as its own
 // control — the shared board's growth per player and the deal where a
 // playfield has company, the garbage rules where several playfields raise
-// garbage at each other.
+// garbage at each other (the holes alone where the floor rises: nothing
+// attacks anybody there).
 func (a *App) wizardCustomRules(gtx C, spec config.GameSpec) D {
 	seats := spec.SeatsPerPlayfield()
 	garbage := spec.Playfields() > 1
+	survival := spec.Survival != config.SurvivalNone
 	kids := []layout.FlexChild{}
 	if seats > 1 {
 		colsHint := fmt.Sprintf("The shared board is %d columns for the first player and %d more for every player after — %d columns for %d players.",
@@ -749,6 +812,15 @@ func (a *App) wizardCustomRules(gtx C, spec config.GameSpec) D {
 			layout.Rigid(a.body("Empty cells in every garbage row an attack sends. 0 raises solid rows that never clear; a holed row clears like any line once its holes are filled.", colMuted)),
 			layout.Rigid(spacer(10)),
 			layout.Rigid(a.wizardCheckBox(&a.randomHolesCb, "Random hole positions", "Off: the rows of one attack share their hole columns, lining up into a well. On: every row draws its own — harder to dig out.")),
+		)
+	} else if survival {
+		kids = append(kids,
+			layout.Rigid(spacer(10)),
+			layout.Rigid(a.wizardNumber(fmt.Sprintf("Garbage holes (%d–%d):", config.MinSurvivalHoles, config.MaxGarbageHoles), &a.holesEd, strconv.Itoa(config.ModernRules().GarbageHoles), nil)),
+			layout.Rigid(spacer(4)),
+			layout.Rigid(a.body("Empty cells in every row the floor raises — at least one, so every row can be cleared. A raised row clears like any line once its holes are filled, and counts toward the level.", colMuted)),
+			layout.Rigid(spacer(10)),
+			layout.Rigid(a.wizardCheckBox(&a.randomHolesCb, "Random hole positions", fmt.Sprintf("Off: the holes line up into a well that moves every %d rows. On: every row draws its own — harder to dig out.", game.SurvivalWellSpan))),
 		)
 	}
 	kids = append(kids,

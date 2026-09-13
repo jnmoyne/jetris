@@ -410,7 +410,7 @@ func TestLobbyCreateGameHoldAndModernPreset(t *testing.T) {
 	if meta.Hold {
 		t.Error("hold should be off unless asked for")
 	}
-	if meta.Rules().IsModern(config.ModeCompetitive) {
+	if meta.Rules().IsModern(config.ModeCompetitive, meta.SurvivalTier()) {
 		t.Error("next 1 / no hold is not the Modern preset")
 	}
 
@@ -425,7 +425,7 @@ func TestLobbyCreateGameHoldAndModernPreset(t *testing.T) {
 	if !meta.Hold || meta.NextCount != config.MaxNextCount || meta.NoGhost || meta.GarbageHoles != 1 || meta.RandomGarbageHoles || !meta.GuidelineGarbage {
 		t.Errorf("Modern preset meta = %+v", meta.Rules())
 	}
-	if !meta.Rules().IsModern(config.ModeTeams) {
+	if !meta.Rules().IsModern(config.ModeTeams, meta.SurvivalTier()) {
 		t.Error("the preset's meta should read back as the Modern preset")
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -433,7 +433,7 @@ func TestLobbyCreateGameHoldAndModernPreset(t *testing.T) {
 	if !g.Hold {
 		t.Error("hold should be mirrored on the listing")
 	}
-	if !g.Rules().IsModern(config.ModeTeams) {
+	if !g.Rules().IsModern(config.ModeTeams, g.Survival) {
 		t.Errorf("the preset's listing %+v should read back as the Modern preset", g.Rules())
 	}
 
@@ -448,7 +448,7 @@ func TestLobbyCreateGameHoldAndModernPreset(t *testing.T) {
 	if meta.GarbageHoles != 0 || meta.GuidelineGarbage || !meta.Hold {
 		t.Errorf("cooperative Guideline meta = %+v, want no garbage rules, hold on", meta.Rules())
 	}
-	if !meta.Rules().IsModern(config.ModeCooperative) {
+	if !meta.Rules().IsModern(config.ModeCooperative, meta.SurvivalTier()) {
 		t.Error("a cooperative preset game should still read as the Modern preset")
 	}
 
@@ -482,8 +482,8 @@ func TestLobbyCreateGameBag(t *testing.T) {
 			t.Errorf("meta bag = %q, want %q", meta.Bag, bag)
 		}
 		time.Sleep(300 * time.Millisecond)
-		if g := lb.Games()[id]; g.Bag != bag || g.Rules().Bag != bag || g.Rules().IsModern(g.Mode) {
-			t.Errorf("listing bag = %q (guideline: %v), want %q and not the preset", g.Bag, g.Rules().IsModern(g.Mode), bag)
+		if g := lb.Games()[id]; g.Bag != bag || g.Rules().Bag != bag || g.Rules().IsModern(g.Mode, g.Survival) {
+			t.Errorf("listing bag = %q (guideline: %v), want %q and not the preset", g.Bag, g.Rules().IsModern(g.Mode, g.Survival), bag)
 		}
 	}
 
@@ -596,10 +596,46 @@ func TestLobbyCreateGameSpecRoundTrip(t *testing.T) {
 		t.Errorf("a competitive game recorded shared-board settings: %+v", meta)
 	}
 	raw, _ := json.Marshal(meta)
-	for _, field := range []string{"extra_rows", "line_goal", "scoring"} {
+	for _, field := range []string{"extra_rows", "line_goal", "scoring", "survival"} {
 		if strings.Contains(string(raw), `"`+field+`"`) {
 			t.Errorf("the default %s is written out: %s", field, raw)
 		}
+	}
+}
+
+// A survival game's tier lands on the meta and the listing, its line goal
+// dropped and its holes at least one; a board each records no floor at all.
+func TestLobbyCreateSurvivalGame(t *testing.T) {
+	lb, js := setupLobby(t)
+	ctx := context.Background()
+	id, err := lb.CreateGame(ctx, config.GameSpec{
+		Mode: config.ModeCooperative, PlayerCount: 2, Survival: config.SurvivalHard, LineGoal: 40,
+		Rules: config.ModernRules(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _, err := natspkg.FetchGameMeta(ctx, js, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.SurvivalTier() != config.SurvivalHard || meta.LineGoal != 0 || meta.GarbageHoles != 1 || meta.GuidelineGarbage {
+		t.Errorf("meta of a survival game: survival=%q line_goal=%d holes=%d attacks=%v", meta.Survival, meta.LineGoal, meta.GarbageHoles, meta.GuidelineGarbage)
+	}
+	time.Sleep(300 * time.Millisecond)
+	g := lb.Games()[id]
+	if g.Survival != config.SurvivalHard || g.LineGoal != 0 || g.GarbageHoles != 1 || !g.Rules().IsModern(g.Mode, g.Survival) {
+		t.Errorf("listing of a survival game: %+v", g)
+	}
+	each, err := lb.CreateGame(ctx, config.GameSpec{Mode: config.ModeCompetitive, PlayerCount: 2, Survival: config.SurvivalEasy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta, _, err = natspkg.FetchGameMeta(ctx, js, each); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Survival != config.SurvivalNone {
+		t.Errorf("a board each recorded a rising floor: %+v", meta)
 	}
 }
 

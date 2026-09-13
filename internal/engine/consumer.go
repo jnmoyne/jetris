@@ -190,17 +190,20 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 	level := game.Level(int(e.totalLines.Load()))
 
 	// Detect completed rows on the live replica. Cooperative publishes the
-	// collapse with merge-retry (no garbage in coop, no gate); competitive
-	// and teams run it as a GATED transform, whose recompute re-detects the
-	// completed rows from converged state if the gate is lost (e.g. a shrink
-	// landed first and shifted them, or a teammate's clear already took them).
-	// Score, events, and the attack are derived from the rows the committed
+	// collapse with merge-retry (no garbage in coop, no gate) — unless the
+	// crew's floor rises through the board's registers (survivalRegisters),
+	// when the clear takes the gate like a team's, so it can never race the
+	// floor's NoCAS shrink from a stale snapshot; competitive and teams run
+	// it as a GATED transform, whose recompute re-detects the completed rows
+	// from converged state if the gate is lost (e.g. a shrink landed first
+	// and shifted them, or a teammate's clear already took them). Score,
+	// events, and the attack are derived from the rows the committed
 	// transform ACTUALLY cleared, not the pre-race detection.
 	clearedLines := 0
 	var clearedRows []int // the rows the committed transform actually cleared (pre-collapse indices)
 	var after []game.Row  // the board as the committed collapse leaves it — a perfect clear leaves nothing locked on it
 	if completed := game.CompletedRows(e.playfield); len(completed) > 0 {
-		if e.gameMode == config.ModeCooperative {
+		if e.gameMode == config.ModeCooperative && !e.survivalRegisters() {
 			// The crew's board has no gate: the collapse is one CAS batch
 			// of the cells it changes — the projection covers the FULL row
 			// range, headroom included (a truncated diff used to strand
@@ -429,15 +432,24 @@ func (e *Engine) runMetaConsumer(ctx context.Context) {
 				continue
 			}
 			if meta.Status == config.GameStatusInProgress {
-				e.gameStarted.Store(true)
+				e.noteGameStarted(meta)
 			}
-			if (meta.Status == config.GameStatusFinished || meta.Status == config.GameStatusArchived) && e.getMode() == ModePlayer {
-				// The game is over and this engine has not heard why yet — a
-				// peer decided it (a line goal reached, a roster that emptied
-				// every other board) before our events consumer caught up.
-				// Play stops now; the events still to come flip the verdict
-				// to won if we won (decideOutcome), like a teams win does.
-				e.transitionToSpectator(false)
+			if meta.Status == config.GameStatusFinished || meta.Status == config.GameStatusArchived {
+				// The game's end as the meta records it: what a spectator's
+				// clock stops on (Survived); a player's stopped when the
+				// game ended for them.
+				if !meta.FinishedAt.IsZero() {
+					e.survivalEnd.CompareAndSwap(0, meta.FinishedAt.UnixNano())
+				}
+				if e.getMode() == ModePlayer {
+					// The game is over and this engine has not heard why yet
+					// — a peer decided it (a line goal reached, a roster that
+					// emptied every other board) before our events consumer
+					// caught up. Play stops now; the events still to come
+					// flip the verdict to won if we won (decideOutcome), like
+					// a teams win does.
+					e.transitionToSpectator(false)
+				}
 			}
 			// Status reaches EVERY engine — spectators included. Gating this
 			// on ModePlayer left a spectator's view stuck pre-start ("GO!"

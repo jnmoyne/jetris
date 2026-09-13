@@ -682,6 +682,18 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 	if !(gmode == config.ModeTeams && mode == engine.ModeSpectator) {
 		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("LEVEL", view.level))))
 	}
+	if tier := eng.Survival(); tier != config.SurvivalNone {
+		// The rising floor: its tier, and the clock the game is played
+		// against — the time survived so far, ticking until the board tops
+		// out, then the result (the game-over box repeats it).
+		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatColored("SURVIVAL", strings.ToUpper(tier.String()), colOrange))))
+		children = append(children, layout.Rigid(func(gtx C) D {
+			if view.status == string(config.GameStatusInProgress) && !view.gameOver {
+				animate(gtx) // the clock ticks
+			}
+			return a.hudStatColored("SURVIVED", formatSurvived(eng.Survived()), colGold)(gtx)
+		}))
+	}
 	if _, goal := eng.GoalProgress(); goal > 0 {
 		// The game's length in lines: this playfield's count against the
 		// goal — every team's for a teams spectator, who has no playfield.
@@ -1178,9 +1190,10 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 		localIdx = -1
 	}
 	started := view.status == string(config.GameStatusInProgress)
-	if mode == engine.ModePlayer && (gmode == config.ModeCompetitive || gmode == config.ModeTeams) {
+	if mode == engine.ModePlayer && (gmode == config.ModeCompetitive || gmode == config.ModeTeams || eng.Survival() != config.SurvivalNone) {
 		// Garbage that landed since the last frame strobes in the attacker's
-		// color and judders the board (competitive modes' arcade impact).
+		// color and judders the board (competitive modes' arcade impact —
+		// and the rising floor's, in a survival game).
 		a.detectGarbage(gtx, snap)
 	}
 	// The pre-rendered move (lab.go): position 2 outlines where the piece is
@@ -1803,6 +1816,12 @@ func (a *App) gameOverBox(gtx C, eng *engine.Engine, gmode config.GameMode, view
 					msg, c := gameOverVerdict(gmode, individual, won, eng.LineGoal(), eng.GoalReached(), teamPlaysOn)
 					if msg != "" {
 						children = append(children, layout.Rigid(spacer(10)), layout.Rigid(a.pixel(unit.Sp(12), msg, c).Layout))
+					}
+					if tier := eng.Survival(); tier != config.SurvivalNone {
+						// The rising floor's result: how long the crew held
+						// out, and against which tier.
+						children = append(children, layout.Rigid(spacer(10)),
+							layout.Rigid(a.pixel(unit.Sp(12), "SURVIVED "+formatSurvived(eng.Survived())+" · "+strings.ToUpper(tier.String()), colGold).Layout))
 					}
 					// Final score: the shared total for cooperative, the player's own
 					// score for competitive, both team totals (own team first) for

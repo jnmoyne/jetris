@@ -84,6 +84,20 @@ func linkDownFor(since, now time.Time) time.Duration {
 	return max(now.Sub(since), time.Millisecond)
 }
 
+// formatSurvived renders a survival game's time — the HUD's running clock,
+// the game-over box's result, the history's headline — as minutes and
+// seconds, with the hours ahead of them past the first: "3:42", "1:02:03".
+func formatSurvived(d time.Duration) string {
+	s := int(d.Round(time.Second).Seconds())
+	if s < 0 {
+		s = 0
+	}
+	if s >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
 // formatLinkDown renders an outage's length for the HUD: tenths under ten
 // seconds, whole seconds under a minute, minutes past that.
 func formatLinkDown(d time.Duration) string {

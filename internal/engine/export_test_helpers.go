@@ -1,6 +1,10 @@
 package engine
 
-import "context"
+import (
+	"context"
+
+	"jetris/internal/config"
+)
 
 // Test hooks for other packages' tests (the UI's reveal, the archiver): the
 // settings and the verdict an engine only ever takes from its game — a meta
@@ -18,6 +22,10 @@ func (e *Engine) DecideOutcomeForTest(winners map[string]bool, winTeam int) {
 // SetLineGoalForTest sets the game's length in lines as a meta would have
 // at Start.
 func (e *Engine) SetLineGoalForTest(goal int) { e.lineGoal = goal }
+
+// SetSurvivalForTest sets the rising floor's tier as a meta would have at
+// Start.
+func (e *Engine) SetSurvivalForTest(tier config.Survival) { e.survival = tier }
 
 // HandleGameEventForTest folds one event as the ordered event stream would
 // have delivered it.

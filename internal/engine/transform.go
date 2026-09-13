@@ -85,8 +85,11 @@ func gatedRetryBackoff(attempt int) time.Duration {
 
 // txnSubject returns the own board's txn register subject.
 func (e *Engine) txnSubject() string {
-	if e.gameMode == config.ModeTeams {
+	switch e.gameMode {
+	case config.ModeTeams:
 		return config.TeamTxnSubject(e.gameID, e.teamIdx)
+	case config.ModeCooperative:
+		return config.CoopTxnSubject(e.gameID)
 	}
 	return config.CompetitiveTxnSubject(e.gameID, e.playerID)
 }
@@ -226,11 +229,12 @@ func (e *Engine) buildGatedItems(snap *game.Playfield, cells map[game.CellPos]ga
 		isTxn: true,
 	})
 
-	// Teammate guards (team boards only): collect the other players' pieces
+	// Teammate guards (shared boards only — a team's, or a crew's whose
+	// floor rises through the gate): collect the other players' pieces
 	// from the snapshot, split them into "moved by this transform" (any of
 	// their cells is rewritten → CAS those writes) and "held untouched" (no
 	// cell rewritten → one expectation carrier per piece).
-	teams := e.gameMode == config.ModeTeams
+	teams := e.sharedBoard()
 	guardedCells := make(map[game.CellPos]bool)
 	type heldGuard struct {
 		pos game.CellPos

@@ -136,6 +136,48 @@ func (e *Engine) bumpLedger(ctx context.Context, cacheKey, subject string, lines
 	log.Printf("garbage ledger %s: gave up after %d attempts", subject, ledgerBumpMaxAttempts)
 }
 
+// publishSurvivalRaise is the rising floor's raise on a shared survival
+// board (survivalRegisters), fired by runInput's raise clock: ONE write to
+// the crew's garbage register — the rows the next raise brings added to the
+// total owed, the count of raises advanced — under a per-subject CAS at the
+// register's last-seen sequence (0 for a register never written). Every
+// engine on the board keeps the same clock and fires within a round trip of
+// the others, and the CAS lets exactly one raise land per tick; a lost race
+// is NOT retried — the winner's echo is what every clock re-arms on, this
+// one's included (handleGarbageRegisterEcho), the explicit contrast with an
+// attack's CAS-add (bumpLedger), where every attacker's rows must land. The
+// rows are then applied by whichever engine's gated shrink wins
+// (applyOwedGarbage), like an attack's. The register as the clock knew it
+// when it fired — owed rows, sequence, raises — comes from runInput: the
+// write must carry THAT expectation, not the mirror's at publish time, or
+// a peer's raise folded in between would be added to instead of lost to.
+// Off runInput, on a goroutine of its own: the write touches no cell, so it
+// races nothing the pipeline publishes, and the round trip stalls no move.
+func (e *Engine) publishSurvivalRaise(ctx context.Context, owed int, seq uint64, raises int) {
+	rows := game.SurvivalRaiseRows(e.survival, e.seed, raises+1)
+	if rows <= 0 {
+		return
+	}
+	payload, err := json.Marshal(GarbageRegister{Total: owed + rows, Raises: raises + 1, By: e.playerIdx})
+	if err != nil {
+		return
+	}
+	subject := e.garbageSubject()
+	_, err = natspkg.PublishMoveAtomically(ctx, e.js, []natspkg.CellUpdate{{
+		Subject:       subject,
+		Payload:       payload,
+		ExpectLastSeq: seq, // per-subject CAS: the first clock to fire raises, the rest lose
+	}})
+	switch {
+	case err == nil:
+	case errors.Is(err, natspkg.ErrCASFailure), errors.Is(err, natspkg.ErrBatchTransient):
+		// A peer's raise landed first (or the server balked): its echo, or
+		// the housekeeping backstop, re-arms this clock.
+	default:
+		log.Printf("survival raise %s: publish: %v", subject, err)
+	}
+}
+
 // applyOwedGarbage runs on runInput — the engine's single gameplay-write
 // goroutine, so it can never race the player's own move publishes — and
 // applies the board's outstanding deficit (owed − applied) as ONE gated
@@ -157,8 +199,16 @@ func (e *Engine) applyOwedGarbage(ctx context.Context) {
 		}
 		// Each raise draws its own hole columns (one draw for all its rows,
 		// or one per row in a random-holes game); a recompute after a lost
-		// gate simply draws again.
-		rows, t, f := pf.ProjectShrinkCascade(deficit, owed.By, e.garbageRaiseHoles(pf.Width, e.garbageHoles, deficit, e.randomGarbageHoles))
+		// gate simply draws again. The rising floor's holes follow the seed
+		// and the rows' ordinals instead — the board's count of rows applied
+		// so far — so the well moves every four rows whichever raises the
+		// rows came in, and a recompute draws exactly the same
+		// (game.SurvivalHoles).
+		holes := e.garbageRaiseHoles(pf.Width, e.garbageHoles, deficit, e.randomGarbageHoles)
+		if e.survival != config.SurvivalNone {
+			holes = game.SurvivalHoles(pf.Width, e.garbageHoles, txn.Applied, deficit, e.randomGarbageHoles, e.seed)
+		}
+		rows, t, f := pf.ProjectShrinkCascade(deficit, owed.By, holes)
 		topped, full = t, f
 		if f || slices.Contains(t, e.playerIdx) {
 			// Our own piece is about to be removed by this batch (or the

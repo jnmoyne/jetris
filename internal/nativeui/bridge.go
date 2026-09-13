@@ -24,12 +24,13 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 			}
 			// A cooperative game-over can still earn fireworks: beating the
 			// best archived co-op score for this seat count — unless the
-			// crew had a goal and missed it (a loss celebrates nothing).
-			// Resolved BEFORE taking a.mu — beatsCoopBest reads the lobby
-			// via getLobby, which locks a.mu itself.
-			coopRecord := u.Kind == engine.UpdateGameOver &&
-				e.GameMode() == config.ModeCooperative && !e.IndividualScoring() &&
-				(e.LineGoal() == 0 || u.Won) && a.beatsCoopBest(e)
+			// crew had a goal and missed it (a loss celebrates nothing) —
+			// or, in a survival game, the best archived time for the tier
+			// and seat count. Resolved BEFORE taking a.mu — the checks read
+			// the lobby via getLobby, which locks a.mu itself.
+			coopRecord := u.Kind == engine.UpdateGameOver && e.GameMode() == config.ModeCooperative &&
+				((e.Survival() != config.SurvivalNone && a.beatsSurvivalBest(e)) ||
+					(e.Survival() == config.SurvivalNone && !e.IndividualScoring() && (e.LineGoal() == 0 || u.Won) && a.beatsCoopBest(e)))
 			a.mu.Lock()
 			switch u.Kind {
 			case engine.UpdateScore:
@@ -160,6 +161,35 @@ func coopScoreIsRecord(recs []config.ArchiveRecord, score, playerCount int, game
 		}
 	}
 	return score > best
+}
+
+// beatsSurvivalBest reports whether the finished survival game's time is a
+// new record against the lobby's archived history — for its tier and seat
+// count, the crew's time whatever the scoring.
+func (a *App) beatsSurvivalBest(e *engine.Engine) bool {
+	lb := a.getLobby()
+	if lb == nil {
+		return false
+	}
+	return survivalTimeIsRecord(lb.Archives(), e.Survived(), e.Survival(), e.PlayerCount(), e.GameID())
+}
+
+// survivalTimeIsRecord reports whether survived strictly beats the best
+// archived time of every cooperative survival game of the same tier and seat
+// count — the game's own record excluded by gameID, as coopScoreIsRecord
+// excludes it, and a zero time never a record.
+func survivalTimeIsRecord(recs []config.ArchiveRecord, survived time.Duration, tier config.Survival, playerCount int, gameID string) bool {
+	if survived <= 0 || tier.Normalized() == config.SurvivalNone {
+		return false
+	}
+	var best time.Duration
+	for _, rec := range recs {
+		if rec.Mode == config.ModeCooperative && rec.SurvivalTier() == tier.Normalized() && rec.PlayerCount == playerCount &&
+			rec.GameID != gameID && rec.Duration() > best {
+			best = rec.Duration()
+		}
+	}
+	return survived > best
 }
 
 // pumpLobby drains the lobby Updates channel. Player/game/archive lists are read

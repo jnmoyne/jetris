@@ -50,10 +50,71 @@ func (e *Engine) runInput(ctx context.Context) {
 	defer housekeeping.Stop()
 	defer e.lockState.disarm()
 
+	// The rising floor's clock (survival games, e.survival): a raise falls
+	// due game.SurvivalInterval of the level after the last one landed. It
+	// is armed by a kick — the game's start, and every raise's echo on the
+	// board's garbage register (registers.go), so on a shared board every
+	// engine's clock keeps phase with the stream, not with itself — and
+	// re-timed from the last raise when the level changes. On a shared board
+	// the tick publishes the raise under a write-once CAS and does NOT re-arm
+	// itself: the winner's echo does (publishSurvivalRaise); a crew of one
+	// raises on the journal and re-arms at once (raiseSolo). raiseAnchor is
+	// when the last raise landed (or the clock was last kicked), the
+	// housekeeping backstop's reference; raiseArmedSeq the register's
+	// sequence as the clock was armed — a tick that finds the register
+	// moved since (a peer's raise folded a moment before it fired, its kick
+	// still queued) is a no-op, not a second raise on top of the peer's.
+	raise := time.NewTimer(time.Hour)
+	raise.Stop()
+	defer raise.Stop()
+	var raiseAnchor time.Time
+	var raiseArmedSeq uint64
+	registerSeq := func() uint64 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.garbageOwedSeq
+	}
+	armRaise := func(from time.Time, seq uint64) {
+		if e.survival == config.SurvivalNone {
+			return
+		}
+		raiseAnchor, raiseArmedSeq = from, seq
+		if !raise.Stop() {
+			select {
+			case <-raise.C:
+			default:
+			}
+		}
+		raise.Reset(max(time.Until(from.Add(game.SurvivalInterval(e.survival, e.Level()))), time.Millisecond))
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-e.survivalKick:
+			// The game started, or a raise landed: the next is due an
+			// interval from now.
+			if e.getMode() != ModePlayer {
+				continue
+			}
+			armRaise(time.Now(), registerSeq())
+		case <-raise.C:
+			if e.getMode() != ModePlayer || !e.gameStarted.Load() {
+				continue
+			}
+			if !e.survivalRegisters() {
+				e.raiseSolo(ctx)
+				armRaise(time.Now(), 0)
+				continue
+			}
+			e.mu.Lock()
+			owed, seq, raises := e.garbageOwed, e.garbageOwedSeq, e.survivalRaises
+			e.mu.Unlock()
+			if seq != raiseArmedSeq {
+				continue // a peer's raise landed since the clock was armed: its kick re-arms it
+			}
+			go e.publishSurvivalRaise(ctx, owed, seq, raises)
 		case <-e.moveReady:
 			// The move leaves the queue the moment its processing (and batch
 			// publish) starts — that is when its chip leaves the MOVE BUFFER
@@ -155,6 +216,11 @@ func (e *Engine) runInput(ctx context.Context) {
 				}
 			}
 			gravity.Reset(interval)
+			// The floor quickens with the level too: the next raise is the
+			// new interval from the last one, not one old interval on.
+			if !raiseAnchor.IsZero() {
+				armRaise(raiseAnchor, raiseArmedSeq)
+			}
 		case now := <-gravity.C:
 			if e.getMode() != ModePlayer {
 				return // became a spectator: stop gravity (and this loop)
@@ -195,13 +261,22 @@ func (e *Engine) runInput(ctx context.Context) {
 			// Garbage backstop: if rows are still owed (a signal was consumed
 			// by an attempt that lost its gate, or arrived before runInput
 			// started), re-arm the application.
-			if e.gameMode != config.ModeCooperative {
+			if e.gameMode != config.ModeCooperative || e.survivalRegisters() {
 				e.mu.Lock()
 				deficit := e.garbageOwed - e.txnApplied
 				e.mu.Unlock()
 				if deficit > 0 {
 					e.signalGarbageApply()
 				}
+			}
+
+			// The rising floor's backstop: a raise whose publish was lost
+			// with no echo to re-arm the clocks on — every engine's would
+			// wait forever — is tried again once two intervals have passed
+			// without one landing.
+			if e.survivalRegisters() && e.gameStarted.Load() && !raiseAnchor.IsZero() &&
+				time.Since(raiseAnchor) > 2*game.SurvivalInterval(e.survival, e.Level()) {
+				armRaise(time.Now(), registerSeq())
 			}
 		}
 	}

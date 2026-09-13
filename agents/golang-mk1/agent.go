@@ -70,6 +70,7 @@ type hosting struct {
 	extraRows  int    // shared boards: rows every seat beyond the first adds below the standard 20 (clamped 0..10; meta extra_rows)
 	lineGoal   int    // the game's length in lines (meta line_goal; 0 = until top out)
 	single     bool   // cooperative: score every seat on its own, the top score wins (meta scoring "individual")
+	survival   string // cooperative: the rising floor's tier (meta survival: "easy", "normal" or "hard"; "" = no floor) — no line goal with it, at least one hole per row
 	pauseAlone bool   // open games: an agent left as the only player waits for company instead of playing on (listing agents_pause_alone)
 }
 
@@ -905,6 +906,18 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	}
 	next := min(max(h.next, 0), maxNextCount)
 	holes := min(max(h.holes, 0), maxGarbageHoles)
+	// The rising floor is a single playfield's game (gameplays §2 Survival):
+	// its rows must be clearable, nothing attacks anybody, and there is no
+	// line goal — it runs until the floor wins.
+	survival := normalizeSurvival(h.survival)
+	if h.mode != modeCooperative {
+		survival = ""
+	}
+	guideline := h.guideline
+	if survival != "" {
+		holes = max(holes, minSurvivalHoles)
+		guideline = false
+	}
 	random := h.random && holes > 0
 
 	// A named game IS its name: the name is the game's ID, so the stream
@@ -955,7 +968,7 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if random {
 		meta.set("random_garbage_holes", true)
 	}
-	if h.guideline {
+	if guideline {
 		meta.set("guideline_garbage", true)
 	}
 	if h.hold {
@@ -981,12 +994,18 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 		meta.set("extra_rows", rows)
 	}
 	goal := max(h.lineGoal, 0)
+	if survival != "" {
+		goal = 0
+	}
 	if goal > 0 {
 		meta.set("line_goal", goal)
 	}
 	single := h.single && h.mode == modeCooperative && players > 1
 	if single {
 		meta.set("scoring", "individual")
+	}
+	if survival != "" {
+		meta.set("survival", survival)
 	}
 	meta.set("seed", uint64(time.Now().UnixNano()))
 	meta.set("status", "created")
@@ -1026,7 +1045,7 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	if random {
 		listing.set("random_garbage_holes", true)
 	}
-	if h.guideline {
+	if guideline {
 		listing.set("guideline_garbage", true)
 	}
 	if h.hold {
@@ -1046,6 +1065,9 @@ func (a *Agent) createGame(ctx context.Context, h *hosting) (string, error) {
 	}
 	if single {
 		listing.set("scoring", "individual")
+	}
+	if survival != "" {
+		listing.set("survival", survival)
 	}
 	listing.set("creator_id", a.name)
 	listing.set("players", []playerSummary(nil)) // no seats taken yet — everyone joins, the creator included

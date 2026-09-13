@@ -41,7 +41,7 @@ func Offline(g OfflineGame) *Engine {
 	}
 	e.visibleRowStart = config.VisibleRowStart
 	e.playerCount = 1
-	rules := g.Rules.Normalized(g.Mode)
+	rules := g.Rules.Normalized(g.Mode, config.SurvivalNone)
 	e.nextCount = rules.NextCount
 	e.noGhost = !rules.Ghost
 	e.showHeadroom = rules.ShowHeadroom

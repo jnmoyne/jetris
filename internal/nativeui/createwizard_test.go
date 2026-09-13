@@ -19,37 +19,37 @@ func TestWizardRulesPreset(t *testing.T) {
 	a.attackTableCb.Value = true
 
 	a.rulesEnum.Value = "modern"
-	if got, want := a.customRules().Normalized(config.ModeCompetitive), (config.GameRules{NextCount: 2, Ghost: true, Hold: true, GarbageHoles: 3, GuidelineGarbage: true}); got != want {
+	if got, want := a.customRules().Normalized(config.ModeCompetitive, config.SurvivalNone), (config.GameRules{NextCount: 2, Ghost: true, Hold: true, GarbageHoles: 3, GuidelineGarbage: true}); got != want {
 		t.Fatalf("custom read-out = %+v, want %+v", got, want)
 	}
-	if !config.ModernRules().IsModern(config.ModeCompetitive) || !config.ModernRules().IsModern(config.ModeCooperative) {
+	if !config.ModernRules().IsModern(config.ModeCompetitive, config.SurvivalNone) || !config.ModernRules().IsModern(config.ModeCooperative, config.SurvivalNone) {
 		t.Fatal("the Modern preset should match itself in every mode")
 	}
-	if config.ModernRules().Normalized(config.ModeCooperative).GarbageHoles != 0 {
+	if config.ModernRules().Normalized(config.ModeCooperative, config.SurvivalNone).GarbageHoles != 0 {
 		t.Fatal("a cooperative game should store no garbage rules")
 	}
-	if got := a.wizardSpec().Rules; !got.IsModern(config.ModeCooperative) {
+	if got := a.wizardSpec().Rules; !got.IsModern(config.ModeCooperative, config.SurvivalNone) {
 		t.Fatalf("the modern radio produced %+v", got)
 	}
 	custom := a.customRules()
-	if custom.IsModern(config.ModeCompetitive) {
+	if custom.IsModern(config.ModeCompetitive, config.SurvivalNone) {
 		t.Fatal("next 2 / holes 3 is not the Modern preset")
 	}
 	a.rulesEnum.Value = "custom"
 	a.boardsEnum.Value = "multiple"
 	a.countEd.SetText("1")
-	if got := a.wizardSpec(); got.Mode != config.ModeCompetitive || got.Rules != custom.Normalized(config.ModeCompetitive) {
+	if got := a.wizardSpec(); got.Mode != config.ModeCompetitive || got.Rules != custom.Normalized(config.ModeCompetitive, config.SurvivalNone) {
 		t.Fatalf("the custom radio produced %+v, want the editors' %+v", got.Rules, custom)
 	}
 	// The custom read-out with the preset's own values IS the preset — the
 	// lobby row then tags it "modern" like a preset-created game.
 	a.nextCountEd.SetText("6")
 	a.holesEd.SetText("1")
-	if !a.customRules().IsModern(config.ModeCompetitive) {
+	if !a.customRules().IsModern(config.ModeCompetitive, config.SurvivalNone) {
 		t.Fatalf("custom rules %+v should match the Modern preset", a.customRules())
 	}
 	a.holdCb.Value = false
-	if a.customRules().IsModern(config.ModeCompetitive) {
+	if a.customRules().IsModern(config.ModeCompetitive, config.SurvivalNone) {
 		t.Fatal("without the hold the rules are not the Modern preset")
 	}
 }
@@ -293,6 +293,82 @@ func TestWizardLineGoal(t *testing.T) {
 	}
 }
 
+// TestWizardSurvival pins step 2's rising floor: none by default and none
+// on several playfields whatever the radio says (the step falls the radio
+// back to the classic length there), the Normal tier when chosen with a
+// stale tier radio, the chosen tier otherwise, no line goal with it, the
+// holes editor honoured under custom rules — floored at one — and the
+// Modern preset's one hole kept.
+func TestWizardSurvival(t *testing.T) {
+	a := newTestApp()
+	if a.survivalEnum.Value != string(config.SurvivalNormal) {
+		t.Errorf("the tier radio opens on %q, want normal", a.survivalEnum.Value)
+	}
+	if a.wizardSurvival() != config.SurvivalNone || a.wizardSpec().Survival != config.SurvivalNone {
+		t.Fatal("a fresh wizard raises the floor")
+	}
+	a.lengthEnum.Value = "survival"
+	a.lineGoalEd.SetText("40")
+	if spec := a.wizardSpec(); spec.Survival != config.SurvivalNormal || spec.LineGoal != 0 || spec.Rules.GarbageHoles != 1 || spec.Rules.GuidelineGarbage {
+		t.Errorf("survival spec = %+v, want the Normal floor, no goal, one hole", spec)
+	}
+	a.survivalEnum.Value = "hard"
+	if spec := a.wizardSpec(); spec.Survival != config.SurvivalHard {
+		t.Errorf("hard tier read as %q", spec.Survival)
+	}
+	a.survivalEnum.Value = "lunatic"
+	if spec := a.wizardSpec(); spec.Survival != config.SurvivalNormal {
+		t.Errorf("a stale tier read as %q, want normal", spec.Survival)
+	}
+	a.survivalEnum.Value = "easy"
+	a.rulesEnum.Value = "custom"
+	a.holesEd.SetText("0")
+	if spec := a.wizardSpec(); spec.Survival != config.SurvivalEasy || spec.Rules.GarbageHoles != config.MinSurvivalHoles {
+		t.Errorf("custom rules with no holes gave %+v, want one hole", spec)
+	}
+	a.holesEd.SetText("3")
+	a.randomHolesCb.Value = true
+	if spec := a.wizardSpec(); spec.Rules.GarbageHoles != 3 || !spec.Rules.RandomGarbageHoles {
+		t.Errorf("custom holes lost: %+v", spec.Rules)
+	}
+	// Several playfields have no floor: the read-out ignores the radio, and
+	// the step falls it back when drawn.
+	a.boardsEnum.Value = "multiple"
+	a.countEd.SetText("1")
+	if spec := a.wizardSpec(); spec.Survival != config.SurvivalNone || spec.Mode != config.ModeCompetitive {
+		t.Errorf("a board each kept the floor: %+v", spec)
+	}
+	a.createWizStep = wizStepRules
+	if d := a.createWizardOverlay(testCtx(1200, 800)); d.Size.X == 0 {
+		t.Fatal("the rules step laid out empty")
+	}
+	if a.lengthEnum.Value != "topout" {
+		t.Errorf("the length radio reads %q on several playfields, want topout", a.lengthEnum.Value)
+	}
+	// Back to one playfield: the survival step lays out with its tiers.
+	a.boardsEnum.Value = "single"
+	a.countEd.SetText("2")
+	a.lengthEnum.Value = "survival"
+	for _, rules := range []string{"modern", "custom"} {
+		a.rulesEnum.Value = rules
+		if d := a.createWizardOverlay(testCtx(1200, 800)); d.Size.X == 0 {
+			t.Fatalf("the survival rules step (%s) laid out empty", rules)
+		}
+	}
+	if got := survivalTierLabel(config.SurvivalNormal); got != "Normal — 1 to 4 rows every 3 s at level 1, every 1.5 s by level 15" {
+		t.Errorf("tier label = %q", got)
+	}
+	if got := survivalTierLabel(config.SurvivalEasy); got != "Easy — one row every 2.5 s at level 1, every 1 s by level 15" {
+		t.Errorf("tier label = %q", got)
+	}
+	if got := survivalTierLabel(config.SurvivalHard); got != "Hard — 4 rows every 5 s at level 1, every 1 s by level 15" {
+		t.Errorf("tier label = %q", got)
+	}
+	if rows := modernSummary(config.GameSpec{Mode: config.ModeCooperative, PlayerCount: 1, Survival: config.SurvivalEasy}); rows[len(rows)-1][0] != "Garbage" {
+		t.Errorf("the preset summary of a survival game ends with %v, want a Garbage line", rows[len(rows)-1])
+	}
+}
+
 // TestWizardExtraRows pins step 2's extra-rows knob: zero by default (the
 // Guideline playfield whatever the crew), clamped to the legal range, its
 // slider resting on whole rows, honoured on a shared playfield with company
@@ -420,7 +496,7 @@ func TestWizardTypeStepRenders(t *testing.T) {
 func TestWizardCustomDefaults(t *testing.T) {
 	a := newTestApp()
 	for _, mode := range []config.GameMode{config.ModeCooperative, config.ModeCompetitive, config.ModeTeams} {
-		if got, want := a.customRules().Normalized(mode), config.ModernRules().Normalized(mode); got != want {
+		if got, want := a.customRules().Normalized(mode, config.SurvivalNone), config.ModernRules().Normalized(mode, config.SurvivalNone); got != want {
 			t.Errorf("%s: a fresh wizard's custom rules = %+v, want the Modern preset %+v", mode, got, want)
 		}
 	}

@@ -344,6 +344,65 @@ func (s Scoring) Normalized() Scoring {
 	return ScoringShared
 }
 
+// Survival is the rising floor of a SINGLE playfield's game — the third game
+// length beside "until top out" and a line goal: garbage rows rise from the
+// bottom of the board on a clock of their own, whatever the players do, the
+// clock quickening with the level, and the game ends at the first top-out
+// — the time survived is the result. The value is the difficulty tier: how
+// fast the floor rises, and by how many rows at a time (game.SurvivalPaceOf).
+// Only a cooperative-mode board — a single playfield, a crew of one included
+// — plays it; several playfields raise garbage at each other instead. Stored
+// on the meta (GameMeta.Survival) and mirrored on the listing and the archive
+// record; absent — the zero value, and every meta written before the field —
+// is no rising floor at all.
+type Survival string
+
+const (
+	SurvivalNone   Survival = ""       // the floor stays put: the default, and every meta written before the field
+	SurvivalEasy   Survival = "easy"   // one row at a time, every 2.5 s at level 1 and every second by level 15
+	SurvivalNormal Survival = "normal" // one to four rows at a time, every 3 s at level 1 and every 1.5 s by level 15
+	SurvivalHard   Survival = "hard"   // four rows at a time, every 5 s at level 1 and every second by level 15
+)
+
+// SurvivalTiers lists the tiers a creator can choose, easiest first.
+func SurvivalTiers() []Survival { return []Survival{SurvivalEasy, SurvivalNormal, SurvivalHard} }
+
+// Normalized reads a recorded tier: the three tiers as themselves, anything
+// else — absent, the zero value, every meta written before the field — as no
+// rising floor.
+func (s Survival) Normalized() Survival {
+	switch s {
+	case SurvivalEasy, SurvivalNormal, SurvivalHard:
+		return s
+	default:
+		return SurvivalNone
+	}
+}
+
+// String names the tier the way the wizard, the HUD and the history show it:
+// "Easy", "Normal" or "Hard" — nothing for no rising floor.
+func (s Survival) String() string {
+	switch s.Normalized() {
+	case SurvivalEasy:
+		return "Easy"
+	case SurvivalNormal:
+		return "Normal"
+	case SurvivalHard:
+		return "Hard"
+	default:
+		return ""
+	}
+}
+
+// Label names the game length the way the lobby row tags it: "survival
+// (normal)" — nothing for no rising floor.
+func (s Survival) Label() string {
+	if s.Normalized() == SurvivalNone {
+		return ""
+	}
+	return "survival (" + string(s.Normalized()) + ")"
+}
+
 type GameStatus string
 
 const (
@@ -375,6 +434,7 @@ type GameMeta struct {
 	ExtraRows          int        `json:"extra_rows,omitempty"`           // shared boards (cooperative, teams): rows every seat beyond the first adds to the board's standard VisibleRows (MinExtraRows..MaxExtraRows) — the board grows downwards, the headroom and the spawn rows stay where they are (see SharedBoardHeight). Absent — the zero value, and every meta written before the field — adds nothing: the standard 20-row playfield whatever the seat count. Meaningless in competitive, like ExtraColumns
 	LineGoal           int        `json:"line_goal,omitempty"`            // the game's length in lines: the game ends the moment a playfield has cleared this many lines in total — on a single playfield the game is over (the crew is done, or in individual scoring the top score wins); across several the first playfield there wins. Absent — the zero value, and every meta written before the field — the game runs until someone tops out (NormalizeLineGoal)
 	Scoring            Scoring    `json:"scoring,omitempty"`              // how the seats of a single shared playfield are scored (Scoring): "individual" for every seat on its own; absent — the default, and every meta written before the field — the crew's one shared score. Only meaningful on a cooperative-mode board with more than one seat (IndividualScoring)
+	Survival           Survival   `json:"survival,omitempty"`             // the rising floor of a single shared playfield (Survival): "easy", "normal" or "hard" — garbage rows rise from the bottom on a clock that quickens with the level, the game ends at the first top-out, and the time survived is the result; absent — the default, and every meta written before the field — the floor stays put. Only meaningful on a cooperative-mode board (SurvivalTier); such a game has no line goal, and its garbage holes are at least one (GameRules.Normalized)
 	Seed               uint64     `json:"seed"`
 	Status             GameStatus `json:"status"`
 	CreatorID          string     `json:"creator_id"`
@@ -425,13 +485,21 @@ func ModernRules() GameRules {
 // Normalized returns the rules clamped to their legal ranges as a game of
 // mode stores them: NextCount and GarbageHoles within their caps, the bag one
 // of the kinds there are, random holes only meaningful with holes — and,
-// since a cooperative game raises no garbage, its garbage rules zeroed so no
-// listing tag misleads.
-func (r GameRules) Normalized(mode GameMode) GameRules {
+// since a cooperative game raises no garbage unless its floor rises
+// (Survival), a cooperative game's garbage rules zeroed so no listing tag
+// misleads, while a survival game keeps its holes — at least
+// MinSurvivalHoles, since a solid row could never clear and the floor would
+// only ever rise — and never an attack table (nothing attacks anybody).
+func (r GameRules) Normalized(mode GameMode, survival Survival) GameRules {
 	r.NextCount = min(max(r.NextCount, 0), MaxNextCount)
 	r.Bag = r.Bag.Normalized()
 	if mode == ModeCooperative {
-		r.GarbageHoles, r.RandomGarbageHoles, r.GuidelineGarbage = 0, false, false
+		if survival.Normalized() == SurvivalNone {
+			r.GarbageHoles, r.RandomGarbageHoles, r.GuidelineGarbage = 0, false, false
+		} else {
+			r.GuidelineGarbage = false
+			r.GarbageHoles = max(r.GarbageHoles, MinSurvivalHoles)
+		}
 	}
 	r.GarbageHoles = min(max(r.GarbageHoles, 0), MaxGarbageHoles)
 	r.RandomGarbageHoles = r.RandomGarbageHoles && r.GarbageHoles > 0
@@ -439,9 +507,10 @@ func (r GameRules) Normalized(mode GameMode) GameRules {
 }
 
 // IsModern reports whether the rules are exactly the Modern preset as a
-// game of mode stores it (a cooperative game has no garbage rules to match).
-func (r GameRules) IsModern(mode GameMode) bool {
-	return r.Normalized(mode) == ModernRules().Normalized(mode)
+// game of mode — with the rising floor's tier, which decides whether a
+// cooperative game has garbage rules to match at all — stores it.
+func (r GameRules) IsModern(mode GameMode, survival Survival) bool {
+	return r.Normalized(mode, survival) == ModernRules().Normalized(mode, survival)
 }
 
 // Rules is the play-rule bundle of a game's meta record.
@@ -519,6 +588,18 @@ func (m GameMeta) IndividualScoring() bool {
 	return m.Scoring.Normalized() == ScoringIndividual && m.Mode == ModeCooperative && m.PlayerCount > 1
 }
 
+// SurvivalTier is this game's rising floor (Survival): the recorded tier,
+// which only a cooperative-mode board — a single playfield — can honour;
+// every other mode, and every meta without the field, plays no rising floor.
+// The one place the rule is decided — engines, the lobby row, the HUD, the
+// archiver and the agents all ask here.
+func (m GameMeta) SurvivalTier() Survival {
+	if m.Mode != ModeCooperative {
+		return SurvivalNone
+	}
+	return m.Survival.Normalized()
+}
+
 // TeamName is what team t of this game is called (see TeamName).
 func (m GameMeta) TeamName(t int) string { return TeamName(m.TeamNames, t) }
 
@@ -547,6 +628,7 @@ func (m GameMeta) Spec() GameSpec {
 		ExtraRows:    m.ExtraRows,
 		LineGoal:     m.LineGoal,
 		Scoring:      m.Scoring,
+		Survival:     m.Survival,
 		SplitPieces:  m.SplitPieces,
 		Rules:        m.Rules(),
 	}
@@ -601,6 +683,7 @@ type GameSpec struct {
 	ExtraRows        int      // shared boards: rows per seat beyond the first (MinExtraRows..MaxExtraRows)
 	LineGoal         int      // the game's length in lines (0 = until top out; see GameMeta.LineGoal)
 	Scoring          Scoring  // single playfield: shared or individual scores
+	Survival         Survival // single playfield: the rising floor and its tier (Survival); none elsewhere, and none with a line goal
 	SplitPieces      bool     // the seven piece types dealt out between the seats of a playfield
 	MaxAgents        int      // lobby: how many seats idle agent players may take — on EACH team of a teams game, in the whole game elsewhere (0 = none; see AgentPolicySeats)
 	AgentsPauseAlone bool     // lobby, open games: an agent left as the only player in the game stops playing, keeping its seat, until someone joins; unset, agents play on — alone, or among themselves
@@ -631,7 +714,18 @@ func (s GameSpec) Normalized() GameSpec {
 	// game's is frozen once it starts — so only an open game has agents
 	// pause when left alone.
 	s.AgentsPauseAlone = s.AgentsPauseAlone && !s.InviteOnly
-	s.Rules = s.Rules.Normalized(s.Mode)
+	// Only a single shared playfield has a floor to raise — several
+	// playfields raise garbage at each other — and a survival game has no
+	// line goal: it runs until the floor wins. Decided before the rules,
+	// whose garbage settings depend on it.
+	s.Survival = s.Survival.Normalized()
+	if s.Mode != ModeCooperative {
+		s.Survival = SurvivalNone
+	}
+	if s.Survival != SurvivalNone {
+		s.LineGoal = 0
+	}
+	s.Rules = s.Rules.Normalized(s.Mode, s.Survival)
 	// Only a shared board has a width and a height to set; competitive
 	// boards are always the standard board, so its meta records no setting.
 	if s.Mode == ModeCompetitive {
@@ -703,6 +797,7 @@ func (s GameSpec) Meta(gameID, creatorID string, seed uint64, now time.Time) Gam
 		ExtraRows:          s.ExtraRows,
 		LineGoal:           s.LineGoal,
 		Scoring:            s.Scoring,
+		Survival:           s.Survival,
 		NextCount:          s.Rules.NextCount,
 		NoGhost:            !s.Rules.Ghost,
 		Hold:               s.Rules.Hold,
@@ -762,6 +857,7 @@ type ArchiveRecord struct {
 	ExtraRows    int            `json:"extra_rows,omitempty"`    // shared boards: rows per seat beyond the first (GameMeta.ExtraRows)
 	LineGoal     int            `json:"line_goal,omitempty"`     // the game's length in lines (GameMeta.LineGoal); absent = played until a top-out
 	Scoring      Scoring        `json:"scoring,omitempty"`       // single playfield: how its seats were scored (GameMeta.Scoring); "individual" ranks by each player's own score, and never against shared-score co-op runs (SameReplayBucket)
+	Survival     Survival       `json:"survival,omitempty"`      // single playfield: the rising floor's tier (GameMeta.Survival); such a game is ranked by the time it survived — longest first — in a replay bucket of its own per tier (RankBefore, SameReplayBucket), never against a run for the score
 	BoardRows    int            `json:"board_rows,omitempty"`    // the boards' height (headroom + visible) the game was played on, as the archiver knew it; the replay reads the height off the replay stream itself and keeps this as its fallback (see BoardHeight)
 	WinningTeam  int            `json:"winning_team"`            // teams mode: the winning team's index; -1 = draw or not a team game
 	TeamScores   []int          `json:"team_scores,omitempty"`   // teams mode: final score per team (indexed by team)
@@ -869,6 +965,22 @@ func (r ArchiveRecord) IndividualScoring() bool {
 	return r.Scoring.Normalized() == ScoringIndividual && r.Mode == ModeCooperative
 }
 
+// IsSurvival reports whether the archived game's single playfield played
+// with the rising floor (see GameMeta.SurvivalTier): its result is the time
+// it survived, not a score.
+func (r ArchiveRecord) IsSurvival() bool {
+	return r.Survival.Normalized() != SurvivalNone && r.Mode == ModeCooperative
+}
+
+// SurvivalTier is the archived game's rising-floor tier (none outside a
+// cooperative survival game).
+func (r ArchiveRecord) SurvivalTier() Survival {
+	if r.Mode != ModeCooperative {
+		return SurvivalNone
+	}
+	return r.Survival.Normalized()
+}
+
 // HeadlineScore is the score a finished game is ranked (and listed) by: the
 // shared total for cooperative, the best team's total for teams, and the best
 // player's score for competitive — and for a shared board whose seats were
@@ -915,13 +1027,29 @@ func (r ArchiveRecord) Duration() time.Duration {
 // shared by the lobby's history list and the replay archiver's top-N cut:
 // higher headline score first, a shorter game breaking a score tie, then the
 // more recent finish — with the game ID as a final total-order tie-break so
-// every client computes the identical top N.
+// every client computes the identical top N. A survival game's result is
+// the time it survived, not a score, so the two kinds never rank against
+// each other: every game played for the score comes first, and the survival
+// games rank among themselves behind them — the LONGEST game first, the
+// score breaking a tie. The ordering stays a total order across a mixed list.
 func (r ArchiveRecord) RankBefore(o ArchiveRecord) bool {
-	if si, sj := r.HeadlineScore(), o.HeadlineScore(); si != sj {
-		return si > sj
+	if ri, ro := r.IsSurvival(), o.IsSurvival(); ri != ro {
+		return !ri
 	}
-	if di, dj := r.Duration(), o.Duration(); di != dj {
-		return di < dj
+	if r.IsSurvival() {
+		if di, dj := r.Duration(), o.Duration(); di != dj {
+			return di > dj
+		}
+		if si, sj := r.HeadlineScore(), o.HeadlineScore(); si != sj {
+			return si > sj
+		}
+	} else {
+		if si, sj := r.HeadlineScore(), o.HeadlineScore(); si != sj {
+			return si > sj
+		}
+		if di, dj := r.Duration(), o.Duration(); di != dj {
+			return di < dj
+		}
 	}
 	if !r.FinishedAt.Equal(o.FinishedAt) {
 		return r.FinishedAt.After(o.FinishedAt)
@@ -941,8 +1069,9 @@ func (r ArchiveRecord) RecentBefore(o ArchiveRecord) bool {
 
 // SameReplayBucket reports whether two records compete for the same replay
 // top-N: same mode, the same scoring (a shared board's individual scores
-// never rank against a crew's shared total), and both with (or both without)
-// agent seats.
+// never rank against a crew's shared total), the same rising-floor tier (a
+// survival game's time never ranks against a score, nor an easy floor
+// against a hard one), and both with (or both without) agent seats.
 func (r ArchiveRecord) SameReplayBucket(o ArchiveRecord) bool {
 	return r.replayBucket() == o.replayBucket()
 }
@@ -951,11 +1080,12 @@ func (r ArchiveRecord) SameReplayBucket(o ArchiveRecord) bool {
 type replayBucketKey struct {
 	mode       GameMode
 	individual bool
+	survival   Survival
 	agents     bool
 }
 
 func (r ArchiveRecord) replayBucket() replayBucketKey {
-	return replayBucketKey{r.Mode, r.IndividualScoring(), r.HasAgents()}
+	return replayBucketKey{r.Mode, r.IndividualScoring(), r.SurvivalTier(), r.HasAgents()}
 }
 
 // uniqueRecords collapses recs to one record per game ID (the last occurrence
@@ -1192,6 +1322,10 @@ const (
 	// cells punched in every garbage row a raise lands (0 = solid, permanent
 	// rows). The holes of one raise share their columns on every row it lands.
 	MaxGarbageHoles = 4
+	// MinSurvivalHoles floors the same setting in a survival game
+	// (GameMeta.Survival): a row the floor raises must be clearable, or the
+	// board would only ever fill and the level never rise.
+	MinSurvivalHoles = 1
 
 	// A shared board (cooperative, or one team's board) is StandardWidth
 	// columns for its first player and GameMeta.ExtraColumns more for every
@@ -1540,8 +1674,12 @@ func TeamCellSubjectFilter(gameID string, team int) string {
 //     payload records the cumulative rows APPLIED; the board's deficit is
 //     garbage.Total − txn.Applied.
 //
-// Cooperative boards have no registers: coop has no garbage, and its clears
-// keep the merge-retry path.
+// A cooperative board has registers only in a survival game
+// (GameMeta.Survival), where the floor rises on a clock: the crew's garbage
+// register is what the clock advances (with a write-once CAS, so of every
+// engine's clock exactly one raise lands per tick), and the crew's clears
+// take the gate like a team's. Any other cooperative board has no garbage,
+// and its clears keep the merge-retry path.
 const (
 	garbageSubjectSuffix = ".playfield.garbage"
 	txnSubjectSuffix     = ".playfield.txn"
@@ -1579,6 +1717,25 @@ func TeamTxnSubject(gameID string, team int) string {
 // every cell plus the garbage/txn registers.
 func TeamPlayfieldFilter(gameID string, team int) string {
 	return "jetris.game." + gameID + ".team." + strconv.Itoa(team) + ".playfield.>"
+}
+
+// CoopGarbageSubject is the crew's shared board's garbage (rows-owed)
+// register subject — written in a survival game only, where the rising
+// floor's clock advances it.
+func CoopGarbageSubject(gameID string) string {
+	return "jetris.game." + gameID + garbageSubjectSuffix
+}
+
+// CoopTxnSubject is the crew's shared board's txn (transform gate) register
+// subject — written in a survival game only.
+func CoopTxnSubject(gameID string) string {
+	return "jetris.game." + gameID + txnSubjectSuffix
+}
+
+// CoopPlayfieldFilter matches the crew's whole playfield namespace: every
+// cell plus the garbage/txn registers a survival game carries.
+func CoopPlayfieldFilter(gameID string) string {
+	return "jetris.game." + gameID + ".playfield.>"
 }
 
 // IsGarbageSubject reports whether a delivered subject is a board's garbage

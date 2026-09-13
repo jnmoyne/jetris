@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log"
+	"slices"
 	"sort"
 	"time"
 
@@ -173,6 +174,43 @@ func (e *Engine) resyncLocal(ctx context.Context) {
 	}
 	e.mu.Unlock()
 	log.Printf("engine %s: local board journaled again after a lost batch: %d cells", e.playerID, len(cells))
+}
+
+// raiseSolo is the rising floor's raise on the journal (runInput, the raise
+// clock): a crew of one has no register to advance and no gate to win — the
+// rows come up on the local board at once, as every move does, and go out
+// behind it as one batch (publishLocal). The count of raises and of rows
+// raised are the engine's own (soloRaises, soloRaised), the rows and the
+// holes drawn from them as a crew's board draws them from its registers, so
+// the floor of a solo game is the floor a crew's would be on the same seed.
+// A raise that squeezes the piece off the top, or pushes the stack past it,
+// is the top-out: hadActivePiece is cleared first, so the journal's lock-in
+// edge (publishLocal) cannot mistake the vanished piece for a lock.
+func (e *Engine) raiseSolo(ctx context.Context) {
+	rows := game.SurvivalRaiseRows(e.survival, e.seed, e.soloRaises+1)
+	if rows <= 0 {
+		return
+	}
+	e.mu.Lock()
+	holes := game.SurvivalHoles(e.playfield.Width, e.garbageHoles, e.soloRaised, rows, e.randomGarbageHoles, e.seed)
+	projected, topped, full := e.playfield.ProjectShrinkCascade(rows, e.playerIdx, holes)
+	out := full || slices.Contains(topped, e.playerIdx)
+	if out {
+		e.hadActivePiece = false
+	}
+	e.soloRaises++
+	e.soloRaised += rows
+	changed := changedCells(e.playfield.Rows, projected, 0, e.playfield.Height)
+	e.publishLocal(ctx, changed, true)
+	e.mu.Unlock()
+	// The shift touches most of the board: repaint it whole.
+	e.emitFullBoardRerender()
+	if out {
+		e.handleTopOut(ctx, false)
+		return
+	}
+	// The stack may have risen to meet the piece: re-time the lock now.
+	e.updateLockDelay(pieceSnapshot{})
 }
 
 // publishEvent publishes a game event on the game stream. A solo engine

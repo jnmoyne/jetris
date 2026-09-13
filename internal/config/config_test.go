@@ -501,22 +501,22 @@ func TestRulesBag(t *testing.T) {
 	if got := (GameMeta{Bag: BagNone}).Rules().Bag; got != BagNone {
 		t.Errorf("meta bag none reads back as %q", got)
 	}
-	if got := (GameRules{Bag: "triple"}).Normalized(ModeCooperative).Bag; got != BagSingle {
+	if got := (GameRules{Bag: "triple"}).Normalized(ModeCooperative, SurvivalNone).Bag; got != BagSingle {
 		t.Errorf("an unknown kind normalized to %q, want the 7-bag", got)
 	}
-	if ModernRules().Bag != BagSingle || !ModernRules().IsModern(ModeCompetitive) {
+	if ModernRules().Bag != BagSingle || !ModernRules().IsModern(ModeCompetitive, SurvivalNone) {
 		t.Fatal("the Modern preset should deal the 7-bag")
 	}
 	for _, bag := range []Bag{BagDouble, BagNone} {
 		r := ModernRules()
 		r.Bag = bag
-		if r.IsModern(ModeCompetitive) || r.IsModern(ModeCooperative) {
+		if r.IsModern(ModeCompetitive, SurvivalNone) || r.IsModern(ModeCooperative, SurvivalNone) {
 			t.Errorf("the preset with bag %q still reads as the Modern preset", bag)
 		}
 	}
 	r := ModernRules()
 	r.Bag = "triple"
-	if !r.IsModern(ModeCompetitive) {
+	if !r.IsModern(ModeCompetitive, SurvivalNone) {
 		t.Error("the preset with an unknown kind — the 7-bag once normalized — should still be the preset")
 	}
 }
@@ -534,7 +534,7 @@ func TestRulesShowHeadroom(t *testing.T) {
 		t.Error("a meta without the field shows its headroom")
 	}
 	for _, mode := range []GameMode{ModeCooperative, ModeCompetitive, ModeTeams} {
-		if !(GameRules{ShowHeadroom: true}).Normalized(mode).ShowHeadroom {
+		if !(GameRules{ShowHeadroom: true}).Normalized(mode, SurvivalNone).ShowHeadroom {
 			t.Errorf("%s: normalizing dropped the hidden-rows setting", mode)
 		}
 	}
@@ -543,7 +543,7 @@ func TestRulesShowHeadroom(t *testing.T) {
 	}
 	r := ModernRules()
 	r.ShowHeadroom = true
-	if r.IsModern(ModeCompetitive) || r.IsModern(ModeCooperative) {
+	if r.IsModern(ModeCompetitive, SurvivalNone) || r.IsModern(ModeCooperative, SurvivalNone) {
 		t.Error("the preset with the hidden rows shown still reads as the Modern preset")
 	}
 }
@@ -591,6 +591,21 @@ func TestGameSpecNormalized(t *testing.T) {
 		{"an open game keeps the pause-when-alone rule",
 			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, AgentsPauseAlone: true},
 			GameSpec{Mode: ModeCooperative, PlayerCount: 2, MaxAgents: 1, AgentsPauseAlone: true}},
+		{"the rising floor is a single playfield's: a board each drops it",
+			GameSpec{Mode: ModeCompetitive, PlayerCount: 2, Survival: SurvivalHard, Rules: GameRules{GarbageHoles: 2}},
+			GameSpec{Mode: ModeCompetitive, PlayerCount: 2, Rules: GameRules{GarbageHoles: 2}}},
+		{"teams drop it too",
+			GameSpec{Mode: ModeTeams, TeamCount: 2, TeamSize: 1, Survival: SurvivalEasy},
+			GameSpec{Mode: ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1, TeamNames: []string{"Green", "Blue"}}},
+		{"a survival crew has no line goal, clearable rows and no attack table",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, Survival: SurvivalNormal, LineGoal: 40, Rules: GameRules{RandomGarbageHoles: true, GuidelineGarbage: true}},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 2, Survival: SurvivalNormal, Rules: GameRules{GarbageHoles: MinSurvivalHoles, RandomGarbageHoles: true}}},
+		{"a solo survival run keeps its holes",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 1, Survival: SurvivalEasy, Rules: GameRules{GarbageHoles: 3}},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 1, Survival: SurvivalEasy, Rules: GameRules{GarbageHoles: 3}}},
+		{"a tier that is not one is no floor, and the goal stands",
+			GameSpec{Mode: ModeCooperative, PlayerCount: 1, Survival: "lunatic", LineGoal: 20, Rules: GameRules{GarbageHoles: 3}},
+			GameSpec{Mode: ModeCooperative, PlayerCount: 1, LineGoal: 20}},
 	} {
 		if got := tc.in.Normalized(); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: Normalized() = %+v, want %+v", tc.name, got, tc.want)
@@ -704,6 +719,64 @@ func TestGameSpecMetaRoundTrip(t *testing.T) {
 	}
 }
 
+// The rising floor: the three tiers read as themselves and anything else as
+// no floor; only a cooperative-mode board plays it, whatever the record
+// says; the meta round-trips it; and the rules of a survival game keep
+// clearable holes and no attack table — the Modern preset included, which
+// the lobby row still tags as the preset.
+func TestSurvivalTier(t *testing.T) {
+	for in, want := range map[Survival]Survival{"easy": SurvivalEasy, "normal": SurvivalNormal, "hard": SurvivalHard, "": SurvivalNone, "lunatic": SurvivalNone} {
+		if got := in.Normalized(); got != want {
+			t.Errorf("Survival(%q).Normalized() = %q, want %q", in, got, want)
+		}
+	}
+	if got := SurvivalTiers(); len(got) != 3 || got[0] != SurvivalEasy || got[2] != SurvivalHard {
+		t.Errorf("SurvivalTiers() = %v", got)
+	}
+	if SurvivalNormal.String() != "Normal" || SurvivalNone.String() != "" || Survival("x").String() != "" {
+		t.Error("String() misnames a tier")
+	}
+	if SurvivalHard.Label() != "survival (hard)" || SurvivalNone.Label() != "" {
+		t.Error("Label() misnames a tier")
+	}
+	for _, tc := range []struct {
+		meta GameMeta
+		want Survival
+	}{
+		{GameMeta{Mode: ModeCooperative, PlayerCount: 1, Survival: SurvivalEasy}, SurvivalEasy},
+		{GameMeta{Mode: ModeCooperative, PlayerCount: 3, Survival: "hard"}, SurvivalHard},
+		{GameMeta{Mode: ModeCompetitive, PlayerCount: 2, Survival: SurvivalEasy}, SurvivalNone},
+		{GameMeta{Mode: ModeTeams, PlayerCount: 2, Survival: SurvivalEasy}, SurvivalNone},
+		{GameMeta{Mode: ModeCooperative, PlayerCount: 2}, SurvivalNone},
+	} {
+		if got := tc.meta.SurvivalTier(); got != tc.want {
+			t.Errorf("%+v: SurvivalTier() = %q, want %q", tc.meta, got, tc.want)
+		}
+	}
+	spec := GameSpec{Name: "g", Mode: ModeCooperative, PlayerCount: 2, Survival: SurvivalNormal, Rules: ModernRules()}.Normalized()
+	meta := spec.Meta("g", "c", 1, time.Time{})
+	if meta.SurvivalTier() != SurvivalNormal || meta.GarbageHoles != 1 || meta.GuidelineGarbage || meta.LineGoal != 0 {
+		t.Errorf("the meta of a survival game: %+v", meta)
+	}
+	if back := meta.Spec(); !reflect.DeepEqual(back, spec) {
+		t.Errorf("meta.Spec() = %+v, want %+v", back, spec)
+	}
+	if !meta.Rules().IsModern(meta.Mode, meta.SurvivalTier()) {
+		t.Error("the Modern preset on a survival game — one hole per row — is not read as the preset")
+	}
+	if ModernRules().IsModern(ModeCooperative, SurvivalNone) != true || !ModernRules().Normalized(ModeCooperative, SurvivalNone).IsModern(ModeCooperative, SurvivalNormal) {
+		t.Error("the preset compares like with like")
+	}
+	custom := ModernRules()
+	custom.GarbageHoles = 3
+	if custom.IsModern(ModeCooperative, SurvivalNormal) || !custom.IsModern(ModeCooperative, SurvivalNone) {
+		t.Error("three holes are custom rules on a survival game, and nothing at all without a floor")
+	}
+	if got := (GameRules{GarbageHoles: 9, RandomGarbageHoles: true}).Normalized(ModeCooperative, SurvivalHard); got.GarbageHoles != MaxGarbageHoles || !got.RandomGarbageHoles {
+		t.Errorf("holes clamp on a survival game: %+v", got)
+	}
+}
+
 // Individual scoring is a single shared playfield's choice: only a
 // cooperative-mode board with company honours it, however the record reads.
 func TestScoringNormalized(t *testing.T) {
@@ -795,6 +868,60 @@ func TestArchiveIndividualScoring(t *testing.T) {
 	comp := ArchiveRecord{Mode: ModeCompetitive, Scoring: ScoringIndividual}
 	if comp.IndividualScoring() {
 		t.Error("only a cooperative-mode board scores individually")
+	}
+}
+
+// A survival game's result is the time it survived: such records rank
+// behind every game played for the score, the longest run first and the
+// score breaking a tie; they sit in a replay bucket of their own per tier;
+// and the ordering stays a total order over a mixed list.
+func TestArchiveSurvivalRanking(t *testing.T) {
+	t0 := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	mk := func(id string, tier Survival, score int, dur time.Duration) ArchiveRecord {
+		return ArchiveRecord{GameID: id, Mode: ModeCooperative, Survival: tier, TotalScore: score,
+			StartedAt: t0.Add(-dur), FinishedAt: t0, Players: []PlayerResult{{PlayerID: "a", Score: score}}}
+	}
+	long, short := mk("a", SurvivalNormal, 10, 5*time.Minute), mk("b", SurvivalNormal, 500, time.Minute)
+	if !long.RankBefore(short) || short.RankBefore(long) {
+		t.Error("the longer run must rank first")
+	}
+	rich, poor := mk("a", SurvivalNormal, 500, time.Minute), mk("b", SurvivalNormal, 10, time.Minute)
+	if !rich.RankBefore(poor) || poor.RankBefore(rich) {
+		t.Error("the score must break a time tie")
+	}
+	scored := mk("c", SurvivalNone, 1, time.Hour)
+	if !scored.RankBefore(long) || long.RankBefore(scored) {
+		t.Error("a game played for the score ranks before every survival game")
+	}
+	if !long.IsSurvival() || scored.IsSurvival() || (ArchiveRecord{Mode: ModeCompetitive, Survival: SurvivalHard}).IsSurvival() {
+		t.Error("IsSurvival() misreads the record")
+	}
+	// Buckets: per tier, apart from the crew's runs for the score.
+	easy := mk("d", SurvivalEasy, 10, time.Minute)
+	if long.SameReplayBucket(easy) || long.SameReplayBucket(scored) || !long.SameReplayBucket(short) {
+		t.Error("survival tiers must bucket apart, and apart from the score runs")
+	}
+	// A total order: sorting a mixed list leaves no pair ranked both ways
+	// or neither way, in any order.
+	recs := []ArchiveRecord{long, short, scored, easy, mk("e", SurvivalNone, 999, time.Second), mk("f", SurvivalHard, 0, 10*time.Minute)}
+	for i := range recs {
+		for j := range recs {
+			if i == j {
+				continue
+			}
+			a, b := recs[i].RankBefore(recs[j]), recs[j].RankBefore(recs[i])
+			if a == b {
+				t.Errorf("%s vs %s: ranked both ways (%v)", recs[i].GameID, recs[j].GameID, a)
+			}
+			for k := range recs {
+				if k == i || k == j || !recs[i].RankBefore(recs[j]) || !recs[j].RankBefore(recs[k]) {
+					continue
+				}
+				if !recs[i].RankBefore(recs[k]) {
+					t.Errorf("%s > %s > %s but not %s > %s", recs[i].GameID, recs[j].GameID, recs[k].GameID, recs[i].GameID, recs[k].GameID)
+				}
+			}
+		}
 	}
 }
 

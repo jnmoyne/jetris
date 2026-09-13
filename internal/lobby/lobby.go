@@ -925,6 +925,7 @@ func (l *Lobby) CreateGame(ctx context.Context, spec config.GameSpec) (string, e
 		ExtraRows:          spec.ExtraRows,
 		LineGoal:           spec.LineGoal,
 		Scoring:            spec.Scoring,
+		Survival:           spec.Survival,
 		InviteOnly:         spec.InviteOnly,
 		CreatorID:          l.playerID,
 		Players:            nil,

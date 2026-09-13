@@ -413,8 +413,9 @@ type App struct {
 	createJoinEnum widget.Enum                        // wizard step 3: "open" or "invite"
 	boardsEnum     widget.Enum                        // wizard step 1: "single" (one shared playfield) or "multiple" (a team on each of several)
 	singleKindEnum widget.Enum                        // wizard step 1, single playfield: "coop" (scored together) or "competitive" (each seat on its own — config.ScoringIndividual)
-	lengthEnum     widget.Enum                        // wizard step 2: "topout" (until someone tops out) or "lines" (the lineGoalEd number of lines — config.GameSpec.LineGoal)
+	lengthEnum     widget.Enum                        // wizard step 2: "topout" (until someone tops out), "lines" (the lineGoalEd number of lines — config.GameSpec.LineGoal) or "survival" (the rising floor — config.GameSpec.Survival, the survivalEnum tier; a single playfield only)
 	lineGoalEd     widget.Editor                      // wizard step 2: the line goal (blank = config.DefaultLineGoal)
+	survivalEnum   widget.Enum                        // wizard step 2, survival: the rising floor's tier — "easy", "normal" or "hard" (config.Survival)
 	wizBackBtn     widget.Clickable                   // wizard: back one step
 	wizNextBtn     widget.Clickable                   // wizard: Next / Choose players… / Create game
 	wizCancelBtn   widget.Clickable                   // wizard: close without creating
@@ -822,9 +823,10 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.holesEd.InputHint = key.HintNumeric
 	a.boardsEnum.Value = "single" // one shared playfield, scored together, until the creator says otherwise
 	a.singleKindEnum.Value = "coop"
-	a.lengthEnum.Value = "topout"     // until someone tops out
-	a.rulesEnum.Value = "modern"      // the Modern preset until the creator asks for custom rules
-	a.createJoinEnum.Value = "invite" // invite-only by default; open games are the opt-in
+	a.lengthEnum.Value = "topout"                        // until someone tops out
+	a.survivalEnum.Value = string(config.SurvivalNormal) // the middle tier, should the creator choose the rising floor
+	a.rulesEnum.Value = "modern"                         // the Modern preset until the creator asks for custom rules
+	a.createJoinEnum.Value = "invite"                    // invite-only by default; open games are the opt-in
 	a.histSortEnum.Value = "score"
 	// Every crew composition is listed by default; each box hides its class.
 	a.histHumansCb.Value = true

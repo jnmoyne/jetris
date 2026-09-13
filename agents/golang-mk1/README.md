@@ -110,6 +110,11 @@ its own columns, `random_garbage_holes` — `--guideline-garbage`, the
 modern attack table (0/1/2/4 for plain clears, the T-spin rows, the Back-to-Back
 and perfect-clear bonuses), `guideline_garbage` — `--hold`, the hold queue,
 `hold`, which the agent itself never uses but the humans in its game may —
+`--survival`, the rising floor of a cooperative game, `survival`: `easy`, `normal` or
+`hard` — garbage rows rise from the bottom of the crew's board on a clock that
+quickens with the level until the crew tops out, the time survived the result (no
+line goal with it, at least one hole per row; the agent runs the floor's clock and
+applies its rows like any peer, guide §4.4) —
 `--split-pieces`, the teams-mode piece split, `split_pieces`: the seven types
 dealt out between the teammates, each seat playing only its own ration (a teams
 game of two or more per team; ignored elsewhere) — `--bag`, the piece

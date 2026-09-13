@@ -503,7 +503,12 @@ func (a *App) gameChatPanel(gtx C, eng *engine.Engine, view gameView) D {
 // window (12% of the room the strip is given) so a taller screen shows more
 // of it without eating into what is above it. line renders message i, so each
 // strip keeps its own idea of what a line says.
+//
+// The box is the strip's whole width, like the composer under it: a list is
+// only as wide as its widest line unless told otherwise, and a chat that has
+// heard nothing but "Hi!" would otherwise be a stamp in the corner.
 func (a *App) chatLogBox(gtx C, lst *widget.List, n int, line func(i int) (string, colorN)) D {
+	gtx.Constraints.Min.X = gtx.Constraints.Max.X
 	return bordered(gtx, func(gtx C) D {
 		if maxH := max(gtx.Dp(96), gtx.Constraints.Max.Y*12/100); gtx.Constraints.Max.Y > maxH {
 			gtx.Constraints.Max.Y = maxH

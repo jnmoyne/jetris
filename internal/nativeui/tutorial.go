@@ -1091,8 +1091,8 @@ func tutorialSteps() []tutStep {
 				"It is a switch — the button that shows a column is the only thing that hides it — and it remembers your choice from one session to the next.",
 			tutLobbyMenuBtn, tutLobbyMenu),
 		lobbyStep("VOICE CHAT",
-			"The mic button is the voice switch. Every session starts muted; tap it to open your microphone to everyone in the lobby — in a game, to your team or to the whole table. "+
-				"Muted, open, or lit green while your voice is going out: the button shows which.",
+			"The mic button is the voice switch: the slash through the microphone means you are muted, which is how every visit to a server starts. Tap it to open your microphone to everyone in the lobby — in a game, to your team or to the whole table. "+
+				"Muted, open, or lit green while your voice is going out: the button shows which. The switch follows you into the games you join and back.",
 			tutLobbyMic),
 		{scene: tutSceneLobby, title: "GATE AND PLAY VOICE", targets: []string{tutVoice}, prep: lobbyOn(lobbyTabGames), scroll: menuScroll,
 			body: "The VOICE section holds the rest. GATE is how much louder than the room you must be before anything is sent: OPEN at 0 sends whenever the mic is on, a higher setting keeps the keyboard's clatter to yourself, and the meter shows your level against it. " +
@@ -1137,7 +1137,7 @@ func tutorialSteps() []tutStep {
 			"Every seat filled, the game screen opens: an empty board, and a bar with the lobby's buttons. ☰ shows and hides the menu column: the players, the stats, and every setting the rest of this tour goes through. Nothing in it stops play — once the game is on, the piece keeps falling while the menu is open.",
 			tutGameBarMenu),
 		readyStep("VOICE",
-			"The mic button is the same switch as in the lobby, on the game's own room: your team's in a teams game — the VOICE section can widen it to everyone — and the whole table otherwise. Muted at every game's start.",
+			"The mic button is the same switch as in the lobby, on the game's own room: your team's in a teams game — the VOICE section can widen it to everyone — and the whole table otherwise. It comes in as you left it in the lobby; the lobby's room is not heard from here.",
 			tutGameBarMic),
 		readyStep("THE PAD SWITCH",
 			"Shows and hides the on-screen pad. In a competitive or teams game a boards button stands beside it, for the opponents' playfields down the side of yours.",

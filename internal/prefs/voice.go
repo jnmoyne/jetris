@@ -5,7 +5,9 @@ import "encoding/json"
 // The voice preferences: the microphone gate — how much louder than the room
 // the player must be for their microphone to publish — and whether other
 // players' voices are played (nativeui/voice.go). The mute itself is NOT
-// here: every game starts muted, by design, whatever the last one ended on.
+// here: it lasts one visit to a server and no longer — every fresh
+// connection to a lobby starts muted, by design, whatever the last one
+// ended on.
 
 // Voice knob bounds and defaults — the single source both this store and
 // the menu's slider clamp to. The gate is in dB above the room's measured

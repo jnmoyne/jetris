@@ -109,7 +109,9 @@ var ErrNoSignal = errors.New("no microphone signal — check the system's microp
 // Session is one game screen's voice: the microphone's frames gated,
 // encoded and published, and every other player's frames received, buffered
 // and mixed into the speakers. Built by New, started by Start, stopped by
-// Stop when the screen is left. It starts muted, every time.
+// Stop when the screen is left. It starts muted, every time; the screen
+// that wants the microphone open from the start asks (SetMuted) once it is
+// up.
 type Session struct {
 	cfg Config
 	dev Device

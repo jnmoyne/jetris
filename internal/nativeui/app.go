@@ -605,6 +605,7 @@ type App struct {
 	voice          *voice.Session
 	voiceRoom      string // the room a.voice is in: a game ID, config.LobbyVoiceRoom, or "" (guarded by mu)
 	voiceStarting  bool   // a lobby session is on its way (reconcileVoice; guarded by mu)
+	micOn          bool   // the mic button's standing answer for this visit to the server, applied to every session started (toggleMic; guarded by mu)
 	voiceDevice    func() voice.Device
 	voicePrefs     prefs.Voice
 	barMicBtn      widget.Clickable

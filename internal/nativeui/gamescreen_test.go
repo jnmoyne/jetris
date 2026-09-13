@@ -469,7 +469,9 @@ func TestLabSwitchFlipsWithoutTakingTheKeys(t *testing.T) {
 // lab switch's scenario: mid-game, the player taps the mic button beside the
 // menu button and plays straight on. The button is a Clickable and takes
 // the keys for the frame of its press; the board must have them back on the
-// next. And a new game screen starts muted, whatever the last one did.
+// next. And the microphone follows the player: a new game screen opens it
+// again if the last one had it open, on a session of its own, the old one
+// gone.
 func TestMicButtonFlipsWithoutTakingTheKeys(t *testing.T) {
 	eng := engine.New(nil, "mic-switch", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	g := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
@@ -494,15 +496,31 @@ func TestMicButtonFlipsWithoutTakingTheKeys(t *testing.T) {
 	if !g.a.getVoice().Muted() || dev.Capturing() {
 		t.Fatal("tapping the mic button again did not mute")
 	}
-	// Unmuted again, then a new game screen: muted, the old session gone.
+	// Unmuted again, then a new game screen: the microphone open there too,
+	// on a new session, the old one stopped.
 	g.tap(barMicX(), barCenterY())
 	if g.a.getVoice().Muted() {
 		t.Fatal("the third tap did not unmute")
 	}
+	first := g.a.getVoice()
 	next := engine.New(nil, "mic-switch-2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	g.a.startVoice(next, context.Background(), nil)
+	if s := g.a.getVoice(); s == first || s.Config().GameID != "mic-switch-2" {
+		t.Fatal("the new game screen kept the old session")
+	}
+	if g.a.getVoice().Muted() || !dev.Capturing() {
+		t.Fatal("a new game screen did not open the microphone the last one had open")
+	}
+	// Muted on this screen, the next one starts muted.
+	g.frame()
+	g.tap(barMicX(), barCenterY())
+	if !g.a.getVoice().Muted() {
+		t.Fatal("the fourth tap did not mute")
+	}
+	third := engine.New(nil, "mic-switch-3", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g.a.startVoice(third, context.Background(), nil)
 	if !g.a.getVoice().Muted() || dev.Capturing() {
-		t.Fatal("a new game screen inherited the last one's open microphone")
+		t.Fatal("a new game screen opened a microphone the last one had muted")
 	}
 }
 

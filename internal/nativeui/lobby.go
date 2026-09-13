@@ -409,17 +409,16 @@ func (a *App) handleLobbyBarClicks(gtx C, modal bool) {
 	if flipped {
 		a.persistPanels()
 	}
-	// The mic button (voice.go): the session's switch, never written out.
-	// In the click's own frame, as on the game screen — the browser opens
-	// the microphone only on the player's gesture.
+	// The mic button (voice.go): the session's switch, never written out —
+	// it lasts the visit to the server. In the click's own frame, as on the
+	// game screen — the browser opens the microphone only on the player's
+	// gesture.
 	mic := 0
 	for a.barMicBtn.Clicked(gtx) {
 		mic++
 	}
 	if mic > 0 && !modal {
-		if v := a.getVoice(); v != nil {
-			v.SetMuted(!v.Muted())
-		}
+		a.toggleMic()
 	}
 	for _, t := range []struct {
 		btn *widget.Clickable

@@ -28,11 +28,21 @@ import (
 // and the window's close (stopVoice); the lobby's — the room
 // config.LobbyVoiceRoom, everyone on the server who is in the lobby — comes
 // and goes with the lobby screen, decided every frame by reconcileVoice
-// (none on the login, archive and replay screens). Every session starts
-// MUTED, whatever the last one ended on — a microphone is nothing to leave
-// open by default. The bar's mic
-// button (micButton, beside the menu button) is the one switch: muted, open,
-// or lit green while the gate is open and frames are going out. The menu's
+// (none on the login, archive and replay screens). The rooms never overlap:
+// a screen's session replaces the last one, and the old one is stopped —
+// its subscriptions dropped, its device closed — BEFORE the new one opens,
+// so nothing said in the lobby is heard on a game screen, nor the other way
+// round (TestVoiceRoomsDoNotLeak, voice/session_test.go).
+//
+// The microphone follows the player from room to room: the mic button's
+// answer (micOn) is the player's standing one for this visit to the server,
+// and every session started — a game joined or spectated, the lobby come
+// back to — opens the microphone again if it was open on the last screen.
+// A fresh connection to a lobby starts MUTED, whatever the last visit ended
+// on (initLobby): a microphone is nothing to leave open by default. The
+// bar's mic button (micButton, beside the menu button) is the one switch:
+// muted, open, or lit green while the gate is open and frames are going
+// out. The menu's
 // VOICE section (voiceSection) holds the rest: the status line, the level
 // meter, the GATE slider — how much louder than the room the player must be
 // before the microphone publishes, OPEN at 0 — "Play voice", and in a teams
@@ -75,8 +85,8 @@ func (a *App) SetVoice(p prefs.Voice) {
 }
 
 // persistVoice saves the gate and "Play voice". A failure is silent, as the
-// handling knobs' is (persistHandling). The mute is not saved: every game
-// starts muted.
+// handling knobs' is (persistHandling). The mute is not saved: it lasts the
+// visit to the server (micOn) and no longer.
 func (a *App) persistVoice() {
 	p := prefs.Voice{GateDb: a.voiceGateDb, Listen: a.voiceListenCb.Value}
 	a.mu.Lock()
@@ -103,20 +113,31 @@ func (a *App) voiceChannel() voice.Channel {
 	return voice.ChannelTeam
 }
 
-// startVoice starts the session for a game screen just entered: muted, on
-// the team's room if the seat has one. Runs off the UI goroutine and
-// without a.mu (opening the speakers takes tens of milliseconds); nc is the
-// app's connection, nil on a transport-less screen (the tests), which makes
-// an offline session. A device that will not open is not a failure of the
+// startVoice starts the session for a game screen just entered, on the
+// team's room if the seat has one, with the microphone as the player left
+// it on the last screen (micOn). Runs off the UI goroutine and without a.mu
+// (opening the speakers takes tens of milliseconds); nc is the app's
+// connection, nil on a transport-less screen (the tests), which makes an
+// offline session. A device that will not open is not a failure of the
 // join: the session says so in its status line and the screen carries on.
+//
+// The screen's last session — the lobby's, or an earlier game's — is
+// stopped FIRST, and only then the new one opened: two sessions up at once
+// would be two rooms heard at once, and two open microphones on the one
+// device.
 func (a *App) startVoice(e *engine.Engine, ctx context.Context, nc *nats.Conn) {
 	team := -1
 	if e.GameMode() == config.ModeTeams && e.InitialMode() == engine.ModePlayer {
 		team = e.TeamIdx()
 	}
 	a.mu.Lock()
-	p := a.voicePrefs
+	p, on := a.voicePrefs, a.micOn
+	old := a.voice
+	a.voice, a.voiceRoom = nil, ""
 	a.mu.Unlock()
+	if old != nil {
+		old.Stop()
+	}
 	s := voice.New(voice.Config{
 		GameID:    e.GameID(),
 		PlayerID:  e.PlayerID(),
@@ -130,11 +151,10 @@ func (a *App) startVoice(e *engine.Engine, ctx context.Context, nc *nats.Conn) {
 		log.Printf("voice: %v", err)
 	}
 	a.mu.Lock()
-	old := a.voice
 	a.voice, a.voiceRoom = s, e.GameID()
 	a.mu.Unlock()
-	if old != nil {
-		old.Stop()
+	if on {
+		s.SetMuted(false)
 	}
 }
 
@@ -172,13 +192,15 @@ func (a *App) reconcileVoice() {
 	}
 }
 
-// startLobbyVoice starts the lobby's session: muted, in the lobby room. Off
-// the UI goroutine; installed only if the lobby is still the screen and
-// nothing else has taken the slot meanwhile (a game joined while the
-// speakers were opening), else stopped again.
+// startLobbyVoice starts the lobby's session in the lobby room, with the
+// microphone as the player left it (micOn: muted on a fresh connection,
+// open again on the way back from a game where it was open). Off the UI
+// goroutine; installed only if the lobby is still the screen and nothing
+// else has taken the slot meanwhile (a game joined while the speakers were
+// opening), else stopped again.
 func (a *App) startLobbyVoice() {
 	a.mu.Lock()
-	lb, nc, p := a.lobby, a.nc, a.voicePrefs
+	lb, nc, p, on := a.lobby, a.nc, a.voicePrefs, a.micOn
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
@@ -213,7 +235,27 @@ func (a *App) startLobbyVoice() {
 		s.Stop()
 		return
 	}
+	if on {
+		s.SetMuted(false)
+	}
 	a.invalidate()
+}
+
+// toggleMic is the bar's mic button's press, on either screen: the
+// session's switch flipped, and the outcome kept as the player's standing
+// answer (micOn) for the sessions that follow — the game joined next, the
+// lobby come back to. Runs in the click's own frame, because the browser
+// opens the microphone only on the player's gesture. Nothing to flip while
+// the session is still on its way (the speakers opening).
+func (a *App) toggleMic() {
+	v := a.getVoice()
+	if v == nil {
+		return
+	}
+	v.SetMuted(!v.Muted())
+	a.mu.Lock()
+	a.micOn = !v.Muted()
+	a.mu.Unlock()
 }
 
 // voiceFrame is a screen's per-frame read of its session: the menu's knobs
@@ -242,23 +284,29 @@ func voiceRepaints(gtx C, v voice.Snapshot, meterShown bool) {
 	}
 }
 
-// micButton is the bar's voice switch: the slashed microphone while muted
-// (greyed when there is no microphone to be had), the microphone while open,
-// and lit green — the countdown's GO — while the gate is open and the
-// player's voice is going out.
+// micButton is the bar's voice switch: the microphone with a red slash
+// through it while muted — the mark every call app puts on a muted
+// microphone, so a player who has never seen this one knows what the button
+// is and that a tap opens it (greyed when there is no microphone to be
+// had); the microphone alone while open; and lit green — the countdown's
+// GO — while the gate is open and the player's voice is going out. The
+// icon is drawn (micIcon, controls.go), not a bitmap: the bar's other
+// switches are blocky by design, but this one has to be read by strangers.
 func (a *App) micButton(gtx C, v voice.Snapshot) D {
-	bm, bg, fg := glyphMicOff, colPanel, colAccent
+	bg, fg, slash := colPanel, colAccent, colErr
 	switch {
 	case v.Opening:
-		bm, fg = glyphMic, colMuted
+		fg, slash = colMuted, colTransparent
 	case !v.Muted && v.Talking:
-		bm, bg, fg = glyphMic, colGo, colBg
+		bg, fg, slash = colGo, colBg, colTransparent
 	case !v.Muted:
-		bm = glyphMic
+		slash = colTransparent
 	case v.Err != "":
 		fg = colMuted
 	}
-	return a.barButtonColors(gtx, &a.barMicBtn, bm, bg, fg)
+	return a.barButtonIcon(gtx, &a.barMicBtn, bg, func(gtx C) D {
+		return micIcon(gtx, gtx.Metric.PxToDp(gtx.Constraints.Max.X*3/5), fg, slash)
+	})
 }
 
 // speakerMark is the mark beside a name while that player is heard: the

@@ -361,3 +361,36 @@ func (c *chanPackets) all() []Packet {
 	defer c.mu.Unlock()
 	return append([]Packet(nil), c.pkts...)
 }
+
+// The lobby's room and a game's are different rooms: alice talking in the
+// lobby is heard by carol, who is in the lobby too, and not by bob, who is
+// on a game screen — nor listed there as speaking. The subjects keep them
+// apart (config.VoiceSubject); the UI keeps to one session at a time on top
+// of that (nativeui/voice.go).
+func TestVoiceRoomsDoNotLeak(t *testing.T) {
+	url, _ := testutil.StartServer(t)
+	alice := startRig(t, url, Config{GameID: config.LobbyVoiceRoom, PlayerID: "alice", Team: -1, GateDb: 0, Listen: true}, nil)
+	carol := startRig(t, url, Config{GameID: config.LobbyVoiceRoom, PlayerID: "carol", Team: -1, GateDb: 0, Listen: true}, nil)
+	bob := startRig(t, url, Config{GameID: "game-7", PlayerID: "bob", Team: -1, GateDb: 0, Listen: true}, nil)
+	spec := startRig(t, url, Config{GameID: "game-7", PlayerID: "spec", Spectator: true, Team: -1, GateDb: 0, Listen: true}, nil)
+
+	alice.sess.SetMuted(false)
+	alice.speak(SineFrames(440, -20, 50))
+	if !carol.hears(60) {
+		t.Fatal("carol, in the lobby room with alice, did not hear her")
+	}
+	if ids := speakerIDs(carol.sess.Snapshot()); len(ids) != 1 || ids[0] != "alice" {
+		t.Fatalf("carol's speakers = %v, want [alice]", ids)
+	}
+	for _, r := range []struct {
+		name string
+		rig  *rig
+	}{{"bob, a player in a game", bob}, {"the game's spectator", spec}} {
+		if r.rig.hears(20) {
+			t.Fatalf("%s heard the lobby's voice", r.name)
+		}
+		if ids := speakerIDs(r.rig.sess.Snapshot()); len(ids) != 0 {
+			t.Fatalf("%s lists %v as speaking — the lobby leaked into the game", r.name, ids)
+		}
+	}
+}

@@ -607,6 +607,10 @@ func (a *App) initLobby(name string) error {
 	a.lobby = lb
 	a.lobbyCancel = lobbyCancel
 	a.chatLog = lb.ChatLog()
+	// A fresh connection starts with the microphone muted, whatever the last
+	// visit ended on (voice.go): from here the mic button's answer follows
+	// the player from the lobby into games and back.
+	a.micOn = false
 	a.mu.Unlock()
 
 	go a.pumpLobby(lobbyCtx, lb)

@@ -9,12 +9,16 @@ package nativeui
 import (
 	"fmt"
 	"image"
+	"math"
 	"strconv"
 	"time"
 
+	"gioui.org/f32"
 	"gioui.org/io/semantic"
 	"gioui.org/layout"
 	"gioui.org/op"
+	"gioui.org/op/clip"
+	"gioui.org/op/paint"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -198,31 +202,9 @@ var (
 		"XXX.XXX.",
 		"........",
 	}
-	// glyphMic is the bar's voice switch (voice.go): a microphone's capsule
-	// on its stand. glyphMicOff is the same capsule with a slash through it
-	// — muted, the state every game starts in. glyphSpeaker marks who is
-	// heard: beside a name in the legend, on an opponent's board label, in
-	// the strip over the board when the menu is away.
-	glyphMic = []string{
-		"...XX...",
-		"..XXXX..",
-		"..XXXX..",
-		"..XXXX..",
-		"X.XXXX.X",
-		".X.XX.X.",
-		"..XXXX..",
-		"...XX...",
-	}
-	glyphMicOff = []string{
-		"...XX..X",
-		"..XXXXX.",
-		"..XXXX..",
-		"..XXXX..",
-		"X.XXXX.X",
-		".XXXX.X.",
-		".X.XX...",
-		"X..XX...",
-	}
+	// glyphSpeaker marks who is heard (voice.go): beside a name in the
+	// legend, on an opponent's board label, in the strip over the board when
+	// the menu is away. The bar's mic button is NOT a bitmap: micIcon.
 	glyphSpeaker = []string{
 		"...X....",
 		"..XX..X.",
@@ -284,6 +266,48 @@ func pixelGlyph(gtx C, bm []string, px int, col colorN) D {
 // glyphWidget wraps pixelGlyph as a layout.Widget at a dp-specified height.
 func glyphWidget(bm []string, size unit.Dp, col colorN) layout.Widget {
 	return func(gtx C) D { return pixelGlyph(gtx, bm, gtx.Dp(size), col) }
+}
+
+// colTransparent is no colour at all: micIcon's "no slash".
+var colTransparent = colorN{}
+
+// micIcon is the bar's mic button's microphone (voice.go), drawn as paths
+// rather than as one of the bitmaps above: the one icon in the bar that
+// strangers have to read at a glance — it says "voice" and, with the slash
+// through it, "muted, tap to talk" — so it is the microphone every call
+// app draws, the capsule on its cradle, smooth at any size. size is its
+// height; col its colour; slash the diagonal's, colTransparent for none.
+// The geometry is the common 24-unit icon grid, scaled to size.
+func micIcon(gtx C, size unit.Dp, col, slash colorN) D {
+	h := float32(gtx.Dp(size))
+	u := h / 24
+	pt := func(x, y float32) f32.Point { return f32.Pt(x*u, y*u) }
+	px := func(v float32) int { return int(math.Round(float64(v * u))) }
+	rect := func(x0, y0, x1, y1 float32) image.Rectangle { return image.Rect(px(x0), px(y0), px(x1), px(y1)) }
+	// The capsule: a rounded rectangle, three units wide either side of the
+	// axis, from the top down to the cradle's middle.
+	r := px(2.5)
+	rr := clip.RRect{Rect: rect(9.5, 1.5, 14.5, 12.5), SE: r, SW: r, NE: r, NW: r}
+	paint.FillShape(gtx.Ops, col, rr.Op(gtx.Ops))
+	// The cradle: a half circle under the capsule, stroked, its ends up at
+	// the capsule's waist, with clear ground between the two.
+	var p clip.Path
+	p.Begin(gtx.Ops)
+	p.MoveTo(pt(5.5, 10.5))
+	p.ArcTo(pt(12, 10.5), pt(12, 10.5), -math.Pi) // the half through the bottom (a positive angle turns through the top)
+	paint.FillShape(gtx.Ops, col, clip.Stroke{Path: p.End(), Width: 1.7 * u}.Op())
+	// The stem and the base.
+	paint.FillShape(gtx.Ops, col, clip.Rect(rect(11.1, 17.5, 12.9, 20.5)).Op())
+	paint.FillShape(gtx.Ops, col, clip.Rect(rect(7.5, 20.5, 16.5, 22.3)).Op())
+	if slash.A != 0 {
+		// The slash: corner to corner over the microphone, in its own colour.
+		var d clip.Path
+		d.Begin(gtx.Ops)
+		d.MoveTo(pt(3.5, 3.5))
+		d.LineTo(pt(20.5, 20.5))
+		paint.FillShape(gtx.Ops, slash, clip.Stroke{Path: d.End(), Width: 2.2 * u}.Op())
+	}
+	return D{Size: image.Pt(int(h), int(h))}
 }
 
 // moveGlyph is the chip/pad symbol for one move: blocky bitmap arrows for the

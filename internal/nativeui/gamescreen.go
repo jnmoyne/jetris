@@ -250,13 +250,11 @@ func (a *App) handleFormClicks(gtx C, eng *engine.Engine) {
 		a.persistPanels()
 	}
 	// The mic button is a switch of another kind (voice.go): the session's,
-	// not a panel's, and never written out — every game starts muted. The
-	// unmute runs here, in the click's own frame, because the browser opens
-	// the microphone only on the player's gesture.
+	// not a panel's, and never written out — it lasts the visit to the
+	// server. The unmute runs here, in the click's own frame, because the
+	// browser opens the microphone only on the player's gesture.
 	for a.barMicBtn.Clicked(gtx) {
-		if v := a.getVoice(); v != nil {
-			v.SetMuted(!v.Muted())
-		}
+		a.toggleMic()
 	}
 }
 
@@ -394,15 +392,25 @@ func (a *App) barButton(gtx C, btn *widget.Clickable, bm []string, on bool) D {
 	return a.barButtonColors(gtx, btn, bm, bg, fg)
 }
 
-// barButtonColors is barButton in any colours: the mic button's third look
-// (voice.go) is neither off nor on.
+// barButtonColors is barButton in any colours, the glyph at half the
+// button's side.
 func (a *App) barButtonColors(gtx C, btn *widget.Clickable, bm []string, bg, fg colorN) D {
+	return a.barButtonIcon(gtx, btn, bg, func(gtx C) D {
+		return glyphWidget(bm, gtx.Metric.PxToDp(gtx.Constraints.Max.X/2), fg)(gtx)
+	})
+}
+
+// barButtonIcon is the bar's square button around any icon, centred in it —
+// the mic button's drawn microphone (voice.go), which is neither a bitmap
+// nor off-or-on. The icon is laid out with the button's inside as its
+// constraints, so it can size itself off the button.
+func (a *App) barButtonIcon(gtx C, btn *widget.Clickable, bg colorN, icon layout.Widget) D {
 	sz := gtx.Dp(gameBarH - 14)
 	gtx.Constraints = layout.Exact(image.Pt(sz, sz))
 	return widget.Border{Color: colAccent, Width: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 		return btn.Layout(gtx, func(gtx C) D {
 			return background(gtx, bg, func(gtx C) D {
-				return layout.Center.Layout(gtx, glyphWidget(bm, gtx.Metric.PxToDp(sz/2), fg))
+				return layout.Center.Layout(gtx, icon)
 			})
 		})
 	})

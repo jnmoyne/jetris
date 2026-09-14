@@ -101,6 +101,17 @@ const (
 	// go out ahead of the one that opened it, so a word's onset is not
 	// clipped.
 	preRollFrames = 2
+	// refRing is the far end's ring for the echo canceller: a second.
+	refRing = 1 << 14
+	// refMargin is how far behind the speakers' newest samples a microphone
+	// frame is paired: a frame. The pairing is then never ahead of the echo
+	// in the frame (the speakers' own buffer holds back at least that much),
+	// and a render callback up to a frame late still finds its samples.
+	refMargin = FrameSamples
+	// refMaxLead is how far the speakers may run ahead of the pairing before
+	// it is made afresh: ten frames more than it should, which only frames
+	// the microphone lost (a stalled encode loop) account for.
+	refMaxLead = FrameSamples + refMargin + 10*FrameSamples
 )
 
 // ErrNoSignal is the zero-signal detector's complaint.
@@ -164,6 +175,20 @@ type Session struct {
 	preRoll [preRollFrames]Packet
 	preN    int
 	pubBuf  []byte
+
+	// The echo canceller (aec.go), nil on a device that cancels its own
+	// echo, and its pairing with the speakers: ref is the far end as the
+	// speakers were handed it, a ring Render writes (refW samples so far)
+	// and the encode loop reads a frame at a time from refR; refSync asks
+	// for the pairing to be made afresh. ref, refW, refR and refSync are
+	// under mu; aec, aecRef and aecOut are the encode loop's.
+	aec            *echoCanceller
+	ref            []int16
+	refW, refR     int64
+	refSync        bool
+	aecRef, aecOut [FrameSamples]int16
+	// encoded counts the frames through the encode loop, for the tests.
+	encoded atomic.Uint64
 }
 
 // New builds a session on a device. Nothing opens until Start.
@@ -182,6 +207,10 @@ func New(cfg Config, dev Device) *Session {
 	s.muted.Store(true)
 	s.listen.Store(cfg.Listen)
 	s.gateDb.Store(int32(cfg.GateDb))
+	if ec, ok := dev.(echoCancelling); !ok || !ec.CancelsEcho() {
+		s.aec = newEchoCanceller()
+		s.ref = make([]int16, refRing)
+	}
 	if cfg.Team >= 0 {
 		s.channel.Store(int32(ChannelTeam))
 	}
@@ -372,6 +401,14 @@ func (s *Session) Render(out []int16) {
 	} else {
 		clear(out)
 	}
+	// What the speakers play is what the microphone will hear back: the
+	// canceller's far end.
+	if s.ref != nil {
+		for _, v := range out {
+			s.ref[s.refW%refRing] = v
+			s.refW++
+		}
+	}
 	s.mu.Unlock()
 }
 
@@ -434,6 +471,9 @@ func (s *Session) onCaptureState(open bool, err error) {
 	s.opening = false
 	s.capturing = open
 	s.zeroRun, s.zeroErr = 0, false
+	if open {
+		s.refSync = true // a microphone opened afresh: its pairing with the speakers too
+	}
 	if err != nil {
 		s.err = err.Error()
 		s.muted.Store(true)
@@ -476,7 +516,44 @@ func (s *Session) encodeLoop() {
 	}
 }
 
-func (s *Session) encodeFrame(pcm []int16) {
+// refFrame copies into dst the far end's samples paired with the
+// microphone frame being encoded, and reports whether the pairing was made
+// afresh — the canceller then starts over. The pairing goes by sample
+// counts: the frame after a pairing gets the far end's next FrameSamples,
+// whatever the two devices' callbacks' timing, so it holds as long as
+// neither side loses samples. Under mu.
+func (s *Session) refFrame(dst []int16) bool {
+	lead := s.refW - s.refR
+	fresh := s.refSync || lead < 0 || lead > refMaxLead
+	if fresh {
+		s.refSync = false
+		s.refR = s.refW - FrameSamples - refMargin
+	}
+	for i := range dst {
+		if p := s.refR + int64(i); p >= 0 && p < s.refW {
+			dst[i] = s.ref[p%refRing]
+		} else {
+			dst[i] = 0 // before the speakers started, or a render callback running late
+		}
+	}
+	s.refR += FrameSamples
+	return fresh
+}
+
+func (s *Session) encodeFrame(raw []int16) {
+	// The echo of what the speakers play, cancelled first (aec.go): the
+	// gate, the meter and the encoder see what is left.
+	pcm := raw
+	if s.aec != nil {
+		s.mu.Lock()
+		fresh := s.refFrame(s.aecRef[:])
+		s.mu.Unlock()
+		if fresh {
+			s.aec.reset()
+		}
+		s.aec.Process(raw, s.aecRef[:], s.aecOut[:])
+		pcm = s.aecOut[:]
+	}
 	s.vad.GateDb = float32(s.gateDb.Load())
 	level := LevelDb(pcm)
 	open, start := s.vad.Update(level)
@@ -520,8 +597,9 @@ func (s *Session) encodeFrame(pcm []int16) {
 		}
 	}
 
+	// The microphone's own frame: a canceller's cut is no dead microphone.
 	zero := true
-	for _, v := range pcm {
+	for _, v := range raw {
 		if v != 0 {
 			zero = false
 			break
@@ -548,6 +626,7 @@ func (s *Session) encodeFrame(pcm []int16) {
 	if changed {
 		s.notify()
 	}
+	s.encoded.Add(1)
 }
 
 // publish sends one packet to the room the switch is on — only while the

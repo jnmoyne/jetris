@@ -28,6 +28,12 @@ import (
 // the microphone prompt to the terminal application, which is where the
 // permission then lives.
 
+// The microphone is raw: miniaudio cancels no echo, and a player on
+// speakers would send every voice they play back into the room. So this
+// device does not claim to (no CancelsEcho), and the Session runs its own
+// canceller on it (aec.go) — the job the browser's getUserMedia does for
+// the web build.
+
 // malgoBackends is the explicit backend list, in priority order. Naming
 // them rather than passing nil leaves out the Null backend, so a Linux box
 // with no sound library at all fails Open cleanly instead of playing into

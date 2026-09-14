@@ -41,6 +41,13 @@ type Device interface {
 	Close()
 }
 
+// echoCancelling is a Device whose microphone arrives echo-cancelled
+// already — the browser's, whose getUserMedia asks for it. The Session runs
+// its own canceller (aec.go) on any other: the desktop's microphone is raw.
+type echoCancelling interface {
+	CancelsEcho() bool
+}
+
 // ErrUnavailable is Open's answer in a build with no audio at all — the
 // desktop built without cgo (device_none.go).
 var ErrUnavailable = errors.New("voice is not available in this build")
@@ -51,6 +58,11 @@ var ErrUnavailable = errors.New("voice is not available in this build")
 type FakeDevice struct {
 	// OpenErr fails Open; CaptureErr fails every SetCapture(true).
 	OpenErr, CaptureErr error
+	// RawMic makes the fake a desktop's microphone, with no echo
+	// cancellation of its own, so a Session runs its canceller on it. By
+	// default it is the browser's, cancelled already: what is fed is what
+	// the encoder gets.
+	RawMic bool
 
 	mu        sync.Mutex
 	io        DeviceIO
@@ -94,6 +106,9 @@ func (f *FakeDevice) Capturing() bool {
 	defer f.mu.Unlock()
 	return f.capturing
 }
+
+// CancelsEcho is RawMic's answer.
+func (f *FakeDevice) CancelsEcho() bool { return !f.RawMic }
 
 // Feed delivers one frame as the microphone would — only while it is open.
 func (f *FakeDevice) Feed(pcm []int16) {

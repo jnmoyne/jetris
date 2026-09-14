@@ -90,6 +90,10 @@ func NewDevice() Device {
 	return &jsDevice{}
 }
 
+// CancelsEcho: the microphone is opened with the browser's own echo
+// cancellation (getUserMedia's echoCancellation), so the Session runs none.
+func (d *jsDevice) CancelsEcho() bool { return true }
+
 // Open creates the context, starts loading the worklet module (asynchronous:
 // SetCapture requests wait for it) and sets up the resume dance. Nothing
 // here prompts.

@@ -504,6 +504,9 @@ func TestMicButtonFlipsWithoutTakingTheKeys(t *testing.T) {
 	}
 	first := g.a.getVoice()
 	next := engine.New(nil, "mic-switch-2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g.a.mu.Lock()
+	g.a.eng = next // the new screen's engine, as startGameScreen sets it
+	g.a.mu.Unlock()
 	g.a.startVoice(next, context.Background(), nil)
 	if s := g.a.getVoice(); s == first || s.Config().GameID != "mic-switch-2" {
 		t.Fatal("the new game screen kept the old session")
@@ -518,6 +521,9 @@ func TestMicButtonFlipsWithoutTakingTheKeys(t *testing.T) {
 		t.Fatal("the fourth tap did not mute")
 	}
 	third := engine.New(nil, "mic-switch-3", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	g.a.mu.Lock()
+	g.a.eng = third // the new screen's engine, as startGameScreen sets it
+	g.a.mu.Unlock()
 	g.a.startVoice(third, context.Background(), nil)
 	if !g.a.getVoice().Muted() || dev.Capturing() {
 		t.Fatal("a new game screen opened a microphone the last one had muted")

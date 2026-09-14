@@ -462,7 +462,7 @@ Every game screen has a voice chat, carried by NATS like everything else — but
 - **Teams games** add a **Team only / Everyone** switch to the section: your frames go to your team's room (the default) or to the whole game. Spectators hear every room and talk to everyone.
 - **Who is talking** shows as a speaker mark beside the name in the menu's players list (green from a team's room, blue from everyone's), on an opponent's board label, and — with the menu put away — in a strip over the bottom-left corner of the board area. The lobby does the same beside the names in its players column, and over the panel's corner when that column is away.
 - The gate and Play voice persist (`voice.json` beside `handling.json`, or a localStorage key in the browser); the mute lasts the visit to the server and is never written out.
-- **Desktop** audio is [miniaudio](https://miniaud.io) through [`gen2brain/malgo`](https://github.com/gen2brain/malgo) (cgo): CoreAudio, WASAPI, and PulseAudio/ALSA/JACK loaded at run time, so Linux needs no extra dev packages. There is no echo cancellation on the desktop — headphones are a kindness to the room. On macOS the microphone prompt is attributed to the terminal you launched from. The Windows arm64 release is built without cgo and reports voice as unavailable (`CGO_ENABLED=0` builds carry a no-audio stub).
+- **Desktop** audio is [miniaudio](https://miniaud.io) through [`gen2brain/malgo`](https://github.com/gen2brain/malgo) (cgo): CoreAudio, WASAPI, and PulseAudio/ALSA/JACK loaded at run time, so Linux needs no extra dev packages. The microphone comes raw, so Jetris cancels the echo itself, in pure Go, as the browser does for its page: what your speakers play is subtracted from what your microphone hears and what is left of it turned down, so a player on speakers no longer sends the room back to itself. It learns the room within a couple of seconds of hearing the others — turning you down rather than letting their echo through while it does — and learns it again when the room changes (headphones off, the laptop moved). On macOS the microphone prompt is attributed to the terminal you launched from. The Windows arm64 release is built without cgo and reports voice as unavailable (`CGO_ENABLED=0` builds carry a no-audio stub).
 - **Browser** audio is Web Audio — an `AudioWorklet` for both directions, with the browser's own echo cancellation and noise suppression on the microphone. Browsers hand a page its microphone (and an `AudioWorklet`) only in a **secure context** — https, or `localhost` — which is why the LAN party page is https (below). A plain-http copy of the browser build (say, `python3 -m http.server` on a LAN address) still hears the room, through a `ScriptProcessorNode`, and its VOICE section says *listening only: the microphone needs https (or localhost)*. Safari and iPad may want one tap on the page before audio starts ("tap anywhere to enable audio").
 
 ### Playing with (and against) agents
@@ -543,7 +543,8 @@ internal/
   cleanup/             startup reconciliation of orphaned/abandoned game streams
   nativeui/            native Gio desktop UI (board, lobby, live NATS-message panel)
   voice/               in-game voice chat over core NATS: IMA ADPCM frames, the noise gate,
-                       jitter buffers and mixing, the desktop (miniaudio) and browser (Web Audio) devices
+                       jitter buffers and mixing, the desktop's echo canceller, the desktop
+                       (miniaudio) and browser (Web Audio) devices
   prefs/               local preferences: favorites, handling knobs, key bindings, panel switches, voice settings
 ```
 

@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -392,5 +393,116 @@ func TestVoiceRoomsDoNotLeak(t *testing.T) {
 		if ids := speakerIDs(r.rig.sess.Snapshot()); len(ids) != 0 {
 			t.Fatalf("%s lists %v as speaking — the lobby leaked into the game", r.name, ids)
 		}
+	}
+}
+
+// echoRoom is a desktop on speakers: bob's voice (far) arrives as packets,
+// the session's speakers play it (Pull), and the room hands it back to the
+// microphone 60 ms late through a decaying tail at -6 dB, with whatever
+// the player says (near) and a little hiss — one frame at a time, each
+// through the encode loop before the next. It reports, frame by frame,
+// whether the gate was open.
+func echoRoom(t *testing.T, s *Session, dev *FakeDevice, far, near []float64) []bool {
+	t.Helper()
+	rng := rand.New(rand.NewSource(11))
+	path := newRoom(rng, 960, 1600, -6)
+	n := len(far) / FrameSamples
+	played := make([]float64, 0, len(far))
+	talking := make([]bool, n)
+	var st CodecState
+	pcm := make([]int16, FrameSamples)
+	mic := make([]int16, FrameSamples)
+	for f := 0; f < n; f++ {
+		var p Packet
+		p.Header = Header{VerCodec: VerCodec, Seq: uint16(f), Predictor: st.Predictor, StepIndex: st.StepIndex}
+		if f == 0 {
+			p.Flags |= FlagStart
+		}
+		for i := range pcm {
+			pcm[i] = clamp16(far[f*FrameSamples+i])
+		}
+		EncodeFrame(&st, pcm, p.Data[:])
+		s.Receive(config.VoiceSubject("echo", "bob"), p.Marshal(nil), time.Now())
+		for _, v := range dev.Pull() {
+			played = append(played, float64(v))
+		}
+		for i := range mic {
+			k := f*FrameSamples + i
+			mic[i] = clamp16(path.echo(played, k) + near[k] + 3*rng.NormFloat64())
+		}
+		dev.Feed(mic)
+		deadline := time.Now().Add(3 * time.Second)
+		for s.encoded.Load() < uint64(f+1) {
+			if time.Now().After(deadline) {
+				t.Fatalf("frame %d never went through the encode loop", f)
+			}
+			time.Sleep(50 * time.Microsecond)
+		}
+		talking[f] = s.Snapshot().Talking
+	}
+	return talking
+}
+
+// A desktop's raw microphone on speakers: the session cancels the room's
+// echo itself. With the gate at its default, bob's voice coming back alone
+// opens it at most once while the canceller learns the room and never
+// after — where a session that takes the device to have cancelled it
+// already has it open most of the time — and the player's own voice, over
+// bob's, still goes out.
+func TestSessionCancelsTheRoomsEcho(t *testing.T) {
+	rng := rand.New(rand.NewSource(12))
+	n := 7 * SampleRate
+	far := talk(rng, n, 3000)
+	near := silence(n)
+	copy(near[5*SampleRate:], talk(rng, 2*SampleRate, 1500))
+	run := func(dev *FakeDevice) []bool {
+		// GateDb 12 is the default gate (prefs.DefaultGateDb).
+		s := New(Config{GameID: "echo", PlayerID: "alice", Team: -1, GateDb: 12, Listen: true}, dev)
+		if err := s.Start(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Stop)
+		s.SetMuted(false)
+		return echoRoom(t, s, dev, far, near)
+	}
+	openings := func(talking []bool, from, to float64) int {
+		a, b := int(from*SampleRate)/FrameSamples, int(to*SampleRate)/FrameSamples
+		k := 0
+		for f := max(a, 1); f < b; f++ {
+			if talking[f] && !talking[f-1] {
+				k++
+			}
+		}
+		return k
+	}
+	open := func(talking []bool, from, to float64) float64 {
+		a, b := int(from*SampleRate)/FrameSamples, int(to*SampleRate)/FrameSamples
+		k := 0
+		for _, on := range talking[a:b] {
+			if on {
+				k++
+			}
+		}
+		return float64(k) / float64(b-a)
+	}
+	cancelled := run(&FakeDevice{RawMic: true})
+	trusted := run(&FakeDevice{})
+	for s := 0; s < 7; s++ {
+		t.Logf("second %d: gate open on %.0f%% of frames cancelled, %.0f%% not", s,
+			100*open(cancelled, float64(s), float64(s+1)), 100*open(trusted, float64(s), float64(s+1)))
+	}
+	if got := open(trusted, 1, 5); got < 0.3 {
+		t.Fatalf("with nothing cancelled the echo opened the gate on %.0f%% of frames: the room is too quiet to test anything", 100*got)
+	}
+	// While it learns the room, the first second or two, a faint blip may
+	// get through; after that, nothing.
+	if got := openings(cancelled, 0, 2); got > 1 {
+		t.Errorf("while the canceller learned the room bob's echo opened the gate %d times, want at most once", got)
+	}
+	if got := openings(cancelled, 2, 5); got > 0 {
+		t.Errorf("once the canceller had learned the room bob's echo opened the gate %d times, want never", got)
+	}
+	if got := open(cancelled, 5.5, 7); got < 0.6 {
+		t.Errorf("the player talking over bob opened the gate on %.0f%% of frames, want most", 100*got)
 	}
 }

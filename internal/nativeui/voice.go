@@ -150,9 +150,22 @@ func (a *App) startVoice(e *engine.Engine, ctx context.Context, nc *nats.Conn) {
 	if err := s.Start(ctx, nc); err != nil {
 		log.Printf("voice: %v", err)
 	}
+	// Installed only if the game is still the screen's and nothing took the
+	// slot while the speakers opened: Back to Lobby pressed meanwhile hands
+	// the slot to the lobby's session (reconcileVoice), and a game session
+	// written over it would leave that one playing the lobby room with
+	// nobody holding it to stop — the lobby heard twice from the next visit
+	// on (TestVoiceStartOutrunByBack).
 	a.mu.Lock()
-	a.voice, a.voiceRoom = s, e.GameID()
+	install := a.eng == e && a.voice == nil
+	if install {
+		a.voice, a.voiceRoom = s, e.GameID()
+	}
 	a.mu.Unlock()
+	if !install {
+		s.Stop()
+		return
+	}
 	if on {
 		s.SetMuted(false)
 	}

@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"image"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,4 +142,80 @@ func TestMicFollowsThePlayerBetweenRooms(t *testing.T) {
 		t.Fatal("spectating did not carry the open microphone over")
 	}
 	a.returnToLobby()
+}
+
+// holdDevice is a fake whose Open can be held — the speakers taking their
+// time — and which counts the devices open at once.
+type holdDevice struct {
+	voice.FakeDevice
+	live   *atomic.Int32
+	opened chan struct{} // closed as Open is entered, when held
+	hold   chan struct{} // Open waits for it, when not nil
+	open   atomic.Bool
+}
+
+func (d *holdDevice) Open(io voice.DeviceIO) error {
+	if d.hold != nil {
+		close(d.opened)
+		<-d.hold
+	}
+	if err := d.FakeDevice.Open(io); err != nil {
+		return err
+	}
+	d.open.Store(true)
+	d.live.Add(1)
+	return nil
+}
+
+func (d *holdDevice) Close() {
+	if d.open.Swap(false) {
+		d.live.Add(-1)
+	}
+	d.FakeDevice.Close()
+}
+
+// Back to Lobby pressed while a game's speakers are still opening: the
+// lobby's session takes the slot, and the game's, once open, is stopped
+// rather than written over it — which would have left the lobby's playing
+// the lobby room with nobody to stop it, and the lobby heard twice from
+// the next visit on.
+func TestVoiceStartOutrunByBack(t *testing.T) {
+	g := newLobbyRig(t, image.Pt(1280, 820), deviceDesktop)
+	a := g.a
+	var live atomic.Int32
+	var made atomic.Int32
+	opened, hold := make(chan struct{}), make(chan struct{})
+	a.voiceDevice = func() voice.Device {
+		d := &holdDevice{live: &live}
+		if made.Add(1) == 1 {
+			d.opened, d.hold = opened, hold
+		}
+		return d
+	}
+	a.stopVoice() // the rig's first frame started one on the default fake
+
+	// Joining: the game's speakers held open.
+	eng := engine.New(nil, "outrun", "tester", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.startGameScreen(eng, ctx, cancel, []lobby.PlayerSummary{{PlayerID: "tester", Name: "tester"}}, "")
+	}()
+	<-opened
+
+	// Back to the lobby meanwhile: its own session comes up.
+	a.returnToLobby()
+	g.frame()
+	waitFor(t, "the lobby session to start", func() bool { return a.getVoice() != nil })
+	lobbySess := a.getVoice()
+
+	close(hold)
+	<-done
+	if v := a.getVoice(); v != lobbySess || v.Config().GameID != config.LobbyVoiceRoom {
+		t.Fatalf("the slot holds %+v after the late game session opened, want the lobby's", v.Config())
+	}
+	waitFor(t, "the game's device to close", func() bool { return live.Load() == 1 })
+	t.Cleanup(a.stopVoice)
 }

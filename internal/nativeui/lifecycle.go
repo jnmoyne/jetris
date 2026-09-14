@@ -998,7 +998,7 @@ func (a *App) returnToLobby() {
 	v := a.voice
 	a.eng = nil
 	a.engCancel = nil
-	a.voice = nil
+	a.voice, a.voiceRoom = nil, ""
 	a.gameOver = false
 	a.gameOverNote = ""
 	a.won = false

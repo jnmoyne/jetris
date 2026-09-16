@@ -825,7 +825,9 @@ func (a *App) fitBoardAndPad(gtx C, cols, rows int, wells sideWells, player, pad
 	if a.form.compact {
 		floor = 10
 	}
-	fit := func(cols, rx, ry int) int { return fitCellPx(gtx, cols, rows, 1, gtx.Dp(24)+rx, ry, floor, 56) }
+	fit := func(cols, rx, ry int) int {
+		return fitCellPx(gtx, cols, rows, 1, gtx.Dp(24)+rx, ry, floor, boardCellMaxDp)
+	}
 	if !pad {
 		plan.cell = fit(cols+wellCols, wellsX, reservedY)
 		return plan

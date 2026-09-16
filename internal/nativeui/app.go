@@ -655,6 +655,9 @@ type App struct {
 	// taps, drags and flicks on the board, fed by handleGestures every frame.
 	// UI goroutine only.
 	gest boardGesture
+	// oppCell is the opponents' thumbnails' cell as the last frame drew them
+	// (opponentPlan), never past gest.cell — read by the tests.
+	oppCell int
 	// shift and soft are the keyboard's auto-repeat machines, one per axis
 	// (autoshift.go): ← → on the DAS and ARR knobs (dasMs, arrMs — ms,
 	// 0..maxHandlingMs) and ↓ on neither, falling at sdf times the level's
@@ -1095,9 +1098,13 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) layout(gtx C) D {
-	// Stretch the whole frame to the display (see scale.go) before any
-	// screen measures a dp or an sp.
-	gtx = scaledContext(gtx)
+	// The frame is laid out at the display's own metric (PxPerDp, PxPerSp)
+	// at every window size: a window dragged out past the default 1280×820
+	// is more dp of ROOM, not bigger dp — the type, the menu and players
+	// columns, the dialogs keep their size and the panels and the boards
+	// take what opens up; only the playfields grow into it (fitCellPx, up
+	// to boardCellMaxDp). HiDPI is the OS's PxPerDp, as ever.
+	//
 	// The frame's form factor (formfactor.go): which device, which way up,
 	// and how much room there is. Every screen reads it off a.form — the
 	// game screen to choose its shape, the others to trim what a phone has

@@ -450,6 +450,15 @@ func hardShadow(gtx C, w layout.Widget) D {
 	return dims
 }
 
+// boardCellMaxDp caps the cell of every full-size board — the player's own
+// playfield (fitBoardAndPad) and a spectator's boards — on a window big
+// enough to ask for more: a 4K window at 1× wants ~90 dp for a 20-row
+// board, a 5K one ~127. Real desktops never reach it — the height bound
+// does the work, and the playfield takes all the room a window opens up
+// (app.go, layout) — so this is a sanity net for degenerate constraints,
+// not a design size.
+const boardCellMaxDp = unit.Dp(128)
+
 // fitCellPx picks the cell size (px) at which `boards` side-by-side playfields
 // of cols×rows visible cells — each with its arcade-well frame, ≈cell/4 of
 // extra width/height per board — fill the current constraints, after reserving

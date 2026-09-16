@@ -831,3 +831,70 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 		t.Error("the player's pad choice did not carry into the next game")
 	}
 }
+
+// TestOpponentColumnGrowsWithTheWindow: the opponents' column beside the
+// board is a share of the board area, fitted to the thumbnails it holds —
+// larger than a thumbnail used to be at the default window, growing with a
+// larger one up to oppCellMaxDp, height-bound with several opponents stacked
+// in it, never under a thumbnail worth reading on a phone's sliver, and
+// never past the playfield's own cell.
+func TestOpponentColumnGrowsWithTheWindow(t *testing.T) {
+	const width, vis = 10, 20
+	const unbounded = 1 << 20 // no playfield to keep under
+	// The board area at the default window with the menu column beside it,
+	// at a 2560×1440 window's, and a phone's — the bar and the chat off.
+	def := looseCtx(932, 586)
+	share := def.Constraints.Max.X * oppColPct / 100
+	oppW, cell := oppColumnFit(def, width, vis, 1, unbounded)
+	if cell < 17 || cell > 19 {
+		t.Fatalf("default window, one opponent: cell %d px, want about 17 (the 13 px it used to be, a little larger)", cell)
+	}
+	if oppW > share || oppW < width*cell {
+		t.Fatalf("default window: column %d px for a %d px cell, want the thumbnail's width within the %d px share", oppW, cell, share)
+	}
+	bigW, big := oppColumnFit(looseCtx(2212, 1206), width, vis, 1, unbounded)
+	if big != looseCtx(1, 1).Dp(oppCellMaxDp) {
+		t.Fatalf("2560×1440 window: cell %d px, want the %d dp cap", big, oppCellMaxDp)
+	}
+	if bigW <= oppW {
+		t.Fatalf("2560×1440 window: column %d px, want wider than the default window's %d px", bigW, oppW)
+	}
+	// Three opponents stacked at the default window: the cell shrinks so the
+	// stack — each board's frame and the label line over it — fits the
+	// area's height.
+	_, three := oppColumnFit(def, width, vis, 3, unbounded)
+	if three >= cell {
+		t.Fatalf("three opponents: cell %d px, want under one opponent's %d px", three, cell)
+	}
+	if fw := max(three/8, 2); 3*(vis*three+2*fw)+3*def.Dp(16)+2*def.Dp(8) > def.Constraints.Max.Y {
+		t.Fatalf("three opponents at %d px cells stand taller than the %d px area", three, def.Constraints.Max.Y)
+	}
+	// A phone's sliver: the column's floor keeps the thumbnail readable.
+	if _, phone := oppColumnFit(looseCtx(390, 700), width, vis, 1, unbounded); phone < 8 {
+		t.Fatalf("a 390 px wide area: cell %d px, want at least 8", phone)
+	}
+	// The playfield's own cell is the ceiling: with the move-buffer strip
+	// and the pad under it the playfield is shorter than the column, and a
+	// thumbnail is never drawn larger than the board it stands beside.
+	if cappedW, capped := oppColumnFit(def, width, vis, 1, 12); capped != 12 || cappedW >= oppW {
+		t.Fatalf("under a 12 px playfield: cell %d px in a %d px column, want 12 in a column narrower than %d", capped, cappedW, oppW)
+	}
+}
+
+// TestOpponentNeverTallerThanThePlayfield: the whole game screen, with the
+// move-buffer strip and the pad under the playfield and the opponents'
+// column beside it, at the default window and a large one — the
+// thumbnails' cell never past the playfield's own.
+func TestOpponentNeverTallerThanThePlayfield(t *testing.T) {
+	for _, sz := range []image.Point{{X: 1280, Y: 820}, {X: 2560, Y: 1440}} {
+		g := newScreenRig(t, sz, deviceDesktop, liveEngine(t, "opp-cap", config.ModeCompetitive))
+		if !g.a.hasOpponents(g.a.eng, engine.ModePlayer, config.ModeCompetitive) {
+			t.Skip("no opponent snapshot arrived yet")
+		}
+		g.a.oppShown = true
+		g.frame()
+		if g.a.oppCell == 0 || g.a.oppCell > g.a.gest.cell {
+			t.Fatalf("%v: opponents' cell %d px, the playfield's %d px — want thumbnails drawn, and no larger", sz, g.a.oppCell, g.a.gest.cell)
+		}
+	}
+}

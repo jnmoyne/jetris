@@ -2497,7 +2497,7 @@ only, one per `ArchiveRecord.AgentClass` — backed by `PlayerResult.Agent`
 and — when teams games are listed — a TEAMS OVERALL standings line
 (`teamStandingsLine`: per-team wins and summed points, leader in gold); the
 game screen gained the mouse control pad, the animated MOVE BUFFER strip, and
-window-reactive sizing (`controls.go`, `fitCellPx`); and every screen stretches to a display larger than the default 1280×820 window — `scale.go`'s `uiScale` multiplies the frame's dp/sp metric by the window's excess over the design size (the smaller of the two dimensions, never below 1) at the top of `App.layout`.
+window-reactive sizing (`controls.go`, `fitCellPx`); and a window larger than the default 1280×820 is more room rather than bigger chrome — the frame keeps the display's metric, the type and the columns keep their dp size, and the playfields grow into what opens up (`boardCellMaxDp`, `opponentPlan`).
 
 ### 6.1 `internal/nativeui`
 

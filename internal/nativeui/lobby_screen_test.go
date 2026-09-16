@@ -73,11 +73,11 @@ func (g *lobbyRig) tap(x, y float32) {
 // strip's switch and the players column's.
 func (g *lobbyRig) barY() float32 {
 	var ops op.Ops
-	gtx := scaledContext(layout.Context{
+	gtx := layout.Context{
 		Ops:         &ops,
 		Metric:      unit.Metric{PxPerDp: 1, PxPerSp: 1},
 		Constraints: layout.Constraints{Max: g.sz},
-	})
+	}
 	return float32(g.a.lobbyBanner(gtx).Size.Y) + barCenterY()
 }
 

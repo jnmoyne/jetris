@@ -204,9 +204,10 @@ func TestScreenSnapshots(t *testing.T) {
 		})
 	})
 
-	// The same login and lobby screens on a display larger than the design
-	// window (1920×1200): the display-adaptive scale (scale.go) stretches
-	// them to fill it instead of leaving the 1280×820 layout floating.
+	// The same login and lobby screens on a display larger than the default
+	// window (1920×1200): the card and the columns keep their dp size — the
+	// frame is never stretched (app.go, layout) — the card centred on the
+	// backdrop, the lobby's panel taking the width its columns leave.
 	t.Run("large_display", func(t *testing.T) {
 		big, err := headless.NewWindow(1920, 1200)
 		if err != nil {

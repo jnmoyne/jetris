@@ -225,6 +225,29 @@ func TestFitBoardAndPad(t *testing.T) {
 	if minPlan.scale < padMinScaleY {
 		t.Fatalf("minimum window: pad scale %v, under its floor %v", minPlan.scale, padMinScaleY)
 	}
+	// The desktop's board column — the default window's, a 2560×1440
+	// window's and a 4K window's, the menu column and the bar taken off —
+	// the playfield grows with the window: the cell strictly larger each
+	// time and past the 56 dp the design window used to cap it at, the pad
+	// flanking it at its natural size throughout.
+	last := 0
+	for _, sz := range []image.Point{{X: 782, Y: 668}, {X: 1892, Y: 1288}, {X: 3172, Y: 2008}} {
+		gtx := looseCtx(sz.X, sz.Y)
+		plan := a.fitBoardAndPad(gtx, cols, rows, wells, true, true, true)
+		if plan.cell <= last {
+			t.Fatalf("%v column: cell %d px, want more than the %d px of the smaller column", sz, plan.cell, last)
+		}
+		if !plan.beside || plan.scale != 1 {
+			t.Fatalf("%v column: %+v, want the pad beside the board at its natural size", sz, plan)
+		}
+		if plan.width > sz.X {
+			t.Fatalf("%v column: %+v is %d px wide", sz, plan, plan.width)
+		}
+		last = plan.cell
+	}
+	if last <= 56 {
+		t.Fatalf("a 4K window's column: cell %d px, want past the 56 dp cap the default window's playfield used to stop at", last)
+	}
 	// Touch: an iPad's board column — landscape competitive games (20 rows,
 	// the opponent column beside them, the browser's toolbar over them: an
 	// 11" and a 10.2") and portrait — the arms stay at (about) their
@@ -275,7 +298,9 @@ func TestHoldWell(t *testing.T) {
 
 // TestGameScreenReactive lays out the full in-progress player game screen —
 // control pad and move-buffer strip included — at a small and a large window,
-// exercising the window-reactive sizing paths end to end.
+// exercising the window-reactive sizing paths end to end. The frame is laid
+// out at the display's metric whatever the window's size: a 2560×1440 window
+// is 2560×1440 dp of room, never a stretched 1280×820.
 func TestGameScreenReactive(t *testing.T) {
 	players := []lobby.PlayerSummary{
 		{PlayerID: "alice", Name: "alice", Ready: true},
@@ -291,6 +316,9 @@ func TestGameScreenReactive(t *testing.T) {
 		gtx := testCtx(sz.X, sz.Y)
 		if d := a.layout(gtx); d.Size.X == 0 || d.Size.Y == 0 {
 			t.Fatalf("game screen at %v rendered zero-size", sz)
+		}
+		if a.form.w != sz.X || a.form.h != sz.Y {
+			t.Fatalf("game screen at %v laid out as %d×%d dp — the frame's metric was stretched", sz, a.form.w, a.form.h)
 		}
 	}
 }

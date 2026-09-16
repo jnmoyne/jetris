@@ -58,11 +58,19 @@ const (
 	hudColMaxW = 340
 	hudColMinW = 240
 	hudOverPct = 78
-	// oppColPct/oppColMaxW bound the opponents' column when it is shown: a
-	// slice of the screen, never more than a thumbnail's worth. Every dp of
-	// it comes off the playfield.
-	oppColPct  = 24
-	oppColMaxW = 150
+	// oppColPct/oppColMinW bound the opponents' column when it is shown: its
+	// SHARE of the board area is what the thumbnails may fill — never under
+	// a thumbnail worth reading — and the column is then exactly as wide as
+	// the thumbnails it holds (opponentPlan), so no slack is taken off the
+	// playfield. Every dp of it comes off the playfield, which is why it is
+	// a switch. The cells run from oppCellMinDp (a phone's sliver) to
+	// oppCellMaxDp — big enough that on a large window the thumbnails grow
+	// with the playfield beside them (about three fifths of its cell, as at
+	// the default window), small enough that they stay thumbnails.
+	oppColPct    = 20
+	oppColMinW   = 90
+	oppCellMinDp = 3
+	oppCellMaxDp = 32
 )
 
 // gameScreen is THE game screen, on every display: the bar, whichever columns
@@ -100,7 +108,8 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 					if !opps {
 						return a.gameBoardArea(gtx, eng, view, mode, gmode)
 					}
-					oppW := min(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMaxW))
+					oppW, oppCell := a.opponentPlan(gtx, eng, view, mode)
+					a.oppCell = oppCell
 					return layout.Center.Layout(gtx, func(gtx C) D {
 						gtx.Constraints.Min = image.Point{}
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -110,7 +119,7 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 							}),
 							layout.Rigid(func(gtx C) D {
 								gtx.Constraints.Min.X, gtx.Constraints.Max.X = oppW, oppW
-								return a.opponentBoards(gtx, eng, view)
+								return a.opponentBoards(gtx, eng, view, oppCell)
 							}),
 						)
 					})
@@ -435,6 +444,65 @@ func (a *App) hasOpponents(eng *engine.Engine, mode engine.Mode, gmode config.Ga
 	return len(eng.OpponentSnapshots()) > 0
 }
 
+// opponentPlan is the opponents' column's width and its thumbnails' cell,
+// worked out BEFORE the board fits itself so nothing is squeezed after the
+// fact (gameScreen): the column may fill oppColPct of the board area, at
+// least oppColMinW, the stacked thumbnails are fitted into that share and
+// the row's height — and never past the playfield's own cell: the playfield
+// keeps its move-buffer strip and its pad under it, an opponent's board has
+// only its label over it, and a thumbnail taller than the board it stands
+// beside is no thumbnail. The column is then as wide as they are. The cell
+// is handed to opponentBoards rather than refitted from the width, which
+// would round it down.
+//
+// The playfield's cell depends on the width the column leaves it, so the
+// two settle in two rounds: the thumbnails are capped at the playfield's
+// cell in the whole area, and — where the column that gives them takes
+// enough width to shrink the playfield under that cap — refitted at the
+// cell it has then; a narrower column can only hand width back, so the
+// second answer stands.
+func (a *App) opponentPlan(gtx C, eng *engine.Engine, view gameView, mode engine.Mode) (oppW, cell int) {
+	opps := eng.OpponentSnapshots()
+	if len(opps) == 0 {
+		return 0, 0
+	}
+	first := opps[sortedOpponentIDs(opps)[0]]
+	vis := boardRows(first, eng.ShowHeadroom())
+	own := a.ownBoardPlan(gtx, eng, view, mode).cell
+	oppW, cell = oppColumnFit(gtx, first.Width, vis, len(opps), own)
+	left := gtx
+	left.Constraints.Max.X = max(0, gtx.Constraints.Max.X-oppW)
+	if beside := a.ownBoardPlan(left, eng, view, mode).cell; beside < cell {
+		oppW, cell = oppColumnFit(gtx, first.Width, vis, len(opps), beside)
+	}
+	return oppW, cell
+}
+
+// oppColumnFit is opponentPlan's arithmetic for n stacked boards of
+// width×vis cells in the board area gtx measures: the column's share of the
+// width, the cell that fits n boards (their frames, a label line over each)
+// into that share and the area's height within [oppCellMinDp, oppCellMaxDp]
+// and no larger than maxCell (px, the playfield's own), and the column's
+// width at that cell — the board, its frame, its inset.
+func oppColumnFit(gtx C, width, vis, n, maxCell int) (oppW, cell int) {
+	share := max(gtx.Constraints.Max.X*oppColPct/100, gtx.Dp(oppColMinW))
+	sgtx := gtx
+	sgtx.Constraints.Max.X = share
+	cell = fitCellPx(sgtx, width, vis*n, 1, gtx.Dp(8), n*gtx.Dp(16), oppCellMinDp, oppCellMaxDp)
+	cell = max(min(cell, maxCell), gtx.Dp(oppCellMinDp))
+	return width*cell + 2*max(cell/8, 2) + gtx.Dp(8), cell
+}
+
+// sortedOpponentIDs is the opponents' board keys in their stable order.
+func sortedOpponentIDs(opps map[string]engine.BoardSnapshot) []string {
+	ids := make([]string, 0, len(opps))
+	for id := range opps {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // opponentBoards is the opponents' playfields beside the board: thumbnails in
 // a column down the side, the name over each. Every pixel of the column comes
 // off the playfield — it is capped at oppColPct of the screen and its cells
@@ -443,20 +511,14 @@ func (a *App) hasOpponents(eng *engine.Engine, mode engine.Mode, gmode config.Ga
 //
 // It is centred on the same axis the board area centres on, so the two read
 // as one row rather than as a board with something bolted to its corner.
-func (a *App) opponentBoards(gtx C, eng *engine.Engine, view gameView) D {
+func (a *App) opponentBoards(gtx C, eng *engine.Engine, view gameView, cell int) D {
 	opps := eng.OpponentSnapshots()
 	if len(opps) == 0 {
 		return D{}
 	}
-	ids := make([]string, 0, len(opps))
-	for id := range opps {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := sortedOpponentIDs(opps)
 	first := opps[ids[0]]
 	headroom := eng.ShowHeadroom()
-	vis := boardRows(first, headroom)
-	cell := fitCellPx(gtx, first.Width, vis*len(ids), 1, gtx.Dp(8), len(ids)*gtx.Dp(16), 3, 14)
 	teams := eng.GameMode() == config.ModeTeams
 	return layout.Center.Layout(gtx, func(gtx C) D {
 		var kids []layout.FlexChild

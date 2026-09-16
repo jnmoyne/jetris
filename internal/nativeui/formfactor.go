@@ -65,15 +65,16 @@ const (
 // goroutine's, like every other layout field).
 type screenForm struct {
 	device   deviceKind
-	w, h     int // the frame in dp, at the frame's own (display-stretched) metric
+	w, h     int // the frame in dp, at the display's metric
 	portrait bool
 	compact  bool
 }
 
-// formOf reads the frame's form factor. gtx is the SCALED context (scale.go),
-// so its dp are the ones every other screen measures itself in: a display big
-// enough to stretch the metric reports about the design window's size and
-// stays on the full layout, as it should.
+// formOf reads the frame's form factor. gtx is the frame context at the
+// display's metric (a HiDPI display carries its own PxPerDp), so its dp are
+// the ones every screen measures itself in: a 2560×1440 window at 1× reads
+// as 2560×1440 dp, is never compact, and the room past the default window
+// goes to the panel and the board (app.go, layout).
 func (a *App) formOf(gtx C) screenForm {
 	f := screenForm{device: deviceDesktop}
 	if m := gtx.Metric.PxPerDp; m > 0 {

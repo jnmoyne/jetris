@@ -1147,6 +1147,46 @@ func (a *App) readyBadge(ready bool) layout.Widget {
 	}
 }
 
+// ownBoardPlan is the playfield's fit in the slot gtx measures: as much
+// board as fits after reserving room for the wells beside it, the player's
+// move-buffer strip under it and (while the game is still playable) the
+// control pad — beside the playfield or under it, whichever leaves the
+// bigger board (fitBoardAndPad). gameBoardArea lays the board out from it;
+// the opponents' column (opponentPlan) reads the cell off it, since a
+// thumbnail is never drawn larger than the playfield it stands beside.
+func (a *App) ownBoardPlan(gtx C, eng *engine.Engine, view gameView, mode engine.Mode) padPlan {
+	snap := eng.Snapshot()
+	player := mode == engine.ModePlayer
+	showPad := player && !view.gameOver && a.padVisible()
+	hold := eng.HoldEnabled()
+	nextPieces := eng.NextPieces()
+	wells := sideWells{hold: player && hold, next: player && len(nextPieces) > 0}
+	// The wells' tiles use the board cell size; the plan measures a well
+	// at a candidate cell by laying it out — at its content's size, not
+	// the slot's — into a macro that is never played (the HOLD box
+	// without its Clickable: laid out twice a frame, that would eat its
+	// taps).
+	loose := gtx
+	loose.Constraints.Min = image.Point{}
+	measure := func(w func(gtx C, cell int) D) func(int) int {
+		return func(cell int) int {
+			m := op.Record(loose.Ops)
+			d := w(loose, cell)
+			m.Stop()
+			return d.Size.Y
+		}
+	}
+	if wells.hold {
+		wells.holdH = measure(func(gtx C, cell int) D {
+			return a.holdWellBox(gtx, game.PieceI, false, false, a.wellCell(cell))
+		})
+	}
+	if wells.next {
+		wells.nextH = measure(func(gtx C, cell int) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) })
+	}
+	return a.fitBoardAndPad(gtx, snap.Width, boardRows(snap, eng.ShowHeadroom()), wells, player, showPad, hold)
+}
+
 func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	// Spectator views are still "content" below the shared overlays: the
 	// pre-game countdown (and, in coop, the game-over box) must reach the
@@ -1264,39 +1304,14 @@ func (a *App) gameBoardArea(gtx C, eng *engine.Engine, view gameView, mode engin
 	// board, the opponents' thumbnails included.
 	headroom := eng.ShowHeadroom()
 	board := func(gtx C) D {
-		// Cell size tracks the window: as much board as fits after reserving
-		// room for the wells beside it, the player's move-buffer strip under
-		// it and (while the game is still playable) the control pad — beside
-		// the playfield or under it, whichever leaves the bigger board
-		// (fitBoardAndPad).
+		// Cell size tracks the window (ownBoardPlan): as much board as fits
+		// after reserving room for the wells beside it, the player's
+		// move-buffer strip under it and (while the game is still playable)
+		// the control pad.
 		player := mode == engine.ModePlayer
 		showPad := player && !view.gameOver && a.padVisible()
 		hold := eng.HoldEnabled()
-		wells := sideWells{hold: showHold, next: showNext}
-		// The wells' tiles use the board cell size; the plan measures a well
-		// at a candidate cell by laying it out — at its content's size, not
-		// the slot's — into a macro that is never played (the HOLD box
-		// without its Clickable: laid out twice a frame, that would eat its
-		// taps).
-		loose := gtx
-		loose.Constraints.Min = image.Point{}
-		measure := func(w func(gtx C, cell int) D) func(int) int {
-			return func(cell int) int {
-				m := op.Record(loose.Ops)
-				d := w(loose, cell)
-				m.Stop()
-				return d.Size.Y
-			}
-		}
-		if showHold {
-			wells.holdH = measure(func(gtx C, cell int) D {
-				return a.holdWellBox(gtx, game.PieceI, false, false, a.wellCell(cell))
-			})
-		}
-		if showNext {
-			wells.nextH = measure(func(gtx C, cell int) D { return a.nextWell(gtx, nextPieces, a.wellCell(cell)) })
-		}
-		plan := a.fitBoardAndPad(gtx, snap.Width, boardRows(snap, headroom), wells, player, showPad, hold)
+		plan := a.ownBoardPlan(gtx, eng, view, mode)
 		cell := plan.cell
 		padEnabled := view.status == string(config.GameStatusInProgress)
 		// boardOnly is the playfield itself, with its effects and the
@@ -1582,7 +1597,7 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	dims := eng.Snapshot()
 	headroom := eng.ShowHeadroom()
 	n := max(len(view.players), 1)
-	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), n, n*gtx.Dp(16), gtx.Dp(30), 8, 30)
+	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), n, n*gtx.Dp(16), gtx.Dp(30), 8, boardCellMaxDp)
 
 	// Elimination states drive the per-board overlays: an eliminated player's
 	// board reads OUT while the game goes on, and once it is decided — all
@@ -1681,44 +1696,6 @@ func (a *App) scrollableBoards(gtx C, list *widget.List, items []layout.Widget) 
 	})
 }
 
-func (a *App) opponentColumn(gtx C, eng *engine.Engine) D {
-	opps := eng.OpponentSnapshots()
-	if len(opps) == 0 {
-		return D{}
-	}
-	ids := make([]string, 0, len(opps))
-	for id := range opps {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	// Thumbnail cells scale with the window height: the whole stack of
-	// opponent boards (plus ~34 dp of label/spacing each) should fit.
-	first := opps[ids[0]]
-	headroom := eng.ShowHeadroom()
-	vis := boardRows(first, headroom)
-	cell := fitCellPx(gtx, first.Width, vis*len(ids), 1, 0, len(ids)*gtx.Dp(34), 6, 13)
-	var children []layout.FlexChild
-	for _, id := range ids {
-		snap := opps[id]
-		label := id
-		if eng.GameMode() == config.ModeTeams {
-			// "team-3" → "TEAM D": with more than two teams the sidebar
-			// stacks several opposing boards, so each needs its own name.
-			label = "OPPOSING TEAM"
-			if t, ok := engine.TeamFromBoardKey(id); ok {
-				label = "TEAM " + eng.TeamName(t)
-			}
-		}
-		children = append(children,
-			layout.Rigid(a.body(label, colMuted)),
-			layout.Rigid(spacer(2)),
-			layout.Rigid(a.boardWidget(snap, -1, cell, false, nil, gtx.Now, headroom)),
-			layout.Rigid(spacer(12)),
-		)
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
-}
-
 // spectatorTeamBoards renders every team's shared board side by side for a
 // teams-mode spectator. The spectator engine consumes team 0 as its "own"
 // board and each remaining team via an opponent consumer (see Engine.Start).
@@ -1732,7 +1709,7 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	dims := eng.Snapshot()
 	headroom := eng.ShowHeadroom()
 	teams := eng.TeamCount()
-	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), teams, teams*gtx.Dp(16), gtx.Dp(26), 10, 40)
+	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), teams, teams*gtx.Dp(16), gtx.Dp(26), 10, boardCellMaxDp)
 	opps := eng.OpponentSnapshots()
 	oc := view.outcome
 

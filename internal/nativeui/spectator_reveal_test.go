@@ -409,7 +409,21 @@ func TestLegendOrderBySeatScore(t *testing.T) {
 	if rows[0].p.PlayerID != "b" || rows[0].idx != 1 || rows[1].p.PlayerID != "c" || rows[2].p.PlayerID != "a" {
 		t.Fatalf("ranked order = %+v, want b, c, a with their seats", rows)
 	}
-	if got := rankingLine(roster, map[string]int{"b": 30, "c": 30}, "a", 50); got != "a 50 · b 30 · c 30" {
+	if got := rankingLine(roster, map[string]int{"a": 50, "b": 30, "c": 30}); got != "a 50 · b 30 · c 30" {
 		t.Errorf("rankingLine = %q", got)
+	}
+	// Scored per seat: competitive, or the crew's board scored individually.
+	for _, tc := range []struct {
+		gmode      config.GameMode
+		individual bool
+		want       bool
+	}{
+		{config.ModeCompetitive, false, true}, {config.ModeCompetitive, true, true},
+		{config.ModeCooperative, true, true}, {config.ModeCooperative, false, false},
+		{config.ModeTeams, false, false}, {config.ModeTeams, true, false},
+	} {
+		if got := perSeatScored(tc.gmode, tc.individual); got != tc.want {
+			t.Errorf("perSeatScored(%v, %v) = %v, want %v", tc.gmode, tc.individual, got, tc.want)
+		}
 	}
 }

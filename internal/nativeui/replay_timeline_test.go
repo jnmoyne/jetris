@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -189,9 +190,9 @@ func TestReplayClearMarksFromEvents(t *testing.T) {
 	}
 }
 
-// Competitive games publish no line_clear event, so their markers are read off
-// the boards: locked cells only ever vanish a row at a time, and only a clear
-// can take them.
+// A competitive recording from before its boards announced their clears has
+// its markers read off the boards: locked cells only ever vanish a row at a
+// time, and only a clear can take them.
 func TestDetectClearsFromBoards(t *testing.T) {
 	board := newReplayBoard("p1", 0, config.StandardWidth, 8, 0)
 	var cells []replayCell
@@ -246,5 +247,150 @@ func TestDetectClearsFromBoards(t *testing.T) {
 	}
 	if got := marks[1].off; got < 21*time.Second || got > 21001*time.Millisecond {
 		t.Errorf("second mark at %v, want the batch that cleared (≈21s)", got)
+	}
+}
+
+// Every seat's announced totals — a line_clear's, a scoring lock's with no
+// lines, a game_over's last points — make the timeline's score marks, each
+// on the sender's board (their own in competitive, the boards standing in
+// sorted-name order; their team's in teams); a competitive clear's marker
+// wears that board's color too; and the last totals count at the end of the
+// recording.
+func TestReplayScoreMarksFromEvents(t *testing.T) {
+	const id = "g5"
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	evSubj := func(kind engine.EventKind, pid string) string {
+		return config.ReplayCopySubject(id, config.EventKindSubject(id, string(kind), pid))
+	}
+	rec := config.ArchiveRecord{GameID: id, Mode: config.ModeCompetitive, PlayerCount: 2,
+		Players: []config.PlayerResult{{PlayerID: "bob"}, {PlayerID: "alice"}}}
+	f := newReplayFeed(rec, t0)
+	f.at(0, replayCountdownSubject(id), map[string]int{"seconds": 0})
+	f.at(5*time.Second, config.ReplayCopySubject(id, config.CompetitiveCellSubject(id, "alice", 6, 2)), lockedCell())
+	f.at(5*time.Second+time.Millisecond, evSubj(engine.EventLineClear, "alice"),
+		engine.GameEvent{Kind: engine.EventLineClear, PlayerID: "alice", Score: 300, LinesCleared: 1, TotalScore: 300, TotalLines: 1})
+	f.at(6*time.Second, evSubj(engine.EventLineClear, "bob"),
+		engine.GameEvent{Kind: engine.EventLineClear, PlayerID: "bob", Score: 40, TotalScore: 40})
+	f.at(9*time.Second, evSubj(engine.EventGameOver, "alice"),
+		engine.GameEvent{Kind: engine.EventGameOver, PlayerID: "alice", Score: 340, TotalScore: 340, TotalLines: 1})
+	tl := f.b.finish()
+
+	want := []scoreMark{
+		{off: 5*time.Second + time.Millisecond, player: "alice", board: 0, score: 300, lines: 1},
+		{off: 6 * time.Second, player: "bob", board: 1, score: 40},
+		{off: 9 * time.Second, player: "alice", board: 0, score: 340, lines: 1},
+	}
+	if !slices.Equal(tl.scores, want) {
+		t.Errorf("scores = %+v, want %+v", tl.scores, want)
+	}
+	if len(tl.marks) != 1 || tl.marks[0].color != 0 || tl.marks[0].lines != 1 || tl.marks[0].off != 5*time.Second+time.Millisecond {
+		t.Errorf("marks = %+v, want alice's one clear in her board's color (0)", tl.marks)
+	}
+	if tl.dur != 9*time.Second {
+		t.Errorf("dur = %v, want the game_over's 9s", tl.dur)
+	}
+
+	// Teams: the sender's team's board and color.
+	teams := config.ArchiveRecord{GameID: id, Mode: config.ModeTeams, PlayerCount: 2, TeamCount: 2, TeamSize: 1,
+		Players: []config.PlayerResult{{PlayerID: "alice"}, {PlayerID: "bob", Team: 1}}}
+	f = newReplayFeed(teams, t0)
+	f.at(0, replayCountdownSubject(id), map[string]int{"seconds": 0})
+	f.at(time.Second, evSubj(engine.EventLineClear, "bob"),
+		engine.GameEvent{Kind: engine.EventLineClear, PlayerID: "bob", Team: 1, Score: 300, LinesCleared: 2, TotalScore: 300, TotalLines: 2})
+	tl = f.b.finish()
+	if len(tl.scores) != 1 || tl.scores[0].board != 1 || len(tl.marks) != 1 || tl.marks[0].color != 1 {
+		t.Errorf("teams: scores = %+v, marks = %+v, want bob's on team B's board (1)", tl.scores, tl.marks)
+	}
+
+	// A recording from before events carried totals leaves no score marks.
+	old := newReplayFeed(rec, t0)
+	old.at(0, replayCountdownSubject(id), map[string]int{"seconds": 0})
+	old.at(time.Second, evSubj(engine.EventLineClear, "alice"), engine.GameEvent{Kind: engine.EventLineClear, PlayerID: "alice", LinesCleared: 1})
+	if tl := old.b.finish(); len(tl.scores) != 0 || len(tl.marks) != 1 {
+		t.Errorf("old recording: scores = %+v, marks = %+v, want no totals and the one clear", tl.scores, tl.marks)
+	}
+}
+
+// The scoreboard follows the playhead the way the boards do: forwards a
+// seat's row is its last announced totals, backwards it is rebuilt from
+// nothing — a seek back across a score event with no cell beside it included.
+func TestReplaySeekFollowsScores(t *testing.T) {
+	rec := config.ArchiveRecord{GameID: "g6", Mode: config.ModeCompetitive, PlayerCount: 2,
+		Players: []config.PlayerResult{{PlayerID: "alice"}, {PlayerID: "bob"}}}
+	rv := newReplayView(rec)
+	rv.tl = &replayTimeline{dur: 10 * time.Second, scores: []scoreMark{
+		{off: 2 * time.Second, player: "alice", score: 300, lines: 1},
+		{off: 4 * time.Second, player: "bob", board: 1, score: 40},
+		{off: 8 * time.Second, player: "alice", score: 340, lines: 1},
+	}}
+	for _, tc := range []struct {
+		head       time.Duration
+		alice, bob int
+		bobSeated  bool
+	}{
+		{3 * time.Second, 300, 0, false},
+		{9 * time.Second, 340, 40, true},
+		{5 * time.Second, 300, 40, true}, // backwards: rebuilt from nothing
+		{time.Second, 0, 0, false},
+		{10 * time.Second, 340, 40, true},
+	} {
+		rv.seek(tc.head)
+		bob, seated := rv.scores["bob"]
+		if rv.scores["alice"].score != tc.alice || bob.score != tc.bob || seated != tc.bobSeated {
+			t.Errorf("seek(%v): scores = %+v, want alice %d, bob %d (seated %v)", tc.head, rv.scores, tc.alice, tc.bob, tc.bobSeated)
+		}
+	}
+}
+
+// A competitive recording's markers come from its line_clear events where a
+// board announced them, and off the board where it did not — so a recording
+// from before competitive boards published them plays back as it did, and a
+// newer one is never marked twice for the one clear.
+func TestCompetitiveClearMarksPreferEvents(t *testing.T) {
+	const id = "g7"
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	rec := config.ArchiveRecord{GameID: id, Mode: config.ModeCompetitive, PlayerCount: 2,
+		Players: []config.PlayerResult{{PlayerID: "alice"}, {PlayerID: "bob"}}}
+	cell := func(pid string, r, c int) string {
+		return config.ReplayCopySubject(id, config.CompetitiveCellSubject(id, pid, r, c))
+	}
+	// On both boards a row fills at 1s and goes at 2s: a clear detectClears
+	// reads off either board.
+	feed := func(announce bool) *replayTimeline {
+		f := newReplayFeed(rec, t0)
+		f.at(0, replayCountdownSubject(id), map[string]int{"seconds": 0})
+		for _, pid := range []string{"alice", "bob"} {
+			for c := 0; c < config.StandardWidth; c++ {
+				f.at(time.Second+time.Duration(c)*time.Microsecond, cell(pid, 7, c), lockedCell())
+			}
+			for c := 0; c < config.StandardWidth; c++ {
+				f.at(2*time.Second+time.Duration(c)*time.Microsecond, cell(pid, 7, c), game.Cell{})
+			}
+		}
+		if announce {
+			// Only alice's board announced its clear.
+			f.at(2*time.Second+time.Millisecond, config.ReplayCopySubject(id, config.EventKindSubject(id, string(engine.EventLineClear), "alice")),
+				engine.GameEvent{Kind: engine.EventLineClear, PlayerID: "alice", Score: 100, LinesCleared: 1, TotalScore: 100, TotalLines: 1})
+		}
+		return f.b.finish()
+	}
+	for _, announce := range []bool{true, false} {
+		tl := feed(announce)
+		if len(tl.marks) != 2 {
+			t.Fatalf("announce=%v: marks = %+v, want one per board", announce, tl.marks)
+		}
+		byBoard := map[int]clearMark{}
+		for _, m := range tl.marks {
+			byBoard[m.color] = m
+		}
+		if len(byBoard) != 2 || byBoard[0].lines != 1 || byBoard[1].lines != 1 {
+			t.Errorf("announce=%v: marks = %+v, want one line on each board", announce, tl.marks)
+		}
+		if announce && byBoard[0].off != 2*time.Second+time.Millisecond {
+			t.Errorf("alice's marker at %v, want the event's time", byBoard[0].off)
+		}
+		if byBoard[1].off < 2*time.Second || byBoard[1].off > 2*time.Second+100*time.Microsecond {
+			t.Errorf("announce=%v: bob's marker at %v, want the board's collapse (≈2s)", announce, byBoard[1].off)
+		}
 	}
 }

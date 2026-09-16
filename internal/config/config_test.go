@@ -930,7 +930,9 @@ func TestArchiveSurvivalRanking(t *testing.T) {
 }
 
 // A record from before the version field carries 0-based levels: Normalize
-// raises every level it holds by one and stamps the version, once; a
+// raises every level it holds by one and stamps the version it now reads
+// as — 2, the levels' version, never the current one, since what a 2 lacks
+// (each player's own score, OwnScores) cannot be recomputed — once; a
 // current record is left alone.
 func TestArchiveRecordNormalizeLegacyLevels(t *testing.T) {
 	legacy := ArchiveRecord{
@@ -940,8 +942,11 @@ func TestArchiveRecordNormalizeLegacyLevels(t *testing.T) {
 		TeamLevels: []int{2, 0},
 	}
 	legacy.Normalize()
-	if legacy.Version != ArchiveRecordVersion {
-		t.Fatalf("version = %d, want %d", legacy.Version, ArchiveRecordVersion)
+	if legacy.Version != archiveRecordLevels1Based {
+		t.Fatalf("version = %d, want %d", legacy.Version, archiveRecordLevels1Based)
+	}
+	if legacy.OwnScores() {
+		t.Fatal("a normalized legacy co-op record claims per-player own scores")
 	}
 	if legacy.Players[0].Level != 1 || legacy.Players[1].Level != 4 {
 		t.Fatalf("player levels = %d/%d, want 1/4", legacy.Players[0].Level, legacy.Players[1].Level)
@@ -967,5 +972,35 @@ func TestArchiveRecordNormalizeLegacyLevels(t *testing.T) {
 	current.Normalize()
 	if current.Players[0].Level != 5 {
 		t.Fatalf("a current record's level moved to %d", current.Players[0].Level)
+	}
+}
+
+// OwnScores: a record written at version 3 carries every player's own
+// score in every mode; a 2 (whose shared-board rows mixed the board's score
+// with the survivors' own) only where the seats were scored on their own —
+// competitive, and the crew's board scored individually — and a 2 stays a 2
+// through Normalize.
+func TestArchiveRecordOwnScores(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rec  ArchiveRecord
+		want bool
+	}{
+		{"v3 co-op", ArchiveRecord{Version: 3, Mode: ModeCooperative}, true},
+		{"v3 teams", ArchiveRecord{Version: 3, Mode: ModeTeams}, true},
+		{"v2 co-op", ArchiveRecord{Version: 2, Mode: ModeCooperative}, false},
+		{"v2 teams", ArchiveRecord{Version: 2, Mode: ModeTeams}, false},
+		{"v2 competitive", ArchiveRecord{Version: 2, Mode: ModeCompetitive}, true},
+		{"v2 individual", ArchiveRecord{Version: 2, Mode: ModeCooperative, Scoring: ScoringIndividual}, true},
+		{"no version, co-op", ArchiveRecord{Mode: ModeCooperative}, false},
+	} {
+		rec := tc.rec
+		rec.Normalize()
+		if got := rec.OwnScores(); got != tc.want {
+			t.Errorf("%s: OwnScores() = %v, want %v", tc.name, got, tc.want)
+		}
+		if tc.rec.Version == 2 && rec.Version != 2 {
+			t.Errorf("%s: Normalize moved a 2 to %d", tc.name, rec.Version)
+		}
 	}
 }

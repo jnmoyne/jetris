@@ -143,15 +143,20 @@ type replayView struct {
 	total  int             // messages the copy holds, from its marker (0 = unknown)
 	err    string
 
-	head    time.Duration // the playhead: everything about the picture on screen
-	cursor  int           // cells of the timeline applied to the boards
-	playing bool
-	speed   float64
-	anchor  time.Time // frame clock the playhead was last advanced from
-	shownN  int       // countdown number currently on screen (-1 = none)
-	shownAt time.Time // when it appeared, for the pop animation
-	done    bool      // the playhead has reached the end: the ending is revealed
-	doneAt  time.Time
+	head   time.Duration // the playhead: everything about the picture on screen
+	cursor int           // cells of the timeline applied to the boards
+	// The scoreboard at the playhead: per seat, the last of the timeline's
+	// score marks at or before it — walked by seek the way cursor walks the
+	// cells (nil until a seat has scored).
+	scoreCursor int
+	scores      map[string]scoreMark
+	playing     bool
+	speed       float64
+	anchor      time.Time // frame clock the playhead was last advanced from
+	shownN      int       // countdown number currently on screen (-1 = none)
+	shownAt     time.Time // when it appeared, for the pop animation
+	done        bool      // the playhead has reached the end: the ending is revealed
+	doneAt      time.Time
 
 	// The scrub track as it was last laid out (replayScrubber), in pixels
 	// from the scrubber's own left edge: what a drag's position is measured
@@ -188,6 +193,78 @@ func (rv *replayView) seek(head time.Duration) {
 		c := cells[rv.cursor]
 		rv.boards[c.board].rows[c.row].Cells[c.col] = c.cell
 	}
+	// The scoreboard walks the same way: forwards from where it stopped,
+	// backwards from nothing — a seat's row is its last announced totals.
+	marks := rv.tl.scores
+	m := sort.Search(len(marks), func(i int) bool { return marks[i].off > head })
+	if m < rv.scoreCursor {
+		rv.scores, rv.scoreCursor = nil, 0
+	}
+	for ; rv.scoreCursor < m; rv.scoreCursor++ {
+		if rv.scores == nil {
+			rv.scores = make(map[string]scoreMark)
+		}
+		s := marks[rv.scoreCursor]
+		rv.scores[s.player] = s
+	}
+}
+
+// boardSubs is the replay's scoreboard at the playhead, one line under each
+// board's label — what a spectator's screen showed at that moment: a
+// competitive board's score and level; a team's total and level, then each
+// member's own points; the crew's total and level, then each member's
+// contribution — or, on the crew's board scored per seat, its seats ranked
+// best first and the shared level. Empty for a recording that carries no
+// totals (one made before line_clear events announced them), so the strip
+// keeps no room for it.
+func (rv *replayView) boardSubs() []string {
+	subs := make([]string, len(rv.boards))
+	if rv.tl == nil || len(rv.tl.scores) == 0 {
+		return subs
+	}
+	type seat struct {
+		name         string
+		score, lines int
+	}
+	seats := make([][]seat, len(rv.boards))
+	for _, p := range rv.rec.Players {
+		board := 0
+		switch rv.rec.Mode {
+		case config.ModeCompetitive:
+			i, ok := rv.byPlayer[p.PlayerID]
+			if !ok {
+				continue
+			}
+			board = i
+		case config.ModeTeams:
+			board = p.Team
+		}
+		if board < 0 || board >= len(seats) {
+			continue
+		}
+		m := rv.scores[p.PlayerID]
+		seats[board] = append(seats[board], seat{agentName(p.PlayerID, p.Agent), m.score, m.lines})
+	}
+	for i, ss := range seats {
+		sort.SliceStable(ss, func(a, b int) bool { return ss[a].score > ss[b].score })
+		total, lines := 0, 0
+		parts := make([]string, 0, len(ss))
+		for _, s := range ss {
+			total += s.score
+			lines += s.lines
+			parts = append(parts, fmt.Sprintf("%s %d", s.name, s.score))
+		}
+		switch {
+		case len(ss) == 0:
+		case rv.rec.Mode == config.ModeCompetitive:
+			subs[i] = fmt.Sprintf("%d · lvl %d", ss[0].score, engine.PlayerLevel(ss[0].lines))
+		case rv.rec.IndividualScoring():
+			subs[i] = fmt.Sprintf("%s · lvl %d", joinParts(parts), engine.PlayerLevel(lines))
+		default:
+			subs[i] = fmt.Sprintf("%d · lvl %d — %s", total, engine.PlayerLevel(lines), joinParts(parts))
+		}
+	}
+	return subs
 }
 
 // replayMaxFrameStep caps how much wall time a single frame may carry the
@@ -493,8 +570,9 @@ func (a *App) layoutReplay(gtx C) D {
 		rv.done, rv.doneAt = end, gtx.Now
 	}
 	boards := make([]labeledBoard, len(rv.boards))
+	subs := rv.boardSubs() // the scoreboard where the playhead stands
 	for i, b := range rv.boards {
-		boards[i] = labeledBoard{label: b.label, idx: b.idx, snap: b.snapshot(rv.tl.headroom), headroom: rv.tl.headroom}
+		boards[i] = labeledBoard{label: b.label, sub: subs[i], idx: b.idx, snap: b.snapshot(rv.tl.headroom), headroom: rv.tl.headroom}
 	}
 	reveal := rv.done
 	if reveal {

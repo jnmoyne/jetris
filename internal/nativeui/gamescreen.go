@@ -570,7 +570,8 @@ func (a *App) opponentBoards(gtx C, eng *engine.Engine, view gameView, cell int)
 // elides rather than wraps, so the bar never grows a second line.
 func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.GameMode) D {
 	line := fmt.Sprintf("%d  LV%d", view.score, view.level)
-	if gmode == config.ModeTeams {
+	switch {
+	case gmode == config.ModeTeams:
 		// "A 1200 · B 940 · C 310  LV3" — every team, in index order, in the
 		// room the bar has.
 		parts := make([]string, 0, len(view.teamScores))
@@ -578,6 +579,15 @@ func (a *App) barStats(gtx C, view gameView, mode engine.Mode, gmode config.Game
 			parts = append(parts, fmt.Sprintf("%s %d", view.teamName(t), view.teamScore(t)))
 		}
 		line = fmt.Sprintf("%s  LV%d", strings.Join(parts, " · "), view.level)
+	case mode == engine.ModeSpectator && view.perSeat:
+		// A spectator on a board scored per seat has no score of their own:
+		// the ranking instead — "alice 1200 · bob 940" — and after it the
+		// crew's shared level where the board has one (competitive boards
+		// each fall at their own).
+		line = rankingLine(view.players, view.playerScores)
+		if gmode == config.ModeCooperative {
+			line += fmt.Sprintf("  LV%d", view.level)
+		}
 	}
 	col := colFg
 	if view.linkDown > 0 {

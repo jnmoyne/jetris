@@ -2197,7 +2197,7 @@ func (g *Game) archive(ctx context.Context) {
 		return // someone else won the archive CAS
 	}
 	record := map[string]any{
-		"version": 2, // the archive record format: levels are 1-based (config.ArchiveRecordVersion)
+		"version": 3, // the archive record format: levels 1-based, every player's score their own locks' total (config.ArchiveRecordVersion)
 		"game_id": g.id, "mode": g.mode, "player_count": meta.int("player_count"),
 		"players":      g.playerResults(),
 		"started_at":   firstNonEmpty(meta.str("started_at"), meta.str("created_at")),
@@ -2291,7 +2291,9 @@ func (g *Game) playerResults() []map[string]any {
 		if p.PlayerID == g.a.name {
 			score, level, lines, pieces = g.score, levelOf(g.lines), g.lines, g.pieceIdx
 		} else if ev, ok := g.results[p.PlayerID]; ok {
-			score, level, lines, pieces = ev.Score, ev.Level, ev.TotalLines, ev.PieceCount
+			// Their game_over's total_score: the sender's own locks' total
+			// (its score is the board's — shared on a crew's or a team's).
+			score, level, lines, pieces = ev.TotalScore, ev.Level, ev.TotalLines, ev.PieceCount
 		} else if tot, ok := g.senderTotals[p.PlayerID]; ok {
 			// Never topped out (a coop survivor, an alive teams winner):
 			// their cumulative line-clear totals are the best record we have.

@@ -37,3 +37,10 @@ func (e *Engine) ctxForTest() context.Context {
 	}
 	return context.Background()
 }
+
+// SetOwnTotalsForTest seeds this player's own cumulative totals — the points
+// and lines of their own locks — as those locks would have.
+func (e *Engine) SetOwnTotalsForTest(score, lines int) {
+	e.ownScore.Store(int64(score))
+	e.ownClearLines.Store(int64(lines))
+}

@@ -844,12 +844,26 @@ type PlayerResult struct {
 //
 //   - 1, or absent (every record written before the field): levels are
 //     0-based (`lines / 10`, 19 at most);
-//   - 2: levels are Tetris Worlds' (game.Level): 1 at the start, one more
-//     every ten lines, 15 at most.
+//   - 2: levels are the speed curve's (game.Level): 1 at the start, one more
+//     every ten lines, 15 at most;
+//   - 3: every player's score is their OWN locks' total in every mode — the
+//     cumulative total their line_clear and game_over events announce. In a
+//     record of 2 the rows of a shared board (the crew's, a team's) are
+//     mixed: the archiving player's and every topped-out player's carry the
+//     board's shared score, the survivors' their own (OwnScores).
 //
-// Normalize brings a record read from the stream up to date, so the readers
-// (the lobby's history, the replay viewer) see one meaning.
-const ArchiveRecordVersion = 2
+// Normalize brings a record read from the stream up to the meaning the
+// readers (the lobby's history, the replay viewer) share where it can — the
+// levels — and leaves the version saying what it could not.
+const ArchiveRecordVersion = 3
+
+// archiveRecordLevels1Based is the first record version whose levels are the
+// speed curve's; archiveRecordOwnScores the first whose per-player scores
+// are each player's own in every mode.
+const (
+	archiveRecordLevels1Based = 2
+	archiveRecordOwnScores    = 3
+)
 
 // ArchiveRecord is published to the archive stream when a game finishes.
 type ArchiveRecord struct {
@@ -878,12 +892,14 @@ type ArchiveRecord struct {
 	Chat         []ChatLine     `json:"chat,omitempty"`          // the game's chat history (last ArchiveChatCap lines), captured before the chat purge
 }
 
-// Normalize brings a record decoded from the archive stream up to
-// ArchiveRecordVersion: a record from before the field (Version 0 or 1)
-// carries 0-based levels, which read one lower than the same play would be
-// scored today — every level it holds moves up by one. Idempotent.
+// Normalize brings a record decoded from the archive stream up to date where
+// it can: a record from before the version field (Version 0 or 1) carries
+// 0-based levels, which read one lower than the same play would be scored
+// today — every level it holds moves up by one, and the record reads as a
+// 2. What a record of 2 lacks (OwnScores) cannot be recomputed, so its
+// version stays 2 and the readers show what it has. Idempotent.
 func (r *ArchiveRecord) Normalize() {
-	if r.Version >= ArchiveRecordVersion {
+	if r.Version >= archiveRecordLevels1Based {
 		return
 	}
 	for i := range r.Players {
@@ -895,7 +911,16 @@ func (r *ArchiveRecord) Normalize() {
 	for t := range r.TeamLevels {
 		r.TeamLevels[t]++
 	}
-	r.Version = ArchiveRecordVersion
+	r.Version = archiveRecordLevels1Based
+}
+
+// OwnScores reports whether the record's per-player scores are each player's
+// own locks' total — what the history can list beside every name on a
+// shared board. True of every record written at version 3 or later; a
+// record scored per seat (competitive, the crew's board scored individually)
+// always carried them.
+func (r *ArchiveRecord) OwnScores() bool {
+	return r.Version >= archiveRecordOwnScores || r.Mode == ModeCompetitive || r.IndividualScoring()
 }
 
 // Teams is the number of teams the archived game was played between,

@@ -1620,14 +1620,16 @@ func archiveHeadlineLevel(r config.ArchiveRecord) int {
 }
 
 // archiveRosterLines builds the PLAYERS column's colored lines for a record,
-// winner(s) first and highlighted in gold: competitive lists players by
+// winner(s) first and highlighted in gold: a board scored per seat —
+// competitive, or the crew's board scored individually — lists players by
 // winner-then-score with each score/level, teams one line per team (winner
-// first, its members and totals), cooperative just the shared roster.
+// first, its members and totals), the crew's shared run its roster with
+// each member's share of the score.
 func archiveRosterLines(r config.ArchiveRecord) []rosterLine {
-	switch r.Mode {
-	case config.ModeTeams:
+	switch {
+	case r.Mode == config.ModeTeams:
 		return teamRosterLines(r)
-	case config.ModeCooperative:
+	case r.Mode == config.ModeCooperative && !r.IndividualScoring():
 		return coopRosterLines(r)
 	default:
 		return competitiveRosterLines(r)
@@ -1698,13 +1700,30 @@ func teamRosterLines(r config.ArchiveRecord) []rosterLine {
 	return out
 }
 
+// coopRosterLines is the crew's roster: each member's share of the shared
+// score beside their name, best first — or the names alone, for a record
+// from before each player's own score was kept (OwnScores).
 func coopRosterLines(r config.ArchiveRecord) []rosterLine {
-	members := make([]string, 0, len(r.Players))
-	for _, p := range r.Players {
-		members = append(members, agentName(p.PlayerID, p.Agent))
+	if !r.OwnScores() {
+		members := make([]string, 0, len(r.Players))
+		for _, p := range r.Players {
+			members = append(members, agentName(p.PlayerID, p.Agent))
+		}
+		sort.Strings(members)
+		return []rosterLine{{strings.Join(members, ", "), colFg}}
 	}
-	sort.Strings(members)
-	return []rosterLine{{strings.Join(members, ", "), colFg}}
+	players := append([]config.PlayerResult(nil), r.Players...)
+	sort.SliceStable(players, func(i, j int) bool {
+		if players[i].Score != players[j].Score {
+			return players[i].Score > players[j].Score
+		}
+		return players[i].PlayerID < players[j].PlayerID
+	})
+	parts := make([]string, 0, len(players))
+	for _, p := range players {
+		parts = append(parts, fmt.Sprintf("%s %d", agentName(p.PlayerID, p.Agent), p.Score))
+	}
+	return []rosterLine{{strings.Join(parts, " · "), colFg}}
 }
 
 // archiveLine summarizes a finished game for the history list.

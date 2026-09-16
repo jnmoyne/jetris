@@ -29,6 +29,7 @@ const (
 	UpdateHold             // the hold slot changed (read via Engine.HeldPiece / HoldUsed)
 	UpdateStepAcked        // a step's batch was acknowledged (or a lost pipeline repaired): the acked board (Engine.Snapshot) moved on before the echo
 	UpdateAward            // a lock scored a clear or a T-spin — ours, or a teammate's on our shared board: the Guideline's name for it (Clear), its points (Score) and who made it (PlayerID) — the HUD's banner
+	UpdatePlayerScores     // another seat's cumulative totals moved (read via Engine.PlayerScores / PlayerLines): the per-player scoreboard every screen lists — no payload
 )
 
 // EngineUpdate is the event sent from engine to UI.

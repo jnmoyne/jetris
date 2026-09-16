@@ -66,10 +66,12 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// authoritative source; EventGameOver's Team field is the fallback for
 	// players missing from the snapshot.
 	playerTeams := make(map[string]int)
-	// Add our own data first
+	// Add our own data first: our own locks' total (OwnScore, what our
+	// line_clear events announce), which on a shared board is our share of
+	// the score the record's total_score / team_scores carry.
 	playerResults[eng.PlayerID()] = config.PlayerResult{
 		PlayerID:   eng.PlayerID(),
-		Score:      eng.Score(),
+		Score:      eng.OwnScore(),
 		Level:      eng.AchievedLevel(),
 		Lines:      eng.OwnLines(),
 		PieceCount: eng.PieceIdx(),
@@ -105,9 +107,12 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 						playerTeams[ev.PlayerID] = ev.Team
 					}
 					if _, exists := playerResults[ev.PlayerID]; !exists {
+						// The event's total_score is the sender's own locks'
+						// total; its score is the board's (the shared one on
+						// a crew's or a team's board).
 						playerResults[ev.PlayerID] = config.PlayerResult{
 							PlayerID:   ev.PlayerID,
-							Score:      ev.Score,
+							Score:      ev.TotalScore,
 							Level:      ev.Level,
 							Lines:      ev.TotalLines,
 							PieceCount: ev.PieceCount,

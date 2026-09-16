@@ -951,6 +951,12 @@ func (e *Engine) TeamLevels() []int {
 // per-player line count; on a shared board the crew's total is TotalLines).
 func (e *Engine) OwnLines() int { return int(e.ownClearLines.Load()) }
 
+// OwnScore is the points this player's own locks earned — the cumulative
+// total their line_clear events announce (the archive's per-player score),
+// which on a shared board is their contribution to the score Score() shows
+// and on a private one is that score itself.
+func (e *Engine) OwnScore() int { return int(e.ownScore.Load()) }
+
 // AchievedLevel returns the level reached by this engine's line total (own
 
 // clears plus folded shared-board clears). Used for the end-of-game archive

@@ -598,6 +598,7 @@ func TestScreenSnapshots(t *testing.T) {
 		for _, tc := range cases {
 			a := newTestApp()
 			a.eng = engine.New(nil, "g1", "alice", "bob", tc.gmode, engine.ModePlayer, 0, tc.team, 0)
+			a.eng.SetOwnTotalsForTest(4200, 33) // the legend's own row reads the engine live
 			a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Team: 1}, {PlayerID: "bob", Name: "bob", Agent: true}}
 			a.screen = screenGame
 			a.gameOver, a.won, a.score, a.level = true, true, 4200, 4
@@ -615,6 +616,7 @@ func TestScreenSnapshots(t *testing.T) {
 		// fireworks but never over a modal.
 		a := newTestApp()
 		a.eng = engine.New(nil, "g1", "alice", "bob", config.ModeCompetitive, engine.ModePlayer, 0, 0, 0)
+		a.eng.SetOwnTotalsForTest(4200, 33)
 		a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice"}, {PlayerID: "bob", Name: "bob", Agent: true}}
 		a.screen = screenGame
 		a.gameStatus = string(config.GameStatusFinished)
@@ -691,6 +693,9 @@ func snapshotSpectateDone(t *testing.T, w *headless.Window, dir string) {
 			gtx.Now = now
 			view := a.snapshotGame(now)
 			view.outcome = tc.oc
+			// The scoreboard as the spectator's engine folded it: the same
+			// totals the outcome ranks by.
+			view.playerScores, view.perSeat = tc.oc.scores, perSeatScored(tc.gmode, false)
 			fillRect(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, colBg)
 			layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -763,6 +768,17 @@ func loadedReplay(rec config.ArchiveRecord) *replayView {
 			color: i % max(len(rv.boards), 1),
 			lines: []int{1, 1, 2, 1, 4, 1, 2, 3}[i%8],
 		})
+	}
+	// And every seat's totals climbing with the clears — the scoreboard the
+	// boards carry under their labels.
+	if n := len(rec.Players); n > 0 {
+		totals := make([]scoreMark, n)
+		for i, m := range tl.marks {
+			s := &totals[i%n]
+			s.score += 100 * m.lines * (1 + i/10)
+			s.lines += m.lines
+			tl.scores = append(tl.scores, scoreMark{off: m.off, player: rec.Players[i%n].PlayerID, board: m.color, score: s.score, lines: s.lines})
+		}
 	}
 	rv.tl = tl
 	rv.head = 2*time.Minute + 30*time.Second

@@ -53,6 +53,12 @@ type gameView struct {
 	shakeStart           time.Time                 // own board: garbage impact-shake epoch (zero = idle)
 	fireworks            *fireworksShow            // nil unless this player/team won (competitive/teams)
 	outcome              liveOutcome               // the decided game's reveal — a spectator's, or a winning player's (zero while undecided, and on a beaten player's screen)
+	// The per-player scoreboard (frameScores): every seat's cumulative own
+	// score and line count as this engine folded them, our own row live —
+	// the legend's figures, the bar's ranking, and the game-over ranking.
+	playerScores, playerLines map[string]int
+	me                        string // the local player (empty on a spectator's screen)
+	perSeat                   bool   // the game is scored per seat — competitive, or the crew's board scored individually — so the scoreboard is a ranking (perSeatScored)
 	// Keyboard owner while the keys drive the piece (handleGameFocus): the
 	// white focus outline goes on whichever of the two holds them.
 	boardFocused, chatFocused bool
@@ -207,6 +213,8 @@ func (a *App) layoutGameEngine(gtx C, eng *engine.Engine) D {
 	live := !a.tutorialUp()
 
 	view := a.snapshotGame(gtx.Now)
+	view.playerScores, view.playerLines, view.me = frameScores(eng)
+	view.perSeat = perSeatScored(gmode, eng.IndividualScoring())
 	if view.finished && live {
 		view.pinned = a.replayPinned(eng.GameID()) // the lobby's word, asked outside the lock
 	}
@@ -686,10 +694,14 @@ func (a *App) gameHUD(gtx C, eng *engine.Engine, view gameView, mode engine.Mode
 			children = append(children,
 				layout.Rigid(a.tutMarked(tutHUDStats, a.hudStatColored("TEAM "+eng.TeamName(t), val, valCol))))
 		}
-	} else {
+	} else if !(mode == engine.ModeSpectator && view.perSeat) {
+		// A spectator on a board scored per seat has no score of their own
+		// to show: the legend above ranks every seat's.
 		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("SCORE", view.score))))
 	}
-	if !(gmode == config.ModeTeams && mode == engine.ModeSpectator) {
+	if !(mode == engine.ModeSpectator && (gmode == config.ModeTeams || gmode == config.ModeCompetitive)) {
+		// Teams and competitive spectators read each board's level inline
+		// (the team rows, the legend); a crew's one board has one level.
 		children = append(children, layout.Rigid(a.tutMarked(tutHUDStats, a.hudStat("LEVEL", view.level))))
 	}
 	if tier := eng.Survival(); tier != config.SurvivalNone {
@@ -950,20 +962,31 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 	// bold italic with a trophy, the beaten in their board colors — no more
 	// "(out)", every beaten player is out.
 	oc := view.outcome
-	// A board scored per seat lists every seat's own score beside its name,
-	// best first — the live ranking the game is about.
-	individual := eng.IndividualScoring()
-	var scores map[string]int
-	if individual {
-		scores = eng.PlayerScores()
-		scores[eng.PlayerID()] = view.score
+	// Every seat's score beside its name (view.playerScores, frameScores).
+	// A board scored per seat — competitive, or the crew's board scored
+	// individually — lists each seat's own score, best first: the live
+	// ranking the game is about, our own row in the accent (a competitive
+	// spectator, who has no LEVEL stat, reads each player's level here too,
+	// every private board falling at its own). A shared board lists each
+	// member's own contribution to the one score, in the roster's order and
+	// muted: the crew's total is the HUD's SCORE stat.
+	spectator := eng.InitialMode() == engine.ModeSpectator
+	var ranked map[string]int // set: the rows rank by it
+	if view.perSeat {
+		ranked = view.playerScores
 	}
 	playerRow := func(i int, p lobby.PlayerSummary) layout.FlexChild {
 		return layout.Rigid(func(gtx C) D {
 			elim := (gmode == config.ModeCompetitive || gmode == config.ModeTeams) && eng.IsEliminated(p.PlayerID)
 			name := agentName(p.Name, p.Agent)
-			if individual {
-				name = fmt.Sprintf("%s  %d", name, scores[p.PlayerID])
+			contribution := ""
+			if view.perSeat {
+				name = fmt.Sprintf("%s  %d", name, view.playerScores[p.PlayerID])
+				if spectator && gmode == config.ModeCompetitive {
+					name += fmt.Sprintf(" · lvl %d", engine.PlayerLevel(view.playerLines[p.PlayerID]))
+				}
+			} else {
+				contribution = fmt.Sprintf("%d", view.playerScores[p.PlayerID])
 			}
 			textCol, won := colFg, false
 			switch {
@@ -974,6 +997,8 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 			case elim:
 				name += " (out)"
 				textCol = colMuted
+			case view.perSeat && p.PlayerID == view.me:
+				textCol = colAccent
 			}
 			// In a split-pieces game the seat's ration goes under its name:
 			// which of the seven types this player — seatmate or opponent —
@@ -986,6 +1011,12 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 							layout.Rigid(func(gtx C) D { return swatch(gtx, render.PlayerColorRGBA(i), 12) }),
 							layout.Rigid(hSpacer(6)),
 							layout.Rigid(a.boardLabel(name, textCol, won)),
+							layout.Rigid(func(gtx C) D {
+								if contribution == "" {
+									return D{}
+								}
+								return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.body(contribution, colMuted))
+							}),
 							layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(12))),
 						)
 					}),
@@ -1030,7 +1061,7 @@ func (a *App) legend(gtx C, eng *engine.Engine, view gameView, gmode config.Game
 	}
 
 	children = append(children, layout.Rigid(a.header("PLAYERS")))
-	for _, r := range legendOrder(view.players, scores) {
+	for _, r := range legendOrder(view.players, ranked) {
 		children = append(children, playerRow(r.idx, r.p))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
@@ -1079,16 +1110,39 @@ func legendOrder(players []lobby.PlayerSummary, scores map[string]int) []legendR
 }
 
 // rankingLine writes every seat's score on a board scored per seat, best
-// first — "alice 1200 · bob 940 · carol 310" — our own from the live view
-// (the engine's own total), the others from the totals their events
-// carried.
-func rankingLine(players []lobby.PlayerSummary, scores map[string]int, me string, myScore int) string {
-	scores[me] = myScore
+// first — "alice 1200 · bob 940 · carol 310" — from the frame's scoreboard
+// (view.playerScores: our own live, the others' as their events carried
+// them).
+func rankingLine(players []lobby.PlayerSummary, scores map[string]int) string {
 	parts := make([]string, 0, len(players))
 	for _, r := range legendOrder(players, scores) {
 		parts = append(parts, fmt.Sprintf("%s %d", agentName(r.p.Name, r.p.Agent), scores[r.p.PlayerID]))
 	}
 	return joinParts(parts)
+}
+
+// perSeatScored reports whether a game's seats are scored on their own —
+// competitive, or the crew's one board scored individually — so that its
+// scoreboard is a ranking, best first, rather than one shared total.
+func perSeatScored(gmode config.GameMode, individual bool) bool {
+	return gmode == config.ModeCompetitive || (gmode == config.ModeCooperative && individual)
+}
+
+// frameScores is the frame's per-player scoreboard: every seat's cumulative
+// own score and line count as the engine folded them from the seats'
+// line_clear events (Engine.PlayerScores / PlayerLines), with the local
+// player's own row read live off their engine — their own totals reach the
+// folded map only as their events echo back, a round trip behind the number
+// the HUD's SCORE stat shows. A spectator has no row of their own. Read once
+// per frame, outside a.mu, like every other engine read the layout makes.
+func frameScores(eng *engine.Engine) (scores, lines map[string]int, me string) {
+	scores, lines = eng.PlayerScores(), eng.PlayerLines()
+	if eng.InitialMode() == engine.ModeSpectator {
+		return scores, lines, ""
+	}
+	me = eng.PlayerID()
+	scores[me], lines[me] = eng.OwnScore(), eng.OwnLines()
+	return scores, lines, me
 }
 
 // rationRow writes one seat's piece ration — the types that seat's sequence
@@ -1616,6 +1670,10 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 					layout.Rigid(func(gtx C) D {
 						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 							layout.Rigid(a.boardLabel(p.Name, render.PlayerColorRGBA(i), oc.wins(p.PlayerID))),
+							layout.Rigid(func(gtx C) D {
+								// The board's live score beside its owner's name.
+								return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.body(fmt.Sprintf("%d", view.playerScores[p.PlayerID]), colMuted))
+							}),
 							layout.Rigid(a.speakerMark(view.voice, p.PlayerID, unit.Dp(10))),
 						)
 					}),
@@ -1735,7 +1793,15 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 				teamCol := render.PlayerColorRGBA(b.team)
 				won := oc.decided && oc.winTeam == b.team
 				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(a.boardLabel(b.label, teamCol, won)),
+					layout.Rigid(func(gtx C) D {
+						// The team's name and, beside it, its live score.
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(a.boardLabel(b.label, teamCol, won)),
+							layout.Rigid(func(gtx C) D {
+								return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, a.body(fmt.Sprintf("%d", view.teamScore(b.team)), colMuted))
+							}),
+						)
+					}),
 					layout.Rigid(spacer(4)),
 					layout.Rigid(func(gtx C) D {
 						if !b.ok {
@@ -1824,11 +1890,14 @@ func (a *App) gameOverBox(gtx C, eng *engine.Engine, gmode config.GameMode, view
 						// A board scored per seat: our own score, then everyone
 						// ranked — the game's verdict is the ranking.
 						scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
-						ranking = rankingLine(view.players, eng.PlayerScores(), eng.PlayerID(), view.score)
+						ranking = rankingLine(view.players, view.playerScores)
 					case gmode == config.ModeCooperative:
 						scoreLine = fmt.Sprintf("Score: %d (level %d)", view.score, view.level)
 					case gmode == config.ModeCompetitive:
+						// Our own score, then everyone's best first: the score
+						// decides nothing here, but it is what the history keeps.
 						scoreLine = fmt.Sprintf("Your score: %d (level %d)", view.score, view.level)
+						ranking = rankingLine(view.players, view.playerScores)
 					case gmode == config.ModeTeams:
 						// Our team first, then the rest in index order — with
 						// six teams the line is long, so the one that matters

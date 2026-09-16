@@ -148,17 +148,25 @@ func (a *App) archiveBoards(gtx C, boards []config.BoardPicture) D {
 
 // boardStripLabelDp is the height boardsStrip keeps over every board for its
 // label (a Body2 line) and the spacer under it, so the fitted cell leaves the
-// labels their room instead of pushing the boards past the bottom.
-const boardStripLabelDp = unit.Dp(26)
+// labels their room instead of pushing the boards past the bottom;
+// boardStripSubDp the same for the sub-line under the label, when any board
+// carries one.
+const (
+	boardStripLabelDp = unit.Dp(26)
+	boardStripSubDp   = unit.Dp(20)
+)
 
 // labeledBoard pairs a renderable board snapshot with its strip label (player
-// ID, team name, or "" for a single shared board) and coloring index. The
-// optional decoration is the replay ending's: a label color override and
-// bold-italic emphasis (the revealed winners), and a wrap around the board
-// widget itself (the winner show, or the beaten boards' OUT wash), handed
-// the strip's cell size so its art scales with the board.
+// ID, team name, or "" for a single shared board) and coloring index, and an
+// optional sub-line under the label — the replay's live scoreboard for the
+// board (replayView.boardSubs). The optional decoration is the replay
+// ending's: a label color override and bold-italic emphasis (the revealed
+// winners), and a wrap around the board widget itself (the winner show, or
+// the beaten boards' OUT wash), handed the strip's cell size so its art
+// scales with the board.
 type labeledBoard struct {
 	label    string
+	sub      string // muted line under the label: the board's score at the playhead ("" = none, no room kept)
 	idx      int
 	snap     engine.BoardSnapshot
 	labelCol colorN // label color when A != 0 (else the idx color)
@@ -183,17 +191,22 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 	}
 	// The widest and the tallest of them: the strip gives every board the one
 	// cell, so it has to be the cell they all fit at.
-	cols, rows, labeled := 0, 0, false
+	cols, rows, labeled, subbed := 0, 0, false, false
 	for _, b := range boards {
 		cols = max(cols, b.snap.Width)
 		rows = max(rows, boardRows(b.snap, b.headroom))
 		labeled = labeled || b.label != ""
+		subbed = subbed || b.sub != ""
 	}
 	// Reserved: each board's right inset, and over it the label line with the
-	// spacer under it (boardStripLabelDp) when the boards carry labels.
+	// spacer under it (boardStripLabelDp) when the boards carry labels, and
+	// the sub-line (boardStripSubDp) when any carries one.
 	reservedY := 0
 	if labeled {
-		reservedY = gtx.Dp(boardStripLabelDp)
+		reservedY += gtx.Dp(boardStripLabelDp)
+	}
+	if subbed {
+		reservedY += gtx.Dp(boardStripSubDp)
 	}
 	cell := fitCellPx(gtx, cols, rows, len(boards), len(boards)*gtx.Dp(16), reservedY, 6, maxDp)
 
@@ -218,6 +231,14 @@ func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
 						if b.emph {
 							l.Font.Weight, l.Font.Style = font.Bold, font.Italic
 						}
+						return l.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						if b.sub == "" {
+							return D{}
+						}
+						l := material.Body2(a.th, b.sub)
+						l.Color = colMuted
 						return l.Layout(gtx)
 					}),
 					layout.Rigid(spacer(4)),
@@ -294,13 +315,25 @@ func (a *App) rosterCompetitive(rec config.ArchiveRecord) []layout.FlexChild {
 }
 
 // rosterCoop lists the cooperative players plainly — one shared board means no
-// per-player color and no winner.
+// per-player color — each with their share of the score beside their name
+// where the record kept it (OwnScores), best first, and on the crew's board
+// scored per seat the top scorer(s) marked as the winners they are.
 func (a *App) rosterCoop(rec config.ArchiveRecord) []layout.FlexChild {
 	players := append([]config.PlayerResult(nil), rec.Players...)
-	sort.Slice(players, func(i, j int) bool { return players[i].PlayerID < players[j].PlayerID })
+	own := rec.OwnScores()
+	sort.SliceStable(players, func(i, j int) bool {
+		if own && players[i].Score != players[j].Score {
+			return players[i].Score > players[j].Score
+		}
+		return players[i].PlayerID < players[j].PlayerID
+	})
 	children := []layout.FlexChild{layout.Rigid(a.header("PLAYERS"))}
 	for _, p := range players {
-		children = append(children, a.archivePlayerRow(agentName(p.PlayerID, p.Agent), colMuted, false))
+		name := agentName(p.PlayerID, p.Agent)
+		if own {
+			name = fmt.Sprintf("%s  %d", name, p.Score)
+		}
+		children = append(children, a.archivePlayerRow(name, colMuted, p.Winner))
 	}
 	return children
 }

@@ -54,7 +54,7 @@ func TestArchiveAndCleanupRecordFirstThenGrace(t *testing.T) {
 	if _, err := js.Publish(ctx, config.MetaSubject(gameID), meta); err != nil {
 		t.Fatal(err)
 	}
-	ev, _ := json.Marshal(engine.GameEvent{Kind: engine.EventGameOver, PlayerID: "rival", Score: 321, Level: 3, PieceCount: 42})
+	ev, _ := json.Marshal(engine.GameEvent{Kind: engine.EventGameOver, PlayerID: "rival", Score: 321, Level: 3, PieceCount: 42, TotalScore: 321, TotalLines: 21})
 	if _, err := js.Publish(ctx, config.EventKindSubject(gameID, string(engine.EventGameOver), "rival"), ev); err != nil {
 		t.Fatal(err)
 	}

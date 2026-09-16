@@ -644,10 +644,13 @@ each lock of yours:
    simply shows no conversation. On a shared board the record must also carry
    the meta's `extra_columns` — the replay viewer rebuilds the board's width
    from it, and without it the recorded cells are laid out on the wrong
-   geometry. Write `version: 2` in the record: it says its levels are the
-   ones the game shows (1 at the start, §7 of the gameplays); a record
-   without it is read as one from before, its levels raised by one on
-   decode.
+   geometry. Write `version: 3` in the record: it says its levels are the
+   ones the game shows (1 at the start, §7 of the gameplays) and that every
+   player's `score` is their OWN locks' total — the `total_score` their
+   events announce, never the board's shared score — so the history can
+   list each crew member's share; a record without a version is read as one
+   from before, its levels raised by one on decode, and a 2 keeps its
+   per-player scores off the shared boards' history rows.
 6. **Replay archive** (part of archiving, AFTER the record publish and BEFORE
    the stream deletion): copy the ENTIRE game stream into the ONE shared
    file-backed **`JETRIS_REPLAY`** stream so the GUI can replay the game

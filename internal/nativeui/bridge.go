@@ -124,6 +124,9 @@ func (a *App) pumpEngine(ctx context.Context, e *engine.Engine) {
 						a.rowStrobes[r] = rowStrobe{start: now, col: colStrobe}
 					}
 				}
+			case engine.UpdatePlayerScores:
+				// Nothing to copy: the layout reads the scoreboard off the
+				// engine each frame (frameScores). The repaint is the point.
 			case engine.UpdateRTT:
 				a.rtt = u.RTT
 			}

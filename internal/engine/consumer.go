@@ -589,6 +589,12 @@ func (e *Engine) foldTotals(ev GameEvent) bool {
 	if ev.PlayerID == e.playerID {
 		return false
 	}
+	if deltaScore > 0 || deltaLines > 0 {
+		// The per-player scoreboard moved (PlayerScores / PlayerLines): every
+		// screen lists every seat's totals, in every mode — competitive too,
+		// where nothing below folds them into a total of ours.
+		e.emitUpdate(EngineUpdate{Kind: UpdatePlayerScores})
+	}
 	own := e.gameMode == config.ModeCooperative
 	if e.gameMode == config.ModeTeams && ev.Team >= 0 && ev.Team < e.TeamCount() {
 		e.teamScores[ev.Team].Add(int64(deltaScore))

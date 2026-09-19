@@ -314,7 +314,7 @@ and the real-time push fabric.
 | `jetris.game.<id>.roster.<player>` | `PlayerSummary` JSON | join announcement (competitive opponent discovery); its `seat` is the STABLE seat the player holds — the index every cell they write carries (`pi`), their colour and their rank among the seats present, which places their spawn point — assigned by the join as the lowest free one (in teams `team × team_size + team_slot`), never renumbered when someone leaves; a listing written before the field carries zeros, read by roster position |
 | `jetris.game.<id>.countdown` | `{"seconds": N}` | 5..0 before start |
 | `jetris.flash.<id>.<player>` | `{"pi","tm","c"}` | **core NATS** (not on the game stream): a player's transient CAS-failure flash, for spectators |
-| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. `line_clear` is published in EVERY mode — competitive too, where nobody folds your points but the line goal and the archive read your totals. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's names (`t_spin` 0/1/2/3 — none, Mini, T-spin, 180 spin — `back_to_back`, `combo`, `perfect`; §4.6) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
+| `jetris.game.<id>.events.<kind>.<player>` | `GameEvent` JSON | per-KIND, per-SENDER event subjects (`line_clear`, `game_over`); consume with the `events.>` filter. `line_clear` is published in EVERY mode — competitive too, where nobody folds your points but the line goal and the archive read your totals. Per-subject retention can only ever trim an OLDER event of the same kind from the same player — `line_clear` carries the sender's cumulative `total_score`/`total_lines` (fold deltas) plus `cleared_rows` (the cleared rows' pre-collapse indices — teammates on a shared board flash them) and the clear's names (`t_spin` 0/1/2/3 — none, Mini, T-spin, 180 spin — `back_to_back`, `combo`, `perfect`; §4.6) and the sender's cumulative `piece_count` (the locking piece included: every seat's piece count is read off its last event, and the tally of those names — the clears by size, the spins, the Back-to-Backs, the longest combo, the perfect clears, the attack — is every seat's `stats` in the archive record, §5) — on a shared board a lock that scored without clearing (a drop's points) is announced too, with `lines_cleared` 0: fold its totals like any other — and each player publishes at most one `game_over`, which carries the same totals so the sender's last points count, so nothing meaningful is ever lost |
 | `jetris.game.<id>.playfield.cell.<row>.<col>` | `Cell` JSON | cooperative shared board |
 | `jetris.game.<id>.team.<t>.playfield.cell.<row>.<col>` | `Cell` JSON | teams boards (t = 0/1) |
 | `jetris.game.<id>.player.<player>.playfield.cell.<row>.<col>` | `Cell` JSON | competitive private boards |
@@ -644,13 +644,23 @@ each lock of yours:
    simply shows no conversation. On a shared board the record must also carry
    the meta's `extra_columns` — the replay viewer rebuilds the board's width
    from it, and without it the recorded cells are laid out on the wrong
-   geometry. Write `version: 3` in the record: it says its levels are the
-   ones the game shows (1 at the start, §7 of the gameplays) and that every
+   geometry. Write `version: 4` in the record: it says its levels are the
+   ones the game shows (1 at the start, §7 of the gameplays), that every
    player's `score` is their OWN locks' total — the `total_score` their
    events announce, never the board's shared score — so the history can
-   list each crew member's share; a record without a version is read as one
-   from before, its levels raised by one on decode, and a 2 keeps its
-   per-player scores off the shared boards' history rows.
+   list each crew member's share, and that every player carries a `stats`
+   tally: `singles`, `doubles`, `triples`, `quads`, `t_spins` (full T-spins
+   and 180 spins that scored), `mini_t_spins`, `back_to_backs`, `max_combo`,
+   `perfect_clears`, `attack` (garbage rows the seat's clears sent, by the
+   game's rule — competitive and teams) and `played_ms` (from `started_at`
+   to the seat's `game_over` as the stream stamped it, or to `finished_at`)
+   — folded from every seat's `line_clear` events as you consumed them
+   (count a lock when its event moves the sender's totals; your own as you
+   score them), the GUI's View board and replay ending list them under
+   every name (the reference agent's `playerStats`); a record without a
+   version is read as one from before, its levels raised by one on decode,
+   a 2 keeps its per-player scores off the shared boards' history rows, and
+   a 3 lists no tally.
 6. **Replay archive** (part of archiving, AFTER the record publish and BEFORE
    the stream deletion): copy the ENTIRE game stream into the ONE shared
    file-backed **`JETRIS_REPLAY`** stream so the GUI can replay the game
@@ -726,6 +736,7 @@ each lock of yours:
 - [ ] An open game joined while `in_progress` when a seat is free — no ready toggle then; the start rule (`readyToStart`) and the `created → starting` election honored when readying up
 - [ ] Board height read from `extra_rows` on a shared board (`24 + (seats − 1) × extra_rows`)
 - [ ] `line_clear` published in competitive too; the `line_goal` counted per playfield off the ordered stream, the finish CASed by every player when it is reached
+- [ ] `line_clear` carries your cumulative `piece_count`; the archive record is `version: 4` and every player row carries its `stats` tally
 - [ ] The crew's game a peer's `game_over` ended finished by you too (CAS), your own `game_over` retried past a blip, and no seat taken in an open game whose meta says it is over
 - [ ] `scoring: "individual"` honored: the crew's points never folded into yours, the top published score the winner
 - [ ] Your own piece vacated before your seat is freed on the way out of a running open game; a peer's piece idle 10 s (or seatless) vacated by you only while you play

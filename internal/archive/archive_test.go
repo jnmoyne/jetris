@@ -111,6 +111,27 @@ func TestArchiveAndCleanupRecordFirstThenGrace(t *testing.T) {
 	if _, ok := scores["me"]; !ok {
 		t.Error("the archiver itself must be in the record")
 	}
+	// The record carries every player's stats tally (version 4): the rival
+	// played from the start to their game_over as the stream stamped it —
+	// about the minute the meta says the game had run — the archiver to the
+	// finish; this never-started engine folded no clears, so the tallies
+	// are otherwise empty.
+	if record.Version != config.ArchiveRecordVersion || !record.HasStats() {
+		t.Errorf("record version = %d, want %d with stats", record.Version, config.ArchiveRecordVersion)
+	}
+	for _, id := range []string{"rival", "me"} {
+		st := scores[id].Stats
+		if st == nil {
+			t.Errorf("%s carries no stats", id)
+			continue
+		}
+		if played := st.Played(); played < 55*time.Second || played > 70*time.Second {
+			t.Errorf("%s played %v, want about the minute the game ran", id, played)
+		}
+		if st.Singles != 0 || st.Quads != 0 || st.Attack != 0 {
+			t.Errorf("%s tally = %+v, want no clears (none were folded)", id, st)
+		}
+	}
 	if len(record.Boards) != 2 {
 		t.Errorf("record has %d boards, want 2 (one per competitive player)", len(record.Boards))
 	}

@@ -152,3 +152,59 @@ func (c clearInfo) name() string {
 func dropPoints(softCells, hardCells int) int {
 	return max(softCells, 0) + 2*max(hardCells, 0)
 }
+
+// playerStats is a seat's tally of what its locks did over the game — the
+// archive record's per-player `stats` (config.PlayerStats in the GUI, the
+// same JSON): one count per name a line_clear carries, folded from every
+// seat's events (our own at publish time), the garbage rows its clears sent
+// by the game's attack rule, and how long it played.
+type playerStats struct {
+	Singles       int   `json:"singles,omitempty"`
+	Doubles       int   `json:"doubles,omitempty"`
+	Triples       int   `json:"triples,omitempty"`
+	Quads         int   `json:"quads,omitempty"`
+	TSpins        int   `json:"t_spins,omitempty"`      // full T-spins and 180 spins that scored
+	MiniTSpins    int   `json:"mini_t_spins,omitempty"` // Mini T-spins that scored
+	BackToBacks   int   `json:"back_to_backs,omitempty"`
+	MaxCombo      int   `json:"max_combo,omitempty"`
+	PerfectClears int   `json:"perfect_clears,omitempty"`
+	Attack        int   `json:"attack,omitempty"`    // garbage rows sent (competitive and teams)
+	PlayedMs      int64 `json:"played_ms,omitempty"` // from the start to the seat's game_over, or to the finish
+}
+
+// tally counts one lock: the clear by its size, the spin that made it, the
+// Back-to-Back, the longest combo, the perfect clear, and — where the game
+// attacks (attacks: competitive and teams) — the rows it sent by the
+// game's rule (guideline: clearInfo.attackRows). spin is the event's
+// t_spin, kept apart from the tables' reading of it: a Mini that cleared
+// three lines scored as a full T-spin but was a Mini.
+func (st *playerStats) tally(c clearInfo, spin int, attacks, guideline bool) {
+	switch {
+	case c.lines >= 4:
+		st.Quads++
+	case c.lines == 3:
+		st.Triples++
+	case c.lines == 2:
+		st.Doubles++
+	case c.lines == 1:
+		st.Singles++
+	}
+	switch spin {
+	case 1:
+		st.MiniTSpins++
+	case 2, 3:
+		st.TSpins++
+	}
+	if c.backToBack && c.difficult() {
+		st.BackToBacks++
+	}
+	if c.lines > 0 {
+		st.MaxCombo = max(st.MaxCombo, c.combo)
+		if c.perfect {
+			st.PerfectClears++
+		}
+		if attacks {
+			st.Attack += c.attackRows(guideline)
+		}
+	}
+}

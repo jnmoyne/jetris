@@ -60,17 +60,20 @@ type Game struct {
 	comboRun int
 	b2bChain bool
 
-	sharedScore  int               // coop: the one shared score (all senders folded)
-	individual   bool              // coop: every seat scored on its own (meta scoring "individual"): the shared score is nobody's, the top score wins at the end
-	totalLines   int               // coop: all cleared lines (level source)
-	teamScores   []int             // teams: per-team scoreboard, one entry per team
-	teamLines    []int             // teams: per-team line totals (level source), one entry per team
-	senderTotals map[string][2]int // last cumulative {score,lines} folded per sender
-	senderTeams  map[string]int    // the team each sender announced, for the line goal's per-playfield count
-	lineGoal     int               // meta line_goal: the game ends when a playfield has cleared this many lines (0 = until top out)
-	survival     string            // meta survival, cooperative only: the rising floor's tier ("too_easy" / "super_easy" / "very_easy" / "easy" / "normal" / "hard"; "" = the floor stays put) — garbage rows rise on the crew's board on a clock that quickens with the level (survival.go)
-	goalDecided  bool              // the goal was reached (the verdict is in goalWon)
-	goalWon      bool              // we are on the playfield that reached it (or the top scorer of a board scored per seat)
+	sharedScore  int                     // coop: the one shared score (all senders folded)
+	individual   bool                    // coop: every seat scored on its own (meta scoring "individual"): the shared score is nobody's, the top score wins at the end
+	totalLines   int                     // coop: all cleared lines (level source)
+	teamScores   []int                   // teams: per-team scoreboard, one entry per team
+	teamLines    []int                   // teams: per-team line totals (level source), one entry per team
+	senderTotals map[string][2]int       // last cumulative {score,lines} folded per sender
+	senderTeams  map[string]int          // the team each sender announced, for the line goal's per-playfield count
+	senderStats  map[string]*playerStats // every seat's tally of its locks (statsFor) — the record's per-player stats; ours counted at publish time, the rest off their events
+	senderPieces map[string]int          // every seat's piece count as its events last announced it
+	outAt        map[string]time.Time    // when each seat's game_over landed, as the stream stamped it: where the time it played ends
+	lineGoal     int                     // meta line_goal: the game ends when a playfield has cleared this many lines (0 = until top out)
+	survival     string                  // meta survival, cooperative only: the rising floor's tier ("too_easy" / "super_easy" / "very_easy" / "easy" / "normal" / "hard"; "" = the floor stays put) — garbage rows rise on the crew's board on a clock that quickens with the level (survival.go)
+	goalDecided  bool                    // the goal was reached (the verdict is in goalWon)
+	goalWon      bool                    // we are on the playfield that reached it (or the top scorer of a board scored per seat)
 
 	eliminated map[string]bool
 	results    map[string]event
@@ -144,6 +147,7 @@ func newGame(a *Agent, id string, idx int) *Game {
 		a: a, id: id, idx: idx,
 		locked: map[cell]wireCell{}, seqs: map[cell]uint64{}, ownAct: map[cell]active{},
 		othersAct: map[cell]int{}, othersPiece: map[int]active{}, senderTotals: map[string][2]int{},
+		senderStats: map[string]*playerStats{}, senderPieces: map[string]int{}, outAt: map[string]time.Time{},
 		eliminated: map[string]bool{}, results: map[string]event{},
 		inflightCells: map[cell]int{}, inflightSeq: map[cell]uint64{},
 		started: make(chan struct{}), ended: make(chan struct{}), survivalKick: make(chan struct{}, 1),
@@ -1041,6 +1045,8 @@ func (g *Game) scoreLock(ctx context.Context, lines, fell int, clearedRows []int
 	g.score += pts
 	g.lines += lines
 	if lines > 0 || (pts > 0 && g.shared()) {
+		// Our own tally, counted here as every peer counts it off the event.
+		g.statsFor(g.a.name).tally(c, int(c.spin), g.mode != modeCooperative, g.guideline)
 		g.publishLineClear(ctx, c, pts, clearedRows)
 	}
 	return c
@@ -1377,6 +1383,16 @@ func (g *Game) startConsumers(ctx context.Context) error {
 			g.foldLineClear(ev)
 			g.checkLineGoal(ev)
 		case "game_over":
+			// Stamped by the server: where the sender's time played ends
+			// (the record's per-player stats).
+			if md, err := m.Metadata(); err == nil {
+				g.mu.Lock()
+				if g.outAt == nil {
+					g.outAt = map[string]time.Time{}
+				}
+				g.outAt[ev.PlayerID] = md.Timestamp
+				g.mu.Unlock()
+			}
 			g.onGameOver(ev)
 		}
 	}, true)
@@ -2196,12 +2212,13 @@ func (g *Game) archive(ctx context.Context) {
 	if _, conflict, err := g.a.metaPublish(ctx, g.id, meta.bytes(), seq); err != nil || conflict {
 		return // someone else won the archive CAS
 	}
+	startedAt, finishedAt := firstNonEmpty(meta.str("started_at"), meta.str("created_at")), firstNonEmpty(meta.str("finished_at"), nowRFC())
 	record := map[string]any{
-		"version": 3, // the archive record format: levels 1-based, every player's score their own locks' total (config.ArchiveRecordVersion)
+		"version": 4, // the archive record format: levels 1-based, every player's score their own locks' total, every player's stats tally (config.ArchiveRecordVersion)
 		"game_id": g.id, "mode": g.mode, "player_count": meta.int("player_count"),
-		"players":      g.playerResults(),
-		"started_at":   firstNonEmpty(meta.str("started_at"), meta.str("created_at")),
-		"finished_at":  firstNonEmpty(meta.str("finished_at"), nowRFC()),
+		"players":      g.playerResults(parseRFC(meta.str("started_at")), parseRFC(finishedAt)),
+		"started_at":   startedAt,
+		"finished_at":  finishedAt,
 		"winning_team": -1,
 		"boards":       g.boardPictures(ctx),
 	}
@@ -2274,7 +2291,21 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-func (g *Game) playerResults() []map[string]any {
+// parseRFC reads a meta timestamp; zero when absent or malformed.
+func parseRFC(s string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// playerResults is the record's `players`: every seat's totals, verdict and
+// tally (`stats`: the clears by name, the attack sent, and the time played —
+// from started, the moment the game went in progress, to the seat's
+// game_over as the stream stamped it, or to finished for a seat that never
+// announced one; no time at all without a start). Caller does not hold mu.
+func (g *Game) playerResults(started, finished time.Time) []map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	winningTeam := -1
@@ -2296,8 +2327,9 @@ func (g *Game) playerResults() []map[string]any {
 			score, level, lines, pieces = ev.TotalScore, ev.Level, ev.TotalLines, ev.PieceCount
 		} else if tot, ok := g.senderTotals[p.PlayerID]; ok {
 			// Never topped out (a coop survivor, an alive teams winner):
-			// their cumulative line-clear totals are the best record we have.
-			score, level, lines = tot[0], levelOf(tot[1]), tot[1]
+			// their cumulative line-clear totals are the best record we
+			// have, and their last line_clear's piece count.
+			score, level, lines, pieces = tot[0], levelOf(tot[1]), tot[1], g.senderPieces[p.PlayerID]
 		}
 		r := map[string]any{"player_id": p.PlayerID, "score": score, "piece_count": pieces}
 		if level != 0 {
@@ -2306,6 +2338,18 @@ func (g *Game) playerResults() []map[string]any {
 		if lines != 0 {
 			r["lines"] = lines
 		}
+		st := playerStats{}
+		if have := g.senderStats[p.PlayerID]; have != nil {
+			st = *have
+		}
+		if !started.IsZero() {
+			end := finished
+			if at, ok := g.outAt[p.PlayerID]; ok && !at.IsZero() {
+				end = at
+			}
+			st.PlayedMs = max(end.Sub(started), 0).Milliseconds()
+		}
+		r["stats"] = st
 		switch g.mode {
 		case modeCooperative:
 			// The crew's shared run has no winners; a board scored per seat

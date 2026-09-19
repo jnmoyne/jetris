@@ -11,6 +11,7 @@ import (
 
 	"gioui.org/layout"
 	"gioui.org/unit"
+	"gioui.org/widget/material"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"jetris/internal/config"
@@ -265,6 +266,40 @@ func (rv *replayView) boardSubs() []string {
 		}
 	}
 	return subs
+}
+
+// replayResults is every player of the replay with their stats for the
+// ending's roster (rosterPanel): the record's players, carrying the tally
+// the archiver wrote — or, for a record from before records carried one
+// (config.ArchiveRecord.HasStats), the tally folded back off the recording's
+// own events (replayTimeline.stats), the piece count read off them too where
+// the record has none. A seat the recording holds no event of lists the
+// figures the record has for it and no tally.
+func replayResults(rv *replayView) []config.PlayerResult {
+	out := append([]config.PlayerResult(nil), rv.rec.Players...)
+	if rv.rec.HasStats() || rv.tl == nil {
+		return out
+	}
+	for i := range out {
+		st, ok := rv.tl.stats[out[i].PlayerID]
+		if !ok {
+			continue
+		}
+		s := *st
+		out[i].Stats = &s
+		if out[i].PieceCount == 0 {
+			out[i].PieceCount = uint64(s.Pieces)
+		}
+	}
+	return out
+}
+
+// replayColumnsFit reports whether the ending's roster (archiveRosterW) can
+// stand beside the boards in the width gtx measures — the archive viewer's
+// rule without its chat column. Where it cannot, the two stack, the column
+// scrolling as one.
+func replayColumnsFit(gtx C) bool {
+	return gtx.Constraints.Max.X-gtx.Dp(archiveRosterW)-gtx.Dp(16) >= gtx.Dp(archiveBoardsMinW)
 }
 
 // replayMaxFrameStep caps how much wall time a single frame may carry the
@@ -647,7 +682,11 @@ func (a *App) layoutReplay(gtx C) D {
 
 // layoutReplayScreen is the loaded replay screen's column: the banner, the
 // summary and the status line, the boards (under the countdown while it
-// counts), and the deck. Caller holds App.mu.
+// counts), and the deck. Revealed, the ending stands every player's stats
+// beside the boards — the archive viewer's roster (rosterPanel), the winners
+// marked — or under them where the screen is too narrow for the two side by
+// side (replayColumnsFit), the column scrolling as one; scrub back into the
+// game and it packs away with the rest of the reveal. Caller holds App.mu.
 func (a *App) layoutReplayScreen(gtx C, rv *replayView, boards []labeledBoard, count int, counting bool, statusLine layout.Widget, reveal, pinned bool) D {
 	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
@@ -668,6 +707,26 @@ func (a *App) layoutReplayScreen(gtx C, rv *replayView, boards []labeledBoard, c
 				content := func(gtx C) D {
 					return layout.Center.Layout(gtx, func(gtx C) D {
 						return a.boardsStrip(gtx, &a.replayBoardsList, boards)
+					})
+				}
+				if reveal {
+					players := replayResults(rv)
+					if replayColumnsFit(gtx) {
+						return layout.Flex{}.Layout(gtx,
+							layout.Rigid(func(gtx C) D {
+								return layout.Inset{Right: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+									return a.rosterPanel(gtx, rv.rec, players, &a.replayRosterList)
+								})
+							}),
+							layout.Flexed(1, content),
+						)
+					}
+					return material.List(a.th, &a.replayColList).Layout(gtx, 1, func(gtx C, _ int) D {
+						return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(content),
+							layout.Rigid(spacer(16)),
+							layout.Rigid(func(gtx C) D { return a.rosterPanel(gtx, rv.rec, players, nil) }),
+						)
 					})
 				}
 				if !counting {

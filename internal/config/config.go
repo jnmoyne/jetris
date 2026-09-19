@@ -837,7 +837,42 @@ type PlayerResult struct {
 	Winner bool `json:"winner,omitempty"`
 	Team   int  `json:"team,omitempty"`  // teams mode: 0 = A, 1 = B
 	Agent  bool `json:"agent,omitempty"` // seat was played by an agent (from the roster at archive time)
+
+	// Stats is the seat's tally of what its locks did over the game — the
+	// clears by size, the spins, the chains, the combos, the attack, and
+	// how long it played (PlayerStats). Written from version 4 on; nil in
+	// every record from before, whose readers list the figures above alone.
+	Stats *PlayerStats `json:"stats,omitempty"`
 }
+
+// PlayerStats is a seat's tally of what its locks did over a game, folded
+// from the line_clear events it announced — one count per Guideline name a
+// clear carries (engine.TallyEvent folds one event; every engine keeps every
+// seat's tally, and the archiver writes them into the record). A seat's own
+// engine reaches the same numbers from the same events, its own echoed back,
+// so every screen — the game-over box, the history's View board, the end of
+// a replay — reads one account of the game.
+type PlayerStats struct {
+	Singles       int   `json:"singles,omitempty"`        // one-line clears
+	Doubles       int   `json:"doubles,omitempty"`        // two-line clears
+	Triples       int   `json:"triples,omitempty"`        // three-line clears
+	Quads         int   `json:"quads,omitempty"`          // four-line clears
+	TSpins        int   `json:"t_spins,omitempty"`        // full T-spins and 180 spins that scored — with lines or without
+	MiniTSpins    int   `json:"mini_t_spins,omitempty"`   // Mini T-spins that scored
+	BackToBacks   int   `json:"back_to_backs,omitempty"`  // difficult clears that extended a Back-to-Back chain
+	MaxCombo      int   `json:"max_combo,omitempty"`      // the longest combo: the Guideline's count at its peak (1 = two clears in a row)
+	PerfectClears int   `json:"perfect_clears,omitempty"` // clears that left the board empty
+	Attack        int   `json:"attack,omitempty"`         // garbage rows the seat's clears sent (competitive and teams; 0 on the crew's board)
+	PlayedMs      int64 `json:"played_ms,omitempty"`      // how long the seat played, in milliseconds: from the start to its top-out, or to the finish
+
+	// Pieces is the seat's piece count as its events last announced it —
+	// the fold's own figure, carried into PlayerResult.PieceCount by the
+	// archiver (never written twice).
+	Pieces int `json:"-"`
+}
+
+// Played is how long the seat played (PlayedMs), as a duration; 0 = unknown.
+func (s PlayerStats) Played() time.Duration { return time.Duration(s.PlayedMs) * time.Millisecond }
 
 // ArchiveRecordVersion is the format of the archive records written now.
 // A record's Version says what its numbers mean:
@@ -851,18 +886,23 @@ type PlayerResult struct {
 //     record of 2 the rows of a shared board (the crew's, a team's) are
 //     mixed: the archiving player's and every topped-out player's carry the
 //     board's shared score, the survivors' their own (OwnScores).
+//   - 4: every player carries their stats tally (PlayerResult.Stats): the
+//     clears by size, the spins, the Back-to-Backs, the longest combo, the
+//     perfect clears, the attack sent and the time played (HasStats).
 //
 // Normalize brings a record read from the stream up to the meaning the
 // readers (the lobby's history, the replay viewer) share where it can — the
 // levels — and leaves the version saying what it could not.
-const ArchiveRecordVersion = 3
+const ArchiveRecordVersion = 4
 
 // archiveRecordLevels1Based is the first record version whose levels are the
 // speed curve's; archiveRecordOwnScores the first whose per-player scores
-// are each player's own in every mode.
+// are each player's own in every mode; archiveRecordStats the first whose
+// players carry their stats tally.
 const (
 	archiveRecordLevels1Based = 2
 	archiveRecordOwnScores    = 3
+	archiveRecordStats        = 4
 )
 
 // ArchiveRecord is published to the archive stream when a game finishes.
@@ -921,6 +961,15 @@ func (r *ArchiveRecord) Normalize() {
 // always carried them.
 func (r *ArchiveRecord) OwnScores() bool {
 	return r.Version >= archiveRecordOwnScores || r.Mode == ModeCompetitive || r.IndividualScoring()
+}
+
+// HasStats reports whether the record's players carry their stats tally
+// (PlayerResult.Stats) — every record written at version 4 or later. A
+// reader of an older record shows the figures the row always had (the
+// score, the level, the lines, the pieces) and no tally; a replay of one
+// folds the tally back off the recording's own events instead.
+func (r *ArchiveRecord) HasStats() bool {
+	return r.Version >= archiveRecordStats
 }
 
 // Teams is the number of teams the archived game was played between,

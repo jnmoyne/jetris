@@ -80,8 +80,8 @@ type GameEvent struct {
 	LinesCleared int       `json:"lines_cleared,omitempty"`
 	ClearedRows  []int     `json:"cleared_rows,omitempty"` // EventLineClear: the cleared rows' pre-collapse indices (teammates strobe them)
 	Score        int       `json:"score,omitempty"`
-	Level        int       `json:"level,omitempty"` // EventGameOver: level achieved (from the sender's line total)
-	PieceCount   uint64    `json:"piece_count,omitempty"`
+	Level        int       `json:"level,omitempty"`       // EventGameOver: level achieved (from the sender's line total)
+	PieceCount   uint64    `json:"piece_count,omitempty"` // the sender's pieces so far — EventGameOver: all of them; EventLineClear: the locking piece included (cumulative, like the totals below: every seat's piece count is read off its last event)
 	PlayerIdx    int       `json:"player_idx,omitempty"`
 	Team         int       `json:"team"` // teams: sender's team (0 = A, 1 = B)
 

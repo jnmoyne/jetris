@@ -81,6 +81,17 @@ type replayTimeline struct {
 	// it): the replay's boards then draw their headroom behind smoked glass
 	// as the players saw it.
 	headroom bool
+	// guideline is the recorded game's attack rule
+	// (config.GameMeta.GuidelineGarbage, off the same meta): what the
+	// tally values a clear's attack by.
+	guideline bool
+	// stats is every seat's tally folded back off the recording's events
+	// (engine.TallyEvent, the fold every engine ran live), for the ending of
+	// a replay whose record predates the tally (replayResults); a seat that
+	// announced nothing has no entry. outOff is when each seat's game_over
+	// was recorded — where the time it played ends (finish).
+	stats  map[string]*config.PlayerStats
+	outOff map[string]time.Duration
 }
 
 // countdownAt returns the countdown number to show at the playhead — the last
@@ -122,6 +133,10 @@ type replayBuilder struct {
 	origin   time.Time // recorded time the timeline's clock starts at
 	started  bool      // an in_progress (or later) meta has been seen
 	n        int       // messages taken in
+	// lastTotals is each seat's cumulative totals as its last event carried
+	// them — the fold's delta rule (engine.foldTotals): an event that moves
+	// nothing is one already tallied.
+	lastTotals map[string][2]int
 }
 
 // newReplayBuilder starts a builder for one game's recording; height is the
@@ -130,7 +145,8 @@ type replayBuilder struct {
 // wrong board or off it).
 func newReplayBuilder(rec config.ArchiveRecord, height int) *replayBuilder {
 	boards, byPlayer := newReplayBoards(rec, height)
-	return &replayBuilder{rec: rec, boards: boards, byPlayer: byPlayer, tl: replayTimeline{startOff: -1}}
+	return &replayBuilder{rec: rec, boards: boards, byPlayer: byPlayer, lastTotals: map[string][2]int{},
+		tl: replayTimeline{startOff: -1, stats: map[string]*config.PlayerStats{}, outOff: map[string]time.Duration{}}}
 }
 
 // add takes one copied message. ts is its ORIGINAL recorded time; the message
@@ -168,7 +184,8 @@ func (b *replayBuilder) add(subject string, data []byte, ts time.Time) {
 		if err := json.Unmarshal(data, &meta); err != nil {
 			return
 		}
-		b.tl.headroom = meta.ShowHeadroom // the setting rides every meta of the game
+		b.tl.headroom = meta.ShowHeadroom // the settings ride every meta of the game
+		b.tl.guideline = meta.GuidelineGarbage
 		if preStartStatus(string(meta.Status)) || b.started {
 			return
 		}
@@ -187,6 +204,7 @@ func (b *replayBuilder) add(subject string, data []byte, ts time.Time) {
 		if ev.TotalScore > 0 || ev.TotalLines > 0 {
 			b.tl.scores = append(b.tl.scores, scoreMark{off: off, player: ev.PlayerID, board: b.eventBoard(ev), score: ev.TotalScore, lines: ev.TotalLines})
 		}
+		b.tally(ev, off)
 		return
 	}
 	if c, ok := b.decodeCell(subject, data); ok {
@@ -195,6 +213,32 @@ func (b *replayBuilder) add(subject string, data []byte, ts time.Time) {
 		}
 		c.off = b.offset(ts)
 		b.tl.cells = append(b.tl.cells, c)
+	}
+}
+
+// tally folds one event into its sender's stats, the way every engine
+// folded it live (engine.TallyEvent behind foldTotals' delta rule): a
+// line_clear that moves the sender's totals is a lock to count, one that
+// moves nothing is a replay of one counted, and a game_over counts only
+// the sender's pieces and marks where their time ends.
+func (b *replayBuilder) tally(ev engine.GameEvent, off time.Duration) {
+	last := b.lastTotals[ev.PlayerID]
+	ds, dl := ev.TotalScore-last[0], ev.TotalLines-last[1]
+	if ds < 0 || dl < 0 {
+		return
+	}
+	b.lastTotals[ev.PlayerID] = [2]int{ev.TotalScore, ev.TotalLines}
+	if ev.Kind == engine.EventLineClear && ds == 0 && dl == 0 {
+		return
+	}
+	st := b.tl.stats[ev.PlayerID]
+	if st == nil {
+		st = &config.PlayerStats{}
+		b.tl.stats[ev.PlayerID] = st
+	}
+	engine.TallyEvent(st, ev, b.rec.Mode != config.ModeCooperative, b.tl.guideline)
+	if ev.Kind == engine.EventGameOver {
+		b.tl.outOff[ev.PlayerID] = off
 	}
 }
 
@@ -229,6 +273,15 @@ func (b *replayBuilder) finish() *replayTimeline {
 		if len(t.cells) > 0 {
 			t.startOff = t.cells[0].off
 		}
+	}
+	// How long each seat played: from the start to its recorded game_over,
+	// or to the end of the recording for a seat that never announced one.
+	for id, st := range t.stats {
+		end := t.dur
+		if off, ok := t.outOff[id]; ok {
+			end = off
+		}
+		st.PlayedMs = max(end-t.startOff, 0).Milliseconds()
 	}
 	if b.rec.Mode == config.ModeCompetitive {
 		// Competitive boards announce their clears like every other board

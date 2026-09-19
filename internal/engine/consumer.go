@@ -335,6 +335,7 @@ func (e *Engine) handleLockIn(ctx context.Context) {
 			Perfect:      clear.Perfect,
 			TotalScore:   int(e.ownScore.Load()),
 			TotalLines:   int(e.ownClearLines.Load()),
+			PieceCount:   e.pieceIdx.Load() + 1, // this lock's piece counted (the index advances below)
 		}
 		data, _ := json.Marshal(ev)
 		e.publishEvent(ctx, config.EventKindSubject(e.gameID, string(EventLineClear), e.playerID), data)
@@ -540,8 +541,11 @@ func (e *Engine) emitTeammateClear(ev GameEvent) {
 // shown totals as their locks folded them (handleLockIn): the shared score
 // and level on a shared board, this player's own on a private one, and the
 // team's scoreboard. The events consumer's replay of the same history then
-// finds these totals already seen. Runs from Start before any consumer or
-// the input loop, so nothing else touches the totals: no lock.
+// folds our own events as any engine folds them — never into the shown
+// totals (foldTotals folds nobody's own), but into our scoreboard row and
+// our tally (stats.go), which pick our earlier locks back up event by
+// event. Runs from Start before any consumer or the input loop, so nothing
+// else touches the totals: no lock.
 func (e *Engine) restoreOwnTotals(payload []byte) {
 	var ev GameEvent
 	if err := json.Unmarshal(payload, &ev); err != nil || ev.PlayerID != e.playerID {
@@ -549,7 +553,6 @@ func (e *Engine) restoreOwnTotals(payload []byte) {
 	}
 	e.ownScore.Store(int64(ev.TotalScore))
 	e.ownClearLines.Store(int64(ev.TotalLines))
-	e.eventTotals[e.playerID] = struct{ score, lines, team int }{ev.TotalScore, ev.TotalLines, e.teamIdx}
 	e.score.Add(int64(ev.TotalScore))
 	e.totalLines.Add(int64(ev.TotalLines))
 	e.refreshLevel()
@@ -585,15 +588,25 @@ func (e *Engine) foldTotals(ev GameEvent) bool {
 		return false // stale replay of an older total: already folded
 	}
 	e.eventTotals[ev.PlayerID] = struct{ score, lines, team int }{ev.TotalScore, ev.TotalLines, ev.Team}
+	// The sender's tally (stats.go), our own included — our own echo is the
+	// one account of our play every other engine has. A line_clear always
+	// moves its sender's totals, so one that moves nothing is a replay of
+	// one already tallied; a game_over moves nothing and tallies nothing but
+	// the sender's piece count.
+	if ev.Kind != EventLineClear || deltaScore > 0 || deltaLines > 0 {
+		e.tallyLocked(ev)
+	}
 	e.mu.Unlock()
+	if deltaScore > 0 || deltaLines > 0 {
+		// The per-player scoreboard moved (PlayerScores / PlayerLines /
+		// PlayerStats): every screen lists every seat's totals, in every
+		// mode — competitive too, where nothing below folds them into a
+		// total of ours. Our own echo raises it too: our scoreboard row is
+		// read live, but our tally is the fold's.
+		e.emitUpdate(EngineUpdate{Kind: UpdatePlayerScores})
+	}
 	if ev.PlayerID == e.playerID {
 		return false
-	}
-	if deltaScore > 0 || deltaLines > 0 {
-		// The per-player scoreboard moved (PlayerScores / PlayerLines): every
-		// screen lists every seat's totals, in every mode — competitive too,
-		// where nothing below folds them into a total of ours.
-		e.emitUpdate(EngineUpdate{Kind: UpdatePlayerScores})
 	}
 	own := e.gameMode == config.ModeCooperative
 	if e.gameMode == config.ModeTeams && ev.Team >= 0 && ev.Team < e.TeamCount() {

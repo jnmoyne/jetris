@@ -521,6 +521,7 @@ func (g *Game) publishLineClear(ctx context.Context, c clearInfo, pts int, rows 
 		"kind": "line_clear", "player_id": g.a.name, "player_idx": g.idx,
 		"lines_cleared": c.lines, "cleared_rows": rows, "score": pts,
 		"team": g.team, "total_score": g.score, "total_lines": g.lines,
+		"piece_count": g.pieceIdx, // our pieces so far, the locking one included — every seat's count is read off its last event
 	}
 	if c.spin != spinNone {
 		ev["t_spin"] = int(c.spin)
@@ -543,7 +544,7 @@ func (g *Game) publishLineClear(ctx context.Context, c clearInfo, pts int, rows 
 // scoreboards, as deltas against the last totals seen from that sender.
 func (g *Game) foldLineClear(ev event) {
 	if ev.PlayerID == g.a.name {
-		return // our own echo: already folded at publish time
+		return // our own echo: already folded (and tallied) at publish time
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -553,6 +554,16 @@ func (g *Game) foldLineClear(ev event) {
 		return
 	}
 	g.senderTotals[ev.PlayerID] = [2]int{ev.TotalScore, ev.TotalLines}
+	// The sender's tally (statsFor): a line_clear that moves their totals
+	// is a lock to count — one that moves nothing is a replay of one
+	// counted — and their piece count is the highest their events announced.
+	if g.senderPieces == nil {
+		g.senderPieces = map[string]int{}
+	}
+	g.senderPieces[ev.PlayerID] = max(g.senderPieces[ev.PlayerID], ev.PieceCount)
+	if ev.Kind == "line_clear" && (ds > 0 || dl > 0) {
+		g.statsFor(ev.PlayerID).tally(ev.clear(), ev.TSpin, g.mode != modeCooperative, g.guideline)
+	}
 	if g.senderTeams == nil {
 		g.senderTeams = map[string]int{}
 	}
@@ -571,6 +582,19 @@ func (g *Game) foldLineClear(ev event) {
 			g.teamLines[ev.Team] += dl
 		}
 	}
+}
+
+// statsFor is a seat's tally, made on first use. Caller holds mu.
+func (g *Game) statsFor(id string) *playerStats {
+	if g.senderStats == nil {
+		g.senderStats = map[string]*playerStats{}
+	}
+	st := g.senderStats[id]
+	if st == nil {
+		st = &playerStats{}
+		g.senderStats[id] = st
+	}
+	return st
 }
 
 // ---- outcomes -------------------------------------------------------------

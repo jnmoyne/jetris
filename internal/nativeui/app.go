@@ -774,6 +774,13 @@ type App struct {
 	specTeamBoardsList widget.List
 	archiveBoardsList  widget.List
 	replayBoardsList   widget.List
+	// The roster-with-stats panels: the archive viewer's, and the replay
+	// ending's beside the boards (rosterPanel) — with replayColList the
+	// ending's stacked column where the panel and the boards cannot stand
+	// side by side.
+	archiveRosterList widget.List
+	replayRosterList  widget.List
+	replayColList     widget.List
 }
 
 // New builds the App. The window is created later, in Run, on the UI goroutine.
@@ -883,6 +890,9 @@ func New(js jetstream.JetStream, kv jetstream.KeyValue) *App {
 	a.specTeamBoardsList.Axis = layout.Horizontal
 	a.archiveBoardsList.Axis = layout.Horizontal
 	a.replayBoardsList.Axis = layout.Horizontal
+	a.archiveRosterList.Axis = layout.Vertical
+	a.replayRosterList.Axis = layout.Vertical
+	a.replayColList.Axis = layout.Vertical
 	return a
 }
 

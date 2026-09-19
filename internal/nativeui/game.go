@@ -1920,6 +1920,24 @@ func (a *App) gameOverBox(gtx C, eng *engine.Engine, gmode config.GameMode, view
 							return l.Layout(gtx)
 						}))
 					}
+					// The player's own stats — what their locks did over the
+					// game (playerStatLines: the lines, pieces, time and
+					// pace, then the tally of their clears) — as a
+					// two-column grid, so the box stays short beside the
+					// playfield; narrower columns on the compact screen,
+					// where it stands under the board. A spectator's box
+					// (a game watched to its end) has no play to tally.
+					if eng.InitialMode() == engine.ModePlayer {
+						colW := statColW
+						if a.form.compact {
+							colW = 150
+						}
+						children = append(children,
+							layout.Rigid(spacer(14)),
+							layout.Rigid(a.pixel(unit.Sp(9), "YOUR STATS", colMuted).Layout),
+							layout.Rigid(spacer(2)),
+							layout.Rigid(a.statGrid(playerStatLines(ownResult(eng), gmode, false, false), colW)))
+					}
 					children = append(children, layout.Rigid(spacer(14)), layout.Rigid(func(gtx C) D {
 						return a.gameOverActions(gtx, view)
 					}))

@@ -361,17 +361,17 @@ func TestScreenSnapshots(t *testing.T) {
 
 	t.Run("archive", func(t *testing.T) {
 		a := newTestApp()
+		rec := sampleReplayRecord() // the players with their stats tally
+		rec.GameID = "g-done"
 		a.openArchive(config.ArchiveRecord{
-			GameID:      "g-done",
+			Version:     rec.Version,
+			GameID:      rec.GameID,
 			Mode:        config.ModeCompetitive,
 			PlayerCount: 2,
 			StartedAt:   time.Date(2026, 7, 23, 14, 0, 0, 0, time.Local),
 			FinishedAt:  time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local),
 			WinningTeam: -1,
-			Players: []config.PlayerResult{
-				{PlayerID: "alice", Score: 4200, Level: 4, Winner: true},
-				{PlayerID: "bob", Score: 3100, Level: 3},
-			},
+			Players:     rec.Players,
 			Chat: []config.ChatLine{
 				{Name: "alice", Text: "good luck!", Timestamp: time.Date(2026, 7, 23, 14, 0, 10, 0, time.Local)},
 				{Name: "bob", Text: "you too", Timestamp: time.Date(2026, 7, 23, 14, 0, 14, 0, time.Local)},
@@ -809,6 +809,7 @@ func fillReplayBoards(rv *replayView) {
 // and dave) beat Team A.
 func sampleTeamsReplayRecord() config.ArchiveRecord {
 	return config.ArchiveRecord{
+		Version:     config.ArchiveRecordVersion,
 		GameID:      "g-replay-teams",
 		Mode:        config.ModeTeams,
 		PlayerCount: 4,
@@ -819,10 +820,14 @@ func sampleTeamsReplayRecord() config.ArchiveRecord {
 		TeamScores:  []int{3100, 4200},
 		TeamLevels:  []int{3, 4},
 		Players: []config.PlayerResult{
-			{PlayerID: "alice", Score: 1600, Level: 3, Team: 0},
-			{PlayerID: "bob", Score: 1500, Level: 3, Team: 0},
-			{PlayerID: "carol", Score: 2200, Level: 4, Team: 1, Agent: true, Winner: true},
-			{PlayerID: "dave", Score: 2000, Level: 4, Team: 1, Winner: true},
+			{PlayerID: "alice", Score: 1600, Level: 3, Team: 0, Lines: 14, PieceCount: 61,
+				Stats: &config.PlayerStats{Singles: 6, Doubles: 4, Attack: 4, PlayedMs: 322_000}},
+			{PlayerID: "bob", Score: 1500, Level: 3, Team: 0, Lines: 11, PieceCount: 58,
+				Stats: &config.PlayerStats{Singles: 3, Doubles: 2, Quads: 1, BackToBacks: 0, MaxCombo: 1, Attack: 7, PlayedMs: 322_000}},
+			{PlayerID: "carol", Score: 2200, Level: 4, Team: 1, Agent: true, Winner: true, Lines: 18, PieceCount: 70,
+				Stats: &config.PlayerStats{Singles: 4, Doubles: 3, Quads: 2, TSpins: 1, BackToBacks: 1, MaxCombo: 2, Attack: 15, PlayedMs: 360_000}},
+			{PlayerID: "dave", Score: 2000, Level: 4, Team: 1, Winner: true, Lines: 16, PieceCount: 66,
+				Stats: &config.PlayerStats{Singles: 8, Doubles: 4, MiniTSpins: 1, MaxCombo: 1, Attack: 5, PlayedMs: 360_000}},
 		},
 	}
 }
@@ -830,6 +835,7 @@ func sampleTeamsReplayRecord() config.ArchiveRecord {
 // sampleCoopReplayRecord is a finished two-seat cooperative run.
 func sampleCoopReplayRecord() config.ArchiveRecord {
 	return config.ArchiveRecord{
+		Version:     config.ArchiveRecordVersion,
 		GameID:      "g-replay-coop",
 		Mode:        config.ModeCooperative,
 		PlayerCount: 2,
@@ -839,8 +845,10 @@ func sampleCoopReplayRecord() config.ArchiveRecord {
 		TotalScore:  5200,
 		FinalLevel:  5,
 		Players: []config.PlayerResult{
-			{PlayerID: "alice", Score: 2700, Level: 5},
-			{PlayerID: "bob", Score: 2500, Level: 5},
+			{PlayerID: "alice", Score: 2700, Level: 5, Lines: 22, PieceCount: 84,
+				Stats: &config.PlayerStats{Singles: 8, Doubles: 4, Triples: 2, TSpins: 1, MaxCombo: 2, PlayedMs: 360_000}},
+			{PlayerID: "bob", Score: 2500, Level: 5, Lines: 20, PieceCount: 80,
+				Stats: &config.PlayerStats{Singles: 10, Doubles: 3, Quads: 1, MaxCombo: 1, PerfectClears: 1, PlayedMs: 360_000}},
 		},
 	}
 }
@@ -848,6 +856,7 @@ func sampleCoopReplayRecord() config.ArchiveRecord {
 // sampleReplayRecord is a finished competitive game with a replay archive.
 func sampleReplayRecord() config.ArchiveRecord {
 	return config.ArchiveRecord{
+		Version:     config.ArchiveRecordVersion,
 		GameID:      "g-replay",
 		Mode:        config.ModeCompetitive,
 		PlayerCount: 2,
@@ -855,8 +864,10 @@ func sampleReplayRecord() config.ArchiveRecord {
 		FinishedAt:  time.Date(2026, 7, 23, 14, 6, 0, 0, time.Local),
 		WinningTeam: -1,
 		Players: []config.PlayerResult{
-			{PlayerID: "alice", Score: 4200, Level: 4, Winner: true},
-			{PlayerID: "bob", Score: 3100, Level: 3},
+			{PlayerID: "alice", Score: 4200, Level: 4, Lines: 31, PieceCount: 118, Winner: true,
+				Stats: &config.PlayerStats{Singles: 9, Doubles: 5, Triples: 2, Quads: 3, TSpins: 2, MiniTSpins: 1, BackToBacks: 2, MaxCombo: 3, Attack: 21, PlayedMs: 360_000}},
+			{PlayerID: "bob", Score: 3100, Level: 3, Lines: 24, PieceCount: 97,
+				Stats: &config.PlayerStats{Singles: 12, Doubles: 3, Triples: 2, TSpins: 1, MaxCombo: 2, PerfectClears: 1, Attack: 9, PlayedMs: 341_500}},
 		},
 	}
 }

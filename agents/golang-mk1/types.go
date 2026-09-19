@@ -124,15 +124,36 @@ func (a pubAck) isCASConflict() bool {
 }
 
 // event is a per-player game event: game_over (elimination/outcome data) and
-// line_clear (the sender's CUMULATIVE totals, folded as deltas by receivers).
+// line_clear (the sender's CUMULATIVE totals, folded as deltas by receivers,
+// and the clear's names — what the sender's tally counts, statsFor).
 type event struct {
 	Kind       string `json:"kind"`
 	PlayerID   string `json:"player_id"`
 	PlayerIdx  int    `json:"player_idx"`
 	Score      int    `json:"score"`
 	Level      int    `json:"level"`
-	PieceCount int    `json:"piece_count"`
+	PieceCount int    `json:"piece_count"` // the sender's pieces so far: a game_over's all of them, a line_clear's the locking piece included
 	Team       int    `json:"team"`
 	TotalScore int    `json:"total_score"`
 	TotalLines int    `json:"total_lines"`
+
+	// line_clear: the clear by the Guideline's names (guide §4.6).
+	LinesCleared int  `json:"lines_cleared"`
+	TSpin        int  `json:"t_spin"` // 0 none, 1 Mini, 2 T-spin, 3 a 180 spin
+	BackToBack   bool `json:"back_to_back"`
+	Combo        int  `json:"combo"`
+	Perfect      bool `json:"perfect"`
+}
+
+// clear is the event's clear as clearInfo values it (a 180 spin scores as a
+// full T-spin, so it is one to the tables).
+func (ev event) clear() clearInfo {
+	c := clearInfo{lines: ev.LinesCleared, backToBack: ev.BackToBack, combo: ev.Combo, perfect: ev.Perfect}
+	switch ev.TSpin {
+	case 1:
+		c.spin = spinMini
+	case 2, 3:
+		c.spin = spinFull
+	}
+	return c
 }

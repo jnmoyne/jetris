@@ -66,6 +66,10 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 	// authoritative source; EventGameOver's Team field is the fallback for
 	// players missing from the snapshot.
 	playerTeams := make(map[string]int)
+	// outAt is when each player's game_over landed on the stream, as the
+	// server stamped it — where the time they played ends (their tally's
+	// PlayedMs); a seat with none played to the finish.
+	outAt := make(map[string]time.Time)
 	// Add our own data first: our own locks' total (OwnScore, what our
 	// line_clear events announce), which on a shared board is our share of
 	// the score the record's total_score / team_scores carry.
@@ -103,6 +107,9 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 				}
 				var ev engine.GameEvent
 				if json.Unmarshal(msg.Data(), &ev) == nil && ev.Kind == engine.EventGameOver {
+					if md, err := msg.Metadata(); err == nil {
+						outAt[ev.PlayerID] = md.Timestamp
+					}
 					if _, exists := playerTeams[ev.PlayerID]; !exists {
 						playerTeams[ev.PlayerID] = ev.Team
 					}
@@ -157,8 +164,36 @@ func ArchiveAndCleanup(ctx context.Context, js jetstream.JetStream, kv jetstream
 			}
 		}
 	}
+	// Every player's tally (engine.PlayerStats): what the archiving engine
+	// folded from every seat's line_clear events, its own echoes included,
+	// with what it knows first-hand of its own seat — the pieces it drew —
+	// and how long each seat played: from the start to its game_over as the
+	// stream stamped it, or to the finish for a seat that never announced
+	// one (a survivor, the winning team, everyone in a game a goal ended).
+	// A seat's piece count comes from its game_over where it sent one, else
+	// from its last line_clear.
+	tallies := eng.PlayerStats()
+	started, ended := meta.StartedAt, meta.FinishedAt
+	if ended.IsZero() {
+		ended = finished
+	}
 	for id, pr := range playerResults {
 		pr.Agent = agentSeats[id]
+		st := tallies[id]
+		if id == eng.PlayerID() {
+			st.Pieces = max(st.Pieces, int(eng.PieceIdx()))
+		}
+		if pr.PieceCount == 0 {
+			pr.PieceCount = uint64(st.Pieces)
+		}
+		if !started.IsZero() {
+			end := ended
+			if at, ok := outAt[id]; ok && !at.IsZero() {
+				end = at
+			}
+			st.PlayedMs = max(end.Sub(started), 0).Milliseconds()
+		}
+		pr.Stats = &st
 		playerResults[id] = pr
 	}
 	// Determine winners in competitive from the archiving engine's live

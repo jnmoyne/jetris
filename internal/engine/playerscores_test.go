@@ -25,16 +25,17 @@ func updateKinds(e *Engine) map[UpdateKind]int {
 // sender's cumulative totals into the per-player scoreboard: its own echo, a
 // rival's clears, the rival's game_over with their last points. A rival's
 // news raises UpdatePlayerScores; a stale replay of an older total neither
-// moves the board nor raises anything; the own echo raises nothing (the
-// screen reads that row live); and the engine's own score stays its own.
+// moves the board nor raises anything; the own echo raises it too (the
+// screen reads that scoreboard row live, but the own tally is the fold's —
+// stats.go); and the engine's own score stays its own.
 func TestPlayerScoresFoldEverySender(t *testing.T) {
 	for _, mode := range []Mode{ModePlayer, ModeSpectator} {
 		e := New(nil, "g", "me", "", config.ModeCompetitive, mode, 0, 0, 0)
 		ctx := context.Background()
 		updateKinds(e)
 		e.handleGameEvent(ctx, GameEvent{Kind: EventLineClear, PlayerID: "me", Score: 300, LinesCleared: 1, TotalScore: 300, TotalLines: 1})
-		if k := updateKinds(e); k[UpdatePlayerScores] != 0 {
-			t.Errorf("%v: our own echo raised UpdatePlayerScores", mode)
+		if k := updateKinds(e); k[UpdatePlayerScores] != 1 {
+			t.Errorf("%v: our own echo raised UpdatePlayerScores %d times, want once (the own tally moved)", mode, k[UpdatePlayerScores])
 		}
 		e.handleGameEvent(ctx, GameEvent{Kind: EventLineClear, PlayerID: "them", Score: 500, LinesCleared: 2, TotalScore: 500, TotalLines: 2})
 		if k := updateKinds(e); k[UpdatePlayerScores] != 1 {

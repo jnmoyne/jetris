@@ -315,6 +315,11 @@ type Engine struct {
 	// converges to the same totals. Touched only by the events-consumer
 	// goroutine — no lock needed.
 	eventTotals map[string]struct{ score, lines, team int } // guarded by e.mu
+	// eventStats is every seat's tally of what its locks did (stats.go),
+	// folded from the same events beside eventTotals — a lock is tallied
+	// when its event moves the sender's totals, so a replayed event counts
+	// nothing twice. Guarded by e.mu.
+	eventStats map[string]config.PlayerStats
 
 	Updates        chan EngineUpdate
 	OnGameFinished func() // called after game transitions to finished (for archiving)
@@ -453,6 +458,7 @@ func New(
 		opponentGarbage:    make(map[string]opponentLedger),
 		garbageRaiseHoles:  game.RaiseHoles,
 		eventTotals:        make(map[string]struct{ score, lines, team int }),
+		eventStats:         make(map[string]config.PlayerStats),
 		winTeam:            -1,
 		peerCells:          make(map[game.CellPos]peerCell),
 		idleVacateAfter:    config.IdlePieceVacateAfter,

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // A board scored per seat: another seat's line_clear folds the crew's lines
 // (the shared level) but never their points; the ranking names the top
@@ -30,7 +33,7 @@ func TestFoldIndividual(t *testing.T) {
 	if !g.individualWinnerLocked() {
 		t.Fatal("the best score is not the winner")
 	}
-	for _, r := range g.playerResults() {
+	for _, r := range g.playerResults(time.Time{}, time.Time{}) {
 		want := r["player_id"] == "me"
 		if _, got := r["winner"]; got != want {
 			t.Errorf("%s: winner %v, want %v", r["player_id"], got, want)

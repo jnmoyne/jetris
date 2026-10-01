@@ -79,6 +79,28 @@ depends on nothing in this repository — a single file implementing the wire pr
 NATS. It is the proof of the "any language, only NATS" contract and a good starting
 point to copy: see its [README](example-python/README.md).
 
+## The coordinating agent: `golang-mk2`
+
+[`golang-mk2/`](golang-mk2/) is `golang-mk1`'s next generation, and the answer to
+"how well do your agents work together?": on a shared board its teammates **talk**,
+through the `JETRIS_BLACKBOARD` KV bucket — each claims where its piece is going, plans
+on the others' claims, yields to the earlier ones and waits for the ones it depends on
+(the open protocol is the guide's §1.4, for any agent in any language to join); a path
+search takes each piece around its teammates' pieces and out of their spawn boxes, and
+locks it in the same batch as the walk. It also carries the shared-board rules `golang-mk1`
+left out (a crewmate's stale piece vacated, a clean leave mid-game, CAS locks), and a
+planner nineteen times faster. `--coordinate=false` plays it exactly as `golang-mk1`
+does; `../scripts/bench-mk2.sh` compares the two on identical games. See its
+[README](golang-mk2/README.md).
+
+```sh
+cd golang-mk2 && go build .
+./golang-mk2 --server nats://localhost:4222 --create --mode cooperative --players 3 --once &
+./golang-mk2 --server nats://localhost:4222 --auto-join --once &
+./golang-mk2 --server nats://localhost:4222 --auto-join --once &
+nats kv watch JETRIS_BLACKBOARD          # the crew's claims, live
+```
+
 ## The reference agent: `golang-mk1`
 
 [`golang-mk1/`](golang-mk1/) is the repo's own agent and the same idea in Go: an

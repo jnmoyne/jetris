@@ -31,6 +31,9 @@ nats stream rm JETRIS_CHAT $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRIS_C
 # Legacy name from before the rename to JETRIS_CHAT.
 nats stream rm JETRIS_LOBBY_CHAT $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRIS_LOBBY_CHAT (legacy)" || true
 
+echo "Deleting the agents' blackboard bucket..."
+nats kv rm JETRIS_BLACKBOARD $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRIS_BLACKBOARD" || echo "  JETRIS_BLACKBOARD not found (ok)"
+
 echo "Deleting lobby KV bucket..."
 nats kv rm JETRIS_LOBBY $NATS_ARGS -f 2>/dev/null && echo "  Deleted JETRIS_LOBBY" || echo "  JETRIS_LOBBY not found (ok)"
 

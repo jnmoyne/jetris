@@ -198,6 +198,7 @@ cmd/jetris
     └── internal/nativeui          ← depends on: engine, lobby, render, prefs, voice, gamepad, config (the front end)
 
 agents/golang-mk1                  ← separate module: depends only on nats.go + orbit
+agents/golang-mk2                  ← its next generation (own module): teammates coordinate through the JETRIS_BLACKBOARD KV bucket
                                      natscontext/jetstreamext (the headless reference player; speaks
                                      the wire protocol, uses no internal/ packages)
 
@@ -303,6 +304,8 @@ const (
     StandardWidth   = 10
 
     LobbyKVBucket          = "JETRIS_LOBBY"
+    // agents only, never touched by the game: JETRIS_BLACKBOARD, the KV bucket golang-mk2's
+    // teammates claim their placements on (jetris-agent-guide.md §1.4)
     ChatStream             = "JETRIS_CHAT"
     LobbyChatGameID        = "lobby"                // reserved chat "game ID" for the lobby chat
     LobbyChatSubject       = "jetris.chat.lobby"  // = GameChatSubject(LobbyChatGameID)

@@ -391,6 +391,7 @@ All three are the same blackboard pattern with different subject schemes and col
 ./scripts/build-wasm.sh                       # optional but first: the browser version, which the binary embeds and serves in LAN party mode
 go build -o jetris ./cmd/jetris
 (cd agents/golang-mk1 && go build .)          # optional: the headless computer player (its own module)
+(cd agents/golang-mk2 && go build .)          # optional: its next generation, whose teammates coordinate through a KV blackboard
 ```
 
 A `jetris` built without the first step still runs and still hosts LAN parties for desktop builds and agents; it just has no browser version to hand the phones (its lobby says so, and so does the page). `internal/webdist` embeds whatever `internal/webdist/dist/` holds when the binary is built — `scripts/build-wasm.sh` fills it — which is why the release workflow runs that script on every platform before `go build`.
@@ -483,6 +484,8 @@ cd agents/golang-mk1 && go build .
 ```
 
 Agents wear their identity on their name — `<version>-<instance>-<difficulty>`, e.g. **`golang-mk1-3f7a-medium`**: which agent code generation, which running copy, and how strong. `--name HAL` swaps the version stem, playing as `HAL-3f7a-medium`. You always know what you're up against in the lobby, rosters, and game history.
+
+Its next generation, **`golang-mk2`** ([`agents/golang-mk2/`](agents/golang-mk2/)), is the one to run when several agents share a board: its teammates coordinate through a second, smaller blackboard — the `JETRIS_BLACKBOARD` KV bucket, where each claims where its piece is going, plans on the others' claims, yields to the earlier ones and waits for the ones it depends on (the protocol is open, [`jetris-agent-guide.md`](jetris-agent-guide.md) §1.4) — and a path search takes each piece around the others' pieces and out of their spawn boxes. `nats kv watch JETRIS_BLACKBOARD` shows the conversation live; `--coordinate=false` plays it as `golang-mk1` does, and `scripts/bench-mk2.sh` measures the difference on identical games.
 
 **You decide per game whether agents may join.** The create wizard's players step has an **"Allow agents to join" checkbox and a max-agents count** (off by default — human-only unless you opt in). Check it, set how many seats agents may take — **per team** in a teams game, so a 2v2 with a max of 1 seats one agent on each side — create the game, and idle `--auto-join` agents fill in up to that max (invited agents join regardless — the invitation is the permission); the game row shows `agents 1/2`-style occupancy (`agents 1, max 1 per team` for a teams game) and agent players are tagged `[agent]` everywhere. The max is enforced atomically, so a crowd of agents can never grab more seats than you allowed. **"Agents pause when alone"**, beneath the count, tells the agents of an open game that one left as its only player should stop playing until someone joins, instead of playing the board on by itself; unchecked, agents play on — alone, or among themselves once the humans leave.
 

@@ -17,10 +17,11 @@ blackboard, and the fair-play rules below.** There is no framework to plug into 
 interface to implement: your agent is a standalone program, in **any language**, that
 connects to NATS and plays by these rules. This guide plus `jetris-gameplays.md` are
 the complete contract — read them and you can build a conformant agent depending on
-nothing in this repository. The repo ships one Go agent, **`golang-mk1`**
-(`agents/golang-mk1/`), itself built purely from this contract as a self-contained
-module; §3 introduces it as a reference and sparring partner, and §4 is the contract
-every agent — `golang-mk1` included — implements.
+nothing in this repository. The repo ships two Go agents, **`golang-mk1`**
+(`agents/golang-mk1/`) and its next generation **`golang-mk2`** (`agents/golang-mk2/`,
+whose teammates coordinate through the blackboard of §1.4), each built purely from
+this contract as a self-contained module; §3 introduces them as references and
+sparring partners, and §4 is the contract every agent — both included — implements.
 To contribute an agent, see [`agents/README.md`](agents/README.md).
 
 Companion documents (all at the repo root):
@@ -147,6 +148,75 @@ pinned by `TestBagParity` and `--selftest`, and `example-python`'s `piece_at`
 takes the kind as its third argument. A game without the field is the 7-bag,
 unchanged.
 
+### 1.4 Talking to your teammates: the agents' blackboard (optional, open)
+
+Humans on a team talk: the game gives every team a voice room of its own
+(`jetris.voice.<gameID>.team.<t>.*`, §4.1). Agents may talk too — through a
+**blackboard**, a KV bucket where the agents of one playfield post what they
+are about to do — and the fairness line is the voice room's: what an agent
+may say there is what it may see (§1) and what it means to do, said only to
+its own teammates. The protocol below is open — any agent, in any language,
+may join it — and `golang-mk2` (§3) is its reference. Nothing obliges an
+agent to use it; an agent that does must keep to it:
+
+- **Who talks to whom.** The agents of ONE playfield with a shared result:
+  the crew of a cooperative game scored together (a survival or line-goal
+  game included), or one team of a teams game. A competitive board, a crew
+  scored per seat (`scoring: "individual"`) and a playfield of one seat have
+  no team, so nothing is said. An agent reads only its **own board's** keys:
+  reading another team's is tapping their voice room.
+- **What may be said.** A claim about the piece in play — its type, where the
+  agent means to put it, whether it has — and the agent's own spawn column.
+  **Never** a preview piece (a human cannot see a teammate's NEXT well),
+  anything derived from the seed beyond the piece in play, or anything read
+  off the protocol layer (a stream sequence number, a header).
+- **The bucket** is `JETRIS_BLACKBOARD`: a KV bucket with memory storage and
+  `LimitMarkerTTL` set (30 s), created idempotently by any agent that wants
+  it (`CreateOrUpdateKeyValue`), recreated by its watchers if it is deleted
+  underneath them. A server that cannot give keys a TTL means no blackboard.
+- **The key** is `<gameID>.<board>.<seat>` — `board` is `crew` on the crew's
+  board and `t<N>` on team N's, `seat` the seat's global index — and a
+  watch on `<gameID>.<board>.*` follows a whole board.
+- **The value** is the seat's claim, JSON, written straight to the key's
+  subject `$KV.JETRIS_BLACKBOARD.<key>` with a per-message TTL of 10 s (the
+  `Nats-TTL` header, as the presence entries are written): a dead agent's
+  claims evaporate, and every write of a piece renews it.
+
+  ```json
+  {"v":1,"agent":"golang-mk2-3f7a-hard","seat":1,"piece":17,
+   "type":2,"rot":1,"col":5,"cells":[[21,5],[22,5],[23,5],[22,6]],"lines":0,
+   "phase":"planned","eta_ms":250,"spawn_col":7,"t":"2026-10-01T09:30:00Z"}
+  ```
+
+  `v` is the protocol version (1); `agent` the writer's player name; `piece`
+  the writer's piece index; `type`/`rot`/`col` the placement (Guideline
+  types 0-6 = I,O,T,S,Z,J,L, the orientation, the anchor column); `cells`
+  the four cells the placement lands on IN THE WRITER'S FRAME at the time
+  of writing — a reader re-derives a planned claim's landing from `type`,
+  `rot` and `col` on its own board, since a collapse may have moved the
+  rows since; `lines` how many rows the writer expects the lock to clear;
+  `phase` is `planned` (posted right after the spawn, before the writer
+  moves) or `locked` (the piece has settled at `cells`; the next piece's
+  claim overwrites the key); `eta_ms` how long the writer expects to take
+  to land; `spawn_col` the writer's spawn column, whose box its teammates
+  keep out of while its spawn is imminent.
+- **Order and conflicts.** The bucket is one ordered stream, so its
+  revisions order every claim the same way for everyone. An agent plans on
+  the projection of the claims it has seen (the teammates' landings as
+  settled cells), posts its claim, and waits for its **own echo** on its
+  watch — it has then seen every claim made before its — before it moves.
+  Against the earlier claims, in revision order: an earlier landing that
+  **overlaps** ours means we yield (the next placement clear of every
+  earlier landing, claimed in its turn); one that changes where ours lands,
+  or whose landing ours would change if we landed first, orders ours
+  **after** it — we keep the placement but do not drop or lock until their
+  claim is `locked` or its cells are settled on the board, and re-plan if
+  that takes too long (1.5 s). Claims made after ours are theirs to yield
+  to; nothing ever makes an earlier claim move, so the chain converges.
+- **Teammates who say nothing** — humans, agents without the blackboard —
+  are played around as before: their falling piece is a transient obstacle
+  on the board, and its straight drop is where they are most likely going.
+
 ## 2. Announce yourself: the agent flag and the agent policy
 
 Agents are first-class but visible:
@@ -227,7 +297,23 @@ Agents are first-class but visible:
   component must use only `[-/_=.a-zA-Z0-9]` (no spaces, no parentheses) and
   the whole must fit 32 characters (`config.ValidatePlayerName`).
 
-## 3. The reference agent `golang-mk1`
+## 3. The reference agents `golang-mk1` and `golang-mk2`
+
+**`golang-mk2`** ([`agents/golang-mk2/`](agents/golang-mk2/)) is `golang-mk1`'s
+next generation, and the reference for the blackboard of §1.4: on a shared
+board its teammates claim their placements on the blackboard, plan on each
+other's claims, yield to the earlier ones and wait for the ones they depend
+on; a path search moves each piece around its teammates' pieces and out of
+their spawn boxes, and locks it in the same batch as the walk; it locks
+with CAS on a shared board, vacates a crewmate's stale piece (idle 10 s, or
+on its spawn box 3 s), and leaves a running open game cleanly. Its planner
+is `golang-mk1`'s Dellacherie evaluator, a row at a time and with a beam at
+the top, so a plan takes tens of milliseconds where it took seconds. It
+plays every mode, `--coordinate=false` plays it as `golang-mk1` does, and
+`scripts/bench-mk2.sh` compares the two on identical games. Its README has
+the details; everything below about `golang-mk1` holds for it too.
+
+### 3.1 The reference agent `golang-mk1`
 
 The repository's own agent, **`golang-mk1`** ([`agents/golang-mk1/`](agents/golang-mk1/)),
 is exactly what this guide asks you to build: an independent module (its own `go.mod`,
@@ -283,6 +369,7 @@ discipline.
 | `JETRIS_LOBBY` | KV bucket | presence (`players.<name>`), game listings (`games.<gameID>`), invitations (`invites.<name>.<gameID>`, one per invited game), pinned replays (`pins.<gameID>`: the key's existence keeps that game's replay out of every archiver's purge — read them before you purge, step 6) |
 | `JETRIS_CHAT` | stream | all chat on `jetris.chat.<gameID>`; the lobby chat uses the reserved game ID `lobby`, which is why no game may be named it |
 | `JETRIS_ARCHIVE` | stream | finished-game records (`jetris.archive`) |
+| `JETRIS_BLACKBOARD` | KV bucket | optional, agents only (§1.4): one claim per seat of a playfield, `<gameID>.<board>.<seat>`, each with a 10 s TTL — where the agents of one team tell each other where their pieces are going |
 | `JETRIS_GAME_<gameID>` | stream | the blackboard: `jetris.game.<gameID>.>`, memory storage, full game history retained (no per-subject cap), atomic publish + direct get enabled |
 
 A game ID is either a v4 UUID or the **name** its creator gave the game: a
@@ -718,6 +805,11 @@ each lock of yours:
   resident to find, or `--join` it in directly.
 - **In Go**: `internal/testutil.StartServer` gives an embedded JetStream server
   for protocol experiments and tests.
+- **With teammates that talk**: run two or three `golang-mk2` residents on a
+  cooperative game and `nats kv watch JETRIS_BLACKBOARD` beside them — the
+  claims are the agents' conversation, live. `scripts/bench-mk2.sh` runs
+  identical games for coordinated, uncoordinated and `golang-mk1` crews and
+  tallies them.
 
 ## 7. Checklist
 
@@ -749,3 +841,4 @@ each lock of yours:
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish
 - [ ] Presence deleted and seats freed on the way out
+- [ ] If you use the blackboard (§1.4): only your own board's keys read, only claims about the piece in play written — never a preview, the seed's future or a sequence number — each with its TTL, posted before you move and checked against the earlier claims once your echo is in

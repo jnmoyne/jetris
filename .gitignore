@@ -5,7 +5,9 @@ jetstream-data/
 /jetris
 /headless-player
 agents/golang-mk1/golang-mk1
+agents/golang-mk2/golang-mk2
 dist/
 # the browser build scripts/build-wasm.sh copies into the desktop binary (internal/webdist)
 internal/webdist/dist/*
 !internal/webdist/dist/.gitkeep
+bench-out/

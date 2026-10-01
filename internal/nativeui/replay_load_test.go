@@ -127,6 +127,23 @@ func TestReplayLoadsRealGame(t *testing.T) {
 		t.Error("a loaded replay does not start playing")
 	}
 
+	// Every message of the copy is in the timeline, cut into transactions
+	// on the batch ids the copy carries: the engine's lock is a batch of
+	// several cells under one id, and the clear's event a publish of its
+	// own.
+	if len(tl.msgs) != rv.total { // the marker counts the copy, itself excluded
+		t.Errorf("%d messages kept, want the copy's %d", len(tl.msgs), rv.total)
+	}
+	batches := 0
+	for _, x := range tl.txns {
+		if x.batch != "" && x.end-x.start > 1 {
+			batches++
+		}
+	}
+	if batches == 0 {
+		t.Errorf("no multi-message transaction with a batch id among %d transactions: the copy lost the ids", len(tl.txns))
+	}
+
 	// The countdown it opens on: four numbers, ≈gap apart, ending before the
 	// game does.
 	if len(tl.counts) != 4 {

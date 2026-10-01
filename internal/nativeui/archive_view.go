@@ -184,13 +184,13 @@ type labeledBoard struct {
 // than today's — a game archived before every board became config.VisibleRows
 // tall replays at the height it was played on — shrinks its cell to stand
 // whole in the room the screen gives it, rather than running off the bottom
-// at a fixed size. Boards too wide even so fall back to horizontal scrolling
-// (scrollableBoards).
+// at a fixed size. The cell is capped only by boardCellMaxDp, the cap every
+// full-size playfield shares: the boards take all the room the window opens
+// up, the way the game screen's do (app.go, layout) — a replay watched on a
+// big window is a big replay. Boards too wide even so fall back to horizontal
+// scrolling (scrollableBoards).
 func (a *App) boardsStrip(gtx C, list *widget.List, boards []labeledBoard) D {
-	maxDp := unit.Dp(16)
-	if len(boards) == 1 {
-		maxDp = 22
-	}
+	maxDp := boardCellMaxDp
 	// The widest and the tallest of them: the strip gives every board the one
 	// cell, so it has to be the cell they all fit at.
 	cols, rows, labeled, subbed := 0, 0, false, false

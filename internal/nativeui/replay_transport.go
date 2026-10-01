@@ -71,6 +71,9 @@ func (a *App) replayTransportEvents(gtx C, rv *replayView) {
 			rv.anchor = gtx.Now
 		}
 	}
+	if a.replayMsgsBtn.Clicked(gtx) {
+		a.replayMsgsShown = !a.replayMsgsShown
+	}
 	if rv.trackW <= 0 {
 		return // not laid out yet: nothing to measure a drag against
 	}
@@ -92,9 +95,9 @@ func (a *App) replayTransportEvents(gtx C, rv *replayView) {
 // replayKeys are the transport's keyboard, the shortcuts a tape deck has
 // always had: the space bar plays and pauses, the arrows move the playhead —
 // left and right by a skip, up and down through the speeds — HOME and END run
-// it to either end, and ESC leaves. They are the same actions the keys of the
-// deck take, and they are drained in the same place, so a replay can be driven
-// entirely from either.
+// it to either end, N shows and hides the NATS messages, and ESC leaves. They
+// are the same actions the keys of the deck take, and they are drained in the
+// same place, so a replay can be driven entirely from either.
 //
 // The leading key.FocusFilter is REQUIRED: a tag only becomes a focusable key
 // target when one is registered for it that frame (the same rule the board's
@@ -107,7 +110,7 @@ func replayKeyFilters(tag event.Tag) []event.Filter {
 	for _, n := range []key.Name{
 		key.NameSpace,
 		key.NameLeftArrow, key.NameRightArrow, key.NameUpArrow, key.NameDownArrow,
-		key.NameHome, key.NameEnd, key.NameEscape,
+		key.NameHome, key.NameEnd, key.NameEscape, replayMsgsKey,
 	} {
 		fs = append(fs, key.Filter{Focus: tag, Name: n})
 	}
@@ -162,9 +165,15 @@ func (a *App) replayKeys(gtx C, rv *replayView) (leave bool) {
 			rv.cue(0, gtx.Now)
 		case key.NameEnd:
 			rv.cue(rv.tl.dur, gtx.Now)
+		case replayMsgsKey:
+			a.replayMsgsShown = !a.replayMsgsShown
 		}
 	}
 }
+
+// replayMsgsKey is the key that shows and hides the replay's NATS messages
+// panel — N, for NATS, and for NOW, which is what the panel is about.
+const replayMsgsKey = key.Name("N")
 
 // replayStepSpeed moves one step along replaySpeeds from the rate nearest sp,
 // stopping at either end.
@@ -182,7 +191,7 @@ func replayStepSpeed(sp float64, step int) float64 {
 // out, so the keyboard is discoverable without a manual. A touch screen has no
 // keyboard to spell out and gets the keys of the deck instead.
 func (a *App) replayKeyHint(gtx C) D {
-	return a.keyHintLine(gtx, "SPACE PLAY/PAUSE · ← → SKIP 10s · ↑ ↓ SPEED · HOME END · ESC LOBBY")
+	return a.keyHintLine(gtx, "SPACE PLAY/PAUSE · ← → SKIP 10s · ↑ ↓ SPEED · HOME END · N NATS MSGS · ESC LOBBY")
 }
 
 // keyHintLine centers one line of shortcut legend under whatever it belongs
@@ -199,9 +208,10 @@ func (a *App) keyHintLine(gtx C, txt string) D {
 
 // replayTransport is the whole deck: the scrubber (clear timeline over scrub
 // slider), then the buttons — the five transport keys, the speed selector,
-// Pin (Unpin while the replay is pinned — pinned says which; share.go), Share,
-// and the way back to the lobby. On a compact screen the row splits in three
-// rather than shrinking the keys.
+// the NATS MSGS switch (lit while the transactions panel is up, natstxn.go),
+// Pin (Unpin while the replay is pinned — pinned says which; share.go),
+// Share, and the way back to the lobby. On a compact screen the row splits
+// in three rather than shrinking the keys.
 func (a *App) replayTransport(gtx C, rv *replayView, pinned bool) D {
 	keys := func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -250,10 +260,13 @@ func (a *App) replayTransport(gtx C, rv *replayView, pinned bool) D {
 		return a.secondaryButton(gtx, &a.replayPinBtn, label)
 	}
 	share := func(gtx C) D { return a.secondaryButton(gtx, &a.replayShareBtn, "Share") }
-	// The three actions that are about the recording rather than the
-	// playhead, kept together at the end of the deck.
+	msgs := func(gtx C) D { return a.transportButton(gtx, &a.replayMsgsBtn, replayMsgsLabel, a.replayMsgsShown) }
+	// The actions that are about the recording rather than the playhead,
+	// kept together at the end of the deck.
 	actions := func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(msgs),
+			layout.Rigid(hSpacer(8)),
 			layout.Rigid(pin),
 			layout.Rigid(hSpacer(8)),
 			layout.Rigid(share),
@@ -361,6 +374,9 @@ func (a *App) replayScrubber(gtx C, rv *replayView) D {
 	semantic.LabelOp(replayScrubLabel).Add(gtx.Ops)
 	return D{Size: image.Pt(w, h)}
 }
+
+// replayMsgsLabel is the NATS MSGS switch's label — how the tests find it.
+const replayMsgsLabel = "NATS MSGS"
 
 // transportButton is a compact pixel key of the deck: accent-bordered like
 // secondaryButton, but tight enough to sit five in a row. on fills it — the

@@ -2668,7 +2668,11 @@ logo flanking "JETRIS: peer to peer blackboard system made with NATS.io JetStrea
 "NATS.io" text in the NATS-blue accent).
 
 **NATS message panel.** The game screen HUD (player AND spectator) has a "Show NATS
-messages" checkbox. While checked, a monospace strip across the bottom of the window
+messages" checkbox (a spectator's opens the transactions window of `natstxn.go` — the
+last transactions over a NOW · LIVE line — and the replay screen's NATS MSGS key / N
+opens the same window on the recording around the playhead, five transactions either
+side, cut on the copy's `Jetris-Batch` ids or, for an older copy, on the recorded pace).
+The player's: While checked, a monospace strip across the bottom of the window
 (at least 170 dp, growing with the window height — like the in-game chat list, which
 grows from its 96 dp minimum) lists the tail of the messages delivered by the engine's game-stream consumers
 (cells, events, meta, countdown, roster — tapped via `engine.tapMsg` → `OnStreamMsg`):

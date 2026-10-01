@@ -898,3 +898,34 @@ func TestOpponentNeverTallerThanThePlayfield(t *testing.T) {
 		}
 	}
 }
+
+// A spectator's boards grow with the window like the player's own
+// (boardCellMaxDp): the competitive strip and the teams strip both draw a
+// bigger cell on a 2560×1440 window than on the default one, past the cap
+// they used to stop at.
+func TestSpectatorBoardsGrowWithTheWindow(t *testing.T) {
+	players := []lobby.PlayerSummary{
+		{PlayerID: "alice", Name: "alice", Ready: true, Team: 0},
+		{PlayerID: "bob", Name: "bob", Ready: true, Team: 1},
+	}
+	for _, gmode := range []config.GameMode{config.ModeCompetitive, config.ModeTeams} {
+		last := 0
+		for _, sz := range []image.Point{{X: 1280, Y: 820}, {X: 2560, Y: 1440}} {
+			a := newTestApp()
+			a.eng = engine.New(nil, "g1", "spec", "", gmode, engine.ModeSpectator, 0, 0, 0)
+			a.gamePlayers, a.readyPlayers = players, players
+			a.screen = screenGame
+			a.gameStatus = string(config.GameStatusInProgress)
+			if d := a.layout(testCtx(sz.X, sz.Y)); d.Size.X == 0 || d.Size.Y == 0 {
+				t.Fatalf("%v spectator screen at %v rendered zero-size", gmode, sz)
+			}
+			if a.specCell <= last {
+				t.Fatalf("%v spectator at %v: cell %d px, want more than the %d px of the smaller window", gmode, sz, a.specCell, last)
+			}
+			last = a.specCell
+		}
+		if last <= 40 {
+			t.Fatalf("%v spectator at 2560x1440: cell %d px, want past the 40 dp the strips used to cap at", gmode, last)
+		}
+	}
+}

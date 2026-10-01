@@ -10,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/jetstreamext"
 
 	"jetris/internal/config"
 )
@@ -173,10 +174,13 @@ const replayCopyChunk = 512
 
 // CopyGameToReplayStream copies every message of a finished game's stream into
 // the shared replay stream: the subject remapped by config.ReplayCopySubject,
-// the payload verbatim, and the original stream timestamp in the
-// config.ReplayTsHeader header (the original headers are deliberately NOT
-// copied — CAS-expectation and atomic-batch headers reference the dying game
-// stream and must not be re-validated against the replay stream). Every ack is
+// the payload verbatim, the original stream timestamp in the
+// config.ReplayTsHeader header and the id of the atomic batch the message
+// committed in, when it did, in config.ReplayBatchHeader (the original
+// headers are deliberately NOT copied — CAS-expectation and atomic-batch
+// headers reference the dying game stream and must not be re-validated
+// against the replay stream; the batch id rides under the replay's own
+// header name, where the server reads nothing into it). Every ack is
 // checked, and the marker is published only after the last copy is confirmed —
 // any failure purges the partial copy and returns the error, so a game either
 // has a complete replay or none. Must run before the game stream is deleted.
@@ -246,12 +250,16 @@ func CopyGameToReplayStream(ctx context.Context, js jetstream.JetStream, gameID 
 			if subject == "" {
 				continue
 			}
+			header := nats.Header{
+				config.ReplayTsHeader: []string{strconv.FormatInt(md.Timestamp.UnixNano(), 10)},
+			}
+			if id := msg.Headers().Get(jetstreamext.BatchIDHeader); id != "" {
+				header.Set(config.ReplayBatchHeader, id)
+			}
 			f, err := js.PublishMsgAsync(&nats.Msg{
 				Subject: subject,
 				Data:    msg.Data(),
-				Header: nats.Header{
-					config.ReplayTsHeader: []string{strconv.FormatInt(md.Timestamp.UnixNano(), 10)},
-				},
+				Header:  header,
 			})
 			if err != nil {
 				return fail(err)

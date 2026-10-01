@@ -23,11 +23,16 @@ func newReplayFeed(rec config.ArchiveRecord, t0 time.Time) *replayFeed {
 }
 
 func (f *replayFeed) at(off time.Duration, subject string, v any) {
+	f.batch(off, subject, v, "")
+}
+
+// batch is at for a message the copy marks as committed in an atomic batch.
+func (f *replayFeed) batch(off time.Duration, subject string, v any, id string) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		panic(err)
 	}
-	f.b.add(subject, data, f.t0.Add(off))
+	f.b.add(subject, data, f.t0.Add(off), id)
 }
 
 func lockedCell() game.Cell { return game.Cell{Occupied: true, PieceType: game.PieceL} }
@@ -391,6 +396,118 @@ func TestCompetitiveClearMarksPreferEvents(t *testing.T) {
 		}
 		if byBoard[1].off < 2*time.Second || byBoard[1].off > 2*time.Second+100*time.Microsecond {
 			t.Errorf("announce=%v: bob's marker at %v, want the board's collapse (≈2s)", announce, byBoard[1].off)
+		}
+	}
+}
+
+// Every message of the recording is kept, and cut into transactions. A copy
+// that carries the batch ids is cut on them: a batch's cells are one
+// transaction whatever their pace, and a meta or an event stands alone even
+// when it was recorded on a batch's heels.
+func TestReplayTransactionsFromBatchIDs(t *testing.T) {
+	const id = "g1"
+	rec := config.ArchiveRecord{GameID: id, Mode: config.ModeCompetitive, PlayerCount: 2,
+		Players: []config.PlayerResult{{PlayerID: "alice"}, {PlayerID: "bob"}}}
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	f := newReplayFeed(rec, t0)
+	cell := func(r, c int) string {
+		return config.ReplayCopySubject(id, config.CompetitiveCellSubject(id, "alice", r, c))
+	}
+	f.at(0, replayCountdownSubject(id), map[string]int{"seconds": 0})
+	f.at(time.Second, replayMetaSubject(id), config.GameMeta{GameID: id, Status: config.GameStatusInProgress})
+	// A lock: four cells in one batch, then the event announcing it 50 µs
+	// behind — inside the pace rule's gap, but its own publish.
+	for c := 0; c < 4; c++ {
+		f.batch(2*time.Second+time.Duration(c)*time.Microsecond, cell(10, c), lockedCell(), "batch-1")
+	}
+	f.at(2*time.Second+50*time.Microsecond, config.ReplayCopySubject(id, config.EventKindSubject(id, string(engine.EventLineClear), "alice")),
+		engine.GameEvent{PlayerID: "alice", LinesCleared: 1, TotalScore: 100, TotalLines: 1})
+	// Another lock a second on, seven cells (a step: four set, three vacated).
+	for c := 0; c < 7; c++ {
+		f.batch(3*time.Second+time.Duration(c)*time.Microsecond, cell(11, c), lockedCell(), "batch-2")
+	}
+	tl := f.b.finish()
+
+	if len(tl.msgs) != 14 {
+		t.Fatalf("%d messages kept, want all 14", len(tl.msgs))
+	}
+	sizes := func(txns []replayTxn) []int {
+		var out []int
+		for _, x := range txns {
+			out = append(out, x.end-x.start)
+		}
+		return out
+	}
+	if got, want := sizes(tl.txns), []int{1, 1, 4, 1, 7}; !slices.Equal(got, want) {
+		t.Fatalf("transactions = %v messages each, want %v", got, want)
+	}
+	for i, x := range tl.txns {
+		if x.idx != i {
+			t.Errorf("transaction %d carries idx %d", i, x.idx)
+		}
+		if x.off != tl.msgs[x.start].off {
+			t.Errorf("transaction %d at %v, its first message at %v", i, x.off, tl.msgs[x.start].off)
+		}
+	}
+	if tl.txns[2].batch != "batch-1" || tl.txns[4].batch != "batch-2" || tl.txns[3].batch != "" {
+		t.Errorf("batch ids = %q %q %q, want batch-1, none, batch-2", tl.txns[2].batch, tl.txns[3].batch, tl.txns[4].batch)
+	}
+	if tl.origin != t0 {
+		t.Errorf("origin = %v, want the countdown's %v", tl.origin, t0)
+	}
+
+	// The window around a playhead: the last n at or before it, the first n
+	// after, either side as short as the recording leaves it.
+	before, after := tl.txnsAround(2*time.Second+10*time.Microsecond, 5)
+	if got, want := sizes(before), []int{1, 1, 4}; !slices.Equal(got, want) {
+		t.Errorf("before the playhead: %v, want %v", got, want)
+	}
+	if got, want := sizes(after), []int{1, 7}; !slices.Equal(got, want) {
+		t.Errorf("after the playhead: %v, want %v", got, want)
+	}
+	before, after = tl.txnsAround(2*time.Second+10*time.Microsecond, 2)
+	if len(before) != 2 || len(after) != 2 || before[0].idx != 1 || after[1].idx != 4 {
+		t.Errorf("capped at 2: before %+v, after %+v", before, after)
+	}
+	if before, after := tl.txnsAround(-1, 5); len(before) != 0 || len(after) != 5 {
+		t.Errorf("before the recording: %d before, %d after, want 0 and 5", len(before), len(after))
+	}
+	if before, after := tl.txnsAround(time.Hour, 5); len(before) != 5 || len(after) != 0 {
+		t.Errorf("past the recording: %d before, %d after, want 5 and 0", len(before), len(after))
+	}
+}
+
+// A recording copied before the copy carried the batch ids is cut on the
+// recorded pace: cell writes microseconds apart are one transaction, cells a
+// batch gap or more apart are the next, and a meta or an event is never
+// grouped with the cells around it.
+func TestReplayTransactionsFromThePace(t *testing.T) {
+	const id = "g1"
+	rec := config.ArchiveRecord{GameID: id, Mode: config.ModeCooperative, PlayerCount: 1,
+		Players: []config.PlayerResult{{PlayerID: "alice"}}}
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	f := newReplayFeed(rec, t0)
+	cell := func(r, c int) string { return config.ReplayCopySubject(id, config.CoopCellSubject(id, r, c)) }
+	for c := 0; c < 4; c++ {
+		f.at(time.Second+time.Duration(c)*20*time.Microsecond, cell(10, c), lockedCell())
+	}
+	f.at(time.Second+100*time.Microsecond, replayMetaSubject(id), config.GameMeta{GameID: id, Status: config.GameStatusInProgress})
+	f.at(time.Second+150*time.Microsecond, cell(12, 0), lockedCell())
+	f.at(time.Second+170*time.Microsecond, cell(12, 1), lockedCell())
+	for c := 0; c < 3; c++ {
+		f.at(time.Second+5*time.Millisecond+time.Duration(c)*20*time.Microsecond, cell(11, c), lockedCell())
+	}
+	tl := f.b.finish()
+	var got []int
+	for _, x := range tl.txns {
+		got = append(got, x.end-x.start)
+	}
+	if want := []int{4, 1, 2, 3}; !slices.Equal(got, want) {
+		t.Fatalf("transactions = %v messages each, want %v", got, want)
+	}
+	for _, x := range tl.txns {
+		if x.batch != "" {
+			t.Errorf("a transaction read off the pace carries batch id %q", x.batch)
 		}
 	}
 }

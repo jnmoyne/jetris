@@ -199,7 +199,14 @@ func (a *App) gameScreen(gtx C, eng *engine.Engine, view gameView, mode engine.M
 		}))
 	}
 	if showMsgs {
-		children = append(children, layout.Rigid(a.natsMsgSection))
+		// The player's panel is the log of the messages as they come; a
+		// spectator's is the stream's last transactions over a NOW marker
+		// (natstxn.go), the window the replay screen opens on a recording.
+		section := a.natsMsgSection
+		if mode == engine.ModeSpectator {
+			section = a.natsTxnSection
+		}
+		children = append(children, layout.Rigid(section))
 	}
 	body := func(gtx C) D { return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...) }
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,

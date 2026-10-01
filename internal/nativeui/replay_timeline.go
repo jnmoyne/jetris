@@ -53,6 +53,33 @@ type clearMark struct {
 	lines int
 }
 
+// replayMsg is one copied message as the recording holds it: when it was
+// recorded on the timeline's clock, its subject, its raw JSON payload and the
+// id of the atomic batch it committed in (config.ReplayBatchHeader; "" for a
+// plain single publish, or for every message of a recording copied before
+// the copy carried the id). The replay's NATS messages panel reads the
+// recording off these, transaction by transaction (replayTxn).
+type replayMsg struct {
+	off     time.Duration
+	subject string
+	payload string
+	batch   string
+}
+
+// replayTxn is one transaction of the recording — the messages of one atomic
+// batch (a lock, a clear's collapse, a garbage raise), or a single publish
+// (a meta, an event, a countdown number) — at the time its first message was
+// recorded: tl.msgs[start:end]. batch is the batch's id, "" for a single
+// publish or a transaction read off the recorded pace alone (groupTxns);
+// idx its place in the recording's transactions, which picks its tint on
+// the panel so neighbouring transactions never share one.
+type replayTxn struct {
+	off        time.Duration
+	start, end int
+	batch      string
+	idx        int
+}
+
 // scoreMark is one seat's cumulative totals as a line_clear (or its
 // game_over) announced them: when, whose, the board they were scored on, and
 // the sender's own score and line count so far. The scoreboard at the
@@ -76,6 +103,15 @@ type replayTimeline struct {
 	scores   []scoreMark
 	startOff time.Duration
 	dur      time.Duration
+	// msgs is every copied message of the recording, in stream order, and
+	// txns the transactions they group into (groupTxns) — what the NATS
+	// messages panel shows around the playhead (txnsAround). origin is the
+	// recorded time the timeline's clock starts at (zero for a recording
+	// with no recorded times), so a message's wall-clock time is origin +
+	// off.
+	msgs   []replayMsg
+	txns   []replayTxn
+	origin time.Time
 	// headroom is the recorded game's hidden-rows setting
 	// (config.GameMeta.ShowHeadroom, read off its meta as the copy holds
 	// it): the replay's boards then draw their headroom behind smoked glass
@@ -107,6 +143,57 @@ func (t *replayTimeline) countdownAt(head time.Duration) (n int, ok bool) {
 		return -1, false
 	}
 	return t.counts[i-1].n, true
+}
+
+// txnsAround is the recording's transactions nearest the playhead: the last n
+// recorded at or before it — the ones the boards at the playhead have applied,
+// the most recent last — and the first n recorded after it, the next the tape
+// will play. Either side is shorter where the recording runs out.
+func (t *replayTimeline) txnsAround(head time.Duration, n int) (before, after []replayTxn) {
+	i := sort.Search(len(t.txns), func(i int) bool { return t.txns[i].off > head })
+	return t.txns[max(i-n, 0):i], t.txns[i:min(i+n, len(t.txns))]
+}
+
+// groupTxns cuts a recording's messages into transactions. A recording whose
+// copy carried the batch ids (config.ReplayBatchHeader) is cut on them:
+// consecutive messages of one id are one transaction, a message with none a
+// transaction of its own. A recording copied before the ids were carried is
+// cut on the recorded pace instead, the way detectClears tells one published
+// batch from the next: consecutive CELL writes within replayBatchGap of each
+// other are one transaction (a batch's messages are stored microseconds
+// apart, the batches themselves further), and anything that is not a cell
+// write — a meta, an event, a countdown number — stands alone, since those
+// are never batched.
+func groupTxns(msgs []replayMsg) []replayTxn {
+	batched := false
+	for _, m := range msgs {
+		if m.batch != "" {
+			batched = true
+			break
+		}
+	}
+	isCell := func(m replayMsg) bool {
+		row, _ := natspkg.ParseCellFromSubject(m.subject)
+		return row >= 0 && !config.IsGarbageSubject(m.subject) && !config.IsTxnSubject(m.subject)
+	}
+	var out []replayTxn
+	for i, m := range msgs {
+		joins := false
+		if i > 0 {
+			prev := msgs[i-1]
+			if batched {
+				joins = m.batch != "" && m.batch == prev.batch
+			} else {
+				joins = isCell(m) && isCell(prev) && m.off-prev.off <= replayBatchGap
+			}
+		}
+		if joins {
+			out[len(out)-1].end = i + 1
+			continue
+		}
+		out = append(out, replayTxn{off: m.off, start: i, end: i + 1, batch: m.batch, idx: len(out)})
+	}
+	return out
 }
 
 // replayMsgTime parses a copied message's ORIGINAL timestamp header
@@ -155,9 +242,18 @@ func newReplayBuilder(rec config.ArchiveRecord, height int) *replayBuilder {
 // (the game's creation, the roster joins, the readying up) is simply prelude
 // that never reaches the timeline, and anything recorded during it that DOES
 // matter (a board written before the count) sits at zero, where a replay
-// opens.
-func (b *replayBuilder) add(subject string, data []byte, ts time.Time) {
+// opens. batch is the id of the atomic batch the message committed in, as
+// the copy carries it (config.ReplayBatchHeader), or "". Every message is
+// kept as the NATS messages panel shows it, whatever it decodes to.
+func (b *replayBuilder) add(subject string, data []byte, ts time.Time, batch string) {
 	b.n++
+	b.decode(subject, data, ts)
+	b.tl.msgs = append(b.tl.msgs, replayMsg{off: b.offset(ts), subject: subject, payload: string(data), batch: batch})
+}
+
+// decode folds one message into the timeline's cells, counts, marks, scores
+// and tally — everything but the message itself.
+func (b *replayBuilder) decode(subject string, data []byte, ts time.Time) {
 	gameID := b.rec.GameID
 	switch subject {
 	case replayCountdownSubject(gameID):
@@ -175,6 +271,9 @@ func (b *replayBuilder) add(subject string, data []byte, ts time.Time) {
 			b.origin = ts
 			for i := range b.tl.cells {
 				b.tl.cells[i].off = 0
+			}
+			for i := range b.tl.msgs {
+				b.tl.msgs[i].off = 0
 			}
 		}
 		b.tl.counts = append(b.tl.counts, countMark{off: b.offset(ts), n: cd.Seconds})
@@ -292,6 +391,8 @@ func (b *replayBuilder) finish() *replayTimeline {
 	}
 	sort.SliceStable(t.marks, func(i, j int) bool { return t.marks[i].off < t.marks[j].off })
 	sort.SliceStable(t.scores, func(i, j int) bool { return t.scores[i].off < t.scores[j].off })
+	t.origin = b.origin
+	t.txns = groupTxns(t.msgs)
 	return t
 }
 

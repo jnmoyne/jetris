@@ -28,6 +28,10 @@ type streamMsg struct {
 	batch   string
 	group   int
 	batched bool
+	// clock, when set, is the row's time column in place of ts: the replay's
+	// transactions panel (natstxn.go) stamps its rows with the recording's
+	// own clock, the one the playhead reads.
+	clock string
 }
 
 // msgLogCap bounds the in-memory message log; the panel shows the tail, and
@@ -130,7 +134,7 @@ func (a *App) resetMsgGroups() {
 
 // natsMsgSection is the bottom message strip plus the divider that resizes it.
 func (a *App) natsMsgSection(gtx C) D {
-	h := a.msgPanelHeightPx(gtx)
+	h := a.msgPanelHeightPx(gtx, gtx.Dp(msgPanelKeepH))
 	return a.tutMark(gtx, tutNatsPanel, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(a.msgPanelDivider),
@@ -144,11 +148,14 @@ func (a *App) natsMsgSection(gtx C) D {
 // at least msgPanelHeight dp, growing with the window (20% of the available
 // height) so a taller window shows more messages. Once dragged, msgPanelDp
 // pins it — still clamped to the window, so shrinking the window never buries
-// the board and re-growing it restores the chosen height.
-func (a *App) msgPanelHeightPx(gtx C) int {
+// the board and re-growing it restores the chosen height. keep is the room
+// (px) always left over the strip for whatever stands above and below it
+// on the screen: the board and the chat (msgPanelKeepH), and on the replay
+// screen the deck under the strip as well (replayDeckKeepDp).
+func (a *App) msgPanelHeightPx(gtx C, keep int) int {
 	avail := gtx.Constraints.Max.Y
 	lo := gtx.Dp(unit.Dp(msgPanelMinH))
-	hi := max(lo, avail-gtx.Dp(unit.Dp(msgPanelKeepH)))
+	hi := max(lo, avail-keep)
 
 	h := max(gtx.Dp(unit.Dp(msgPanelHeight)), avail*20/100)
 	if a.msgPanelDp > 0 {
@@ -247,9 +254,13 @@ func (a *App) msgRow(gtx C, m streamMsg, firstOfGroup, lastOfGroup bool) D {
 	if m.batched && firstOfGroup {
 		gutterCol, gutter = c, shortBatchID(m.batch)
 	}
+	clock := m.clock
+	if clock == "" {
+		clock = m.ts.Format("15:04:05.000")
+	}
 	children := []layout.FlexChild{
 		layout.Rigid(a.mono(gutter+"  ", gutterCol)),
-		layout.Rigid(a.mono(m.ts.Format("15:04:05.000")+"  ", colMuted)),
+		layout.Rigid(a.mono(clock+"  ", colMuted)),
 		layout.Rigid(a.mono(m.subject+"  ", colAccent)),
 	}
 	for _, s := range jsonSpans(m.payload) {

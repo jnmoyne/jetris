@@ -1646,6 +1646,13 @@ const (
 	// ReplayTsHeader carries a copied message's ORIGINAL stream timestamp
 	// (integer nanoseconds since the Unix epoch).
 	ReplayTsHeader = "Jetris-Ts"
+	// ReplayBatchHeader carries the Nats-Batch-Id of the atomic batch a
+	// copied message committed in (absent for a plain single publish) —
+	// the original header is not copied, since the replay stream would
+	// re-validate it, so the id rides under a name of the replay's own: it
+	// is what lets the replay screen's NATS messages panel show the
+	// recording transaction by transaction.
+	ReplayBatchHeader = "Jetris-Batch"
 
 	replaySubjectPrefix = "jetris.replay."
 	replayMarkerToken   = "done"

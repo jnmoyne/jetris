@@ -374,6 +374,12 @@ type App struct {
 	// (takeLinkedReplay, takeLinkedJoin); guarded by mu.
 	replayPinBtn   widget.Clickable
 	replayShareBtn widget.Clickable
+	// The replay's NATS MSGS switch (replay_transport.go) and whether the
+	// transactions panel it opens is up (natstxn.go) — the N key flips it
+	// too. UI goroutine only; kept across replays, like the game screen's
+	// checkbox.
+	replayMsgsBtn   widget.Clickable
+	replayMsgsShown bool
 	// The game-over box's own Pin and Share (gameOverActions), for the game
 	// just played; gameOverNote is the line under them (a refused pin),
 	// cleared with the rest of the game state (lifecycle.go).
@@ -656,8 +662,11 @@ type App struct {
 	// UI goroutine only.
 	gest boardGesture
 	// oppCell is the opponents' thumbnails' cell as the last frame drew them
-	// (opponentPlan), never past gest.cell — read by the tests.
-	oppCell int
+	// (opponentPlan), never past gest.cell — read by the tests. specCell is
+	// the same for a spectator's boards (spectatorBoards,
+	// spectatorTeamBoards).
+	oppCell  int
+	specCell int
 	// shift and soft are the keyboard's auto-repeat machines, one per axis
 	// (autoshift.go): ← → on the DAS and ARR knobs (dasMs, arrMs — ms,
 	// 0..maxHandlingMs) and ↓ on neither, falling at sdf times the level's

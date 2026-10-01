@@ -485,7 +485,7 @@ func (a *App) runReplayLoad(ctx context.Context, rv *replayView) {
 				a.invalidate()
 				return
 			}
-			b.add(msg.Subject(), msg.Data(), replayMsgTime(msg))
+			b.add(msg.Subject(), msg.Data(), replayMsgTime(msg), msg.Headers().Get(config.ReplayBatchHeader))
 			if b.n%replayProgressEvery == 0 {
 				a.mu.Lock()
 				rv.loaded = b.n
@@ -736,6 +736,15 @@ func (a *App) layoutReplayScreen(gtx C, rv *replayView, boards []labeledBoard, c
 					layout.Expanded(content),
 					layout.Stacked(func(gtx C) D { return a.countdownOverlay(gtx, count, rv.shownAt) }),
 				)
+			}),
+			layout.Rigid(func(gtx C) D {
+				// The transactions panel (natstxn.go), when it is switched
+				// on: under the boards, over the deck, the playhead's NOW
+				// across its middle.
+				if !a.replayMsgsShown {
+					return D{}
+				}
+				return a.replayMsgSection(gtx, rv)
 			}),
 			layout.Rigid(spacer(10)),
 			layout.Rigid(func(gtx C) D { return a.replayTransport(gtx, rv, pinned) }),

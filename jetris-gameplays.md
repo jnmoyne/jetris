@@ -1349,6 +1349,19 @@ its raw **JSON payload**, syntax-colored (keys blue, string values green, number
 collected while the box is checked, and the log is cleared when entering or leaving a
 game.
 
+A **spectator's** panel is a window on the stream rather than a log: the last
+transactions delivered — a batch's messages as one bracketed block, a single publish on
+its own — stacked over a gold **NOW · LIVE** line at the live edge. A **replay** has the
+same window, opened by the deck's **NATS MSGS** key or the N key: the five transactions
+at or before the playhead stand over a NOW line that reads the playhead's clock
+(`m:ss.mmm` from the recording's start, the clock every row is stamped with), the next
+five under it; scrubbing moves the window over the recording and playing runs the
+transactions up through NOW. The replay copy carries each message's batch id in a
+`Jetris-Batch` header, which is what the transactions are cut on; a recording copied
+before the header existed is cut on the recorded pace (cell writes microseconds apart
+are one batch, anything that is not a cell write stands alone). Both panels share the
+game panel's resize handle and height setting.
+
 **Transactions are shown as blocks.** Nearly every board change is published as ONE
 atomic batch (see Playfield Storage) — a move is 4–8 cell messages that commit together.
 The server stores the batch's `Nats-Batch-Id` header on every message of the batch, so

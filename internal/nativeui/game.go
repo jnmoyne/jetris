@@ -1652,6 +1652,7 @@ func (a *App) spectatorBoards(gtx C, eng *engine.Engine, view gameView) D {
 	headroom := eng.ShowHeadroom()
 	n := max(len(view.players), 1)
 	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), n, n*gtx.Dp(16), gtx.Dp(30), 8, boardCellMaxDp)
+	a.specCell = cell
 
 	// Elimination states drive the per-board overlays: an eliminated player's
 	// board reads OUT while the game goes on, and once it is decided — all
@@ -1768,6 +1769,7 @@ func (a *App) spectatorTeamBoards(gtx C, eng *engine.Engine, view gameView) D {
 	headroom := eng.ShowHeadroom()
 	teams := eng.TeamCount()
 	cell := fitCellPx(gtx, dims.Width, boardRows(dims, headroom), teams, teams*gtx.Dp(16), gtx.Dp(26), 10, boardCellMaxDp)
+	a.specCell = cell
 	opps := eng.OpponentSnapshots()
 	oc := view.outcome
 

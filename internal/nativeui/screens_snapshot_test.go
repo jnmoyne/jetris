@@ -519,6 +519,42 @@ func TestScreenSnapshots(t *testing.T) {
 		snapshotPNG(t, w, dir, "screen_replay_fast", func(gtx C) { a.layout(gtx) })
 	})
 
+	// The replay's NATS messages: the transactions panel under the boards,
+	// the playhead's NOW across its middle, the transactions just applied
+	// over it and the next under it — at the default window and on a
+	// 2560×1440 one, where the boards take the room the window opens up
+	// (and, without the panel, all of it).
+	t.Run("replay_natsmsgs", func(t *testing.T) {
+		a := newTestApp()
+		rv := loadedReplay(sampleReplayRecord())
+		seedReplayMsgs(rv)
+		rv.playing = false
+		a.replayView = rv
+		a.screen = screenReplay
+		a.replayMsgsShown = true
+		snapshotPNG(t, w, dir, "screen_replay_natsmsgs", func(gtx C) { a.layout(gtx) })
+		big, err := headless.NewWindow(2560, 1440)
+		if err != nil {
+			t.Fatalf("headless window: %v", err)
+		}
+		defer big.Release()
+		snapshotPNGSized(t, big, dir, "screen_replay_natsmsgs_big", image.Pt(2560, 1440), func(gtx C) { a.layout(gtx) })
+		a.replayMsgsShown = false
+		snapshotPNGSized(t, big, dir, "screen_replay_big", image.Pt(2560, 1440), func(gtx C) { a.layout(gtx) })
+	})
+
+	// A spectator's NATS messages: the stream's last transactions over a
+	// NOW marker at the live edge.
+	t.Run("game_spectator_natsmsgs", func(t *testing.T) {
+		a := newTestApp()
+		a.eng = engine.New(nil, "g1", "spec", "", config.ModeCooperative, engine.ModeSpectator, 0, 0, 0)
+		a.gamePlayers = []lobby.PlayerSummary{{PlayerID: "alice", Name: "alice", Ready: true}}
+		a.screen = screenGame
+		a.showMsgs.Value = true
+		a.msgLog = sampleStreamMsgs()
+		snapshotPNG(t, w, dir, "screen_game_spectator_natsmsgs", func(gtx C) { a.layout(gtx) })
+	})
+
 	// The replay's Share: the link as a QR code over the dimmed deck, with
 	// Copy link; and the same modal for a server a browser cannot reach,
 	// which says why instead. (A pinned replay's history row — the PINNED

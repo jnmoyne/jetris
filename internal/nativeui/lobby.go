@@ -1812,7 +1812,7 @@ func (a *App) lobbyActions(gtx C) D {
 				return a.attractButton(gtx, &a.createBtn, "Create a new game")
 			}),
 			a.tutMarked(tutHowToPlayBtn, func(gtx C) D {
-				return a.secondaryButton(gtx, &a.tutBtn, "How to play")
+				return a.helpButton(gtx, &a.tutBtn, "? How to play")
 			}),
 		)
 	})
@@ -2265,14 +2265,7 @@ func (a *App) attractStyled(gtx C, b material.ButtonStyle) D {
 		dims := b.Layout(gtx)
 		w, h := dims.Size.X, dims.Size.Y
 		bounds := image.Rect(0, 0, w, h)
-
-		bv := gtx.Dp(3)
-		hi := colorN{R: 0xff, G: 0xff, B: 0xff, A: 0x48}
-		lo := colorN{A: 0x55}
-		fillRect(gtx.Ops, image.Rect(0, 0, w-bv, bv), hi)
-		fillRect(gtx.Ops, image.Rect(0, 0, bv, h-bv), hi)
-		fillRect(gtx.Ops, image.Rect(bv, h-bv, w, h), lo)
-		fillRect(gtx.Ops, image.Rect(w-bv, bv, w, h), lo)
+		bevel(gtx, w, h)
 
 		// Glint sweep, phase-locked to the wall clock so every attract button
 		// on screen flashes in unison.
@@ -2301,6 +2294,33 @@ func (a *App) attractStyled(gtx C, b material.ButtonStyle) D {
 			// instead of redrawing every frame.
 			gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(attractPeriod - ph)})
 		}
+		return dims
+	})
+}
+
+// bevel draws the attract buttons' bas-relief edge over a w×h button face:
+// light along the top and left, shade along the bottom and right.
+func bevel(gtx C, w, h int) {
+	bv := gtx.Dp(3)
+	hi := colorN{R: 0xff, G: 0xff, B: 0xff, A: 0x48}
+	lo := colorN{A: 0x55}
+	fillRect(gtx.Ops, image.Rect(0, 0, w-bv, bv), hi)
+	fillRect(gtx.Ops, image.Rect(0, 0, bv, h-bv), hi)
+	fillRect(gtx.Ops, image.Rect(bv, h-bv, w, h), lo)
+	fillRect(gtx.Ops, image.Rect(w-bv, bv, w, h), lo)
+}
+
+// helpButton renders the lobby's How to play: filled NATS green with a dark
+// label and the attract bevel, so a newcomer finds it at a glance beside the
+// blue Create a new game — but without the glint, which stays the one action
+// the screen is waiting on.
+func (a *App) helpButton(gtx C, btn *widget.Clickable, label string) D {
+	return hardShadow(gtx, func(gtx C) D {
+		b := pixelize(material.Button(a.th, btn, label))
+		b.Background = colNATSGreen
+		b.Color = colBg
+		dims := b.Layout(gtx)
+		bevel(gtx, dims.Size.X, dims.Size.Y)
 		return dims
 	})
 }

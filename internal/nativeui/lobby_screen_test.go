@@ -83,20 +83,25 @@ func (g *lobbyRig) barY() float32 {
 
 func lobbyPlayersBtnX(w int) float32 { return barPadX(w) }
 
-// TestLobbyBarSwitches: a desktop lobby opens with all three columns up, and
-// each bar button hides exactly the one it shows — nothing else moves, and
-// the button that showed a column is the only thing that puts it away.
+// TestLobbyBarSwitches: a desktop lobby opens with the players and the chat
+// up and the menu away, and each bar button hides exactly the one it shows —
+// nothing else moves, and the button that showed a column is the only thing
+// that puts it away.
 func TestLobbyBarSwitches(t *testing.T) {
 	const w, h = 1280, 820
 	g := newLobbyRig(t, image.Pt(w, h), deviceDesktop)
 	if g.a.form.compact {
 		t.Fatalf("a %dx%d desktop window came out compact: %+v", w, h, g.a.form)
 	}
-	if !g.a.lobbyMenuVisible() || !g.a.lobbyPlayersVisible() || !g.a.lobbyChatVisible() {
-		t.Fatalf("the lobby did not open with all three up: menu=%v players=%v chat=%v",
+	if g.a.lobbyMenuVisible() || !g.a.lobbyPlayersVisible() || !g.a.lobbyChatVisible() {
+		t.Fatalf("the lobby did not open with the menu away and the rest up: menu=%v players=%v chat=%v",
 			g.a.lobbyMenuVisible(), g.a.lobbyPlayersVisible(), g.a.lobbyChatVisible())
 	}
 	y := g.barY()
+	g.tap(barMenuX(), y)
+	if !g.a.lobbyMenuVisible() {
+		t.Fatal("the menu button did not bring the menu up")
+	}
 	for _, c := range []struct {
 		name string
 		x    float32
@@ -123,20 +128,20 @@ func TestLobbyBarSwitches(t *testing.T) {
 	}
 }
 
-// TestLobbyCompactOpensWhole: a phone's lobby opens with all three of its
-// switches on, as every screen does — what a phone changes is only where they
-// go, the menu being drawn OVER the panel rather than beside it, because what
-// is left of a 390 dp screen after a menu column is no games list. And the
-// switch is still the player's: pressing it takes the menu away, and pressing
-// it again puts it back.
+// TestLobbyCompactOpensWhole: a phone's lobby opens with the same switches
+// on as every screen — the players and the chat, the menu away — and what a
+// phone changes is only where they go, the menu being drawn OVER the panel
+// rather than beside it, because what is left of a 390 dp screen after a menu
+// column is no games list. And the switch is still the player's: pressing it
+// brings the menu up, and pressing it again puts it away.
 func TestLobbyCompactOpensWhole(t *testing.T) {
 	const w, h = 390, 844
 	g := newLobbyRig(t, image.Pt(w, h), devicePhone)
 	if !g.a.form.compact {
 		t.Fatalf("a %dx%d phone did not get the compact form: %+v", w, h, g.a.form)
 	}
-	if !g.a.lobbyMenuVisible() || !g.a.lobbyPlayersVisible() || !g.a.lobbyChatVisible() {
-		t.Errorf("a phone's lobby opened with a column away: menu=%v players=%v chat=%v",
+	if g.a.lobbyMenuVisible() || !g.a.lobbyPlayersVisible() || !g.a.lobbyChatVisible() {
+		t.Errorf("a phone's lobby opened with the menu up or a column away: menu=%v players=%v chat=%v",
 			g.a.lobbyMenuVisible(), g.a.lobbyPlayersVisible(), g.a.lobbyChatVisible())
 	}
 	if g.a.lobbyMenuBeside(looseCtx(w, h)) {
@@ -144,12 +149,12 @@ func TestLobbyCompactOpensWhole(t *testing.T) {
 	}
 	y := g.barY()
 	g.tap(barMenuX(), y)
-	if g.a.lobbyMenuVisible() {
-		t.Error("the menu button did not close the menu on a phone")
-	}
-	g.tap(barMenuX(), y)
 	if !g.a.lobbyMenuVisible() {
 		t.Error("the menu button did not open the menu on a phone")
+	}
+	g.tap(barMenuX(), y)
+	if g.a.lobbyMenuVisible() {
+		t.Error("the menu button did not close the menu on a phone")
 	}
 }
 
@@ -160,6 +165,7 @@ func TestLobbySwitchesUnderAModal(t *testing.T) {
 	const w, h = 1280, 820
 	g := newLobbyRig(t, image.Pt(w, h), deviceDesktop)
 	y := g.barY()
+	g.a.lobbyMenuShown = true
 	g.a.createWizStep = wizStepType
 	g.frame()
 	g.tap(barMenuX(), y)

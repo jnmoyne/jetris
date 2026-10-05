@@ -344,14 +344,18 @@ func TestSwipeSurfaceRotateSplitFollowsTheWell(t *testing.T) {
 func TestBarSwitchesShowAndHideTheColumns(t *testing.T) {
 	const w, h = 390, 844
 	g := newScreenRig(t, image.Pt(w, h), devicePhone, liveEngine(t, "compact-panels", config.ModeCompetitive))
-	// Everything starts up, a phone included; the button is what puts it away
-	// and the same button is what brings it back.
+	// The menu starts away, a phone included; the button is what brings it
+	// up and the same button is what puts it away again.
+	if g.a.hudVisible() {
+		t.Fatal("the menu column is up to begin with")
+	}
+	g.tap(barMenuX(), barCenterY())
 	if !g.a.hudVisible() {
-		t.Fatal("the menu column is not up to begin with")
+		t.Fatal("the menu button did not show the menu column")
 	}
 	g.tap(barMenuX(), barCenterY())
 	if g.a.hudVisible() {
-		t.Fatal("the menu button did not hide the menu column")
+		t.Fatal("the menu button did not hide the column it showed")
 	}
 	g.tap(barMenuX(), barCenterY())
 	if !g.a.hudVisible() {
@@ -401,9 +405,9 @@ func TestMenuColumnLeavesTheGamePlayable(t *testing.T) {
 	eng := engine.New(nil, "menu-playable", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	g := newScreenRig(t, image.Pt(w, h), deviceDesktop, eng)
 	g.a.padShown = false
-	g.frame()
+	g.tap(barMenuX(), barCenterY())
 	if !g.a.hudVisible() {
-		t.Fatal("a wide window does not start with the menu column up")
+		t.Fatal("the menu button did not bring the menu column up")
 	}
 	// A wide window has room for the menu beside the board, so the board area
 	// — and the surface a swipe lands on — starts clear of the column.
@@ -441,8 +445,9 @@ func TestMenuColumnLeavesTheGamePlayable(t *testing.T) {
 func TestLabSwitchFlipsWithoutTakingTheKeys(t *testing.T) {
 	eng := engine.New(nil, "lab-switch", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
 	g := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
+	g.tap(barMenuX(), barCenterY())
 	if !g.a.hudVisible() {
-		t.Fatal("a wide window does not start with the menu column up")
+		t.Fatal("the menu button did not bring the menu column up")
 	}
 	if g.a.labEnum.Value == labSync {
 		t.Fatal("the lab switch starts on Pessimistic sync; this test flips onto it")
@@ -642,27 +647,25 @@ func TestCompactPadButtonTogglesThePad(t *testing.T) {
 // TestOneScreenEverywhere: a desktop window gets the same screen a phone
 // does — the bar on top, every column and strip on one of its switches. What
 // differs is only what the screen can afford: a wide one is not "compact", so
-// its menu column and its opponents show by default and its wells draw at the
-// board's own cell.
+// its opponents show by default and its wells draw at the board's own cell.
 func TestOneScreenEverywhere(t *testing.T) {
 	eng := liveEngine(t, "one-screen", config.ModeCompetitive)
 	wide := newScreenRig(t, image.Pt(1280, 820), deviceDesktop, eng)
 	if wide.a.form.compact {
 		t.Fatal("a 1280x820 window reports itself as compact")
 	}
-	// The menu column stands beside the board from the first frame here — a
-	// wide window can afford it — and the bar's button takes it away and
-	// brings it back, exactly as it does on a phone.
-	if !wide.a.hudVisible() {
-		t.Fatal("a wide window does not start with the menu column up")
+	// The menu column starts away here too, and the bar's button brings it
+	// up and takes it away, exactly as it does on a phone.
+	if wide.a.hudVisible() {
+		t.Fatal("a wide window starts with the menu column up")
 	}
 	wide.tap(barMenuX(), barCenterY())
-	if wide.a.hudVisible() {
+	if !wide.a.hudVisible() {
 		t.Fatal("the desktop window has no working menu button")
 	}
 	wide.tap(barMenuX(), barCenterY())
-	if !wide.a.hudVisible() {
-		t.Fatal("the menu button did not bring back the column it hid")
+	if wide.a.hudVisible() {
+		t.Fatal("the menu button did not take away the column it showed")
 	}
 	// Room to spare: the opponents show without being asked, and the wells
 	// draw at the board's own cell rather than the narrow screen's fraction.
@@ -805,11 +808,11 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	a.gameStatus = string(config.GameStatusInProgress)
 	a.chatLog = []lobby.ChatMessage{{GameID: "g1", Name: "bob", Text: "gl hf"}}
 	a.layout(testCtx(390, 844)) // the game screen's first frame
-	// The player puts the menu away and leaves the chat strip up.
-	a.hudShown = false
+	// The player opens the menu and leaves the chat strip up.
+	a.hudShown = true
 	a.layout(testCtx(390, 844))
-	if a.hudVisible() || a.chatSeen != 1 {
-		t.Fatalf("first game: menu up=%v seen=%d, want it away with the one message read", a.hudVisible(), a.chatSeen)
+	if !a.hudVisible() || a.chatSeen != 1 {
+		t.Fatalf("first game: menu up=%v seen=%d, want it up with the one message read", a.hudVisible(), a.chatSeen)
 	}
 	// A second game: a new engine, so a new screen.
 	a.eng = engine.New(nil, "g2", "alice", "bob", config.ModeCooperative, engine.ModePlayer, 0, 0, 0)
@@ -817,7 +820,7 @@ func TestPanelsResetOnANewGame(t *testing.T) {
 	if a.chatSeen != 0 {
 		t.Errorf("chatSeen = %d on the new game, want 0", a.chatSeen)
 	}
-	if a.hudVisible() {
+	if !a.hudVisible() {
 		t.Error("the player's menu choice did not carry into the next game")
 	}
 	// The bar's switches are the player's own and survive the move.

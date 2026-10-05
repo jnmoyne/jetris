@@ -11,8 +11,9 @@ import (
 	"testing"
 )
 
-// A fresh install (no file) shows every panel; a saved set reloads exactly as
-// written — a panel hidden on purpose does not come back.
+// A fresh install (no file) shows every panel but the two menu columns; a
+// saved set reloads exactly as written — a panel hidden on purpose does not
+// come back, nor does a menu opened on purpose go away.
 func TestPanelsRoundTrip(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -23,12 +24,13 @@ func TestPanelsRoundTrip(t *testing.T) {
 	if p != DefaultPanels() {
 		t.Fatalf("fresh panels = %+v, want the defaults %+v", p, DefaultPanels())
 	}
-	if want := (Panels{true, true, true, true, true, true, true}); p != want {
-		t.Fatalf("the defaults hide something: %+v", p)
+	if want := (Panels{false, true, true, true, false, true, true}); p != want {
+		t.Fatalf("the defaults = %+v, want only the menus hidden", p)
 	}
 
 	want := DefaultPanels()
 	want.Chat, want.Pad, want.LobbyPlayers = false, false, false
+	want.Menu, want.LobbyMenu = true, true
 	if err := SavePanels(want); err != nil {
 		t.Fatal(err)
 	}
@@ -54,19 +56,19 @@ func TestPanelsRoundTrip(t *testing.T) {
 	}
 }
 
-// A set saved before a switch existed: the missing key shows, as a fresh
-// install does, rather than reading as a panel the player put away.
+// A set saved before a switch existed: the missing key takes its default, as
+// a fresh install does, rather than reading as a panel the player put away.
 func TestPanelsAbsentKeyShows(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	writePanelsFile(t, dir, `{"menu": false, "chat": false}`)
+	writePanelsFile(t, dir, `{"opponents": false, "chat": false, "lobby_menu": true}`)
 
 	p, err := LoadPanels()
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := DefaultPanels()
-	want.Menu, want.Chat = false, false
+	want.Opponents, want.Chat, want.LobbyMenu = false, false, true
 	if p != want {
 		t.Fatalf("panels from a partial file = %+v, want %+v", p, want)
 	}

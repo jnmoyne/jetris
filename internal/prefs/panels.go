@@ -26,11 +26,12 @@ type Panels struct {
 	LobbyChat    bool `json:"lobby_chat"`
 }
 
-// DefaultPanels is a fresh install's screens: every panel showing.
+// DefaultPanels is a fresh install's screens: every panel showing but the two
+// ☰ menu columns, which wait for their button.
 func DefaultPanels() Panels {
 	return Panels{
-		Menu: true, Opponents: true, Pad: true, Chat: true,
-		LobbyMenu: true, LobbyPlayers: true, LobbyChat: true,
+		Menu: false, Opponents: true, Pad: true, Chat: true,
+		LobbyMenu: false, LobbyPlayers: true, LobbyChat: true,
 	}
 }
 

@@ -7,9 +7,9 @@ import (
 )
 
 // TestPanelsStartOnEveryScreen: a fresh App shows every panel on both
-// screens, whatever the device and however the window is held. The form
-// factor decides WHERE a panel goes (formfactor.go) and never whether it is
-// there, so a player who has set nothing gets the whole screen.
+// screens but the two ☰ menu columns, whatever the device and however the
+// window is held. The form factor decides WHERE a panel goes (formfactor.go)
+// and never whether it is there.
 func TestPanelsStartOnEveryScreen(t *testing.T) {
 	for _, f := range []screenForm{
 		{device: deviceDesktop, w: 1280, h: 820},
@@ -21,15 +21,16 @@ func TestPanelsStartOnEveryScreen(t *testing.T) {
 	} {
 		a := newTestApp()
 		a.form = f
+		if a.hudVisible() || a.lobbyMenuVisible() {
+			t.Errorf("%v %dx%d: a menu starts up: game=%v lobby=%v", f.device, f.w, f.h, a.hudVisible(), a.lobbyMenuVisible())
+		}
 		for _, c := range []struct {
 			name string
 			on   bool
 		}{
-			{"menu", a.hudVisible()},
 			{"opponents", a.oppVisible()},
 			{"pad", a.padVisible()},
 			{"chat", a.chatVisible()},
-			{"lobby menu", a.lobbyMenuVisible()},
 			{"lobby players", a.lobbyPlayersVisible()},
 			{"lobby chat", a.lobbyChatVisible()},
 		} {
@@ -41,17 +42,20 @@ func TestPanelsStartOnEveryScreen(t *testing.T) {
 }
 
 // TestPanelsPersistAndReload: what the player puts away is written out, both
-// screens' switches together, and comes back put away at the next launch —
-// while everything they left alone comes back showing.
+// screens' switches together, and comes back put away at the next launch; a
+// menu they opened comes back open — while everything they left alone comes
+// back as it started.
 func TestPanelsPersistAndReload(t *testing.T) {
 	a := newTestApp()
 	var saved prefs.Panels
 	a.panelsSave = func(p prefs.Panels) error { saved = p; return nil }
 
 	a.chatShown, a.padShown, a.lobbyPlayersShown = false, false, false
+	a.lobbyMenuShown = true
 	a.persistPanels()
 	want := prefs.DefaultPanels()
 	want.Chat, want.Pad, want.LobbyPlayers = false, false, false
+	want.LobbyMenu = true
 	if saved != want {
 		t.Fatalf("persisted %+v, want %+v", saved, want)
 	}
@@ -64,7 +68,7 @@ func TestPanelsPersistAndReload(t *testing.T) {
 		got  bool
 		want bool
 	}{
-		{"menu", b.hudVisible(), true},
+		{"menu", b.hudVisible(), false},
 		{"opponents", b.oppVisible(), true},
 		{"pad", b.padVisible(), false},
 		{"chat", b.chatVisible(), false},
@@ -85,9 +89,9 @@ func TestPanelsPersistAndReload(t *testing.T) {
 // localStorage is refused) flips its switches and says nothing.
 func TestPanelsPersistWithoutAStore(t *testing.T) {
 	a := newTestApp()
-	a.hudShown = false
+	a.chatShown = false
 	a.persistPanels()
-	if a.hudVisible() {
-		t.Error("the menu came back on")
+	if a.chatVisible() {
+		t.Error("the chat came back on")
 	}
 }

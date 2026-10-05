@@ -113,6 +113,8 @@ func TestLegendFollowsTheScheme(t *testing.T) {
 func TestKeysDialogRebinds(t *testing.T) {
 	g := newLobbyRig(t, image.Pt(1280, 820), deviceDesktop)
 	a := g.a
+	a.lobbyMenuShown = true // the dialog's buttons are in the menu column
+	g.frame()
 	var saved prefs.Keymap
 	a.keymapSave = func(k prefs.Keymap) error { saved = k.Clone(); return nil }
 	tapButton := func(label string) {

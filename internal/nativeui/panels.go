@@ -12,10 +12,11 @@ package nativeui
 // content, and a menu shut over a playfield says nothing about whether one is
 // wanted beside a list of games.
 //
-// Every one of them starts ON. A player who has never touched a switch sees
-// everything the screen has, on a desktop and on a phone alike: the game
-// arrives whole rather than folded away behind buttons nobody has been told
-// about. What a small screen changes is WHERE a panel goes — the menu drawn
+// Every one of them starts ON but the two ☰ menu columns, which start put
+// away: a player who has never touched a switch sees the content and its
+// companions — the boards, the players, the pad, the chat — on a desktop and
+// on a phone alike, with the menu one press away on the bar's first button.
+// What a small screen changes is WHERE a panel goes — the menu drawn
 // over the board instead of beside it (hudBeside), the pad under the
 // playfield instead of next to it, the columns stacked under the panel
 // instead of alongside (formfactor.go) — never whether it is there at all.

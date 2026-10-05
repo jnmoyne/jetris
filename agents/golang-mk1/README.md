@@ -130,7 +130,8 @@ becomes the game's ID, so the lobby lists it by name and its stream is
 and `_`, at most 24 of them, anything else in the name becoming a dash, and the
 create fails if another game already holds it),
 `--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
-`async`), `--auto-join`, `--wait`, `--once`, `--selftest`.
+`async`), `--soft-drop` (never hard-drop: the piece soft-drops a row per move step
+to its landing, then locks), `--auto-join`, `--wait`, `--once`, `--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the
 GUI and create a game with agents allowed — or let one instance host for another:

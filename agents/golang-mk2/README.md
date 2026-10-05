@@ -112,6 +112,8 @@ Flags are `golang-mk1`'s (`--server`/`--context`/`--user`/`--password`, `--name`
 - `--host-only` with `--create` — create the game and stay in the lobby without a seat
   until it is over: a benchmark's neutral host.
 - `--trace` — every piece's lifecycle in the log.
+- `--soft-drop` — never hard-drop: the walk goes alone, then the piece soft-drops a row per
+  move step to its landing and locks there (a point a row instead of two).
 
 ## Measuring it
 

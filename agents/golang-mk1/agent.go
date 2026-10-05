@@ -82,7 +82,8 @@ type Agent struct {
 	name       string
 	difficulty string
 	tn         tuning
-	pub        int // publish discipline for move batches: pubSync / pubAsync / pubOptimistic (pipeline.go)
+	pub        int  // publish discipline for move batches: pubSync / pubAsync / pubOptimistic (pipeline.go)
+	softDrop   bool // --soft-drop: never hard-drop — the piece soft-drops a row per move step to its landing (Game.execute)
 	joinID     string
 	inviteTeam int           // teams: the team the current invitation names (-1 = none)
 	host       *hosting      // non-nil: create one game first, then play it

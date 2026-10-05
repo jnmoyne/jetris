@@ -103,6 +103,7 @@ type Game struct {
 	// put the piece back up), owed again at once. Guarded by mu.
 	nextGravity time.Time
 	gravityDebt int
+	softDropped int // rows the piece in play soft-dropped (--soft-drop), a point a cell at the lock (scoreLock)
 
 	metaSeed    uint64
 	playerCount int
@@ -810,7 +811,7 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 	p := n
 	g.piece = &p
 	spawnT = time.Now()
-	g.nextGravity, g.gravityDebt = spawnT.Add(g.gravityNow()), 0
+	g.nextGravity, g.gravityDebt, g.softDropped = spawnT.Add(g.gravityNow()), 0, 0
 	return spawnT, true, false
 }
 
@@ -1033,7 +1034,8 @@ func (g *Game) scoreLock(ctx context.Context, lines, fell int, clearedRows []int
 	} else {
 		g.comboRun = 0
 	}
-	pts := c.points(level) + dropPoints(0, fell)
+	pts := c.points(level) + dropPoints(g.softDropped, fell)
+	g.softDropped = 0
 	switch g.mode {
 	case modeCooperative:
 		g.sharedScore += pts
@@ -1748,7 +1750,8 @@ func (g *Game) toGrid() *grid {
 	return gr
 }
 
-// execute drives the piece to (orient, col) honoring gravity, then hard-drops.
+// execute drives the piece to (orient, col) honoring gravity, then hard-drops
+// — or, with --soft-drop, soft-drops a row per move step (softDropStep).
 // On shared boards another player's falling piece is a TRANSIENT obstacle:
 // blocked by it we wait (it falls away), never lock against it, and never top
 // out on it (gameplays §3).
@@ -1838,6 +1841,9 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			case transient:
 				// a crossing piece is in the way: wait it out
 			default:
+				if g.a.softDrop && g.softDropStep(ctx, p) {
+					break
+				}
 				if g.settleForLock(ctx, p) {
 					g.mu.Unlock()
 					return
@@ -1848,6 +1854,13 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 		} else {
 			// The piece is at its planned column: settle before deciding its
 			// landing, so the drop row comes from converged state.
+			if g.a.softDrop && g.softDropStep(ctx, p) {
+				g.mu.Unlock()
+				if !g.wait(ctx, g.a.tn.moveDelay) {
+					return
+				}
+				continue
+			}
 			if g.settleForLock(ctx, p) {
 				g.mu.Unlock()
 				return
@@ -1873,6 +1886,23 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return
 		}
 	}
+}
+
+// softDropStep is --soft-drop's stand-in for the hard drop: while the piece
+// can fall, it moves one row down (a soft-dropped row, a point at the lock)
+// and reports true — the caller paces the next step by the move delay. At
+// rest it reports false, the drop row its own row, and the caller locks it
+// there with no hard-drop fall to score — unless what holds it up is
+// another player's falling piece (dropRowShared stops above those), when
+// the caller waits as it would for a hard drop. Call with g.mu held.
+func (g *Game) softDropStep(ctx context.Context, p active) bool {
+	if g.dropRowShared(p) <= p.row {
+		return false
+	}
+	if g.publishPieceMove(ctx, active{p.pt, p.orient, p.row + 1, p.col}) {
+		g.softDropped++
+	}
+	return true
 }
 
 // fallRows is the piece p fallen up to n rows on the local board: as far as

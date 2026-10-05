@@ -147,8 +147,8 @@ func (c clearInfo) name() string {
 
 // dropPoints is what the piece earned on its way down: one point per cell
 // soft-dropped, two per cell hard-dropped — never multiplied by the level.
-// This agent only ever hard-drops (or lets gravity carry the piece, which
-// earns nothing).
+// This agent hard-drops — or, with --soft-drop, soft-drops — or lets
+// gravity carry the piece, which earns nothing.
 func dropPoints(softCells, hardCells int) int {
 	return max(softCells, 0) + 2*max(hardCells, 0)
 }

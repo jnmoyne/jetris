@@ -64,6 +64,7 @@ func main() {
 	bag := flag.String("bag", "", "piece randomizer when creating a game: the 7-bag (empty, the default), double (two of each type per bag of fourteen) or none (every piece an independent draw)")
 	preset := flag.Bool("guideline", false, "create the game with the GUI wizard's Modern preset — next 6, hold, the 7-bag, 1 hole per garbage row, the modern attack table — overriding --next, --holes, --random-holes, --guideline-garbage, --hold and --bag")
 	publish := flag.String("publish", "async", "how move batches are committed (guide §4.3): sync (await every commit ack), async (pipelined, no expectation on in-flight cells), or optimistic (pipelined with predicted sequences)")
+	softDrop := flag.Bool("soft-drop", false, "never hard-drop: once at its planned column and orientation, the piece is soft-dropped a row at a time (a row per move step) until it rests, then locks — slower, a point a row instead of two")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
 	once := flag.Bool("once", false, "play one game, then exit")
@@ -139,6 +140,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	a.softDrop = *softDrop
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

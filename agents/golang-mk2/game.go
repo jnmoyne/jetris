@@ -2044,7 +2044,8 @@ func (g *Game) toGrid() *grid {
 
 // execute drives the piece to its plan — the path to the planned column and
 // orientation (findPath), then the hard drop and the lock, as ONE batch when
-// the way is clear — honoring gravity all the while: the rows a deadline
+// the way is clear; with --soft-drop the walk goes alone and the piece then
+// soft-drops a row per turn to its landing — honoring gravity all the while: the rows a deadline
 // owes fall as one batch first, and the walk follows in the same turn, so a
 // fast level never keeps the piece from walking. On a shared board another
 // player's falling piece is a TRANSIENT obstacle: blocked by it we wait at
@@ -2211,6 +2212,13 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 				case res.reached:
 					dr, clear := g.dropClearAt(res.end)
 					switch {
+					case clear && !g.depsPending() && dr == plan.dropRow && g.a.softDrop:
+						// No hard drop: walk to the column, the soft drop
+						// follows from there a row a turn.
+						g.publishPieceMove(ctx, res.end)
+						g.softDropped += res.downs
+						g.restingSince = time.Time{}
+						endWait(now)
 					case clear && !g.depsPending() && dr == plan.dropRow:
 						// The walk, the hard drop and the lock as ONE batch:
 						// the piece is on the board one round trip less.
@@ -2287,12 +2295,21 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 				switch {
 				case !clear:
 					// The drop rests on another FALLING piece: move there
-					// but stay active — gravity resumes once it falls.
-					if dr != p.row {
+					// (a row a turn with --soft-drop) but stay active —
+					// gravity resumes once it falls.
+					switch {
+					case dr == p.row:
+						noteWait(now)
+					case g.a.softDrop:
+						if g.publishPieceMove(ctx, active{p.pt, p.orient, p.row + 1, p.col}) {
+							g.softDropped++
+						}
+						g.restingSince = time.Time{}
+					default:
 						g.publishPieceMove(ctx, active{p.pt, p.orient, dr, p.col})
 						g.restingSince = time.Time{}
+						noteWait(now)
 					}
-					noteWait(now)
 				case dr < plan.dropRow:
 					// The board stops the piece short of its landing —
 					// something locked above it since the plan: no claim
@@ -2326,6 +2343,13 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					g.requestReplan(replanDropRow)
 					leave(now)
 					return
+				case g.a.softDrop && dr > p.row:
+					// No hard drop: one row down a turn, a point a row.
+					if g.publishPieceMove(ctx, active{p.pt, p.orient, p.row + 1, p.col}) {
+						g.softDropped++
+					}
+					g.restingSince = time.Time{}
+					endWait(now)
 				default:
 					if !g.lockPiece(ctx, active{p.pt, p.orient, dr, p.col}) {
 						g.requestReplan(replanLockDropped)

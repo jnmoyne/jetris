@@ -71,6 +71,7 @@ func main() {
 	seed := flag.Uint64("seed", 0, "with --create: the game's piece seed (unset = the clock), so benchmark runs deal every crew the same pieces")
 	hostOnly := flag.Bool("host-only", false, "with --create: create the game and stay in the lobby without taking a seat until it is over (a benchmark's neutral host)")
 	trace := flag.Bool("trace", false, "log every piece's lifecycle — spawn, plan, claim, waits, moves, lock — with microsecond stamps (a tuning aid)")
+	softDrop := flag.Bool("soft-drop", false, "never hard-drop: once at its planned column and orientation, the piece is soft-dropped a row at a time (a row per move step) until it rests, then locks — slower, a point a row instead of two")
 	autoJoin := flag.Bool("auto-join", false, "also join open agent-allowed games (default: invited games only)")
 	wait := flag.Duration("wait", 10*time.Minute, "max wait for a joined game to fill and start before un-joining it")
 	once := flag.Bool("once", false, "play one game, then exit")
@@ -155,6 +156,7 @@ func main() {
 	}
 	a.coordinate = *coordinate
 	a.trace = *trace
+	a.softDrop = *softDrop
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

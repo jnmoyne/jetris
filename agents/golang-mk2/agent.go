@@ -94,6 +94,7 @@ type Agent struct {
 	autoJoin   bool
 	coordinate bool // shared boards: coordinate with teammate agents through the blackboard (blackboard.go); off, the agent plays every board as golang-mk1 does
 	trace      bool // --trace: log every piece's lifecycle — spawn, plan, claim, waits, moves, lock — with microsecond stamps (Game.trace)
+	softDrop   bool // --soft-drop: never hard-drop — the piece soft-drops a row per move step to its landing (Game.execute)
 
 	nc       *nats.Conn
 	js       jetstream.JetStream

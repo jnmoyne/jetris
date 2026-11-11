@@ -322,9 +322,9 @@ func CountdownSubject(gameID string) string
 // → "jetris.game." + gameID + ".countdown"
 
 func GameChatSubject(gameID string) string
-// → "jetris.chat." + gameID (on the CHAT stream, not the game stream —
-//   game streams keep only the latest message per subject). Lobby and game
-//   chat share one stream, distinguished purely by the game-ID subject token
+// → "jetris.chat." + gameID (on the CHAT stream, not the game stream).
+//   Lobby and game chat share one stream, distinguished purely by the
+//   game-ID subject token
 //   (the lobby uses the reserved ID LobbyChatGameID, "lobby"); the consumer
 //   derives the scope via GameIDFromChatSubject(subject) ("" = lobby).
 
@@ -3771,7 +3771,7 @@ lobby/GUI machinery Phase 12 added (agent policy + `[agent]` tagging, `UnjoinGam
 and by agents over the wire.
 
 Hosting and residency carried over at the wire level: `--create` writes the per-game
-stream (last-value-per-subject, atomic publish, direct get), the initial meta (CAS
+stream (full history, no per-subject limit, atomic publish, direct get), the initial meta (CAS
 "subject empty"), the KV listing (agent-friendly `max_agents` by default), and the
 `game.created` event, then joins its own game; residents accept invitations (declining
 modes they can't play), scan open agent-allowed competitive games oldest-first with

@@ -860,7 +860,7 @@ func (a *Agent) joinGame(ctx context.Context, gameID string, invited bool) int {
 
 // createGame hosts a new competitive game — the creator's side of the
 // lifecycle (guide §5), mirroring what the GUI's create row writes: the
-// per-game stream (last-value-per-subject, atomic batches enabled), the
+// per-game stream (full history, no per-subject limit, atomic batches enabled), the
 // initial meta (CAS "subject must be empty", so a colliding id fails loudly),
 // the lobby KV listing others discover, and the transient game.created event.
 // The caller then joins its own game like any other player. Returns the new

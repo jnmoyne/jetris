@@ -396,10 +396,16 @@ Treat an ID as opaque: never parse a name out of it, and never assume a UUID.
 | `jetris.lobby.event.>` | core NATS subjects | transient lobby events (`game.created/joined/left`, `invite.sent/retracted/declined`) — no stream, subscribe live |
 | `jetris.voice.<gameID>.>` | core NATS subjects | the players' voice chat: 168-byte IMA ADPCM frames on `…all.<player>` and `…team.<t>.<player>` (the lobby's room is `jetris.voice.lobby.all.<player>`) — no stream, never replayed; nothing an agent needs to subscribe to or publish |
 
-The last property is the heart of the design: the stream keeps only the latest
-message per subject, so **the last message on each cell subject IS that cell's
-current value** — the stream is simultaneously the event log, the current state,
-and the real-time push fabric.
+The game stream is the heart of the design. It has **no per-subject limit**: it
+keeps every message of the game, from its first to its last, and is deleted once
+the game is archived (create it with no `max_msgs_per_subject`, and never set one).
+**The last message on each cell subject IS that cell's current value**, read with
+a direct get (§4.5), and the messages before it are the game: an ordered consumer
+delivers every write in order, so a lagging reader never misses a cell's vacate
+because a later write to the same subject trimmed it, a spectator joining mid-game
+replays the board from the start, and the replay archive (§5) copies the whole
+stream. The stream is at once the event log, the current state, and the real-time
+push fabric.
 
 ### 4.2 Game-stream subjects
 

@@ -191,10 +191,9 @@ Stream:  JETRIS_GAME_<id>          (subjects: jetris.game.<id>.>)
   jetris.game.<id>.countdown                   →     { seconds: 3 }
 ```
 
-Chat is the one thing that does NOT live here: the game stream keeps only the
-latest message per subject, which would truncate a conversation to its last
-line. All chat — the lobby's and every game's — lives in the shared
-`JETRIS_CHAT` stream instead, distinguished purely by the game-ID token of
+Chat is the one thing that does NOT live here. All chat — the lobby's and
+every game's — lives in the shared `JETRIS_CHAT` stream instead,
+distinguished purely by the game-ID token of
 the subject: a game's messages on `jetris.chat.<gameID>` (seen only by that
 game's players and spectators, and purged when the game is archived or
 deleted), lobby messages under the reserved game ID `lobby`

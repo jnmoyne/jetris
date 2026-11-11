@@ -59,7 +59,7 @@ the preview is deep, so the consumers and the heartbeats keep running under it.
   package (`uv sync --extra nkeys`); `socks_proxy`, `nsc` lookups and Windows cert stores
   are refused by name.
 - Where golang-mk2 and the guide differ, this follows golang-mk2: the flash carries no
-  `tm`, and the game stream is created with no per-subject limit.
+  `tm`.
 
 ## Fair visibility
 

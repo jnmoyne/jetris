@@ -561,9 +561,8 @@ func CountdownSubject(gameID string) string
 // Lobby chat and per-game chat share the SAME stream (ChatStream),
 // distinguished purely by the game-ID token of the subject: a game's messages
 // on GameChatSubject ("jetris.chat.<id>"), lobby messages under the
-// reserved game ID LobbyChatGameID ("jetris.chat.lobby"). Game chat cannot
-// live on the game stream because game streams keep only the latest message
-// per subject.
+// reserved game ID LobbyChatGameID ("jetris.chat.lobby"). Game chat does not
+// live on the game stream.
 func GameChatSubject(gameID string) string
 const ChatSubjectFilter = "jetris.chat.*"       // stream config (lobby + games)
 func GameIDFromChatSubject(subject string) string // "" = lobby

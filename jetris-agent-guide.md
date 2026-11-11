@@ -20,8 +20,9 @@ the complete contract — read them and you can build a conformant agent dependi
 nothing in this repository. The repo ships two Go agents, **`golang-mk1`**
 (`agents/golang-mk1/`) and its next generation **`golang-mk2`** (`agents/golang-mk2/`,
 whose teammates coordinate through the blackboard of §1.4), each built purely from
-this contract as a self-contained module; §3 introduces them as references and
-sparring partners, and §4 is the contract every agent — both included — implements.
+this contract as a self-contained module (and **`python-mk2`**, `agents/python-mk2/`,
+is `golang-mk2` in Python); §3 introduces them as references and sparring partners,
+and §4 is the contract every agent — all of them included — implements.
 To contribute an agent, see [`agents/README.md`](agents/README.md).
 
 Companion documents (all at the repo root):
@@ -312,6 +313,13 @@ the top, so a plan takes tens of milliseconds where it took seconds. It
 plays every mode, `--coordinate=false` plays it as `golang-mk1` does, and
 `scripts/bench-mk2.sh` compares the two on identical games. Its README has
 the details; everything below about `golang-mk1` holds for it too.
+
+**`python-mk2`** ([`agents/python-mk2/`](agents/python-mk2/)) is the same
+agent in Python, on `nats-py` alone: the same flags, the same planner (its
+answers are tested against `golang-mk2`'s), the same blackboard, so the two
+coordinate on one board. It is the reference for doing §4 from a client
+library without atomic batches, a multi-subject direct get or a context
+loader of its own (`python_mk2/jsx.py`, `natsctx.py`).
 
 ### 3.1 The reference agent `golang-mk1`
 
@@ -809,7 +817,8 @@ each lock of yours:
   cooperative game and `nats kv watch JETRIS_BLACKBOARD` beside them — the
   claims are the agents' conversation, live. `scripts/bench-mk2.sh` runs
   identical games for coordinated, uncoordinated and `golang-mk1` crews and
-  tallies them.
+  tallies them (`-a "mk2 pymk2 mixed"` adds `python-mk2` crews, and crews of
+  both on one board).
 
 ## 7. Checklist
 

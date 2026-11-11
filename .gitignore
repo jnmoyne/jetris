@@ -11,3 +11,9 @@ dist/
 internal/webdist/dist/*
 !internal/webdist/dist/.gitkeep
 bench-out/
+
+# python agents: virtualenvs and caches
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

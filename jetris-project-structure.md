@@ -47,8 +47,10 @@ jetris/
 │       └── main.go
 ├── agents/
 │   ├── example-python/              ← minimal Python agent (no repo dependency)
-│   └── golang-mk1/                  ← the Go reference agent: its own module (own go.mod,
-│                                      deps: nats.go + orbit natscontext/jetstreamext), NOT part of go build ./...
+│   ├── golang-mk1/                  ← the Go reference agent: its own module (own go.mod,
+│   │                                  deps: nats.go + orbit natscontext/jetstreamext), NOT part of go build ./...
+│   ├── golang-mk2/                  ← its next generation (own module): teammates coordinate through JETRIS_BLACKBOARD
+│   └── python-mk2/                  ← golang-mk2 in Python (own pyproject.toml, dep: nats-py), module for module
 ├── internal/
 │   ├── config/
 │   │   └── config.go
@@ -200,6 +202,7 @@ cmd/jetris
 
 agents/golang-mk1                  ← separate module: depends only on nats.go + orbit
 agents/golang-mk2                  ← its next generation (own module): teammates coordinate through the JETRIS_BLACKBOARD KV bucket
+agents/python-mk2                  ← golang-mk2 ported to Python (own package, nats-py only): same protocol, flags and blackboard
                                      natscontext/jetstreamext (the headless reference player; speaks
                                      the wire protocol, uses no internal/ packages)
 

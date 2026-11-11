@@ -4,6 +4,9 @@
 # IDENTICAL cooperative line-goal games: the same seed, goal, width and
 # neutral host (golang-mk2 --host-only creates the game and takes no seat)
 # for every arm, so the only thing that differs between the arms is the crew.
+# Further arms, asked for with -a: "pymk2" (crews of python-mk2), "pymk2solo"
+# (python-mk2 --coordinate=false) and "mixed" (golang-mk2 and python-mk2
+# seats alternating on one board); they need uv.
 #
 #   scripts/bench-mk2.sh [-n games] [-k crew] [-s seed] [-l line-goal] [-d difficulty]
 #                        [-x extra-cols] [-p port] [-o outdir] [-a "arms"] [--keep]
@@ -44,6 +47,10 @@ TAG=$(printf '%04x' $((RANDOM % 65536)))
 echo "building the agents…"
 (cd "$ROOT/agents/golang-mk1" && go build -o "$TMP/golang-mk1" .)
 (cd "$ROOT/agents/golang-mk2" && go build -o "$TMP/golang-mk2" .)
+PYMK2="$ROOT/agents/python-mk2/.venv/bin/python-mk2"
+if [[ " $ARMS " == *" pymk2"* || " $ARMS " == *" mixed "* ]]; then
+  (cd "$ROOT/agents/python-mk2" && uv sync --quiet)
+fi
 
 PIDS=()
 cleanup() {
@@ -65,11 +72,14 @@ done
 # and the host process ends once the game is over (its listing is gone).
 run_game() {
   local arm=$1 round=$2 id="bench-$arm-$round-$TAG"
-  local bin="$TMP/golang-mk2" flags=""
+  local bin="$TMP/golang-mk2" alt="" flags=""
   case "$arm" in
     mk2) ;;
     mk2solo) flags="--coordinate=false" ;;
     mk1) bin="$TMP/golang-mk1" ;;
+    pymk2) bin="$PYMK2" ;;
+    pymk2solo) bin="$PYMK2"; flags="--coordinate=false" ;;
+    mixed) alt="$PYMK2" ;; # even seats golang-mk2, odd seats python-mk2
     *) echo "unknown arm $arm" >&2; return 1 ;;
   esac
   "$TMP/golang-mk2" --server "$URL" --create --host-only --mode cooperative --players "$K" --max-agents "$K" \
@@ -80,8 +90,10 @@ run_game() {
   sleep 1
   local players=()
   for j in $(seq 1 "$K"); do
+    local seat="$bin"
+    if [[ -n "$alt" && $((j % 2)) -eq 0 ]]; then seat="$alt"; fi
     # shellcheck disable=SC2086
-    "$bin" --server "$URL" --join "$id" --once --difficulty "$DIFF" $flags > "$OUT/$id-p$j.log" 2>&1 &
+    "$seat" --server "$URL" --join "$id" --once --difficulty "$DIFF" $flags > "$OUT/$id-p$j.log" 2>&1 &
     players+=("$!")
     PIDS+=("$!")
     sleep 0.3
@@ -115,7 +127,7 @@ grep -h "stats:" "$OUT"/bench-*-p*.log > "$OUT/stats.txt" || true
 
 echo
 echo "== $N game(s) per arm, crews of $K at $DIFF, $GOAL lines, seeds $((SEED + 1))..$((SEED + N)), $EXTRA extra columns =="
-printf "%-8s %6s %8s %7s %8s %7s | %8s %8s %8s %8s %8s\n" arm games "seconds" pieces "pcs/line" score cas waits "deferred" replans yields
+printf "%-10s %6s %8s %7s %8s %7s | %8s %8s %8s %8s %8s\n" arm games "seconds" pieces "pcs/line" score cas waits "deferred" replans yields
 for arm in $ARMS; do
   jq -r --arg arm "$arm" '
     select(.game_id | startswith("bench-" + $arm + "-")) |
@@ -126,7 +138,7 @@ for arm in $ARMS; do
   | awk -v arm="$arm" -v statsfile="$OUT/stats.txt" '
       { n++; secs += $1; pieces += $2; lines += $3; score += $4 }
       END {
-        if (n == 0) { printf "%-8s %6d\n", arm, 0; exit }
+        if (n == 0) { printf "%-10s %6d\n", arm, 0; exit }
         cas = waits = def = rep = yld = 0
         while ((getline line < statsfile) > 0) {
           if (line !~ "game=bench-" arm "-") continue
@@ -136,7 +148,7 @@ for arm in $ARMS; do
           if (match(line, /claims_yielded=[0-9]+/)) yld += substr(line, RSTART + 15, RLENGTH - 15)
           if (match(line, /replans=[a-z0-9:,]+/)) { s = substr(line, RSTART + 8, RLENGTH - 8); m = split(s, parts, ","); for (i = 1; i <= m; i++) { split(parts[i], kv, ":"); rep += kv[2] } }
         }
-        printf "%-8s %6d %8.1f %7.1f %8.2f %7.0f | %8.1f %8.1f %8.1f %8.1f %8.1f\n", arm, n, secs / n, pieces / n, pieces / (lines > 0 ? lines : 1), score / n, cas / n, waits / n, def / n, rep / n, yld / n
+        printf "%-10s %6d %8.1f %7.1f %8.2f %7.0f | %8.1f %8.1f %8.1f %8.1f %8.1f\n", arm, n, secs / n, pieces / n, pieces / (lines > 0 ? lines : 1), score / n, cas / n, waits / n, def / n, rep / n, yld / n
       }'
 done
 echo

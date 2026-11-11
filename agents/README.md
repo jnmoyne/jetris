@@ -101,6 +101,23 @@ cd golang-mk2 && go build .
 nats kv watch JETRIS_BLACKBOARD          # the crew's claims, live
 ```
 
+## The coordinating agent, in Python: `python-mk2`
+
+[`python-mk2/`](python-mk2/) is `golang-mk2` ported to Python: the same protocol, rules,
+flags and blackboard, on [`nats-py`](https://github.com/nats-io/nats.py) alone, its
+modules mirroring `golang-mk2`'s files one for one. A `python-mk2` and a `golang-mk2`
+on one board coordinate with each other as two of either do, which is the blackboard's
+point: an open protocol, not a library. Its planner gives `golang-mk2`'s answers (it is
+tested against them) and runs the lookahead on worker processes, so a plan fits a think
+pause. `../scripts/bench-mk2.sh -a "mk2 pymk2 mixed"` compares the crews. See its
+[README](python-mk2/README.md).
+
+```sh
+cd python-mk2 && uv sync
+uv run python-mk2 --server nats://localhost:4222 --auto-join       # a resident, as golang-mk2's
+uv run python-mk2 --server nats://localhost:4222 --create --mode cooperative --players 2 --once
+```
+
 ## The reference agent: `golang-mk1`
 
 [`golang-mk1/`](golang-mk1/) is the repo's own agent and the same idea in Go: an

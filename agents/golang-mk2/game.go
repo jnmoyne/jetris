@@ -42,7 +42,7 @@ type Game struct {
 	spawnC    int // our spawn column: among the seats PRESENT on a shared board (spawnColumn), refreshed on every roster change
 	extra     int // shared boards: the extra columns per seat (extraColumns), the step between neighbouring spawn points
 	runCtx    context.Context
-	pub       int // the publish discipline this game is played with (pipeline.go resolvePublish): the agent's explicit choice, or auto resolved by the board once run knows it
+	pub       int // the publish discipline this game is played with (pipeline.go): the agent's --publish
 
 	mu          sync.Mutex
 	locked      map[cell]wireCell // settled cells (stack + garbage)
@@ -186,7 +186,7 @@ func newGame(a *Agent, id string, idx int) *Game {
 		claims: map[int]claim{}, bbNotify: make(chan struct{}),
 	}
 	g.pipeCond = sync.NewCond(&g.mu)
-	g.pub = resolvePublish(a.pub, false) // run resolves it again once the board is known
+	g.pub = a.pub
 	return g
 }
 
@@ -735,12 +735,12 @@ type garbageReg struct {
 }
 
 // publishPieceMove CAS-batches the diff between the current active cells and
-// `to`. Pipelined modes (--publish async/optimistic) send the batch and move
-// on — a loss surfaces later and settles the pipeline (pipeline.go). Sync
-// mode blocks on the ack; a dropped write flashes and resyncs.
+// `to`. The optimistic mode (--publish optimistic) sends the batch and moves
+// on — a loss surfaces later and settles the pipeline (pipeline.go). The
+// pessimistic mode blocks on the ack; a dropped write flashes and resyncs.
 func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
 	cells, old := g.moveBatch(to)
-	if g.pub != pubSync {
+	if g.pub != pubPessimistic {
 		if !g.publishBatchAsync(ctx, cells, old) {
 			g.settlePipeline(ctx)
 			return false
@@ -1684,7 +1684,6 @@ func (g *Game) run(ctx context.Context) bool {
 	default:
 		g.pieceIdx = meta.int("piece_idx")
 	}
-	g.pub = resolvePublish(g.a.pub, g.shared())
 	// The blackboard (guide §1.4): a team to coordinate with — the crew of
 	// a board scored together, or our team — and a bucket to do it on.
 	if g.a.coordinate && g.a.blackboard() != nil {

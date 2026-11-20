@@ -2,24 +2,25 @@
 move batches, the walk batches and the gravity ticks.
 
 The contract does not require awaiting one batch's commit ack before sending
-the next, so the agent's --publish flag picks how a move batch is committed:
+the next, so the agent's --publish flag picks how a move batch is committed,
+the same two settings as the human client's MOVE PUBLISHING switch:
 
-  - sync: the classic path (Game.publish_batch): the publish blocks on the
-    commit ack, one round trip per batch.
-  - async: the batch is SENT and the next move is made at once; a cell an
-    un-acked batch already wrote goes out with NO expectation (its sequence
-    is unknown until that ack), every other cell with its exact per-subject
-    CAS. On the agent's own competitive board it is the only writer between
-    barriers, so nothing can slip into the unguarded window, which is why
-    `auto`, the default, picks it there and never on a shared board, where a
-    teammate contending for that cell within one round trip would be
-    overwritten: `auto` plays those sync (resolve_publish).
-  - optimistic: the same pipeline, with the gap closed by GUESSING: an
-    in-flight cell carries the sequence its write is PREDICTED to get (a
-    batch's N messages take N consecutive stream sequences after the
-    stream's end as the agent knows it, or the batch in flight ahead). Full
-    CAS protection while pipelining, at the price of a repair whenever the
-    stream did not do what the agent assumed.
+  - pessimistic: the classic path (Game.publish_batch): the publish blocks
+    on the commit ack, one round trip per batch, every cell with its exact
+    per-subject CAS.
+  - optimistic (the default): the batch is SENT and the next move is made
+    at once. A cell an un-acked batch already wrote cannot carry an exact
+    expectation (its sequence is unknown until that ack), so on a SHARED
+    board it carries the sequence its write is PREDICTED to get (a batch's
+    N messages take N consecutive stream sequences after the stream's end
+    as the agent knows it, or the batch in flight ahead): full CAS
+    protection while pipelining, at the price of a repair whenever the
+    stream did not do what the agent assumed. On the agent's own
+    competitive board it is the only writer of its cells, so a batch in
+    flight cannot lose a race and the one behind it has nothing to guard:
+    an in-flight cell goes out with no expectation, and the opponents'
+    traffic in the stream can spoil no guess. Every other cell keeps its
+    exact per-subject CAS. This is the engine's PublishOptimistic exactly.
 
 A lost pipelined batch (a CAS race, a wrong guess, a missing ack) marks the
 pipeline BROKEN: the batches sent behind it were computed on a false premise,
@@ -33,31 +34,22 @@ pipeline first (settle_pipeline) so its expectations are exact.
 import asyncio
 
 from . import aio, jsx
-from .consts import PUB_ASYNC, PUB_AUTO, PUB_OPTIMISTIC, PUB_SYNC
+from .consts import PUB_OPTIMISTIC, PUB_PESSIMISTIC
 from .wire import CASError, CellUpd, log, order_cells, payload_bytes, rand_id
 
 # The pipeline's depth: at the limit the next move batch waits for a slot.
-MAX_INFLIGHT_BATCHES = 4
+# One, like the human client's Optimistic switch.
+MAX_INFLIGHT_BATCHES = 1
 
 # How long a pipelined batch waits for its commit ack before it is treated as
 # lost (abandoned server-side, or the link gone).
 BATCH_ACK_TIMEOUT = 10.0
 
 
-def resolve_publish(pub, shared):
-    """The discipline a game is played with: an explicit choice as it is,
-    auto as sync on a shared board (every cell there may have another writer,
-    so every write of ours carries its exact expectation) and async on a
-    private one."""
-    if pub != PUB_AUTO:
-        return pub
-    return PUB_SYNC if shared else PUB_ASYNC
-
-
 def parse_publish_mode(s):
-    modes = {"sync": PUB_SYNC, "async": PUB_ASYNC, "optimistic": PUB_OPTIMISTIC, "auto": PUB_AUTO}
+    modes = {"pessimistic": PUB_PESSIMISTIC, "optimistic": PUB_OPTIMISTIC}
     if s not in modes:
-        raise ValueError(f'unknown publish mode "{s}" (want auto, sync, async or optimistic)')
+        raise ValueError(f'unknown publish mode "{s}" (want pessimistic or optimistic)')
     return modes[s]
 
 
@@ -71,8 +63,9 @@ class PipelineMixin:
     async def publish_batch_async(self, cells, flash_cells):
         """Send one CAS move batch without waiting for its commit ack and
         report whether it went out. A cell an un-acked batch already wrote
-        carries no expectation (async) or the sequence that write is
-        predicted to get (optimistic); every other cell its exact per-subject
+        carries the sequence that write is predicted to get on a shared
+        board, no expectation on the agent's own competitive board; every
+        other cell its exact per-subject
         CAS from self.seqs (which holds only acked/echoed truth: predictions
         live in inflight_seq). With the limit's worth of batches in flight it
         waits for a slot. Call with mu held; False means the pipeline is
@@ -85,7 +78,7 @@ class PipelineMixin:
             await self.pipe_cond.wait()
         if self.pipe_broken or self.is_ended():
             return False
-        predict = self.pub == PUB_OPTIMISTIC
+        predict = self.shared()  # guesses guard against a teammate; a competitive board has none
         base = max(self.stream_seq_seen, self.pipe_predicted_end)
         batch_id = rand_id(22)
         nc = self.a.nc

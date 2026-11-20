@@ -14,11 +14,10 @@ from nats.js import api
 from python_mk2 import aio, jsx
 from python_mk2.agent import Agent, ConnChoice, rand_id
 from python_mk2.blackboard import PHASE_PLANNED, Coordinator, board_name, claim_key
-from python_mk2.consts import (MODE_COMPETITIVE, MODE_TEAMS, PUB_AUTO, PUB_SYNC, game_stream_name)
+from python_mk2.consts import (MODE_COMPETITIVE, MODE_TEAMS, PUB_PESSIMISTIC, game_stream_name)
 from python_mk2.game import Game
 from python_mk2.path import Active
 from python_mk2.pieces import SPAWN_COL, SPAWN_ROW, WIDTH, piece_cells
-from python_mk2.pipeline import resolve_publish
 from python_mk2.planner import Placement
 from python_mk2.rules import MIN_EXTRA_COLUMNS
 from python_mk2.shared import shared_height, shared_width
@@ -54,7 +53,7 @@ class ServerEnv:
                 pass
         await self.nc.close()
 
-    def agent(self, name, pub=PUB_SYNC):
+    def agent(self, name, pub=PUB_PESSIMISTIC):
         a = Agent(ConnChoice(server=NATS_URL), "t", "hard", pub=pub)
         a.name = name
         a.nc, a.js = self.nc, self.js
@@ -81,7 +80,7 @@ class ServerEnv:
             g.team_scores, g.team_lines = [0, 0], [0, 0]
         g.w, g.h = shared_width(seats, MIN_EXTRA_COLUMNS), shared_height(seats, 0)
         g.spawn_c = g.spawn_column([])
-        g.pub = resolve_publish(PUB_AUTO, True)
+        g.pub = PUB_PESSIMISTIC
         self.games.append(g)
         return g
 
@@ -97,7 +96,7 @@ class ServerEnv:
             g.team_scores, g.team_lines = [0, 0], [0, 0]
         g.w, g.h = g0.w, g0.h
         g.spawn_c = g.spawn_column([])
-        g.pub = PUB_SYNC
+        g.pub = PUB_PESSIMISTIC
         self.games.append(g)
         return g
 

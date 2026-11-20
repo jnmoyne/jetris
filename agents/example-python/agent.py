@@ -21,14 +21,19 @@ Scope (deliberately minimal):
     every peer to do). Games may reveal a piece preview (meta next_count,
     0-4) that an agent MAY plan with — this one keeps its strategy one-ply
     and simply ignores its allowance, which is always legal.
-  - Publishing is PIPELINED by default (guide §4.3): a move batch is sent and
-    the next move made at once, the commit ack handled when it comes — a cell
-    an un-acked batch already wrote goes out with no expectation, every other
-    cell with its exact per-subject CAS. A lost batch drains the pipeline,
-    refetches the committed board, vacates the strays the poisoned batches
-    left, and re-plans; barriers (spawn, lock-in, gated transforms) settle
-    the pipeline first so their expectations are exact. --publish sync
-    restores the classic one-round-trip-per-batch discipline.
+  - Publishing is OPTIMISTIC by default (guide §4.3; --publish, the human
+    client's MOVE PUBLISHING switch): a move batch is sent and the next move
+    made at once, the commit ack handled when it comes. On its own
+    competitive board — the only board this agent plays — it is the only
+    writer of its cells, so a cell an un-acked batch already wrote goes out
+    with no expectation (there is no teammate to guard it against, and a
+    shared board's predicted sequence would only lose to the opponents'
+    traffic); every other cell keeps its exact per-subject CAS. A lost batch
+    drains the pipeline, refetches the committed board, vacates the strays
+    the poisoned batches left, and re-plans; barriers (spawn, lock-in, gated
+    transforms) settle the pipeline first so their expectations are exact.
+    --publish pessimistic restores the classic one-round-trip-per-batch
+    discipline.
 
 Everything it carries as a peer, per the guide:
   presence heartbeat - join via KV CAS - roster announcement - ready toggle -
@@ -86,8 +91,8 @@ CAS_ERR_CODES = (10071, 10164)  # wrong last seq for subject (plain / batch-cons
 
 # The batch pipeline (guide §4.3): how many move batches may be in flight
 # before the next one waits, and how long a commit ack may take before the
-# batch counts as lost.
-MAX_INFLIGHT = 4
+# batch counts as lost. One in flight, like the human client's Optimistic switch.
+MAX_INFLIGHT = 1
 ACK_TIMEOUT = 10.0
 
 # Tetromino cell offsets [piece][orientation] -> 4 (rowOff, colOff) from the
@@ -286,7 +291,7 @@ class GameOver(Exception):
 
 
 class Agent:
-    def __init__(self, server, stem, join_id, once, auto_join, publish="async"):
+    def __init__(self, server, stem, join_id, once, auto_join, publish="optimistic"):
         self.server = server
         self.name = f"{stem}-{secrets.token_hex(2)}-{DIFFICULTY}"
         if len(self.name) > 32:
@@ -294,7 +299,7 @@ class Agent:
         self.join_id = join_id
         self.once = once
         self.auto_join = auto_join
-        self.publish = publish  # "async" (pipelined move batches) or "sync"
+        self.publish = publish  # "optimistic" (pipelined move batches) or "pessimistic"
         self.nc = self.js = self.kv = None
         self.listings = {}      # gameID -> listing dict (from the KV watcher)
         self.invites = {}       # gameID -> invitation dict (one KV key per game)
@@ -597,10 +602,11 @@ class Agent:
 
     async def publish_batch_pipelined(self, game, cells, flash_cells):
         """Send one CAS move batch WITHOUT awaiting its commit ack (guide
-        §4.3 — the pipelined/async discipline the contract allows) and return
+        §4.3 — the optimistic discipline the contract allows) and return
         whether it went out. A cell an un-acked batch already wrote carries
-        NO expectation (its sequence is unknown until that ack); every other
-        cell its exact per-subject CAS. The whole batch — commit included —
+        NO expectation (its sequence is unknown until that ack, and on our
+        own competitive board no one else writes it); every other cell its
+        exact per-subject CAS. The whole batch — commit included —
         is published on the calling flow, so the order of commits on the wire
         is the order of the calls; a background task consumes the ack from a
         reply inbox: on success the ACTUAL sequences write through, on a lost
@@ -922,14 +928,14 @@ class Game:
 
     async def publish_piece_move(self, new):
         """CAS-batch the diff between the current active cells and `new`
-        (type, orient, row, col). Pipelined (the default): the batch is sent
+        (type, orient, row, col). Optimistic (the default): the batch is sent
         and we move on — a loss surfaces later and settles the pipeline.
-        Sync (--publish sync): block on the ack; a dropped write flashes and
-        resyncs."""
+        Pessimistic (--publish pessimistic): block on the ack; a dropped
+        write flashes and resyncs."""
         old = set(self.active_cells())
         cells = [((r, c), self.active_cell_payload(*new)) for r, c in piece_cells(*new)]
         cells += [((r, c), None) for r, c in old - set(piece_cells(*new))]
-        if self.a.publish != "sync":
+        if self.a.publish != "pessimistic":
             if not await self.a.publish_batch_pipelined(self, cells, sorted(old)):
                 await self.settle()
                 return False
@@ -1521,10 +1527,11 @@ async def main():
     ap.add_argument("--auto-join", action="store_true",
                     help="also join open agent-allowed games (default: invited games only)")
     ap.add_argument("--once", action="store_true", help="play one game, then exit")
-    ap.add_argument("--publish", choices=("sync", "async"), default="async",
-                    help="how move batches are committed (guide §4.3): async = "
-                         "pipelined, no expectation on in-flight cells (default); "
-                         "sync = await every commit ack")
+    ap.add_argument("--publish", choices=("pessimistic", "optimistic"), default="optimistic",
+                    help="how move batches are committed (guide §4.3), the human "
+                         "client's MOVE PUBLISHING switch: optimistic = pipelined, "
+                         "no expectation on in-flight cells of our own competitive "
+                         "board (default); pessimistic = await every commit ack")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:

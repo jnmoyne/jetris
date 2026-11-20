@@ -3,26 +3,25 @@ package main
 // The batch pipeline (guide §4.3): pipelined publishing of the piece's CAS
 // move batches — the walk batches and the gravity ticks. The contract does not
 // require awaiting one batch's commit ack before sending the next, so the
-// agent's --publish flag picks how a move batch is committed:
+// agent's --publish flag picks how a move batch is committed — the same two
+// settings as the human client's MOVE PUBLISHING switch:
 //
-//   - sync: the classic path (game.go publishBatch) — the publish blocks on
-//     the commit ack, one round trip per batch.
-//   - async: the batch is SENT and the next move is made at once; a cell an
-//     un-acked batch already wrote goes out with NO expectation (its
-//     sequence is unknown until that ack), every other cell with its exact
-//     per-subject CAS. On the agent's own competitive board it is the only
-//     writer between barriers, so nothing can slip into the unguarded window
-//     — which is why `auto`, the default, picks it there and never on a
-//     shared board, where a teammate contending for that cell within one
-//     round trip would be overwritten: `auto` plays those sync
-//     (resolvePublish).
-//   - optimistic: the same pipeline, with the gap closed by GUESSING — an
-//     in-flight cell carries the sequence its write is PREDICTED to get (a
-//     batch's N messages take N consecutive stream sequences after the
-//     stream's end as the agent knows it, or the batch in flight ahead).
-//     Full CAS protection while pipelining, at the price of a repair whenever
-//     the stream did not do what the agent assumed (another player's traffic
-//     landing first is a lost race, visibly).
+//   - pessimistic: the classic path (game.go publishBatch) — the publish
+//     blocks on the commit ack, one round trip per batch, every cell with its
+//     exact per-subject CAS.
+//   - optimistic (the default): the batch is SENT and the next move is made
+//     at once. A cell an un-acked batch already wrote cannot carry an exact
+//     expectation (its sequence is unknown until that ack), so on a SHARED
+//     board it carries the sequence its write is PREDICTED to get (a batch's
+//     N messages take N consecutive stream sequences after the stream's end
+//     as the agent knows it, or the batch in flight ahead) — full CAS
+//     protection while pipelining, at the price of a repair whenever the
+//     stream did not do what the agent assumed. On the agent's own
+//     competitive board it is the only writer of its cells, so a batch in
+//     flight cannot lose a race and the one behind it has nothing to guard:
+//     an in-flight cell goes out with no expectation, and the opponents'
+//     traffic in the stream can spoil no guess. Every other cell keeps its
+//     exact per-subject CAS. This is the engine's PublishOptimistic exactly.
 //
 // A lost pipelined batch (a CAS race, a wrong guess, a missing ack) marks the
 // pipeline BROKEN: the batches sent behind it were computed on a false
@@ -46,47 +45,27 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// The publish disciplines (--publish). pubAuto is the default: the
-// discipline is picked per game — sync on a shared board, async on the
-// agent's own competitive board (resolvePublish).
+// The publish disciplines (--publish).
 const (
-	pubSync = iota
-	pubAsync
+	pubPessimistic = iota
 	pubOptimistic
-	pubAuto
 )
-
-// resolvePublish is the discipline a game is played with: an explicit choice
-// as it is, auto as sync on a shared board (every cell there may have another
-// writer, so every write of ours carries its exact expectation) and async on
-// a private one.
-func resolvePublish(pub int, shared bool) int {
-	if pub != pubAuto {
-		return pub
-	}
-	if shared {
-		return pubSync
-	}
-	return pubAsync
-}
 
 func parsePublishMode(s string) (int, error) {
 	switch s {
-	case "sync":
-		return pubSync, nil
-	case "async":
-		return pubAsync, nil
+	case "pessimistic":
+		return pubPessimistic, nil
 	case "optimistic":
 		return pubOptimistic, nil
-	case "auto":
-		return pubAuto, nil
 	}
-	return 0, fmt.Errorf("unknown publish mode %q (want auto, sync, async or optimistic)", s)
+	return 0, fmt.Errorf("unknown publish mode %q (want pessimistic or optimistic)", s)
 }
 
 // maxInflightBatches bounds the pipeline's depth: at the limit the next move
-// batch waits for a slot, like the human client's in-flight limit.
-const maxInflightBatches = 4
+// batch waits for a slot. One, like the human client's Optimistic switch: the
+// move behind a batch in flight waits for that batch's ack, not for a round
+// trip of its own.
+const maxInflightBatches = 1
 
 // batchAckTimeout bounds how long a pipelined batch waits for its commit ack
 // before it is treated as lost (abandoned server-side, or the link gone).
@@ -105,8 +84,8 @@ func (g *Game) noteStreamSeq(seq uint64) {
 
 // publishBatchAsync sends one CAS move batch without waiting for its commit
 // ack and reports whether it went out. A cell an un-acked batch already wrote
-// carries no expectation (async) or the sequence that write is predicted to
-// get (optimistic); every other cell its exact per-subject CAS from g.seqs
+// carries the sequence that write is predicted to get on a shared board, no
+// expectation on the agent's own competitive board; every other cell its exact per-subject CAS from g.seqs
 // (which holds only acked/echoed truth — predictions live in inflightSeq).
 // With the limit's worth of batches in flight it waits for a slot. Call with
 // g.mu held; false means the pipeline is broken and the caller must settle.
@@ -122,7 +101,7 @@ func (g *Game) publishBatchAsync(ctx context.Context, cells []cellUpd, flashCell
 	if g.pipeBroken || g.isEnded() {
 		return false
 	}
-	predict := g.pub == pubOptimistic
+	predict := g.shared() // guesses guard against a teammate; a competitive board has none
 	base := max(g.streamSeqSeen.Load(), g.pipePredictedEnd)
 	batchID := randID(22)
 	keys := make([]cell, n)

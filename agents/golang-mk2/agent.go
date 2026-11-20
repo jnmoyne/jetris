@@ -85,7 +85,7 @@ type Agent struct {
 	name       string
 	difficulty string
 	tn         tuning
-	pub        int // publish discipline for move batches: pubSync / pubAsync / pubOptimistic (pipeline.go)
+	pub        int // publish discipline for move batches: pubPessimistic / pubOptimistic (pipeline.go)
 	joinID     string
 	inviteTeam int           // teams: the team the current invitation names (-1 = none)
 	host       *hosting      // non-nil: create one game first, then play it

@@ -40,7 +40,7 @@ func sharedTestGame(t *testing.T, ctx context.Context, mode, seat, seats int) *G
 	}
 	t.Cleanup(func() { _ = js.DeleteStream(context.Background(), gameStreamName(id)) })
 
-	a := &Agent{nc: nc, js: js, name: "me", pub: pubSync,
+	a := &Agent{nc: nc, js: js, name: "me", pub: pubPessimistic,
 		listings: map[string]obj{}, invites: map[string]obj{}, streams: map[string]jetstream.Stream{}, stopCh: make(chan struct{})}
 	g := newGame(a, id, seat)
 	g.mode, g.playerCount, g.seatsOnPF, g.extra, g.stream = mode, seats, seats, minExtraColumns, s
@@ -50,7 +50,7 @@ func sharedTestGame(t *testing.T, ctx context.Context, mode, seat, seats int) *G
 	}
 	g.w, g.h = sharedWidth(seats, minExtraColumns), sharedHeight(seats, 0)
 	g.spawnC = g.spawnColumn(nil)
-	g.pub = resolvePublish(pubAuto, true)
+	g.pub = pubPessimistic
 	return g
 }
 

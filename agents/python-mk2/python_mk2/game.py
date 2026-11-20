@@ -17,7 +17,7 @@ import time
 from . import aio, jsx
 from .blackboard import (ECHO_TIMEOUT, PHASE_LOCKED, PHASE_PLANNED, BlackboardMixin, Coordinator, board_name,
                          claim_key)
-from .consts import (ARCHIVE_SUBJECT, CHAT_STREAM, HEADROOM, MODE_COMPETITIVE, MODE_COOPERATIVE, MODE_TEAMS, PUB_SYNC,
+from .consts import (ARCHIVE_SUBJECT, CHAT_STREAM, HEADROOM, MODE_COMPETITIVE, MODE_COOPERATIVE, MODE_TEAMS, PUB_PESSIMISTIC,
                      game_stream_name, meta_subject)
 from .coord import (CONFLICT_OVERLAP, LOCK_DELAY, PLAN_STALE, REPLAN_DEP_TIMEOUT, REPLAN_DROP_ROW,
                     REPLAN_LOCK_DROPPED, REPLAN_NONE, REPLAN_STALE, REPLAN_UNREACHABLE, RETHINK_DELAY, CoordMixin,
@@ -25,7 +25,7 @@ from .coord import (CONFLICT_OVERLAP, LOCK_DELAY, PLAN_STALE, REPLAN_DEP_TIMEOUT
 from .engine import Grid
 from .path import Active
 from .pieces import PIECE_NAMES, SPAWN_COL, SPAWN_ROW, WIDTH, piece_cells
-from .pipeline import PipelineMixin, resolve_publish
+from .pipeline import PipelineMixin
 from .planner import (Placement, choose, lookahead_job, plan_finish, plan_placements, plan_roots,
                       revealed_pieces)
 from .rng import BAG_SINGLE, bag_label, normalize_bag, piece_at_bag, piece_set_for
@@ -106,7 +106,7 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         self.h = 0             # board height, headroom included (competitive 24; a shared board + extra_rows per seat beyond the first)
         self.spawn_c = SPAWN_COL  # our spawn column: among the seats PRESENT on a shared board, refreshed on every roster change
         self.extra = 0         # shared boards: the extra columns per seat, the step between neighbouring spawn points
-        self.pub = resolve_publish(a.pub, False)  # run resolves it again once the board is known
+        self.pub = a.pub
 
         self.mu = asyncio.Lock()
         self.locked = {}        # settled cells (stack + garbage): (r, c) → WireCell
@@ -551,11 +551,12 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
 
     async def publish_piece_move(self, to):
         """CAS-batch the diff between the current active cells and `to`.
-        Pipelined modes (--publish async/optimistic) send the batch and move
+        The optimistic mode (--publish optimistic) sends the batch and moves
         on: a loss surfaces later and settles the pipeline (pipeline.py).
-        Sync mode blocks on the ack; a dropped write flashes and resyncs."""
+        The pessimistic mode blocks on the ack; a dropped write flashes and
+        resyncs."""
         cells, old = self.move_batch(to)
-        if self.pub != PUB_SYNC:
+        if self.pub != PUB_PESSIMISTIC:
             if not await self.publish_batch_async(cells, old):
                 await self.settle_pipeline()
                 return False
@@ -1216,7 +1217,6 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                 log.info("split pieces: slot %d holds %s", self.team_slot, ration_names(self.ration))
         else:
             self.piece_idx = o_int(meta, "piece_idx")
-        self.pub = resolve_publish(self.a.pub, self.shared())
         if min(self.next_count, self.a.tn.lookahead) >= 2 and getattr(self.a, "plan_pool", None) is not None:
             self.a.plan_pool.warm()  # the lookahead's workers, up before the first piece
         # The blackboard (guide §1.4): a team to coordinate with (the crew of

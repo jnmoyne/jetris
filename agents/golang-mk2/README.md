@@ -44,9 +44,10 @@ shared board, `golang-mk2` agents on one team **coordinate through a blackboard*
   the lock delay's grace (500 ms) for the crewmate in its way to fall away.
 - **A collapse moves the plan, not the piece's mind**: a crewmate's clear that shifts
   our piece down shifts its planned landing with it; only a rising stack re-plans.
-- **`--publish auto`** (the default): `sync` on a shared board — every cell there may
-  have another writer, so every write of ours carries its exact expectation — and
-  `async` on a private competitive board, where `golang-mk1`'s pipelining is safe.
+- **`--publish optimistic`** (the default) or **`pessimistic`** — the human client's MOVE
+  PUBLISHING switch, as in `golang-mk1`: pipelined with predicted expectations on a
+  shared board (no expectation on in-flight cells of a private competitive board,
+  where nobody else writes them), or every commit ack awaited.
 - **A planner nineteen times faster** (`engine.go`, `planner.go`): the same Dellacherie
   evaluator and beam lookahead over the game's revealed preview, its features computed
   a row at a time on bit masks and the lookahead run for the six best placements
@@ -105,8 +106,7 @@ Flags are `golang-mk1`'s (`--server`/`--context`/`--user`/`--password`, `--name`
 
 - `--coordinate` (default true) — use the blackboard on shared boards; `false` plays them
   as `golang-mk1` does.
-- `--publish` now defaults to `auto` (sync on a shared board, async on a private one);
-  `sync`, `async` and `optimistic` are still there.
+- `--publish` takes `optimistic` (the default) or `pessimistic`, like `golang-mk1`.
 - `--seed <n>` with `--create` — the game's piece seed, so benchmark runs deal every
   crew the same pieces.
 - `--host-only` with `--create` — create the game and stay in the lobby without a seat

@@ -5,21 +5,24 @@ from conftest import needs_server
 from server_helpers import ServerEnv, assert_converged
 
 from python_mk2 import jsx
-from python_mk2.consts import PUB_ASYNC, PUB_OPTIMISTIC
+from python_mk2.consts import MODE_COOPERATIVE, PUB_OPTIMISTIC
 from python_mk2.path import Active
 from python_mk2.wire import CellUpd
 
 pytestmark = needs_server
 
 
-@pytest.mark.parametrize("pub", [PUB_ASYNC, PUB_OPTIMISTIC], ids=["async", "optimistic"])
-async def test_pipelined_moves(pub):
-    """A run of piece moves through the async and optimistic pipelines
-    without awaiting the individual acks, settled: the stream holds exactly
-    the final position with the write-through sequences reconciled to the
-    actual ones."""
+@pytest.mark.parametrize("board", ["competitive", "shared"])
+async def test_pipelined_moves(board):
+    """A run of piece moves through the optimistic pipeline without awaiting
+    the individual acks, on a competitive board (no expectation on in-flight
+    cells) and a shared one (predicted expectations), settled: the stream
+    holds exactly the final position with the write-through sequences
+    reconciled to the actual ones."""
     async with ServerEnv() as env:
-        g = await env.pipeline_test_game(pub)
+        g = await env.pipeline_test_game(PUB_OPTIMISTIC)
+        if board == "shared":
+            g.mode = MODE_COOPERATIVE
         async with g.mu:
             p = Active(2, 0, 2, g.spawn_c)
             await g.publish_batch([CellUpd(c, g.active_payload(p)) for c in p.cells()], True)
@@ -48,7 +51,7 @@ async def test_pipeline_repair():
     the loss: the settle repairs the board back to one consistent piece,
     stream truth adopted, every stray vacated, sequences exact."""
     async with ServerEnv() as env:
-        g = await env.pipeline_test_game(PUB_ASYNC)
+        g = await env.pipeline_test_game(PUB_OPTIMISTIC)
         async with g.mu:
             p = Active(1, 0, 2, g.spawn_c)  # O piece: 2x2, easy geometry
             await g.publish_batch([CellUpd(c, g.active_payload(p)) for c in p.cells()], True)

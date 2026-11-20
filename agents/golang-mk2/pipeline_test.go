@@ -80,20 +80,20 @@ func assertConverged(t *testing.T, ctx context.Context, g *Game) {
 	}
 }
 
-// TestPipelinedMoves drives a run of piece moves through the async and
-// optimistic pipelines without awaiting the individual acks, settles, and
-// checks the stream holds exactly the final position with the write-through
-// sequences reconciled to the actual ones.
+// TestPipelinedMoves drives a run of piece moves through the optimistic
+// pipeline without awaiting the individual acks — on a competitive board (no
+// expectation on in-flight cells) and on a shared one (predicted
+// expectations) — settles, and checks the stream holds exactly the final
+// position with the write-through sequences reconciled to the actual ones.
 func TestPipelinedMoves(t *testing.T) {
-	for _, pub := range []int{pubAsync, pubOptimistic} {
-		name := "async"
-		if pub == pubOptimistic {
-			name = "optimistic"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, board := range []string{"competitive", "shared"} {
+		t.Run(board, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			g := pipelineTestGame(t, ctx, pub)
+			g := pipelineTestGame(t, ctx, pubOptimistic)
+			if board == "shared" {
+				g.mode = modeCooperative
+			}
 
 			g.mu.Lock()
 			defer g.mu.Unlock()
@@ -141,7 +141,7 @@ func TestPipelinedMoves(t *testing.T) {
 func TestPipelineRepair(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	g := pipelineTestGame(t, ctx, pubAsync)
+	g := pipelineTestGame(t, ctx, pubOptimistic)
 
 	g.mu.Lock()
 	defer g.mu.Unlock()

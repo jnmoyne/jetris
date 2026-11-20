@@ -39,12 +39,13 @@ strong **Dellacherie** brain and its `easy`/`medium`/`hard` difficulties.
   (active → locked → empty ordering, per-subject expected-last-sequence, write-through), and
   every bulk transform (line-clear collapse, garbage cascade) as a **gated** batch behind
   its txn register — exactly as the guide specifies.
-- **Pipelines its move batches** (guide §4.3): `--publish` picks the discipline — `sync`
-  (await every commit ack, the classic one-round-trip-per-batch path), `async` (the
-  default: a batch is sent and the next move made at once, a cell an un-acked batch
-  already wrote carrying no expectation), or `optimistic` (pipelined with the sequences
-  in-flight writes are *predicted* to get, full CAS protection at the price of a repair on
-  a wrong guess) — the same three modes the human client plays. A lost pipelined batch
+- **Pipelines its move batches** (guide §4.3): `--publish` picks the discipline — the
+  same two settings as the human client's MOVE PUBLISHING switch. `pessimistic` awaits
+  every commit ack (the classic one-round-trip-per-batch path). `optimistic` (the
+  default) sends a batch and makes the next move at once: a cell an un-acked batch
+  already wrote carries the sequence that write is *predicted* to get on a shared board
+  (full CAS protection at the price of a repair on a wrong guess), and no expectation on
+  its own competitive board, where nobody else writes its cells. A lost pipelined batch
   drains the acks, refetches the committed board in one multi-subject direct get, vacates
   the strays the poisoned batches left, flashes, and re-plans; the spawn, the lock-in and
   every gated transform settle the pipeline first so their expectations are exact
@@ -129,8 +130,8 @@ becomes the game's ID, so the lobby lists it by name and its stream is
 `JETRIS_GAME_<name>` rather than one named after a UUID; letters, digits, `-`
 and `_`, at most 24 of them, anything else in the name becoming a dash, and the
 create fails if another game already holds it),
-`--publish` (`sync`/`async`/`optimistic` — how move batches are committed, default
-`async`), `--soft-drop` (never hard-drop: the piece soft-drops a row per move step
+`--publish` (`pessimistic`/`optimistic` — how move batches are committed, default
+`optimistic`), `--soft-drop` (never hard-drop: the piece soft-drops a row per move step
 to its landing, then locks), `--auto-join`, `--wait`, `--once`, `--selftest`.
 
 To watch it play, start a local server (`nats-server -js`, or the GUI's LAN mode), run the
@@ -156,7 +157,7 @@ GUI and create a game with agents allowed — or let one instance host for anoth
 - `scoring.go` — the modern scoring and attack tables (a port of the GUI's
   `internal/game/scoring.go`): every lock scored like the GUI scores it, so the
   totals this agent announces fold into the same scoreboards.
-- `pipeline.go` — the batch pipeline: the `--publish` disciplines (sync/async/optimistic),
+- `pipeline.go` — the batch pipeline: the `--publish` disciplines (pessimistic/optimistic),
   settle barriers, and the lost-batch repair.
 - `shared.go` — shared boards: the coop/teams board consumer, merge-retry clears,
   deferred spawns, cascading garbage lifts, team verdicts.

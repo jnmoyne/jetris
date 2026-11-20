@@ -691,12 +691,12 @@ type garbageReg struct {
 }
 
 // publishPieceMove CAS-batches the diff between the current active cells and
-// `to`. Pipelined modes (--publish async/optimistic) send the batch and move
-// on — a loss surfaces later and settles the pipeline (pipeline.go). Sync
-// mode blocks on the ack; a dropped write flashes and resyncs.
+// `to`. The optimistic mode (--publish optimistic) sends the batch and moves
+// on — a loss surfaces later and settles the pipeline (pipeline.go). The
+// pessimistic mode blocks on the ack; a dropped write flashes and resyncs.
 func (g *Game) publishPieceMove(ctx context.Context, to active) bool {
 	cells, old := g.moveBatch(to)
-	if g.a.pub != pubSync {
+	if g.a.pub != pubPessimistic {
 		if !g.publishBatchAsync(ctx, cells, old) {
 			g.settlePipeline(ctx)
 			return false

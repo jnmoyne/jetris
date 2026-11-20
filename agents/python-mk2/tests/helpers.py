@@ -18,7 +18,7 @@ class StubAgent:
 
     def __init__(self, name="me"):
         self.name = name
-        self.pub = consts.PUB_AUTO
+        self.pub = consts.PUB_OPTIMISTIC
         self.tn = difficulty_tuning("hard")
         self.rng = random.Random(1)
         self.trace = False

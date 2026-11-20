@@ -353,11 +353,11 @@ Its reading order (see its [README](agents/golang-mk1/README.md)): `pieces.go` �
 One behavior of its move pipeline worth copying: moves that lose a CAS race are
 **dropped, not retried** — it re-observes committed state, resyncs, and re-plans
 (§4.3), which is what keeps a contended board consistent. Its `--publish` flag
-plays all three publish disciplines the contract allows — `sync` (await every
-commit ack), `async` (pipelined, no expectation on in-flight cells, the
-default), and `optimistic` (pipelined with predicted sequences) — the same
-choice the human client's HUD offers, with the same repair-and-re-plan recovery
-when a pipelined batch is lost.
+plays the two publish disciplines the human client's MOVE PUBLISHING switch
+offers — `pessimistic` (await every commit ack) and `optimistic` (pipelined, the
+default: predicted sequences on in-flight cells of a shared board, no
+expectation on in-flight cells of its own competitive board) — with the same
+repair-and-re-plan recovery when a pipelined batch is lost.
 
 ## 4. The contract: play the protocol (any language)
 
@@ -454,23 +454,29 @@ must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
 - **Batches may be pipelined.** Nothing in the contract makes you await one
   batch's commit ack before sending the next: you may publish your move batches
   asynchronously — send the commit, handle the ack when it comes — and keep
-  several in flight, exactly as the human client's async/optimistic publish
-  modes do. The catch is CAS: a per-subject expectation is an EXACT sequence
+  several in flight, exactly as the human client's **Optimistic** publish mode
+  does (its **Pessimistic** mode — await every ack — is the other discipline;
+  agents offer the same two, `--publish pessimistic|optimistic`, optimistic by
+  default). The catch is CAS: a per-subject expectation is an EXACT sequence
   known only from the ack, so a pipelined batch cannot carry an exact
-  expectation about a cell an un-acked batch already wrote. Such a cell goes out
-  either with NO expectation (the async discipline), or with the sequence the
-  un-acked write is PREDICTED to get (the optimistic discipline: a batch's N
-  messages take N consecutive stream sequences, so predict from the highest
-  stream sequence you have observed, or the predicted end of the batch in flight
-  ahead, whichever is later); every other cell keeps its exact per-subject CAS.
-  Both are optimistic in the true sense — a batch sent behind an un-acked one is
-  computed on the assumption that it commits. When a pipelined batch is lost (a
+  expectation about a cell an un-acked batch already wrote. On a SHARED board
+  such a cell carries the sequence the un-acked write is PREDICTED to get (a
+  batch's N messages take N consecutive stream sequences, so predict from the
+  highest stream sequence you have observed, or the predicted end of the batch
+  in flight ahead, whichever is later) — full CAS protection while pipelining,
+  at the price of a repair whenever another writer lands first. On your own
+  COMPETITIVE board you are the only writer of your cells, so a batch in flight
+  cannot lose a race and the one behind it has nothing to guard: such a cell
+  goes out with NO expectation (a guess would only lose to the opponents'
+  traffic in the stream). Every other cell keeps its exact per-subject CAS.
+  Either way the pipeline is optimistic in the true sense — a batch sent behind
+  an un-acked one is computed on the assumption that it commits. When a pipelined batch is lost (a
   CAS race, or a wrong guess), treat it like any dropped move, at pipeline
   scale: stop publishing, let every in-flight ack drain, re-fetch your committed
   board (§4.5), vacate any stray cells the batches poisoned behind the loss left
-  committed, flash, and re-plan. Bound your depth (the human client keeps at
-  most a handful of batches in flight) and keep your barriers honest: a lock-in,
-  a spawn, and every gated transform (§4.4) still needs exact expectations, so
+  committed, flash, and re-plan. Bound your depth (the human client's Optimistic
+  mode, and the in-repo agents, keep one batch in flight) and keep your barriers
+  honest: a lock-in, a spawn, and every gated transform (§4.4) still needs exact expectations, so
   settle the pipeline — drain, repair if broken — before publishing one.
 - **Player moves that lose CAS are dropped** — never retried. Re-observe, re-plan.
   On a dropped move, **broadcast a CAS-failure flash** so spectators can see it (see

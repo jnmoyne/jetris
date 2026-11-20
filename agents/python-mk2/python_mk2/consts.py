@@ -17,10 +17,9 @@ PRESENCE_EVERY = 5.0       # seconds between presence heartbeats
 PRESENCE_TTL = 300.0       # per-message TTL on presence writes: a crashed peer's entry self-deletes
 INVITE_TTL = 120.0         # an invitation is fresh for two minutes
 
-# The publish disciplines (--publish). PUB_AUTO is the default: the
-# discipline is picked per game, sync on a shared board, async on the agent's
-# own competitive board (pipeline.resolve_publish).
-PUB_SYNC, PUB_ASYNC, PUB_OPTIMISTIC, PUB_AUTO = range(4)
+# The publish disciplines (--publish), the human client's MOVE PUBLISHING
+# switch: PUB_OPTIMISTIC is the default (pipeline.py).
+PUB_PESSIMISTIC, PUB_OPTIMISTIC = range(2)
 
 
 def game_stream_name(game_id):

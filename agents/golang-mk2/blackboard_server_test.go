@@ -15,7 +15,7 @@ import (
 // one blackboard.
 func sharedTestPeer(t *testing.T, ctx context.Context, g0 *Game, seat int) *Game {
 	t.Helper()
-	a := &Agent{nc: g0.a.nc, js: g0.a.js, name: fmt.Sprintf("peer%d", seat), pub: pubSync,
+	a := &Agent{nc: g0.a.nc, js: g0.a.js, name: fmt.Sprintf("peer%d", seat), pub: pubPessimistic,
 		listings: map[string]obj{}, invites: map[string]obj{}, streams: map[string]jetstream.Stream{}, stopCh: make(chan struct{})}
 	g := newGame(a, g0.id, seat)
 	g.mode, g.playerCount, g.seatsOnPF, g.extra, g.stream = g0.mode, g0.playerCount, g0.seatsOnPF, g0.extra, g0.stream
@@ -26,7 +26,7 @@ func sharedTestPeer(t *testing.T, ctx context.Context, g0 *Game, seat int) *Game
 	}
 	g.w, g.h = g0.w, g0.h
 	g.spawnC = g.spawnColumn(nil)
-	g.pub = pubSync
+	g.pub = pubPessimistic
 	return g
 }
 

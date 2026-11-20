@@ -48,6 +48,7 @@ func TestResyncSharedMultiGet(t *testing.T) {
 	a := &Agent{nc: nc, js: js, name: "me"}
 	g := newGame(a, id, 1)
 	g.mode, g.team, g.playerCount, g.w, g.stream = modeTeams, 0, 4, 20, s
+	g.h = sharedHeight(2, 6) // a team board of two seats with six extra rows each: 30 × 20 = 600 cells, past one chunk
 	if n := g.height() * g.w; n <= fetchChunk {
 		t.Fatalf("board has %d cells; this test wants the multi-chunk path (> %d)", n, fetchChunk)
 	}

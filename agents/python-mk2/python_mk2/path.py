@@ -14,6 +14,12 @@ the lock that follows can ride the same batch (execute). When the goal is out
 of reach (a crewmate's piece across the way) the search still says where to
 wait: the reached state nearest the goal outside every teammate's spawn box
 (waiting_spot), so a deferred spawn of theirs is never ours to cause.
+
+The search is a flood (Search): with a goal it stops at the first state that
+meets it; without one it reaches everything there is to reach, which is what
+prices the walk to every placement at once (coord.route_costs). The other
+players' pieces are given to it as cells by seat (the live ones, or a
+forecast of them), so it can say whose piece stood in the way.
 """
 
 from dataclasses import dataclass, field
@@ -65,13 +71,15 @@ class PathResult:
     """What the search found: where the path ends (the goal, or the waiting
     spot), whether that is the goal, the moves that get there, how many of
     them were rows soft-dropped, and whether a crewmate's falling piece was
-    what stood between the piece and any state it could not reach."""
+    what stood between the piece and any state it could not reach, and whose
+    (blockers, the seats, sorted)."""
 
     end: Active
     reached: bool = False
     moves: list = field(default_factory=list)
     downs: int = 0
     blocked_by_transient: bool = False
+    blockers: list = field(default_factory=list)
 
 
 # The search's queue: a binary heap ordered by cost alone, sifted exactly as
@@ -111,37 +119,89 @@ def rot_dist(frm, to):
     return (to - frm) & 3
 
 
-def find_path(can_move, can_place, p, goal_col, goal_orient, boxes):
-    """Search from p to the plan's orientation and column, at whatever row
-    the search reaches them: gravity and the hard drop are the caller's, and
-    the planner's placements are straight drops from above. can_move(cells)
-    is true where the piece may stand right now; can_place(cells) where only
-    a falling piece (not the stack, not the walls) could be in the way."""
+class Search:
+    """One Dijkstra flood from where a piece stands: every state it reached,
+    at what cost and by which move, and the seats whose falling pieces
+    stopped it somewhere (blockers): the crewmates in its way."""
+
+    __slots__ = ("pt", "start", "dist", "prev", "via", "closed", "blockers", "found")
+
+    def __init__(self, pt, start):
+        self.pt, self.start = pt, start
+        self.dist = {start: 0.0}
+        self.prev = {}
+        self.via = {}
+        self.closed = set()
+        self.blockers = set()
+        self.found = None
+
+    def reach(self):
+        """The cost of the cheapest way to every (orientation, column) the
+        flood reached, at whatever row: what a placement's walk costs."""
+        out = {}
+        dist = self.dist
+        for st in self.closed:
+            k = (st[2], st[1])
+            d = dist[st]
+            if k not in out or d < out[k]:
+                out[k] = d
+        return out
+
+    def blocker_seats(self):
+        """The seats whose pieces stopped the flood, sorted."""
+        return sorted(self.blockers)
+
+    def result(self, end, reached):
+        """The path to end (a state the flood reached), as moves."""
+        moves = []
+        downs = 0
+        st = end
+        while st != self.start:
+            m = self.via[st]
+            moves.append(m)
+            if m == MOVE_DOWN:
+                downs += 1
+            st = self.prev[st]
+        moves.reverse()
+        return PathResult(end=Active(self.pt, end[2], end[0], end[1]), reached=reached, moves=moves, downs=downs,
+                          blocked_by_transient=bool(self.blockers), blockers=self.blocker_seats())
+
+
+def flood(can_place, p, boxes, others, goal=None):
+    """Search from p over the moves the game allows, the stack an obstacle
+    for good (can_place(cells) is true where only a falling piece, not the
+    stack or the walls, could be in the way) and `others` (cells held by
+    other players' falling pieces, by seat: the live ones, or a forecast of
+    them, coord.py) obstacles in passing. With a goal, goal(state) on (row,
+    col, orient), it stops at the first state that meets it (found); without
+    one it reaches everything there is to reach."""
     pt = p.pt
     start = (p.row, p.col, p.orient)
     live = [b for b in boxes if b.imminent]
-    dist = {start: 0.0}
-    prev = {}
-    via = {}
-    closed = set()
-    transient = False
+    s = Search(pt, start)
+    dist, prev, via, closed, blockers = s.dist, s.prev, s.via, s.closed, s.blockers
     heap = [(0.0, start)]
-    found = None
     while heap:
         cost, st = _pop(heap)
         if st in closed or cost > dist[st]:
             continue
         closed.add(st)
-        row, col, orient = st
-        if col == goal_col and orient == goal_orient:
-            found = st
+        if goal is not None and goal(st):
+            s.found = st
             break
+        row, col, orient = st
         for m, nxt in ((MOVE_LEFT, (row, col - 1, orient)), (MOVE_RIGHT, (row, col + 1, orient)),
                        (MOVE_DOWN, (row + 1, col, orient)), (MOVE_CW, (row, col, (orient + 1) & 3))):
             cs = piece_cells(pt, nxt[2], nxt[0], nxt[1])
-            if not can_move(cs):
-                if can_place(cs):
-                    transient = True  # only a falling piece stands there
+            if not can_place(cs):
+                continue
+            hit = False
+            for c in cs:
+                seat = others.get(c)
+                if seat is not None:
+                    blockers.add(seat)  # only a falling piece stands there
+                    hit = True
+            if hit:
                 continue
             ncost = cost + 1
             for b in live:
@@ -155,38 +215,41 @@ def find_path(can_move, can_place, p, goal_col, goal_orient, boxes):
             prev[nxt] = st
             via[nxt] = m
             _push(heap, (ncost, nxt))
-    end = start
-    reached = found is not None
-    if reached:
-        end = found
-    else:
-        spot = waiting_spot(closed, dist, start, goal_col, goal_orient, live, pt)
-        if spot is not None:
-            end = spot
-    moves = []
-    downs = 0
-    s = end
-    while s != start:
-        moves.append(via[s])
-        if via[s] == MOVE_DOWN:
-            downs += 1
-        s = prev[s]
-    moves.reverse()
-    return PathResult(end=Active(pt, end[2], end[0], end[1]), reached=reached, moves=moves, downs=downs,
-                      blocked_by_transient=transient)
+    return s
 
 
-def waiting_spot(closed, dist, start, goal_col, goal_orient, boxes, pt):
+def find_path(can_place, others, p, goal_col, goal_orient, boxes, keep=None):
+    """Search from p to the plan's orientation and column, at whatever row
+    the search reaches them: gravity and the hard drop are the caller's, and
+    the planner's placements are straight drops from above. keep is cells a
+    wait must stay out of where it can (the drop shafts of the claims with
+    right of way over ours, coord.keep_out): a path may cross them, a waiting
+    spot is chosen outside them."""
+    s = flood(can_place, p, boxes, others, lambda st: st[1] == goal_col and st[2] == goal_orient)
+    if s.found is not None:
+        return s.result(s.found, True)
+    spot = waiting_spot(s.closed, s.dist, s.start, goal_col, goal_orient, boxes, keep, p.pt)
+    return s.result(s.start if spot is None else spot, False)
+
+
+def waiting_spot(closed, dist, start, goal_col, goal_orient, boxes, keep, pt):
     """Where to wait when the goal is out of reach: among the states the
     search reached, the one nearest the goal (columns and quarter turns to
     go) outside every imminent teammate spawn box when any such state exists,
-    the cheaper path breaking ties. None when the start is the best."""
+    and outside the cells to keep out of (keep) when any of those does, the
+    cheaper path breaking ties (and, between equals, the state's own order:
+    row, column, orientation). None when the start is the best."""
+    keep = keep or ()
     best = None
     best_key = None
     for s in sorted(closed):
         cs = piece_cells(pt, s[2], s[0], s[1])
-        out = not any(b.imminent and b.covers(cs) for b in boxes)
-        key = (not out, abs(s[1] - goal_col) + rot_dist(s[2], goal_orient), dist[s])
+        # Trouble ranks a spot: in a spawn box is worse than in a shaft, and
+        # either is worse than neither.
+        trouble = 2 if any(b.imminent and b.covers(cs) for b in boxes) else 0
+        if keep and any(c in keep for c in cs):
+            trouble += 1
+        key = (trouble, abs(s[1] - goal_col) + rot_dist(s[2], goal_orient), dist[s])
         if best_key is None or key < best_key:
             best, best_key = s, key
     if best is None or best == start:

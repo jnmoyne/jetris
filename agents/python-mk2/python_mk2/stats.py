@@ -27,6 +27,13 @@ class CoordStats:
     dep_waits: int = 0        # drops held for an earlier claim to land
     dep_wait_ms: int = 0      # their total length
     echo_timeouts: int = 0    # claims played uncoordinated because their echo never came
+    reach_cols: int = 0       # columns between our spawn point and each landing, summed (stats_line prints the mean)
+    stand_locks: int = 0      # locks away from the planned column: the lock delay ran out on a walk that never got there
+    hurries: int = 0          # think pauses cut short because a teammate said it waits on our piece
+    intents_made: int = 0     # next-piece placements announced on the blackboard (Claim.next), first in line only
+    intents_kept: int = 0     # of those, the ones the piece was then played at
+    holes_made: int = 0       # covered empty cells our locks added to the board, as it stood at the lock
+    holes_planned: int = 0    # of those, what the plans expected to add on the board they were made on
     replans: dict = field(default_factory=dict)  # re-plans by reason
     started: float = 0.0      # when the game started for us (monotonic)
 
@@ -42,7 +49,8 @@ class StatsMixin:
             stats: game=<id> mode=<coop|competitive|teams> seat=N coordinate=<bool> pieces=N lines=N score=N
             shared_score=N cas_losses=N walk_waits=N/<ms>ms deferred_spawns=N/<ms>ms spawn_unblocks=N
             idle_vacates=N lock_retries=N locks_dropped=N replans=<reason:count,…|none> claims_yielded=N
-            dep_waits=N/<ms>ms echo_timeouts=N duration=<s>s
+            dep_waits=N/<ms>ms echo_timeouts=N reach=<cols> quads=N stand_locks=N hurries=N
+            intents=<kept>/<made> holes=<made>/<planned> duration=<s>s
 
         Caller holds mu."""
         mode = {MODE_COOPERATIVE: "coop", MODE_COMPETITIVE: "competitive", MODE_TEAMS: "teams"}.get(self.mode, "")
@@ -54,13 +62,17 @@ class StatsMixin:
         st = self.st
         replans = ",".join(f"{k}:{st.replans[k]}" for k in sorted(st.replans)) or "none"
         duration = time.monotonic() - st.started if st.started else 0.0
+        reach = st.reach_cols / self.piece_idx if self.piece_idx > 0 else 0.0
+        quads = self.stats_for(self.a.name).quads if self.a is not None else 0
         return (f"stats: game={self.id} mode={mode} seat={self.idx} coordinate={str(self.coordinating()).lower()} "
                 f"pieces={self.piece_idx} lines={self.lines} score={self.score} shared_score={shared} "
                 f"cas_losses={st.cas_losses} walk_waits={st.walk_waits}/{st.walk_wait_ms}ms "
                 f"deferred_spawns={st.deferred_spawns}/{st.deferred_ms}ms spawn_unblocks={st.spawn_unblocks} "
                 f"idle_vacates={st.idle_vacates} lock_retries={st.lock_retries} locks_dropped={st.locks_dropped} "
                 f"replans={replans} claims_yielded={st.claims_yielded} dep_waits={st.dep_waits}/{st.dep_wait_ms}ms "
-                f"echo_timeouts={st.echo_timeouts} duration={duration:.1f}s")
+                f"echo_timeouts={st.echo_timeouts} reach={reach:.1f} quads={quads} stand_locks={st.stand_locks} "
+                f"hurries={st.hurries} intents={st.intents_kept}/{st.intents_made} "
+                f"holes={st.holes_made}/{st.holes_planned} duration={duration:.1f}s")
 
     def trace(self, fmt, *args):
         """Log one step of a piece's lifecycle when --trace is on: the tuning

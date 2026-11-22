@@ -935,6 +935,7 @@ func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 						}
 					}
 				}
+				diff = mergeCells(diff) // a piece shifted into a cell the stack held: one write a cell
 				txn := txnReg{Applied: g.txnApplied, Op: "clear", By: g.idx}
 				if err := g.publishGatedBatch(ctx, txn, diff); err != nil {
 					if errors.Is(err, errCAS) {
@@ -1304,6 +1305,7 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 				}
 			}
 		}
+		diff = mergeCells(diff) // a piece lifted into a cell another left, or the stack did: one write a cell
 		txn := txnReg{Applied: g.garbageOwed, Op: "shrink", By: g.idx}
 		txn.Topped = toppedOwners
 		if boardFull {

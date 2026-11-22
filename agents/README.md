@@ -87,7 +87,11 @@ through the `JETRIS_BLACKBOARD` KV bucket — each claims where its piece is goi
 on the others' claims, yields to the earlier ones and waits for the ones it depends on
 (the open protocol is the guide's §1.4, for any agent in any language to join); a path
 search takes each piece around its teammates' pieces and out of their spawn boxes, and
-locks it in the same batch as the walk. It also carries the shared-board rules `golang-mk1`
+locks it in the same batch as the walk. The claims also say where each piece is headed
+and when, so a seat plays the whole board rather than the columns under its spawn
+point; a blocked piece says whom it waits on, the one in the way hurries, and the later
+claim of two gives way; each claim carries the writer's plans for its next pieces; and
+a crew that agrees keeps a well open for four-row clears (`--well`). It also carries the shared-board rules `golang-mk1`
 left out (a crewmate's stale piece vacated, a clean leave mid-game, CAS locks), and a
 planner nineteen times faster. `--coordinate=false` plays it exactly as `golang-mk1`
 does; `../scripts/bench-mk2.sh` compares the two on identical games. See its
@@ -107,7 +111,8 @@ nats kv watch JETRIS_BLACKBOARD          # the crew's claims, live
 flags and blackboard, on [`nats-py`](https://github.com/nats-io/nats.py) alone, its
 modules mirroring `golang-mk2`'s files one for one. A `python-mk2` and a `golang-mk2`
 on one board coordinate with each other as two of either do, which is the blackboard's
-point: an open protocol, not a library. Its planner gives `golang-mk2`'s answers (it is
+point: an open protocol, not a library — the guide's optional claim fields included
+(waits, next pieces, the well). Its planner gives `golang-mk2`'s answers (it is
 tested against them) and runs the lookahead on worker processes, so a plan fits a think
 pause. `../scripts/bench-mk2.sh -a "mk2 pymk2 mixed"` compares the crews. See its
 [README](python-mk2/README.md).

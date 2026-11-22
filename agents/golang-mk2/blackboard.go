@@ -12,7 +12,9 @@ package main
 // cooperative game, or one team of a teams game — the way a team's voice
 // room is (an agent never reads another board's keys). Nothing goes on the
 // blackboard that its writer may not see (guide §1): the piece in play and
-// an intention about it, never a preview, a seed or a sequence number.
+// an intention about it, and tentative placements for the pieces its OWN
+// NEXT well shows — never a teammate's sequence, a seed or a sequence
+// number.
 //
 // The bucket is one ordered stream, so its revisions order every claim the
 // same for everyone: an agent posts its claim, waits for its own echo on
@@ -61,7 +63,63 @@ type claim struct {
 	SpawnCol int       `json:"spawn_col"`
 	T        string    `json:"t"`
 
-	rev uint64 // the KV revision the watcher delivered it at (not on the wire)
+	// Optional, and absent from a claim of an agent that does not say them
+	// (guide §1.4): where the piece stood when the claim was written; how it
+	// goes down once at its column (dropHard — the default — or dropSoft);
+	// the seats whose pieces are in the writer's way, while it waits for
+	// them where it is, falling with gravity; the writer's tentative
+	// placements for the pieces its own NEXT well shows; and the column it
+	// is keeping open for a four-row clear.
+	At     *[3]int     `json:"at,omitempty"`
+	Drop   string      `json:"drop,omitempty"`
+	WaitOn []int       `json:"wait_on,omitempty"`
+	Next   []nextClaim `json:"next,omitempty"`
+	Well   *int        `json:"well,omitempty"`
+
+	rev    uint64    // the KV revision the watcher delivered it at (not on the wire)
+	prio   uint64    // its place in the right of way: the revision this seat FIRST claimed this placement of this piece at (foldClaimRaw)
+	seenAt time.Time // when the watcher delivered it, on our clock: what its eta_ms counts from
+}
+
+// nextClaim is a tentative placement for a piece the writer's NEXT well
+// shows: its piece index, type, orientation and anchor column.
+type nextClaim struct {
+	Piece int `json:"piece"`
+	Type  int `json:"type"`
+	Rot   int `json:"rot"`
+	Col   int `json:"col"`
+}
+
+const (
+	dropHard = "hard"
+	dropSoft = "soft"
+)
+
+// samePlacement reports whether two claims are for the same placement of
+// the same piece — a re-post of one claim (a wait announced, a preview
+// refreshed), which keeps its place in the right of way.
+func (c claim) samePlacement(o claim) bool {
+	return c.Phase == phasePlanned && o.Phase == phasePlanned && c.Piece == o.Piece && c.Type == o.Type && c.Rot == o.Rot && c.Col == o.Col
+}
+
+// order is the claim's place in the right of way: the revision its
+// placement was first claimed at, which is its own revision unless it was
+// said again since.
+func (c claim) order() uint64 {
+	if c.prio != 0 {
+		return c.prio
+	}
+	return c.rev
+}
+
+// waitsOn reports whether the claim says its writer waits on the seat.
+func (c claim) waitsOn(seat int) bool {
+	for _, s := range c.WaitOn {
+		if s == seat {
+			return true
+		}
+	}
+	return false
 }
 
 // coordinator is this game's place on the blackboard: the board we play
@@ -104,9 +162,8 @@ func claimKey(gameID, board string, seat int) string {
 
 // ensureBlackboard creates or updates the blackboard bucket: memory
 // storage (nothing on it outlives a piece), LimitMarkerTTL so every claim
-// can carry its TTL. Idempotent, so it serves both connect and the watch's
-// recovery of a bucket deleted underneath a running agent. A server too
-// old for per-key TTLs (ErrLimitMarkerTTLNotSupported) means no blackboard.
+// can carry its TTL. A server too old for per-key TTLs
+// (ErrLimitMarkerTTLNotSupported) means no blackboard.
 func (a *Agent) ensureBlackboard(ctx context.Context) (jetstream.KeyValue, error) {
 	return a.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket: a.bbBucket, Storage: jetstream.MemoryStorage, LimitMarkerTTL: blackboardMarkerTTL})
@@ -137,6 +194,17 @@ func (g *Game) claimFor(p active, pl placement, phase string, eta time.Duration)
 	for i, d := range pl.dest {
 		c.Cells[i] = [2]int{d.r, d.c}
 	}
+	if g.wellWanted() {
+		w := g.wellColumn()
+		c.Well = &w
+	}
+	if phase == phasePlanned {
+		c.At = &[3]int{p.row, p.col, p.orient}
+		c.Drop = dropHard
+		if g.a.softDrop {
+			c.Drop = dropSoft
+		}
+	}
 	return c
 }
 
@@ -148,6 +216,23 @@ func (g *Game) postClaim(ctx context.Context, c claim) (uint64, error) {
 	if g.coord == nil {
 		return 0, errors.New("no blackboard")
 	}
+	// After every write still on its way (postAsync): this claim is the
+	// newer word, and must be the last one on the key.
+	g.mu.Lock()
+	tail := g.postTail
+	g.mu.Unlock()
+	if tail != nil {
+		select {
+		case <-tail:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return g.publishClaim(ctx, c)
+}
+
+// publishClaim is the write itself (postClaim, postAsync).
+func (g *Game) publishClaim(ctx context.Context, c claim) (uint64, error) {
 	b, _ := json.Marshal(c)
 	ack, err := g.a.js.Publish(ctx, "$KV."+g.a.bbBucket+"."+g.coord.key, b, jetstream.WithMsgTTL(claimTTL))
 	if err != nil {
@@ -159,17 +244,105 @@ func (g *Game) postClaim(ctx context.Context, c claim) (uint64, error) {
 // postLockedAsync announces that the piece has locked where it did, without
 // waiting for the ack: teammates stop projecting the claim and, until the
 // lock's cells reach them off the game stream, project the cells it names.
-func (g *Game) postLockedAsync(c claim) {
+// Caller holds mu.
+func (g *Game) postLockedAsync(c claim) { g.postAsync(c) }
+
+// postAsync writes a claim without waiting for its ack — the lock's
+// announcement, a wait's — IN THE ORDER the calls were made: each write
+// goes out once the one before it has (postTail), and the next claim made
+// with postClaim waits for them all. Out of order, a wait announced for a
+// piece could land on the blackboard after that piece's lock, and stand
+// there as a planned claim for a piece that is stack. Caller holds mu.
+func (g *Game) postAsync(c claim) {
 	if g.coord == nil {
 		return
 	}
+	prev := g.postTail
+	done := make(chan struct{})
+	g.postTail = done
 	go func() {
+		defer close(done)
+		if prev != nil {
+			<-prev
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if _, err := g.postClaim(ctx, c); err != nil {
+		if _, err := g.publishClaim(ctx, c); err != nil {
 			g.bbLogOnce.Do(func() { log.Printf("blackboard: %v (repeats not logged)", err) })
 		}
 	}()
+}
+
+// announceWait says on the blackboard that the piece in play waits on the
+// seats' pieces, where it is, falling with gravity (claim.WaitOn): the
+// claim as it stands, said again — it keeps its place in the right of way
+// — so that the seats named know someone is held up by them (pause: their
+// think pause ends now) and everyone knows this piece is staying in its
+// columns. Caller holds mu.
+func (g *Game) announceWait(seats []int) {
+	if g.coord == nil || g.myClaim == nil || len(seats) == 0 || g.piece == nil {
+		return
+	}
+	c := *g.myClaim
+	c.WaitOn = append([]int(nil), seats...)
+	c.At = &[3]int{g.piece.row, g.piece.col, g.piece.orient}
+	c.T = nowRFC()
+	g.postAsync(c)
+}
+
+// waitedOn reports whether a teammate's claim says, as of the last couple
+// of seconds, that it waits on our piece. Caller holds mu.
+func (g *Game) waitedOn(now time.Time) bool {
+	for seat, c := range g.claims {
+		if seat != g.idx && c.Phase == phasePlanned && c.waitsOn(g.idx) && now.Sub(c.seenAt) < 2*time.Second && g.seatPresentLocked(seat) {
+			return true
+		}
+	}
+	return false
+}
+
+// pause is the think pause of a piece on a coordinated board: the
+// difficulty's, unless a teammate says it waits on our piece — then the
+// piece goes as soon as its claim is confirmed (a move step), and the
+// pause is cut short the moment such a claim arrives (foldClaimRaw closes
+// hurry). "You go, I wait": the one in the way is the one that hurries.
+// Returns false when the game or the agent stops.
+func (g *Game) pause(ctx context.Context, d time.Duration) bool {
+	if g.coord == nil || d <= g.a.tn.moveDelay {
+		return g.wait(ctx, d)
+	}
+	g.mu.Lock()
+	if g.waitedOn(time.Now()) {
+		g.st.hurries++
+		g.mu.Unlock()
+		return g.wait(ctx, g.a.tn.moveDelay)
+	}
+	ch := make(chan struct{})
+	g.hurry = ch
+	g.mu.Unlock()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	hurried, ok := false, true
+	select {
+	case <-ch:
+		hurried = true
+	case <-timer.C:
+	case <-ctx.Done():
+		ok = false
+	case <-g.a.stopCh:
+		ok = false
+	case <-g.ended:
+		ok = false
+	}
+	g.mu.Lock()
+	if g.hurry == ch {
+		g.hurry = nil
+	}
+	if hurried {
+		g.st.hurries++
+	}
+	g.mu.Unlock()
+	return ok
 }
 
 // awaitRev waits until our watch has delivered the blackboard's revision
@@ -202,60 +375,30 @@ func (g *Game) awaitRev(ctx context.Context, rev uint64, timeout time.Duration) 
 }
 
 // claimWatch follows our board's keys on the blackboard for the life of
-// the game, folding every claim under mu (foldClaimRaw). A watch that ends
-// — the bucket deleted underneath us, as a shared server's purge does —
-// is re-established, the bucket recreated if need be, and since a new
-// bucket's revisions start over, the claims and the revision mark are
-// dropped and the piece in play re-planned (replanBBReset).
+// the game, folding every claim under mu (foldClaimRaw).
 func (g *Game) claimWatch(ctx context.Context) {
-	if g.coord == nil {
+	kv := g.a.blackboard()
+	if g.coord == nil || kv == nil {
 		return
 	}
-	backoff := 500 * time.Millisecond
-	established := false
-	for !g.a.done(ctx) && !g.isEnded() {
-		kv := g.a.blackboard()
-		if kv == nil {
-			fresh, err := g.a.ensureBlackboard(ctx)
-			if err != nil {
-				g.bbLogOnce.Do(func() { log.Printf("blackboard: %v (repeats not logged)", err) })
-				if !g.wait(ctx, backoff) {
-					return
-				}
-				continue
-			}
-			g.a.setBlackboard(fresh)
-			kv = fresh
-		}
-		w, err := kv.Watch(ctx, g.coord.watch)
-		if err != nil {
-			if !g.a.done(ctx) {
-				// The bucket is gone (or the server is): recreate it on the
-				// way back in, through a fresh handle.
-				if fresh, err2 := g.a.ensureBlackboard(ctx); err2 == nil {
-					g.a.setBlackboard(fresh)
-				} else {
-					g.a.setBlackboard(nil)
-				}
-			}
-			if !g.wait(ctx, backoff) {
+	w, err := kv.Watch(ctx, g.coord.watch)
+	if err != nil {
+		g.bbLogOnce.Do(func() { log.Printf("blackboard: %v (repeats not logged)", err) })
+		return
+	}
+	defer func() { _ = w.Stop() }()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-g.a.stopCh:
+			return
+		case <-g.ended:
+			return
+		case e, ok := <-w.Updates():
+			if !ok {
 				return
 			}
-			continue
-		}
-		g.mu.Lock()
-		if established {
-			g.bbEpoch++
-			g.bbRev, g.myRev = 0, 0
-			g.claims = map[int]claim{}
-			if g.piece != nil {
-				g.requestReplan(replanBBReset)
-			}
-			log.Printf("blackboard watch re-established (epoch %d)", g.bbEpoch)
-		}
-		established = true
-		g.mu.Unlock()
-		for e := range w.Updates() {
 			if e == nil {
 				continue // the initial values are in
 			}
@@ -263,35 +406,33 @@ func (g *Game) claimWatch(ctx context.Context) {
 			g.foldClaimRaw(e.Key(), e.Value(), e.Revision(), e.Operation())
 			g.mu.Unlock()
 		}
-		_ = w.Stop()
-		if g.a.done(ctx) || g.isEnded() {
-			return
-		}
-		// The watch ended on its own: the bucket was deleted underneath
-		// it (nats.go closes the subscription once the consumer's
-		// heartbeats stop). Make sure it is there, then watch again.
-		if fresh, err := g.a.ensureBlackboard(ctx); err == nil {
-			g.a.setBlackboard(fresh)
-		}
-		if !g.wait(ctx, backoff) {
-			return
-		}
 	}
 }
 
 // foldClaimRaw folds one delivery of the watch into the claims: a put is
-// the seat's claim (a version we do not speak is none), a delete or a
-// purge — a TTL expiry arrives as one — is the seat's claim gone. Every
-// delivery moves the revision mark and wakes awaitRev. Caller holds mu.
+// the seat's claim (a version we do not speak, or a piece type there is
+// not, is none), a delete or a
+// purge — a TTL expiry arrives as one — is the seat's claim gone. A claim
+// takes its place in the right of way (prio) from the revision it was first
+// made at: said again for the same placement of the same piece, it keeps
+// it. Every delivery moves the revision mark and wakes awaitRev. Caller
+// holds mu.
 func (g *Game) foldClaimRaw(key string, val []byte, rev uint64, op jetstream.KeyValueOp) {
 	if g.claims == nil {
 		g.claims = map[int]claim{}
 	}
 	if seat, err := strconv.Atoi(key[strings.LastIndexByte(key, '.')+1:]); err == nil {
 		var c claim
-		if op == jetstream.KeyValuePut && json.Unmarshal(val, &c) == nil && c.V == claimVersion {
-			c.rev = rev
+		if op == jetstream.KeyValuePut && json.Unmarshal(val, &c) == nil && c.V == claimVersion && c.Type >= 0 && c.Type < len(pieces) {
+			c.rev, c.prio, c.seenAt = rev, rev, time.Now()
+			if old, ok := g.claims[seat]; ok && old.samePlacement(c) {
+				c.prio = old.order() // the same claim, said again: its place in the order is kept
+			}
 			g.claims[seat] = c
+			if seat != g.idx && c.Phase == phasePlanned && c.waitsOn(g.idx) && g.hurry != nil {
+				close(g.hurry) // a teammate waits on our piece: the think pause ends now (pause)
+				g.hurry = nil
+			}
 		} else {
 			delete(g.claims, seat)
 		}

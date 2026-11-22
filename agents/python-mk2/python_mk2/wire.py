@@ -226,6 +226,36 @@ def order_cells(cells):
     cells.sort(key=lambda u: (category(u.c), u.at[0], u.at[1]))
 
 
+def merge_cells(cells):
+    """The batch with one update a cell: where it holds several for the same
+    cell, a cell written beats a cell vacated (of two written, the later),
+    and the guard of any of them is kept. A transform's batch is the settled
+    cells' diff followed by the falling pieces it moves with the stack, and
+    a piece moves INTO cells the batch also empties: a collapse shifts one
+    that hung just over the stack into cells the stack held, a raise lifts
+    one into the cells the piece right above it leaves. Two writes to one
+    subject in an atomic batch carry the same expected sequence, and the
+    second can never match: the batch was rejected as a CAS conflict every
+    time it was tried, by every seat that tried it, and the rows stood full
+    until the crew topped out (a single row needs a piece resting on the
+    stack for that, four rows at once only one within four rows of it).
+    Where neither write is guarded the batch commits, and the empty one,
+    ordered last, wins: a piece on the wire short of a cell."""
+    at = {}
+    out = []
+    for u in cells:
+        i = at.get(u.at)
+        if i is None:
+            at[u.at] = len(out)
+            out.append(u)
+            continue
+        guard = u.guard or out[i].guard
+        if u.c is not None or out[i].c is None:
+            out[i] = u
+        out[i] = out[i]._replace(guard=guard)
+    return out
+
+
 def payload_bytes(c):
     return b"{}" if c is None else c.to_bytes()
 

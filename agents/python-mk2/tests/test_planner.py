@@ -5,8 +5,9 @@ import random
 
 from python_mk2.engine import GRID_CLAIMED, Geometry, Grid
 from python_mk2.pieces import SPAWN_COL, SPAWN_ROW, WIDTH, piece_cells
-from python_mk2.planner import (LOOKAHEAD_BEAM, LOOKAHEAD_TOP_OUT_PENALTY, _expand, enumerate_placements,
-                                evaluate_board, lookahead, plan_placements, revealed_pieces, simulate_lock)
+from python_mk2.planner import (LOOKAHEAD_BEAM, LOOKAHEAD_TOP_OUT_PENALTY, NO_WELL, _expand, enumerate_placements,
+                                evaluate_board, evaluate_well, lookahead, plan_placements, principal_variation,
+                                revealed_pieces, simulate_lock)
 
 
 def row_transitions_slow(g):
@@ -131,23 +132,61 @@ def test_packed_search_matches_the_reference():
     assert checked > 3000
 
 
-def lookahead_reference(g, spawn_c, upcoming):
+def test_packed_search_matches_the_reference_with_a_well():
+    # The same pin for a crew keeping a column open: every placement scored
+    # as evaluate_well scores it, the stack high or not, and with no well
+    # exactly as evaluate_board does.
+    rnd = random.Random(5)
+    checked = spoiled = 0
+    for _ in range(300):
+        g = random_grid(rnd, kinds=(1, 1, 1, 2, 3, 4))
+        well = g.w - 1
+        if rnd.random() < 0.7:
+            for r in range(g.h):  # mostly open, as a kept well is
+                if rnd.random() < 0.9:
+                    g.set(r, well, 0)
+        pt = rnd.randrange(7)
+        s_row = rnd.choice([SPAWN_ROW, SPAWN_ROW, rnd.randrange(0, g.h - 4)])
+        s_col = rnd.randrange(-2, g.w)
+        ref = enumerate_placements(g, pt, s_row, s_col)
+        geo = Geometry.of(g.h, g.w)
+        b, st, fo = geo.pack(g)
+        for ws in ((well, False), (well, True), NO_WELL, (g.w, False)):
+            got = _expand(geo, b, st, fo, pt, s_row, s_col, ws[0], ws[1])
+            assert [(c[1], c[2], c[3]) for c in got] == [(p.orient, p.col, p.drop_row) for p in ref]
+            for cand, pl in zip(got, ref):
+                after, lines, eroded = simulate_lock(g, pl.dest)
+                assert cand[0] == evaluate_well(after, pl.dest, lines, eroded, ws), (ws, pl)
+                if ws[0] == well and any(c == well for _, c in pl.dest):
+                    spoiled += 1
+                checked += 1
+    assert checked > 6000 and spoiled > 200
+
+
+def lookahead_reference(g, spawn_c, upcoming, ws=NO_WELL):
+    """The lookahead on Grids, a cell at a time: the best total, and the
+    line that makes it as [(orient, col), …]."""
     if not upcoming:
-        return 0.0
+        return 0.0, []
     pt = upcoming[0]
     if not g.can_place(piece_cells(pt, 0, SPAWN_ROW, spawn_c)):
-        return LOOKAHEAD_TOP_OUT_PENALTY
+        return LOOKAHEAD_TOP_OUT_PENALTY, []
     cands = enumerate_placements(g, pt, SPAWN_ROW, spawn_c)
     if not cands:
-        return LOOKAHEAD_TOP_OUT_PENALTY
+        return LOOKAHEAD_TOP_OUT_PENALTY, []
     xs = []
     for cand in cands:
         after, lines, eroded = simulate_lock(g, cand.dest)
-        xs.append((evaluate_board(after, cand.dest, lines, eroded), after))
+        xs.append((evaluate_well(after, cand.dest, lines, eroded, ws), after, (cand.orient, cand.col)))
     xs.sort(key=lambda x: -x[0])
     if len(upcoming) == 1:
-        return xs[0][0]
-    return max(score + lookahead_reference(board, spawn_c, upcoming[1:]) for score, board in xs[:LOOKAHEAD_BEAM])
+        return xs[0][0], [xs[0][2]]
+    best, best_line = None, None
+    for score, board, at in xs[:LOOKAHEAD_BEAM]:
+        rest, line = lookahead_reference(board, spawn_c, upcoming[1:], ws)
+        if best is None or score + rest > best:
+            best, best_line = score + rest, [at] + line
+    return best, best_line
 
 
 def test_lookahead_matches_the_reference():
@@ -159,7 +198,12 @@ def test_lookahead_matches_the_reference():
                 g.set(r, c, 0)
         upcoming = [rnd.randrange(7) for _ in range(rnd.randrange(1, 4))]
         spawn_c = (g.w - 4) // 2
-        assert lookahead(g, spawn_c, upcoming) == lookahead_reference(g, spawn_c, upcoming)
+        for ws in (NO_WELL, (g.w - 1, False), (g.w - 1, True)):
+            total, line = lookahead_reference(g, spawn_c, upcoming, ws)
+            assert lookahead(g, spawn_c, upcoming, ws) == total
+            # The line the search found best is the reference's, placement
+            # for placement (short of a piece that cannot spawn).
+            assert principal_variation(g, spawn_c, upcoming, ws) == line
 
 
 def test_planner_takes_the_line_it_is_handed():

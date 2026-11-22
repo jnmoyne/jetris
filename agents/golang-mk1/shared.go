@@ -482,6 +482,7 @@ func (g *Game) clearRowsCoop(ctx context.Context, rows []int) int {
 				}
 			}
 		}
+		diff = mergeCells(diff) // a piece shifted into a cell the stack held: one write a cell
 		if err := g.publishBatch(ctx, diff, true); err != nil {
 			if errors.Is(err, errCAS) {
 				continue
@@ -497,7 +498,41 @@ func (g *Game) clearRowsCoop(ctx context.Context, rows []int) int {
 		g.reindexOthers()
 		return len(rows)
 	}
+	log.Printf("coop clear: gave up on rows %v after 5 attempts", rows)
 	return 0
+}
+
+// mergeCells is the batch with one update a cell: where it holds several
+// for the same cell, a cell written beats a cell vacated (of two written,
+// the later), and the guard of any of them is kept. A transform's batch is
+// the settled cells' diff followed by the falling pieces it moves with the
+// stack — and a piece moves INTO cells the batch also empties: a collapse
+// shifts one that hung just over the stack into cells the stack held, a
+// raise lifts one into the cells the piece right above it leaves. Two
+// writes to one subject in an atomic batch carry the same expected
+// sequence, and the second can never match: the batch was rejected as a
+// CAS conflict every time it was tried, by every seat that tried it, and
+// the rows stood full until the crew topped out — a single row needs a
+// piece resting on the stack for that, four rows at once only one within
+// four rows of it. (Where neither write is guarded the batch commits, and
+// the empty one, ordered last, wins: a piece on the wire short of a cell.)
+func mergeCells(cells []cellUpd) []cellUpd {
+	at := make(map[cell]int, len(cells))
+	out := cells[:0:0]
+	for _, u := range cells {
+		i, ok := at[u.at]
+		if !ok {
+			at[u.at] = len(out)
+			out = append(out, u)
+			continue
+		}
+		guard := u.guard || out[i].guard
+		if u.c != nil || out[i].c == nil {
+			out[i] = u
+		}
+		out[i].guard = guard
+	}
+	return out
 }
 
 // reindexOthers rebuilds the cell→owner map from the per-owner pieces.

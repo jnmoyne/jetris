@@ -26,7 +26,11 @@ async def test_claim_json():
     for k in ("v", "agent", "seat", "piece", "type", "rot", "col", "cells", "lines", "phase", "eta_ms", "spawn_col",
               "t"):
         assert k in fields, f"claim JSON lacks {k!r}: {b}"
-    assert len(fields) == 13
+    # A planned claim also says where the piece stands and how it drops; the
+    # other optional fields (wait_on, next, well) are absent until set.
+    for k in ("at", "drop"):
+        assert k in fields, f"claim JSON lacks {k!r}: {b}"
+    assert len(fields) == 15
     assert parse_claim(b) == c
     assert (c.v == CLAIM_VERSION and c.seat == 0 and c.piece == 17 and c.type == 2 and c.rot == 1 and c.col == 5
             and c.eta_ms == 120 and c.spawn_col == g.spawn_c and c.lines == 1)

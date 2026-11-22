@@ -84,7 +84,7 @@ async def test_stats_line():
                            "shared_score=4100 cas_losses=3 walk_waits=2/450ms deferred_spawns=1/120ms "
                            "spawn_unblocks=0 idle_vacates=0 lock_retries=0 locks_dropped=0 "
                            "replans=collapse:1,droprow:2 claims_yielded=4 dep_waits=5/900ms echo_timeouts=0 "
-                           "duration=0.0s"), line
+                           "reach=0.0 quads=0 stand_locks=0 hurries=0 intents=0/0 holes=0/0 duration=0.0s"), line
     quiet = make_game(mode=MODE_COMPETITIVE, score=50)
     async with quiet.mu:
         line = quiet.stats_line()

@@ -131,6 +131,7 @@ def build_parser():
     boolean("host-only", False, "with --create: create the game and stay in the lobby without taking a seat until it is over (a benchmark's neutral host)")
     boolean("trace", False, "log every piece's lifecycle (spawn, plan, claim, waits, moves, lock) with microsecond stamps (a tuning aid)")
     boolean("soft-drop", False, "never hard-drop: once at its planned column and orientation, the piece is soft-dropped a row at a time (a row per move step) until it rests, then locks: slower, a point a row instead of two")
+    flag("well", default="auto", choices=("auto", "on", "off"), help="coordinated boards: keep the last column open so an I piece clears four rows at once, when every teammate's claim agrees and the stack is low: auto (every game but a survival one), on, or off")
     flag("plan-workers", type=int, default=-1, metavar="N", help="worker processes for the planner's lookahead at a deep preview (default: one per placement in the beam, as the cores allow; 0 = plan in-process)")
     boolean("auto-join", False, "also join open agent-allowed games (default: invited games only)")
     flag("wait", type=parse_duration, default=600.0, metavar="DURATION", help="max wait for a joined game to fill and start before un-joining it (default 10m)")
@@ -229,6 +230,7 @@ def main(argv=None):
         agent.coordinate = args.coordinate
         agent.trace = args.trace
         agent.soft_drop = args.soft_drop
+        agent.well = args.well
         agent.plan_pool = PlanPool(args.plan_workers)
         await _run(agent)
 

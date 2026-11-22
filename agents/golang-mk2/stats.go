@@ -30,6 +30,13 @@ type coordStats struct {
 	depWaits       int            // drops held for an earlier claim to land
 	depWaitMs      int64          // their total length
 	echoTimeouts   int            // claims played uncoordinated because their echo never came
+	reachCols      int            // columns between our spawn point and each landing, summed (statsLine prints the mean)
+	standLocks     int            // locks away from the planned column: the lock delay ran out on a walk that never got there
+	hurries        int            // think pauses cut short because a teammate said it waits on our piece
+	intentsMade    int            // next-piece placements announced on the blackboard (claim.Next), first in line only
+	intentsKept    int            // of those, the ones the piece was then played at
+	holesMade      int            // covered empty cells our locks added to the board, as it stood at the lock
+	holesPlanned   int            // of those, what the plans expected to add on the board they were made on
 	replans        map[string]int // re-plans by reason (replanReason.String)
 	started        time.Time      // when the game started for us
 }
@@ -44,7 +51,7 @@ func (s *coordStats) noteReplan(reason string) {
 
 // statsLine is the game's account in one greppable line:
 //
-//	stats: game=<id> mode=<coop|competitive|teams> seat=N coordinate=<bool> pieces=N lines=N score=N shared_score=N cas_losses=N walk_waits=N/<ms>ms deferred_spawns=N/<ms>ms spawn_unblocks=N idle_vacates=N lock_retries=N locks_dropped=N replans=<reason:count,…|none> claims_yielded=N dep_waits=N/<ms>ms echo_timeouts=N duration=<s>s
+//	stats: game=<id> mode=<coop|competitive|teams> seat=N coordinate=<bool> pieces=N lines=N score=N shared_score=N cas_losses=N walk_waits=N/<ms>ms deferred_spawns=N/<ms>ms spawn_unblocks=N idle_vacates=N lock_retries=N locks_dropped=N replans=<reason:count,…|none> claims_yielded=N dep_waits=N/<ms>ms echo_timeouts=N reach=<cols> quads=N stand_locks=N hurries=N intents=<kept>/<made> holes=<made>/<planned> duration=<s>s
 //
 // Caller holds mu.
 func (g *Game) statsLine() string {
@@ -75,10 +82,19 @@ func (g *Game) statsLine() string {
 	if !g.st.started.IsZero() {
 		duration = time.Since(g.st.started).Seconds()
 	}
-	return fmt.Sprintf("stats: game=%s mode=%s seat=%d coordinate=%v pieces=%d lines=%d score=%d shared_score=%d cas_losses=%d walk_waits=%d/%dms deferred_spawns=%d/%dms spawn_unblocks=%d idle_vacates=%d lock_retries=%d locks_dropped=%d replans=%s claims_yielded=%d dep_waits=%d/%dms echo_timeouts=%d duration=%.1fs",
+	reach := 0.0
+	if g.pieceIdx > 0 {
+		reach = float64(g.st.reachCols) / float64(g.pieceIdx)
+	}
+	quads := 0
+	if g.a != nil {
+		quads = g.statsFor(g.a.name).Quads
+	}
+	return fmt.Sprintf("stats: game=%s mode=%s seat=%d coordinate=%v pieces=%d lines=%d score=%d shared_score=%d cas_losses=%d walk_waits=%d/%dms deferred_spawns=%d/%dms spawn_unblocks=%d idle_vacates=%d lock_retries=%d locks_dropped=%d replans=%s claims_yielded=%d dep_waits=%d/%dms echo_timeouts=%d reach=%.1f quads=%d stand_locks=%d hurries=%d intents=%d/%d holes=%d/%d duration=%.1fs",
 		g.id, mode, g.idx, g.coordinating(), g.pieceIdx, g.lines, g.score, shared, g.st.casLosses.Load(),
 		g.st.walkWaits, g.st.walkWaitMs, g.st.deferredSpawns, g.st.deferredMs, g.st.spawnUnblocks, g.st.idleVacates,
-		g.st.lockRetries, g.st.locksDropped, replans, g.st.claimsYielded, g.st.depWaits, g.st.depWaitMs, g.st.echoTimeouts, duration)
+		g.st.lockRetries, g.st.locksDropped, replans, g.st.claimsYielded, g.st.depWaits, g.st.depWaitMs, g.st.echoTimeouts,
+		reach, quads, g.st.standLocks, g.st.hurries, g.st.intentsKept, g.st.intentsMade, g.st.holesMade, g.st.holesPlanned, duration)
 }
 
 // trace logs one step of a piece's lifecycle when --trace is on: the

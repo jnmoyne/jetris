@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -22,11 +23,18 @@ func TestClaimJSON(t *testing.T) {
 			t.Errorf("claim JSON lacks %q: %s", k, b)
 		}
 	}
-	if len(fields) != 13 {
-		t.Errorf("claim JSON carries %d fields, want 13: %s", len(fields), b)
+	// A planned claim also says where the piece stands and how it drops;
+	// the other optional fields (wait_on, next, well) are absent until set.
+	for _, k := range []string{"at", "drop"} {
+		if _, ok := fields[k]; !ok {
+			t.Errorf("claim JSON lacks %q: %s", k, b)
+		}
+	}
+	if len(fields) != 15 {
+		t.Errorf("claim JSON carries %d fields, want 15: %s", len(fields), b)
 	}
 	var back claim
-	if err := json.Unmarshal(b, &back); err != nil || back != c {
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, c) {
 		t.Errorf("round trip: %+v != %+v (%v)", back, c, err)
 	}
 	if c.V != claimVersion || c.Seat != 0 || c.Piece != 17 || c.Type != 2 || c.Rot != 1 || c.Col != 5 || c.ETAms != 120 || c.SpawnCol != g.spawnC || c.Lines != 1 {

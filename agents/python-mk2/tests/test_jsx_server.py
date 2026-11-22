@@ -112,7 +112,7 @@ async def test_kv_ttl_put_expires_and_the_watch_sees_it(nc):
     try:
         # Idempotent: a second ensure binds to the same bucket.
         await jsx.ensure_kv(js, bucket, api.StorageType.MEMORY, 30.0)
-        w = await jsx.KvWatch.start(js, kv, bucket, "g1.crew.*")
+        w = await jsx.KvWatch.start(kv, "g1.crew.*")
         seen = []
 
         async def follow():
@@ -137,19 +137,3 @@ async def test_kv_ttl_put_expires_and_the_watch_sees_it(nc):
         assert gone and gone[0][0] == "g1.crew.0" and gone[0][2] > r2
     finally:
         await js.delete_key_value(bucket)
-
-
-async def test_watch_ends_when_its_bucket_is_deleted(nc, monkeypatch):
-    monkeypatch.setattr(jsx.KvWatch, "PROBE_EVERY", 0.2)
-    js = nc.jetstream()
-    bucket = "JETRIS_BLACKBOARD_TEST_" + secrets.token_hex(4)
-    kv = await jsx.ensure_kv(js, bucket, api.StorageType.MEMORY, 30.0)
-    w = await jsx.KvWatch.start(js, kv, bucket, ">")
-
-    async def drain():
-        return [e async for e in w.updates()]
-
-    task = asyncio.ensure_future(drain())
-    await asyncio.sleep(0.3)
-    await js.delete_key_value(bucket)
-    assert await asyncio.wait_for(task, 5.0) == [None]

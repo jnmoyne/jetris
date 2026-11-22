@@ -170,7 +170,7 @@ async def test_invitations():
     bucket = "JETRIS_LOBBY_TEST_" + rand_id(6)
     a = await make_agent(bucket, "inv")
     gid = "t-" + rand_id(8)
-    watch = asyncio.create_task(a.lobby_watch())
+    watch = asyncio.create_task(a.lobby_watch(await jsx.KvWatch.start(a.kv, ">")))
 
     async def key_gone(key):
         try:

@@ -19,15 +19,20 @@ import "math/bits"
 type grid struct {
 	h, w  int
 	cells []int8   // row-major, w columns per row
-	rows  []uint32 // per-row filled masks
-	full  uint32   // the mask of a full row
+	rows  []uint64 // per-row filled masks (a board of up to maxGridWidth columns)
+	full  uint64   // the mask of a full row
 }
+
+// maxGridWidth is the widest board the row masks hold: a bit a column, and
+// one more for the right wall (rowTransitions). A crew of eight at seven
+// extra columns a seat is 59 wide; a wider board is not played (Game.run).
+const maxGridWidth = 63
 
 // gridClaimed is a teammate's claimed landing, projected as settled.
 const gridClaimed int8 = 4
 
 func newGrid(h, w int) *grid {
-	return &grid{h: h, w: w, cells: make([]int8, h*w), rows: make([]uint32, h), full: 1<<uint(w) - 1}
+	return &grid{h: h, w: w, cells: make([]int8, h*w), rows: make([]uint64, h), full: 1<<uint(w) - 1}
 }
 
 func (g *grid) at(r, c int) int8 { return g.cells[r*g.w+c] }
@@ -42,7 +47,7 @@ func (g *grid) set(r, c int, v int8) {
 func (g *grid) filled(r, c int) bool { return g.rows[r]>>uint(c)&1 == 1 }
 
 func (g *grid) clone() *grid {
-	c := &grid{h: g.h, w: g.w, cells: make([]int8, len(g.cells)), rows: make([]uint32, g.h), full: g.full}
+	c := &grid{h: g.h, w: g.w, cells: make([]int8, len(g.cells)), rows: make([]uint64, g.h), full: g.full}
 	copy(c.cells, g.cells)
 	copy(c.rows, g.rows)
 	return c
@@ -124,7 +129,7 @@ func (g *grid) rowTransitions() int {
 	for _, m := range g.rows {
 		a := m<<1 | 1                // the cells shifted up one bit, the left wall in bit 0
 		b := m | 1<<uint(g.w)        // the cells, the right wall in bit w
-		n += bits.OnesCount32(a ^ b) // a change wherever a neighbour differs
+		n += bits.OnesCount64(a ^ b) // a change wherever a neighbour differs
 	}
 	return n
 }
@@ -133,19 +138,19 @@ func (g *grid) rowTransitions() int {
 // empty, the space above the board counting as empty and the floor as
 // filled.
 func (g *grid) colTransitions() int {
-	n := bits.OnesCount32(g.rows[0]) // above the board: empty
+	n := bits.OnesCount64(g.rows[0]) // above the board: empty
 	for r := 1; r < g.h; r++ {
-		n += bits.OnesCount32(g.rows[r-1] ^ g.rows[r])
+		n += bits.OnesCount64(g.rows[r-1] ^ g.rows[r])
 	}
-	return n + bits.OnesCount32(^g.rows[g.h-1]&g.full) // the floor: filled
+	return n + bits.OnesCount64(^g.rows[g.h-1]&g.full) // the floor: filled
 }
 
 // holes counts the empty cells with a filled cell somewhere above them.
 func (g *grid) holes() int {
 	n := 0
-	var covered uint32
+	var covered uint64
 	for _, m := range g.rows {
-		n += bits.OnesCount32(covered &^ m)
+		n += bits.OnesCount64(covered &^ m)
 		covered |= m
 	}
 	return n
@@ -157,7 +162,7 @@ func (g *grid) holes() int {
 // empty cells below each column is kept as the pass climbs.
 func (g *grid) wells() int {
 	n := 0
-	var run [32]int
+	var run [maxGridWidth]int
 	for r := g.h - 1; r >= 0; r-- {
 		m := g.rows[r]
 		walls := (m<<1 | 1) & (m>>1 | 1<<uint(g.w-1)) // both neighbours filled, the walls counting

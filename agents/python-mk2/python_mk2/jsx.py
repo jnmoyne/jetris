@@ -1,8 +1,7 @@
 """JetStream plumbing the protocol needs beyond the client's stock calls.
 
 Raw publish requests carrying a CAS expectation or batch markers, the
-multi-subject direct get, KV buckets with per-key TTLs, and a KV watch that
-ends (instead of going quiet) when its bucket is deleted underneath it.
+multi-subject direct get, KV buckets with per-key TTLs, and a KV watch.
 """
 
 import asyncio
@@ -185,46 +184,20 @@ async def kv_put_ttl(nc, bucket, key, value, ttl):
 
 
 class KvWatch:
-    """A watch on a bucket's keys that knows when to give up: updates() yields
-    every delivery (None once the initial values are in), and ends when the
-    watch is stopped or the bucket's stream is gone or was recreated
-    underneath it, which a liveness probe checks every few seconds."""
+    """A watch on a bucket's keys: updates() yields every delivery (None
+    once the initial values are in) until the watch is stopped."""
 
-    PROBE_EVERY = 5.0
-
-    def __init__(self, js, kv, bucket, watcher):
-        self._js, self._kv, self._bucket, self._w = js, kv, bucket, watcher
-        self._created = None
+    def __init__(self, watcher):
+        self._w = watcher
         self._stopped = False
-        self._probe = asyncio.create_task(self._probe_loop())
 
     @classmethod
-    async def start(cls, js, kv, bucket, keys):
-        watcher = await kv.watch(keys)
-        return cls(js, kv, bucket, watcher)
+    async def start(cls, kv, keys):
+        return cls(await kv.watch(keys))
 
-    async def _probe_loop(self):
-        stream = f"KV_{self._bucket}"
-        try:
-            while not self._stopped:
-                try:
-                    si = await self._js.stream_info(stream)
-                    created = si.created
-                    if self._created is None:
-                        self._created = created
-                    elif created != self._created:
-                        break  # deleted and recreated: its revisions started over
-                except NotFoundError:
-                    break
-                except Exception:
-                    pass  # a blip (a reconnect in progress): probe again
-                await asyncio.sleep(self.PROBE_EVERY)
-        except asyncio.CancelledError:
+    async def stop(self):
+        if self._stopped:
             return
-        if not self._stopped:
-            await self._end()
-
-    async def _end(self):
         self._stopped = True
         try:
             await self._w.stop()
@@ -234,12 +207,6 @@ class KvWatch:
                 self._w._updates.put_nowait(self._w.STOP_ITER)
             except Exception:
                 pass
-
-    async def stop(self):
-        if self._stopped:
-            return
-        self._probe.cancel()
-        await self._end()
 
     async def updates(self):
         """Yield (key, value, revision, op) per delivery, None once the

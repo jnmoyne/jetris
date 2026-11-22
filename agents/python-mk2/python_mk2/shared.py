@@ -18,8 +18,8 @@ from .rng import piece_set_for
 from .rules import (DEFAULT_TEAM_COUNT, MAX_TEAM_COUNT, MIN_TEAM_COUNT, extra_columns, extra_rows,  # noqa: F401
                     normalize_team_count, team_names)
 from .scoring import SPIN_NONE, PlayerStats
-from .wire import (CASError, CellUpd, WireCell, dumps, event_clear, log, o_bool, o_int, parse_cell, to_obj,
-                   txn_payload)
+from .wire import (CASError, CellUpd, WireCell, dumps, event_clear, log, merge_cells, o_bool, o_int, parse_cell,
+                   to_obj, txn_payload)
 
 # A shared board is STANDARD_HEIGHT rows (headroom included) for its first
 # seat and the game's extra_rows more for every seat after it (rules.py). The
@@ -342,18 +342,22 @@ class SharedMixin:
                 pl = WireCell(t=np.pt, a=True, r=np.orient, ar=np.row, ac=np.col, pi=pi)
                 diff += [CellUpd(c, pl) for c in sorted(new_set)]
                 diff += [CellUpd(c) for c in sorted(old_cells) if c not in new_set and c not in new_locked]
+            diff = merge_cells(diff)  # a piece shifted into a cell the stack held: one write a cell
             try:
                 await self.publish_batch(diff, True)
-            except CASError:
+            except CASError as e:
+                self.trace("clear of rows %s: attempt %d, a batch of %d cell(s): %s", rows, attempt + 1, len(diff), e)
                 continue
             except Exception as e:
                 log.info("coop clear: %s", e)
                 return 0
+            self.trace("cleared rows %s on attempt %d, a batch of %d cell(s)", rows, attempt + 1, len(diff))
             self.locked = new_locked
             for pi, np in moved.items():
                 self.others_piece[pi] = np
             self.reindex_others()
             return len(rows)
+        log.info("coop clear: gave up on rows %s after 5 attempts", rows)
         return 0
 
     def reindex_others(self):

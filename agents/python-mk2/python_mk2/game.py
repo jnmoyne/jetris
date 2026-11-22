@@ -15,19 +15,20 @@ import random
 import time
 
 from . import aio, jsx
-from .blackboard import (ECHO_TIMEOUT, PHASE_LOCKED, PHASE_PLANNED, BlackboardMixin, Coordinator, board_name,
-                         claim_key)
+from .blackboard import (ECHO_TIMEOUT, PHASE_LOCKED, PHASE_PLANNED, BlackboardMixin, Coordinator, NextClaim,
+                         board_name, claim_key)
 from .consts import (ARCHIVE_SUBJECT, CHAT_STREAM, HEADROOM, MODE_COMPETITIVE, MODE_COOPERATIVE, MODE_TEAMS, PUB_PESSIMISTIC,
                      game_stream_name, meta_subject)
-from .coord import (CONFLICT_OVERLAP, LOCK_DELAY, PLAN_STALE, REPLAN_DEP_TIMEOUT, REPLAN_DROP_ROW,
+from .coord import (CONFLICT_OVERLAP, LOCK_DELAY, MAX_BLOCKED_PLANS, MAX_HOLE_REPLANS, MAX_NEXT_CLAIMS, PLAN_STALE,
+                    REPLAN_BLOCKED, REPLAN_COLLAPSE, REPLAN_DEP_TIMEOUT, REPLAN_DROP_ROW, REPLAN_HOLES,
                     REPLAN_LOCK_DROPPED, REPLAN_NONE, REPLAN_STALE, REPLAN_UNREACHABLE, RETHINK_DELAY, CoordMixin,
-                    replan_name)
+                    replan_name, well_ready)
 from .engine import Grid
 from .path import Active
 from .pieces import PIECE_NAMES, SPAWN_COL, SPAWN_ROW, WIDTH, piece_cells
 from .pipeline import PipelineMixin
 from .planner import (Placement, choose, lookahead_job, plan_finish, plan_placements, plan_roots,
-                      revealed_pieces)
+                      principal_variation, revealed_pieces, simulate_lock)
 from .rng import BAG_SINGLE, bag_label, normalize_bag, piece_at_bag, piece_set_for
 from .rules import MAX_GARBAGE_HOLES
 from .scoring import ClearInfo, drop_points
@@ -36,9 +37,9 @@ from .shared import (STANDARD_HEIGHT, SharedMixin, extra_columns, extra_rows, le
 from .stats import CoordStats, StatsMixin
 from .survival import MIN_SURVIVAL_HOLES, SurvivalMixin, normalize_survival, survival_holes
 from .sweep import PeerCell, SpawnBlocker, SweepMixin
-from .wire import (EMPTY_CELL, CASError, CellUpd, WireCell, dumps, garbage_payload, garbage_reg, log, now_rfc, o_bool,
-                   o_int, o_str, order_cells, parse_cell, parse_event, parse_rfc, payload_bytes, players_of, rand_id,
-                   to_obj, txn_payload)
+from .wire import (EMPTY_CELL, CASError, CellUpd, WireCell, dumps, garbage_payload, garbage_reg, log, merge_cells,
+                   now_rfc, o_bool, o_int, o_str, order_cells, parse_cell, parse_event, parse_rfc, payload_bytes,
+                   players_of, rand_id, to_obj, txn_payload)
 
 # The subjects per multi-subject direct get: the server answers at most 1024
 # results per request (no pagination), so larger boards go in chunks.
@@ -60,7 +61,7 @@ _CONTINUE, _LOCKED, _DONE = range(3)
 class _Exec:
     """execute's account of the piece it is driving, across its turns."""
 
-    __slots__ = ("plan", "last_progress", "last_pos", "stale_since", "waiting_since")
+    __slots__ = ("plan", "last_progress", "last_pos", "stale_since", "waiting_since", "blocked_since")
 
     def __init__(self, plan):
         self.plan = plan
@@ -68,16 +69,17 @@ class _Exec:
         self.last_pos = None
         self.stale_since = None    # when the plan first read as stale (check_plan)
         self.waiting_since = None  # the current wait on a crewmate's piece, for the stats
+        self.blocked_since = None  # since when the piece has stood behind crewmates' pieces (_blocked)
 
 
 class PendingClaim:
-    """A claim posted and not yet confirmed: the placement's ranking and
-    projection, for the yields confirm_plan may have to make."""
+    """A claim posted and not yet confirmed: the placement's ranking,
+    projection and grid, for the yields confirm_plan may have to make."""
 
-    __slots__ = ("c", "rev", "ranked", "proj", "eta")
+    __slots__ = ("c", "rev", "ranked", "proj", "gr", "eta")
 
-    def __init__(self, c, rev, ranked, proj, eta):
-        self.c, self.rev, self.ranked, self.proj, self.eta = c, rev, ranked, proj, eta
+    def __init__(self, c, rev, ranked, proj, eta, gr=None):
+        self.c, self.rev, self.ranked, self.proj, self.gr, self.eta = c, rev, ranked, proj, gr, eta
 
 
 def clear_of(ranked, cells):
@@ -184,13 +186,21 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         self.claims = {}
         self.bb_rev = 0
         self.bb_notify = asyncio.Event()
-        self.bb_epoch = 0
+        self.plan_holes = 0        # the covered cells the plan in play expected its landing to add, on the board it was made on (spoils, and the stats)
+        self.blocked_replan = False  # the next plan is for a piece blocked where it stands: only placements it can walk to right now (REPLAN_BLOCKED)
+        self.blocked_plans = 0     # such re-plans the piece in play has had (execute bounds them)
+        self.hole_replans = 0      # re-plans of the piece in play because its landing would have covered more than planned (spoils)
         self.my_claim = None
         self.my_rev = 0
+        self.my_prio = 0           # our claim's place in the right of way (Claim.prio): the revision this placement was first claimed at
+        self.hurry = None          # an Event set when a teammate's claim says it waits on our piece while we think (pause)
+        self.post_tail = None      # the last claim written without waiting (post_async): the writes keep their order
+        self.my_next = ()          # the tentative placements our last claim said for the pieces in our NEXT well (Claim.next)
+        self.my_intent = None      # the one of them for the piece now in play, or about to be: kept, mostly (Projection.intent)
         self.bb_logged = False
         self.deps = []             # the claims the piece in play must let land first
         self.dep_since = None      # since when the drop has been held for them
-        self.ignored_claims = {}   # seat → the revision of a claim waited on past its time
+        self.ignored_claims = {}   # seat → the place (Claim.prio) of a claim waited on past its time: planned without until the seat claims anew
 
         self.meta_seed = 0
         self.player_count = 0
@@ -637,7 +647,9 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         self.trace("spawned %s at col %d", PIECE_NAMES[pt], self.spawn_c)
         self.next_gravity, self.gravity_debt = spawn_t + self.gravity_now(), 0
         self.soft_dropped, self.resting_since, self.replan, self.plan_shift = 0, None, REPLAN_NONE, 0
-        self.my_claim, self.my_rev, self.deps, self.dep_since, self.ignored_claims = None, 0, [], None, {}
+        self.hole_replans, self.plan_holes, self.blocked_replan, self.blocked_plans = 0, 0, False, 0
+        self.my_claim, self.my_rev, self.my_prio = None, 0, 0
+        self.deps, self.dep_since, self.ignored_claims = [], None, {}
         return spawn_t, True, False
 
     async def lock_piece(self, dest):
@@ -698,16 +710,30 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
             # A short, seat-staggered pause before the retry.
             await asyncio.sleep(min((attempt + 1 + self.idx) * 0.0002, 0.002))
             attempt += 1
+        holes_before = self.to_grid_projected().holes()
         for c in dest_cells:
             self.locked[c] = lp
-        self.trace("locked at rot %d col %d row %d after %d attempt(s)", dest.orient, dest.col, dest.row,
-                   self.st.lock_retries)
+        made = self.to_grid_projected().holes() - holes_before
+        self.st.holes_made += max(made, 0)
+        self.st.holes_planned += max(self.plan_holes, 0)
+        self.trace("locked at rot %d col %d row %d after %d attempt(s): holes %+d (the plan expected %+d)",
+                   dest.orient, dest.col, dest.row, self.st.lock_retries, made, self.plan_holes)
+        self.plan_holes = 0
+        self.st.reach_cols += abs(dest.col - self.spawn_c)
         self.piece = None
         if self.coord is not None:
             # Tell the board: the claim is fulfilled, at these cells (the
             # teammates project them until the lock's echo reaches them).
-            self.post_locked_async(self.claim_for(
-                dest, Placement(orient=dest.orient, col=dest.col, dest=dest_cells), PHASE_LOCKED, 0.0))
+            lc = self.claim_for(dest, Placement(orient=dest.orient, col=dest.col, dest=dest_cells), PHASE_LOCKED, 0.0)
+            lc.next = self.my_next  # still where the next ones are meant to go, the first of them the piece about to spawn
+            self.post_locked_async(lc)
+            if self.my_intent is not None and self.my_intent.piece == self.piece_idx:
+                self.st.intents_made += 1
+                if self.my_intent.rot == dest.orient and self.my_intent.col == dest.col:
+                    self.st.intents_kept += 1
+            self.my_intent = None
+            if self.my_next and self.my_next[0].piece == self.piece_idx + 1:
+                self.my_intent = self.my_next[0]
             self.my_claim, self.deps = None, []
             self.end_dep_wait(time.monotonic())
         done = self.completed_rows_shared() if shared else self.completed_rows()
@@ -777,6 +803,7 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                         diff += [CellUpd(c, pl, True) for c in sorted(new_set)]
                         diff += [CellUpd(c, None, True) for c in sorted(old_cells)
                                  if c not in new_set and c not in new_locked]
+                    diff = merge_cells(diff)  # a piece shifted into a cell the stack held: one write a cell
                     try:
                         await self.publish_gated_batch(txn, diff)
                     except CASError:
@@ -1007,6 +1034,7 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                     pl = WireCell(t=to.pt, a=True, r=to.orient, ar=to.row, ac=to.col, pi=owner)
                     diff += [CellUpd(c, pl, guard) for c in sorted(new_set)]
                     diff += [CellUpd(c, None, guard) for c in old_cells if c not in new_set and c not in new_locked]
+                diff = merge_cells(diff)  # a piece lifted into a cell another left, or the stack did: one write a cell
                 txn = txn_payload(self.garbage_owed, "shrink", self.idx, topped_owners, board_full)
                 try:
                     await self.publish_gated_batch(txn, diff)
@@ -1364,7 +1392,7 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
             plan, pending, ok = await self.plan(piece, delay)
             if not ok:
                 return await self.top_out()
-            if not await self.wait(delay):
+            if not await self.pause(delay):
                 break
             plan = await self.confirm_plan(piece, plan, pending)
             await self.execute(plan, spawn_t)
@@ -1397,6 +1425,13 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
             proj = None
             if self.coord is not None:
                 gr, proj = self.build_projection()
+                if self.blocked_replan:
+                    # Blocked where it stood: only what the piece can walk to
+                    # this instant is an answer (REPLAN_BLOCKED).
+                    proj.route, proj.route_now = self.route_costs_now(p), True
+                    self.blocked_replan = False
+                else:
+                    proj.route = self.route_costs(p, began, pause)
             else:
                 gr = self.to_grid()
             piece_idx, spawn_c = self.piece_idx, self.spawn_c
@@ -1417,20 +1452,48 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         if pl is None:
             self.trace("no placement at all (%d candidates)", len(ranked))
             return Placement(), None, False
+        self.note_plan_holes(gr, pl)
         if self.coord is None or proj is None:
             self.trace("planned rot %d col %d row %d (score %.1f, %d candidates, %dms)", pl.orient, pl.col,
                        pl.drop_row, pl.score, len(ranked), int(took * 1000))
             return pl, None, True
-        self.trace("planned rot %d col %d row %d (score %.1f, %d candidates, wait on %s, %dms)", pl.orient, pl.col,
-                   pl.drop_row, pl.score, len(ranked), pl.wait_on, int(took * 1000))
+        self.trace("planned rot %d col %d row %d (score %.1f, %d candidates, wait on %s, well %d on %s high %s "
+                   "ready %d, lines %d, %dms)", pl.orient, pl.col, pl.drop_row, pl.score, len(ranked), pl.wait_on,
+                   proj.well, proj.well_on, proj.well_high, well_ready(gr, proj.well), pl.lines, int(took * 1000))
         eta = pause + tn.move_delay + 0.05
         c = self.claim_for(p, pl, PHASE_PLANNED, eta)
+        # Where the pieces in our NEXT well go from here, as the lookahead
+        # has it (guide §1.4: our own preview, and no further than the game
+        # shows). The search that ranked the placement found the line
+        # already, when the placement was in its beam.
+        if upcoming:
+            line = pl.pv
+            if line is None:
+                after, _, _ = simulate_lock(gr, pl.dest)
+                if len(upcoming) < 2:
+                    line = principal_variation(after, spawn_c, upcoming, proj.well_spec())
+                else:
+                    line = await asyncio.to_thread(principal_variation, after, spawn_c, upcoming, proj.well_spec())
+            c.next = tuple(NextClaim(piece=piece_idx + 1 + i, type=upcoming[i], rot=o, col=col)
+                           for i, (o, col) in enumerate(line[:MAX_NEXT_CLAIMS]))
+        self.my_next = c.next
         try:
             rev = await self.post_claim(c)
         except Exception as e:
             self.bb_log_once(e)
             return pl, None, True  # uncoordinated for this piece
-        return pl, PendingClaim(c=c, rev=rev, ranked=ranked, proj=proj, eta=eta), True
+        return pl, PendingClaim(c=c, rev=rev, ranked=ranked, proj=proj, eta=eta, gr=gr), True
+
+    def note_plan_holes(self, gr, pl):
+        """Record what the plan expects its landing to cover on the board it
+        was made on: the stats' measure of the holes a plan chose, against
+        the ones its lock then made (lock_piece), and what spoils holds the
+        landing to."""
+        sim = gr.clone()
+        for r, c in pl.dest:
+            if 0 <= r < sim.h and 0 <= c < sim.w:
+                sim.set(r, c, 1)
+        self.plan_holes = sim.holes() - gr.holes()
 
     async def _search(self, gr, p, spawn_c, upcoming, proj):
         """The planner's search. A shallow one is a millisecond, run here; a
@@ -1476,9 +1539,13 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         tn = self.a.tn
         while True:
             async with self.mu:
-                kind, more, taken = self.classify(p, pl, rev)
+                prio = rev
+                mine = self.claims.get(self.idx)
+                if mine is not None and mine.rev == rev:
+                    prio = mine.order()  # the same placement claimed again keeps its place
+                kind, more, taken = self.classify(p, pl, prio)
                 if kind != CONFLICT_OVERLAP or attempt >= 2:
-                    self.my_claim, self.my_rev = c, rev
+                    self.my_claim, self.my_rev, self.my_prio = c, rev, prio
                     self.deps = self.merge_deps(pl, pc.proj, more)
                     self.trace("claimed at rev %d: %s, %d dep(s)", rev, kind, len(self.deps))
                     return pl
@@ -1489,7 +1556,10 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
             if nxt is None:
                 return pl  # nothing clear of them: the wire decides
             pl = nxt
+            if pc.gr is not None:
+                self.note_plan_holes(pc.gr, pl)
             c = self.claim_for(p, pl, PHASE_PLANNED, tn.move_delay + 0.05)
+            self.my_next = ()  # said for another landing of this piece: not for this one
             try:
                 rev = await self.post_claim(c)
             except Exception:
@@ -1556,6 +1626,25 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         if ex.waiting_since is not None:
             self.st.walk_wait_ms += int((now - ex.waiting_since) * 1000)
             ex.waiting_since = None
+        ex.blocked_since = None
+
+    def _blocked(self, ex, now, seats):
+        """Account a turn spent behind the seats' falling pieces: the wait is
+        announced on the blackboard when it starts (announce_wait), and past
+        our patience with them (block_patience) the piece is planned again
+        among what it can reach: True, and the turn is over (_DONE)."""
+        self._note_walk_wait(ex, now)
+        if not seats:
+            return False
+        if ex.blocked_since is None:
+            ex.blocked_since = now
+            self.announce_wait(seats)
+        if self.blocked_plans < MAX_BLOCKED_PLANS and now - ex.blocked_since > self.block_patience(seats, now):
+            self.blocked_plans += 1
+            self.blocked_replan = True
+            self.request_replan(REPLAN_BLOCKED)
+            return True
+        return False
 
     async def _execute_turn(self, ex, now):
         """One turn of execute, mu held: _DONE (the plan is over: locked
@@ -1567,13 +1656,19 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
             # A crewmate's clear collapsed rows under the piece and it was
             # re-adopted lower (adopt_own_piece): the plan keeps its column
             # and orientation, and its landing is derived again on the board
-            # as it stands (reland_plan). No re-plan needed; the checks
-            # below say if that was wrong.
-            was = ex.plan.drop_row
+            # as it stands (reland_plan). A clear alone moves the landing
+            # down by the rows it moved the piece: the cleared rows were
+            # full, so they lay under both. Any other landing means the stack
+            # in those columns changed as well (the lock that made the clear
+            # left cells there, or another one landed): the plan was made for
+            # a board that is gone, and is made again.
+            was, shift = ex.plan.drop_row, self.plan_shift
             ex.plan = self.reland_plan(self.piece, ex.plan)
-            self.trace("collapse: the piece moved %d row(s), the landing %d → %d", self.plan_shift, was,
-                       ex.plan.drop_row)
             self.plan_shift = 0
+            self.trace("collapse: the piece moved %d row(s), the landing %d → %d", shift, was, ex.plan.drop_row)
+            if ex.plan.drop_row != was + shift:
+                self.request_replan(REPLAN_COLLAPSE)
+                return _DONE
         plan = ex.plan
         if self.pipe_broken:
             # A pipelined batch was lost: drain, repair, re-plan.
@@ -1638,7 +1733,8 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
             elif transient:
                 # Blocked only by another falling piece: wait, don't lock.
                 # The lock delay never starts on one (gameplays §3).
-                self._note_walk_wait(ex, now)
+                if self._blocked(ex, now, self.owners_under(p)):
+                    return _DONE
             else:
                 # Resting on the stack or the floor. Where it meant to be,
                 # the piece locks now; elsewhere, on a shared board, it gets
@@ -1647,15 +1743,29 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                 if self.resting_since is None:
                     self.resting_since = now
                 if at_target or not shared or now - self.resting_since >= LOCK_DELAY:
+                    if not at_target and self.blocked_plans < MAX_BLOCKED_PLANS:
+                        # On the stack, away from its column, and the grace
+                        # is spent: the plan is out of reach. Rather than
+                        # lock where it stands, it is planned again among
+                        # what it can reach from here.
+                        self.blocked_plans += 1
+                        self.blocked_replan = True
+                        self.request_replan(REPLAN_BLOCKED)
+                        return _DONE
                     if await self.settle_for_lock(p):
+                        return _DONE
+                    if at_target and self.spoils(p):
+                        self.request_replan(REPLAN_HOLES)
                         return _DONE
                     if not await self.lock_piece(p):
                         self.request_replan(REPLAN_LOCK_DROPPED)
                         return _DONE
                     locked = True
+                    if not at_target:
+                        self.st.stand_locks += 1
         if not locked and self.piece is not None and self.piece == p:
             if not at_target:
-                res = self.find_path(p, plan, self.teammate_boxes())
+                res = self.find_path(p, plan, self.teammate_boxes(), self.keep_out())
                 pending = self.deps_pending()
                 self.trace("path to rot %d col %d: reached %s, %d move(s) to rot %d col %d row %d, transient %s, "
                            "deps pending %s", plan.orient, plan.col, res.reached, len(res.moves), res.end.orient,
@@ -1673,6 +1783,9 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                         # The walk, the hard drop and the lock as ONE batch:
                         # the piece is on the board one round trip less.
                         if await self.settle_for_lock(p):
+                            return _DONE
+                        if self.spoils(Active(p.pt, plan.orient, dr, plan.col)):
+                            self.request_replan(REPLAN_HOLES)
                             return _DONE
                         self.soft_dropped += res.downs
                         if not await self.lock_piece(Active(p.pt, plan.orient, dr, plan.col)):
@@ -1704,18 +1817,21 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                             await self.publish_piece_move(res.end)
                             self.soft_dropped += res.downs
                             self.resting_since = None
-                        self._note_walk_wait(ex, now)
+                        if self._blocked(ex, now, self.owners_under(res.end)):
+                            return _DONE
                 elif res.end != p:
                     # A partial walk, to the waiting spot the search picked.
                     await self.publish_piece_move(res.end)
                     self.soft_dropped += res.downs
                     self.resting_since = None
-                    if res.blocked_by_transient:
-                        self._note_walk_wait(ex, now)
+                    if res.blocked_by_transient and self._blocked(ex, now, res.blockers):
+                        return _DONE
                 elif res.blocked_by_transient:
                     # A crossing piece is in the way, and we are as close as
-                    # we get: wait it out.
-                    self._note_walk_wait(ex, now)
+                    # we get: wait it out, for as long as the right of way
+                    # says (_blocked).
+                    if self._blocked(ex, now, res.blockers):
+                        return _DONE
                 else:
                     # Walled off by the stack with nowhere better to stand:
                     # the plan is not the thing to do any more.
@@ -1735,7 +1851,8 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                     # row a turn with --soft-drop) but stay active: gravity
                     # resumes once it falls.
                     if dr == p.row:
-                        self._note_walk_wait(ex, now)
+                        if self._blocked(ex, now, self.owners_under(p)):
+                            return _DONE
                     elif soft_drop:
                         if await self.publish_piece_move(Active(p.pt, p.orient, p.row + 1, p.col)):
                             self.soft_dropped += 1
@@ -1743,7 +1860,8 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                     else:
                         await self.publish_piece_move(Active(p.pt, p.orient, dr, p.col))
                         self.resting_since = None
-                        self._note_walk_wait(ex, now)
+                        if self._blocked(ex, now, self.owners_under(Active(p.pt, p.orient, dr, p.col))):
+                            return _DONE
                 elif dr < plan.drop_row:
                     # The board stops the piece short of its landing
                     # (something locked above it since the plan): no claim of
@@ -1777,6 +1895,9 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                         self.soft_dropped += 1
                     self.resting_since = None
                     self._end_walk_wait(ex, now)
+                elif self.spoils(Active(p.pt, p.orient, dr, p.col)):
+                    self.request_replan(REPLAN_HOLES)
+                    return _DONE
                 else:
                     if not await self.lock_piece(Active(p.pt, p.orient, dr, p.col)):
                         self.request_replan(REPLAN_LOCK_DROPPED)
@@ -1784,6 +1905,26 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                     locked = True
                     self._end_walk_wait(ex, now)
         return _LOCKED if locked else _CONTINUE
+
+    def spoils(self, dest):
+        """Whether locking the piece at dest, on the board as it stands,
+        would cover more empty cells than the plan expected to: the plan was
+        made on a projection (a teammate's claim that then went elsewhere, a
+        clear, a lock in between), and the board it lands on is not that one.
+        The landing is then planned again, on the board that is there, rather
+        than locked into a hole nobody chose; MAX_HOLE_REPLANS times a piece
+        at most, each one counted. Shared boards only. Caller holds mu."""
+        if not self.shared() or self.hole_replans >= MAX_HOLE_REPLANS:
+            return False
+        gr = self.to_grid_projected()
+        before = gr.holes()
+        for r, c in dest.cells():
+            if 0 <= r < gr.h and 0 <= c < gr.w:
+                gr.set(r, c, 1)
+        if gr.holes() - before <= max(self.plan_holes, 0):
+            return False
+        self.hole_replans += 1
+        return True
 
     def drop_clear_at(self, a):
         """The hard-drop row of a piece standing at a, and whether it would

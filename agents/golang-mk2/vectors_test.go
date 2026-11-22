@@ -32,6 +32,16 @@ func TestWriteVectors(t *testing.T) {
 		DepETA    map[string]int `json:"dep_eta"`
 		OwnSpawnC int            `json:"own_spawn_c"`
 		Boxes     [][4]int       `json:"boxes"` // seat, c0, c1, imminent
+		// What a claim says beyond the landing (coord.go): the walk's
+		// cost by (orientation, column), the teammates' tentative
+		// landings, our own announced placement, and the crew's well.
+		Route    [][3]float64 `json:"route"` // orient, col, cost; null = no route (the flat costs)
+		RouteNow bool         `json:"route_now"`
+		Tent     [][3]float64 `json:"tent"`   // row, col, weight
+		Intent   *[2]int      `json:"intent"` // orient, col
+		Well     int          `json:"well"`
+		WellOn   bool         `json:"well_on"`
+		WellHigh bool         `json:"well_high"`
 	}
 	type planOut struct {
 		H        int         `json:"h"`
@@ -45,6 +55,8 @@ func TestWriteVectors(t *testing.T) {
 		Proj     *projOut    `json:"proj"`
 		Features [4]int      `json:"features"` // row transitions, col transitions, holes, wells
 		Ranked   []rankedOut `json:"ranked"`
+		PV       [][2]int    `json:"pv"`       // the lookahead's best line from the best placement: orient, col per upcoming piece
+		PVScore  float64     `json:"pv_score"` // and its total
 	}
 	rnd := mrand.New(mrand.NewPCG(20261111, 2))
 	board := func(w int) *grid {
@@ -81,6 +93,12 @@ func TestWriteVectors(t *testing.T) {
 		}
 		var proj *projection
 		var po *projOut
+		routed := i%8 == 7 // a coordinated board planned as plan() plans it: routes, tentative landings, an intent, the well
+		if routed && rnd.IntN(3) != 0 {
+			for r := 0; r < g.h; r++ { // the crew's well, kept open
+				g.set(r, w-1, 0)
+			}
+		}
 		if i%4 == 3 {
 			// A coordinated board: a foreign falling piece, a teammate's
 			// claimed landing, a silent teammate's straight drop, a spawn box.
@@ -111,6 +129,35 @@ func TestWriteVectors(t *testing.T) {
 				im = 1
 			}
 			po.Boxes = [][4]int{{2, c0, c0 + 3, im}}
+			if routed {
+				proj.route, po.Route = map[[2]int]float64{}, [][3]float64{}
+				for o := 0; o < 4; o++ {
+					for c := -2; c < w; c++ {
+						if rnd.IntN(5) != 0 {
+							cost := float64(rnd.IntN(3000)) / 1000
+							proj.route[[2]int{o, c}] = cost
+							po.Route = append(po.Route, [3]float64{float64(o), float64(c), cost})
+						}
+					}
+				}
+				proj.routeNow = rnd.IntN(4) == 0
+				po.RouteNow = proj.routeNow
+				proj.tent = map[cell]float64{}
+				tpt, tor, tcol := rnd.IntN(7), rnd.IntN(4), rnd.IntN(w-3)
+				if g.canPlace(pieceCells(tpt, tor, spawnRow, tcol)) {
+					weight := 1 / float64(1+rnd.IntN(2))
+					for _, x := range pieceCells(tpt, tor, g.dropRow(tpt, tor, spawnRow, tcol), tcol) {
+						proj.tent[x] = weight
+						po.Tent = append(po.Tent, [3]float64{float64(x.r), float64(x.c), weight})
+					}
+				}
+				if rnd.IntN(2) == 0 {
+					proj.intent = &[2]int{rnd.IntN(4), rnd.IntN(w - 3)}
+					po.Intent = proj.intent
+				}
+				proj.well, proj.wellOn, proj.wellHigh = w-1, rnd.IntN(4) != 0, rnd.IntN(2) == 0
+				po.Well, po.WellOn, po.WellHigh = proj.well, proj.wellOn, proj.wellHigh
+			}
 		} else if i%4 == 1 {
 			// An uncoordinated shared board: another player's falling piece.
 			fpt, forr, fcol := rnd.IntN(7), rnd.IntN(4), rnd.IntN(w-3)
@@ -138,8 +185,21 @@ func TestWriteVectors(t *testing.T) {
 				}
 			}
 		}
-		for _, pl := range planPlacements(g, pt, row, col, spawnC, upcoming, proj) {
+		ranked := planPlacements(g, pt, row, col, spawnC, upcoming, proj)
+		for _, pl := range ranked {
 			p.Ranked = append(p.Ranked, rankedOut{pl.orient, pl.col, pl.dropRow, pl.lines, pl.score, pl.waitOn})
+		}
+		if len(ranked) > 0 && len(upcoming) > 0 {
+			ws := noWell
+			if proj != nil {
+				ws = proj.wellSpec()
+			}
+			after, _, _ := simulateLock(g, ranked[0].dest)
+			p.PV = [][2]int{}
+			for _, x := range principalVariation(after, spawnC, upcoming, ws) {
+				p.PV = append(p.PV, [2]int{x.orient, x.col})
+			}
+			p.PVScore = lookaheadWell(after, spawnC, upcoming, ws)
 		}
 		plans = append(plans, p)
 	}

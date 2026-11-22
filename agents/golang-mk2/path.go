@@ -22,6 +22,7 @@ package main
 import (
 	"container/heap"
 	"math"
+	"sort"
 )
 
 type pathMove uint8
@@ -64,13 +65,14 @@ type pathState struct{ row, col, orient int }
 // the waiting spot), whether that is the goal, the moves that get there,
 // how many of them were rows soft-dropped, and whether a crewmate's
 // falling piece was what stood between the piece and any state it could
-// not reach.
+// not reach — and whose (blockers, the seats, sorted).
 type pathResult struct {
 	end                active
 	reached            bool
 	moves              []pathMove
 	downs              int
 	blockedByTransient bool
+	blockers           []int
 }
 
 // pathNode is a heap entry of the search.
@@ -89,29 +91,40 @@ func (h *pathHeap) Pop() any             { old := *h; n := len(old); x := old[n-
 func rotDist(from, to int) int           { return (to - from) & 3 }
 func (s pathState) cells(pt int) [4]cell { return pieceCells(pt, s.orient, s.row, s.col) }
 
-// findPath searches from p to the plan's orientation and column — at
-// whatever row the search reaches them: gravity and the hard drop are the
-// caller's, and the planner's placements are straight drops from above.
-// Call with g.mu held.
-func (g *Game) findPath(p active, pl placement, boxes []spawnBox) pathResult {
+// search is one Dijkstra flood from where a piece stands: every state it
+// reached, at what cost and by which move, and the seats whose falling
+// pieces stopped it somewhere (blockers) — the crewmates in its way.
+type search struct {
+	pt       int
+	start    pathState
+	dist     map[pathState]float64
+	prev     map[pathState]pathState
+	via      map[pathState]pathMove
+	closed   map[pathState]bool
+	blockers map[int]bool
+	found    *pathState
+}
+
+// flood searches from p over the moves the game allows, the stack an
+// obstacle for good and `others` — cells held by other players' falling
+// pieces, by seat: the live ones (g.othersAct), or a forecast of them
+// (coord.go) — obstacles in passing. With a goal it stops at the first
+// state that meets it (found); without one it reaches everything there is
+// to reach. Call with g.mu held.
+func (g *Game) flood(p active, boxes []spawnBox, others map[cell]int, goal func(pathState) bool) *search {
 	start := pathState{p.row, p.col, p.orient}
-	goal := func(s pathState) bool { return s.col == pl.col && s.orient == pl.orient }
-	dist := map[pathState]float64{start: 0}
-	prev := map[pathState]pathState{}
-	via := map[pathState]pathMove{}
-	closed := map[pathState]bool{}
-	transient := false
+	s := &search{pt: p.pt, start: start, dist: map[pathState]float64{start: 0}, prev: map[pathState]pathState{},
+		via: map[pathState]pathMove{}, closed: map[pathState]bool{}, blockers: map[int]bool{}}
 	h := &pathHeap{{start, 0}}
-	var found *pathState
 	for h.Len() > 0 {
 		n := heap.Pop(h).(pathNode)
-		if closed[n.st] || n.cost > dist[n.st] {
+		if s.closed[n.st] || n.cost > s.dist[n.st] {
 			continue
 		}
-		closed[n.st] = true
-		if goal(n.st) {
-			s := n.st
-			found = &s
+		s.closed[n.st] = true
+		if goal != nil && goal(n.st) {
+			st := n.st
+			s.found = &st
 			break
 		}
 		for _, m := range []pathMove{moveLeft, moveRight, moveDown, moveCW} {
@@ -127,10 +140,17 @@ func (g *Game) findPath(p active, pl placement, boxes []spawnBox) pathResult {
 				next.orient = (next.orient + 1) & 3
 			}
 			cs := next.cells(p.pt)
-			if !g.canMove(cs) {
-				if g.canPlace(cs) {
-					transient = true // only a falling piece stands there
+			if !g.canPlace(cs) {
+				continue
+			}
+			hit := false
+			for _, c := range cs {
+				if seat, ok := others[c]; ok {
+					s.blockers[seat] = true // only a falling piece stands there
+					hit = true
 				}
+			}
+			if hit {
 				continue
 			}
 			cost := n.cost + 1
@@ -140,69 +160,137 @@ func (g *Game) findPath(p active, pl placement, boxes []spawnBox) pathResult {
 					break
 				}
 			}
-			if d, ok := dist[next]; ok && d <= cost {
+			if d, ok := s.dist[next]; ok && d <= cost {
 				continue
 			}
-			dist[next] = cost
-			prev[next] = n.st
-			via[next] = m
+			s.dist[next] = cost
+			s.prev[next] = n.st
+			s.via[next] = m
 			heap.Push(h, pathNode{next, cost})
 		}
 	}
-	end := start
-	reached := found != nil
-	if reached {
-		end = *found
-	} else if spot, ok := waitingSpot(closed, dist, start, pl, boxes, p.pt); ok {
-		end = spot
+	return s
+}
+
+// reach is the cost of the cheapest way to every (orientation, column) the
+// flood reached, at whatever row — what a placement's walk costs.
+func (s *search) reach() map[[2]int]float64 {
+	out := map[[2]int]float64{}
+	for st := range s.closed {
+		k := [2]int{st.orient, st.col}
+		if d, ok := out[k]; !ok || s.dist[st] < d {
+			out[k] = s.dist[st]
+		}
 	}
+	return out
+}
+
+// blockerSeats is the seats whose pieces stopped the flood, sorted.
+func (s *search) blockerSeats() []int {
+	out := make([]int, 0, len(s.blockers))
+	for seat := range s.blockers {
+		out = append(out, seat)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// result is the path to end (a state the flood reached), as moves.
+func (s *search) result(end pathState, reached bool) pathResult {
 	var moves []pathMove
 	downs := 0
-	for s := end; s != start; s = prev[s] {
-		moves = append(moves, via[s])
-		if via[s] == moveDown {
+	for st := end; st != s.start; st = s.prev[st] {
+		moves = append(moves, s.via[st])
+		if s.via[st] == moveDown {
 			downs++
 		}
 	}
 	for i, j := 0, len(moves)-1; i < j; i, j = i+1, j-1 {
 		moves[i], moves[j] = moves[j], moves[i]
 	}
-	return pathResult{end: active{p.pt, end.orient, end.row, end.col}, reached: reached, moves: moves, downs: downs, blockedByTransient: transient}
+	return pathResult{end: active{s.pt, end.orient, end.row, end.col}, reached: reached, moves: moves, downs: downs,
+		blockedByTransient: len(s.blockers) > 0, blockers: s.blockerSeats()}
+}
+
+// findPath searches from p to the plan's orientation and column — at
+// whatever row the search reaches them: gravity and the hard drop are the
+// caller's, and the planner's placements are straight drops from above.
+// Call with g.mu held.
+func (g *Game) findPath(p active, pl placement, boxes []spawnBox) pathResult {
+	return g.findPathKeep(p, pl, boxes, nil)
+}
+
+// findPathKeep is findPath with cells a wait must keep out of where it can
+// (keep: the drop shafts of the claims with right of way over ours,
+// coord.go keepOut) — a path may cross them, a waiting spot is chosen
+// outside them. Call with g.mu held.
+func (g *Game) findPathKeep(p active, pl placement, boxes []spawnBox, keep map[cell]bool) pathResult {
+	s := g.flood(p, boxes, g.othersAct, func(st pathState) bool { return st.col == pl.col && st.orient == pl.orient })
+	if s.found != nil {
+		return s.result(*s.found, true)
+	}
+	end := s.start
+	if spot, ok := waitingSpot(s.closed, s.dist, s.start, pl, boxes, keep, p.pt); ok {
+		end = spot
+	}
+	return s.result(end, false)
 }
 
 // waitingSpot picks where to wait when the goal is out of reach: among the
 // states the search reached, the one nearest the goal — columns and quarter
 // turns to go — outside every imminent teammate spawn box when any such
-// state exists, the cheaper path breaking ties. Nothing to move to when
-// the start is the best.
-func waitingSpot(closed map[pathState]bool, dist map[pathState]float64, start pathState, pl placement, boxes []spawnBox, pt int) (pathState, bool) {
-	inBox := func(s pathState) bool {
+// state exists, and outside the cells to keep out of (keep) when any of
+// those does, the cheaper path breaking ties. Nothing to move to when the
+// start is the best.
+func waitingSpot(closed map[pathState]bool, dist map[pathState]float64, start pathState, pl placement, boxes []spawnBox, keep map[cell]bool, pt int) (pathState, bool) {
+	// trouble ranks a spot: in a spawn box is worse than in a shaft, and
+	// either is worse than neither.
+	trouble := func(s pathState) int {
 		cs := s.cells(pt)
+		n := 0
 		for _, b := range boxes {
 			if b.imminent && b.covers(cs) {
-				return true
+				n += 2
+				break
 			}
 		}
-		return false
+		for _, c := range cs {
+			if keep[c] {
+				n++
+				break
+			}
+		}
+		return n
 	}
 	score := func(s pathState) float64 {
 		return math.Abs(float64(s.col-pl.col)) + float64(rotDist(s.orient, pl.orient))
 	}
 	var best pathState
-	bestOut, bestScore, bestCost, have := false, math.Inf(1), math.Inf(1), false
+	bestTrouble, bestScore, bestCost, have := 0, math.Inf(1), math.Inf(1), false
 	for s := range closed {
-		out := !inBox(s)
-		sc, c := score(s), dist[s]
+		tr, sc, c := trouble(s), score(s), dist[s]
 		switch {
-		case !have, out && !bestOut,
-			out == bestOut && (sc < bestScore || (sc == bestScore && c < bestCost)):
-			best, bestOut, bestScore, bestCost, have = s, out, sc, c, true
+		case !have, tr < bestTrouble,
+			tr == bestTrouble && (sc < bestScore || (sc == bestScore && (c < bestCost || (c == bestCost && lessState(s, best))))):
+			best, bestTrouble, bestScore, bestCost, have = s, tr, sc, c, true
 		}
 	}
 	if !have || best == start {
 		return start, false
 	}
 	return best, true
+}
+
+// lessState orders two states, so that a tie between waiting spots is
+// broken the same way every time (map order is not an order).
+func lessState(a, b pathState) bool {
+	if a.row != b.row {
+		return a.row < b.row
+	}
+	if a.col != b.col {
+		return a.col < b.col
+	}
+	return a.orient < b.orient
 }
 
 // teammateBoxes is every other seat's spawn box on our playfield, among the

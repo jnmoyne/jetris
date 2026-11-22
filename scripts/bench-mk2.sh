@@ -9,16 +9,18 @@
 # seats alternating on one board); they need uv.
 #
 #   scripts/bench-mk2.sh [-n games] [-k crew] [-s seed] [-l line-goal] [-d difficulty]
-#                        [-x extra-cols] [-p port] [-o outdir] [-a "arms"] [--keep]
+#                        [-x extra-cols] [-p port] [-o outdir] [-a "arms"] [-f "flags"] [--keep]
 #
 # Defaults: 3 games, a crew of 2, seed 42 (game i plays seed+i), 40 lines,
 # hard, 4 extra columns per seat, a private nats-server on port 4333, the
 # logs and records under bench-out/<timestamp>, the arms "mk2 mk2solo mk1".
+# -f passes further flags to every golang-mk2 and python-mk2 seat (-f "--trace",
+# -f "--well off").
 # Needs go, nats-server, the nats CLI and jq. It kills only the processes it
 # started; --keep leaves the server's store directory behind.
 set -euo pipefail
 
-N=3 K=2 SEED=42 GOAL=40 DIFF=hard EXTRA=4 PORT=4333 OUT="" KEEP=0 ARMS="mk2 mk2solo mk1"
+N=3 K=2 SEED=42 GOAL=40 DIFF=hard EXTRA=4 PORT=4333 OUT="" KEEP=0 ARMS="mk2 mk2solo mk1" MK2FLAGS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n) N=$2; shift 2 ;;
@@ -30,8 +32,9 @@ while [[ $# -gt 0 ]]; do
     -p) PORT=$2; shift 2 ;;
     -o) OUT=$2; shift 2 ;;
     -a) ARMS=$2; shift 2 ;;
+    -f) MK2FLAGS=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n 2,16p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,18p "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -74,12 +77,12 @@ run_game() {
   local arm=$1 round=$2 id="bench-$arm-$round-$TAG"
   local bin="$TMP/golang-mk2" alt="" flags=""
   case "$arm" in
-    mk2) ;;
-    mk2solo) flags="--coordinate=false" ;;
+    mk2) flags="$MK2FLAGS" ;;
+    mk2solo) flags="--coordinate=false $MK2FLAGS" ;;
     mk1) bin="$TMP/golang-mk1" ;;
-    pymk2) bin="$PYMK2" ;;
-    pymk2solo) bin="$PYMK2"; flags="--coordinate=false" ;;
-    mixed) alt="$PYMK2" ;; # even seats golang-mk2, odd seats python-mk2
+    pymk2) bin="$PYMK2"; flags="$MK2FLAGS" ;;
+    pymk2solo) bin="$PYMK2"; flags="--coordinate=false $MK2FLAGS" ;;
+    mixed) alt="$PYMK2"; flags="$MK2FLAGS" ;; # even seats golang-mk2, odd seats python-mk2
     *) echo "unknown arm $arm" >&2; return 1 ;;
   esac
   "$TMP/golang-mk2" --server "$URL" --create --host-only --mode cooperative --players "$K" --max-agents "$K" \
@@ -127,7 +130,7 @@ grep -h "stats:" "$OUT"/bench-*-p*.log > "$OUT/stats.txt" || true
 
 echo
 echo "== $N game(s) per arm, crews of $K at $DIFF, $GOAL lines, seeds $((SEED + 1))..$((SEED + N)), $EXTRA extra columns =="
-printf "%-10s %6s %8s %7s %8s %7s | %8s %8s %8s %8s %8s\n" arm games "seconds" pieces "pcs/line" score cas waits "deferred" replans yields
+printf "%-10s %6s %8s %7s %8s %7s | %8s %8s %8s %8s %8s | %6s %6s %6s\n" arm games "seconds" pieces "pcs/line" score cas waits "deferred" replans yields reach quads stand
 for arm in $ARMS; do
   jq -r --arg arm "$arm" '
     select(.game_id | startswith("bench-" + $arm + "-")) |
@@ -139,18 +142,21 @@ for arm in $ARMS; do
       { n++; secs += $1; pieces += $2; lines += $3; score += $4 }
       END {
         if (n == 0) { printf "%-10s %6d\n", arm, 0; exit }
-        cas = waits = def = rep = yld = 0
+        cas = waits = def = rep = yld = reach = seats = quads = stand = 0
         while ((getline line < statsfile) > 0) {
           if (line !~ "game=bench-" arm "-") continue
           if (match(line, /cas_losses=[0-9]+/)) cas += substr(line, RSTART + 11, RLENGTH - 11)
           if (match(line, /walk_waits=[0-9]+/)) waits += substr(line, RSTART + 11, RLENGTH - 11)
           if (match(line, /deferred_spawns=[0-9]+/)) def += substr(line, RSTART + 16, RLENGTH - 16)
           if (match(line, /claims_yielded=[0-9]+/)) yld += substr(line, RSTART + 15, RLENGTH - 15)
+          if (match(line, /reach=[0-9.]+/)) { reach += substr(line, RSTART + 6, RLENGTH - 6); seats++ }
+          if (match(line, /quads=[0-9]+/)) quads += substr(line, RSTART + 6, RLENGTH - 6)
+          if (match(line, /stand_locks=[0-9]+/)) stand += substr(line, RSTART + 12, RLENGTH - 12)
           if (match(line, /replans=[a-z0-9:,]+/)) { s = substr(line, RSTART + 8, RLENGTH - 8); m = split(s, parts, ","); for (i = 1; i <= m; i++) { split(parts[i], kv, ":"); rep += kv[2] } }
         }
-        printf "%-10s %6d %8.1f %7.1f %8.2f %7.0f | %8.1f %8.1f %8.1f %8.1f %8.1f\n", arm, n, secs / n, pieces / n, pieces / (lines > 0 ? lines : 1), score / n, cas / n, waits / n, def / n, rep / n, yld / n
+        printf "%-10s %6d %8.1f %7.1f %8.2f %7.0f | %8.1f %8.1f %8.1f %8.1f %8.1f | %6.1f %6.1f %6.1f\n", arm, n, secs / n, pieces / n, pieces / (lines > 0 ? lines : 1), score / n, cas / n, waits / n, def / n, rep / n, yld / n, reach / (seats > 0 ? seats : 1), quads / n, stand / n
       }'
 done
 echo
-echo "(seconds: start to finish; pieces and score: the crew's per game; cas, waits, deferred, replans, yields: the crew's per game, off the stats: lines — golang-mk1 prints none)"
+echo "(seconds: start to finish; pieces and score: the crew's per game; cas, waits, deferred, replans, yields, quads, stand (locks away from the planned column): the crew's per game, off the stats: lines; reach: columns from spawn to landing, a seat's mean — golang-mk1 prints none)"
 echo "logs and records: $OUT"

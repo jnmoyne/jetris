@@ -32,8 +32,6 @@ from .workers import PlanPool
 
 BLACKBOARD_MARKER_TTL = 30.0  # LimitMarkerTTL: enables the per-key TTL, and is how long an expired key's marker lingers
 
-WATCH_RETRY_MAX = 30.0  # ceiling for the doubling pause between failed re-watches
-WATCH_SETTLED = 30.0    # a watch up this long before ending: the next retry starts afresh
 
 # Caps a game's name, in characters. A name is the game's ID, so it lands in
 # the game's stream name, in every subject it writes and in its lobby KV key.
@@ -272,6 +270,7 @@ class Agent:
         self.coordinate = True     # shared boards: coordinate with teammate agents through the blackboard; off, the agent plays every board on its own
         self.trace = False         # --trace: log every piece's lifecycle with microsecond stamps
         self.soft_drop = False     # --soft-drop: never hard-drop
+        self.well = "auto"         # --well: keep the board's last column open for four-row clears on a coordinated board: "auto" (not in survival games), "on", "off" (Game.well_wanted)
 
         self.nc = None
         self.js = None
@@ -413,17 +412,13 @@ class Agent:
         LimitMarkerTTL enables the per-message-TTL presence writes AND makes
         expiries emit watchable delete markers, so every lobby learns a
         vanished player is gone without polling. It also converges a plain
-        bucket some earlier client may have left behind. Idempotent, so it
-        serves both connect and the lobby watcher's recovery of a bucket
-        that was deleted underneath a running agent."""
+        bucket some earlier client may have left behind."""
         return await jsx.ensure_kv(self.js, self.bucket, api.StorageType.FILE, PRESENCE_TTL)
 
     async def ensure_blackboard(self):
         """Create or update the blackboard bucket: memory storage (nothing on
         it outlives a piece), LimitMarkerTTL so every claim can carry its
-        TTL. Idempotent, so it serves both connect and the watch's recovery
-        of a bucket deleted underneath a running agent. A server too old for
-        per-key TTLs raises: no blackboard."""
+        TTL. A server too old for per-key TTLs raises: no blackboard."""
         return await jsx.ensure_kv(self.js, self.bb_bucket, api.StorageType.MEMORY, BLACKBOARD_MARKER_TTL)
 
     def blackboard(self):
@@ -479,54 +474,13 @@ class Agent:
             if not await self.sleep(PRESENCE_EVERY):
                 return
 
-    async def lobby_watch(self):
-        """Mirror the lobby KV into memory: game listings and our
-        invitations.
+    async def lobby_watch(self, w):
+        """Mirror the lobby KV into memory (game listings and our
+        invitations) from the watch run opened, for the life of the agent.
 
         A server outage never reaches here: the watcher's subscription
         survives the reconnect and its ordered consumer resumes where it
-        stopped. What ends a watch is its stop at shutdown, or the bucket
-        itself being deleted, as a shared server can do to a running agent.
-        A finished watch is either the end, or something to re-establish
-        after a pause, recreating a vanished bucket first, as at connect.
-        Never spin on it: the pause doubles while re-watching keeps failing,
-        and a failure that repeats is logged once."""
-        delay, last = 1.0, ""
-        while True:
-            started = time.monotonic()
-            msg = "lobby watch ended; re-watching"
-            try:
-                await self.watch_lobby(last != "")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                msg = f"lobby watch: {e or type(e).__name__}"
-            if self.done():
-                return
-            if time.monotonic() - started > WATCH_SETTLED:
-                delay, last = 1.0, ""  # it had been up: start afresh
-            if msg != last:
-                last = msg
-                log.info("%s (repeats not logged)", msg)
-            if not await self.sleep(delay):
-                return
-            delay = min(2 * delay, WATCH_RETRY_MAX)
-
-    async def watch_lobby(self, report):
-        """Run one lobby watcher until it ends: returns once a watch that was
-        established has closed underneath it, raises the error that kept one
-        from being established. The watch opens with the bucket's current
-        state and then a None marker; the mirror is rebuilt aside and swapped
-        in whole at the marker, so a re-watch neither shows an empty lobby
-        meanwhile nor keeps the entries that vanished with the old bucket or
-        during the gap. With report set, the re-established watch is
-        logged."""
-        try:
-            w = await jsx.KvWatch.start(self.js, self.kv, self.bucket, ">")
-        except Exception:
-            if not await self.recreate_lobby_bucket():
-                raise
-            w = await jsx.KvWatch.start(self.js, self.kv, self.bucket, ">")
+        stopped."""
 
         async def stop_with_agent():
             await self.stop_ev.wait()
@@ -534,62 +488,33 @@ class Agent:
 
         stopper = asyncio.create_task(stop_with_agent())
         invite_prefix = "invites." + self.name + "."
-        listings, invites = {}, {}
         try:
             async for e in w.updates():
                 if e is None:  # end-of-initial-data marker
-                    self.listings, self.invites = listings, invites
-                    if report:
-                        log.info("lobby watch re-established: %d games, %d invitations", len(listings), len(invites))
                     continue
                 key, value, _rev, op = e
                 deleted = op in (jsx.KV_DEL, jsx.KV_PURGE)
-                # Private maps until the marker, the shared mirror after it.
                 if key.startswith("games.") and len(key) > 6:
                     gid = key[6:]
                     if deleted:
-                        listings.pop(gid, None)
+                        self.listings.pop(gid, None)
                     else:
-                        listings[gid] = to_obj(value)
+                        self.listings[gid] = to_obj(value)
                         # The game being played: its roster follows the
                         # listing (an open game's seats come and go), for
                         # the deal and the verdict.
                         g = self.game
                         if g is not None and g.id == gid:
-                            g.on_roster(players_of(listings[gid]))
+                            g.on_roster(players_of(self.listings[gid]))
                 elif key.startswith(invite_prefix) and len(key) > len(invite_prefix):
                     gid = key[len(invite_prefix):]
                     if deleted:
-                        invites.pop(gid, None)
+                        self.invites.pop(gid, None)
                     else:
-                        invites[gid] = to_obj(value)
+                        self.invites[gid] = to_obj(value)
         finally:
             stopper.cancel()
             await w.stop()
-
-    async def recreate_lobby_bucket(self):
-        """Tell whether the lobby bucket is what a failed watch is missing
-        and, if so, recreate it as at connect and report True. Our presence
-        entry went with the old bucket, so it is republished at once rather
-        than on the next tick. The KeyValue handle is left alone: it holds
-        nothing but names, so it works against the new bucket (same
-        configuration) exactly as against the old, and the other tasks using
-        it need no coordination."""
-        try:
-            await self.js.key_value(self.bucket)
-            return False
-        except nats.js.errors.BucketNotFoundError:
-            pass
-        except Exception:
-            return False
-        try:
-            await self.ensure_lobby_bucket()
-        except Exception as e:
-            raise RuntimeError(f"lobby bucket {self.bucket} is gone and recreating it failed: "
-                               f"{e or type(e).__name__}") from e
-        log.info("lobby bucket %s was deleted underneath us; recreated it", self.bucket)
-        await self._presence()
-        return True
 
     def fresh_invites(self):
         """Pending (not declined, not stale) invitations, oldest first: one
@@ -1125,6 +1050,7 @@ class Agent:
         connection could not be made, or closed for good."""
         try:
             await self.connect()
+            lobby = await jsx.KvWatch.start(self.kv, ">")
         except BaseException:
             if self.nc is not None and not self.nc.is_closed:
                 self.stop()
@@ -1136,7 +1062,7 @@ class Agent:
         log.info("%s connected to %s", self.name, _url_str(self.nc.connected_url))
         await self._presence()
         self._spawn(self.presence_loop())
-        self._spawn(self.lobby_watch())
+        self._spawn(self.lobby_watch(lobby))
         try:
             while not self.stopping():
                 game_id, invited = await self.select_game()

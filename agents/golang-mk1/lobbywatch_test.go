@@ -11,15 +11,12 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// TestLobbyWatchSurvivesBucketDeletion runs the lobby watcher against a live
-// JetStream server (JETRIS_NATS_URL; skipped otherwise) and deletes the lobby
-// bucket underneath it, as a shared server's purge does to a resident agent.
-// The watcher must notice — its ordered consumer's heartbeats stop and nats.go
-// closes the subscription, which takes ~10 s — recreate the bucket, drop the
-// listing that vanished with the old one, and mirror new writes again, all
-// through the KeyValue handle it already had. A private bucket name keeps the
-// test off the server's real lobby.
-func TestLobbyWatchSurvivesBucketDeletion(t *testing.T) {
+// TestLobbyWatchMirrorsTheBucket runs the lobby watcher against a live
+// JetStream server (JETRIS_NATS_URL; skipped otherwise): listings written to
+// the bucket reach the mirror, deleted ones leave it, and the watcher ends
+// with its context. A private bucket name keeps the test off the server's
+// real lobby.
+func TestLobbyWatchMirrorsTheBucket(t *testing.T) {
 	url := os.Getenv("JETRIS_NATS_URL")
 	if url == "" {
 		t.Skip("set JETRIS_NATS_URL to a JetStream-enabled nats-server to run")
@@ -33,7 +30,7 @@ func TestLobbyWatchSurvivesBucketDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	a := &Agent{nc: nc, js: js, name: "me", bucket: "JETRIS_LOBBY_TEST_" + randID(6),
@@ -44,10 +41,14 @@ func TestLobbyWatchSurvivesBucketDeletion(t *testing.T) {
 	defer func() { _ = js.DeleteKeyValue(context.Background(), a.bucket) }()
 	wctx, wcancel := context.WithCancel(ctx)
 	defer wcancel()
+	w, err := a.kv.WatchAll(wctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		a.lobbyWatch(wctx)
+		a.lobbyWatch(wctx, w)
 	}()
 
 	put := func(gid string) {
@@ -65,7 +66,7 @@ func TestLobbyWatchSurvivesBucketDeletion(t *testing.T) {
 	}
 	waitFor := func(what string, cond func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(45 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for !cond() {
 			if time.Now().After(deadline) {
 				t.Fatalf("timed out waiting for %s", what)
@@ -77,26 +78,14 @@ func TestLobbyWatchSurvivesBucketDeletion(t *testing.T) {
 	put("g1")
 	waitFor("g1 to be mirrored", func() bool { return listed("g1") })
 
-	// Pull the bucket out from under the running watch.
-	if err := js.DeleteKeyValue(ctx, a.bucket); err != nil {
-		t.Fatal(err)
-	}
-	waitFor("the bucket to be recreated", func() bool {
-		_, err := js.KeyValue(ctx, a.bucket)
-		return err == nil
-	})
-	waitFor("the stale g1 listing to be dropped", func() bool { return !listed("g1") })
-	// Our presence entry is republished into the new bucket without waiting
-	// for the next presence tick.
-	waitFor("presence to be republished", func() bool {
-		_, err := a.kv.Get(ctx, "players.me")
-		return err == nil
-	})
-	// And the watch is live again, through the same handle.
 	put("g2")
 	waitFor("g2 to be mirrored", func() bool { return listed("g2") })
-	if listed("g1") {
-		t.Fatal("g1 came back: the mirror kept state from the deleted bucket")
+	if err := a.kv.Delete(ctx, "games.g1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("the deleted g1 listing to be dropped", func() bool { return !listed("g1") })
+	if !listed("g2") {
+		t.Fatal("g2 left the mirror with g1")
 	}
 
 	wcancel()

@@ -23,6 +23,7 @@ class StubAgent:
         self.rng = random.Random(1)
         self.trace = False
         self.soft_drop = False
+        self.well = "auto"
         self.coordinate = True
         self.wait = 600.0
         self.stop_ev = asyncio.Event()

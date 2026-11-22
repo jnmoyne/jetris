@@ -93,7 +93,7 @@ func randomGrid(rnd *rand.Rand, h, w int) *grid {
 func TestFeaturesAgreeWithTheCellByCellOnes(t *testing.T) {
 	rnd := rand.New(rand.NewPCG(7, 11))
 	for i := 0; i < 2000; i++ {
-		w := 10 + rnd.IntN(21) // 10..30 columns: every board the game makes
+		w := 10 + rnd.IntN(maxGridWidth-9) // 10..63 columns: every board the grid holds
 		h := 24 + rnd.IntN(11)
 		g := randomGrid(rnd, h, w)
 		if a, b := g.rowTransitions(), rowTransitionsSlow(g); a != b {
@@ -117,6 +117,35 @@ func TestFeaturesAgreeWithTheCellByCellOnes(t *testing.T) {
 			for col := 0; col < c.w; col++ {
 				if c.filled(r, col) != (c.at(r, col) != 0) {
 					t.Fatalf("mask and cells disagree at (%d,%d)", r, col)
+				}
+			}
+		}
+	}
+}
+
+// A crew of eight's board (38 columns at four extra a seat) is planned on
+// like any other, and so is the widest the grid holds: the row masks are
+// 64 bits wide (they were 32, and such a board was a panic at the first
+// plan).
+func TestPlanningOnAWideBoard(t *testing.T) {
+	for _, w := range []int{38, maxGridWidth} {
+		g := newGrid(20+headroom, w)
+		for c := 0; c < w-1; c++ { // a row full but for the last column, and a step on it
+			g.set(g.h-1, c, 1)
+			if c%5 == 0 {
+				g.set(g.h-2, c, 1)
+			}
+		}
+		for pt := range pieces {
+			for _, proj := range []*projection{nil, {well: w - 1, wellOn: true}} {
+				ranked := planPlacements(g, pt, spawnRow, w/2, 3, []int{0, 1}, proj)
+				if len(ranked) == 0 {
+					t.Fatalf("no placement for piece %d on a board of %d columns", pt, w)
+				}
+				for _, d := range ranked[0].dest {
+					if d.c < 0 || d.c >= w {
+						t.Fatalf("piece %d on a board of %d columns lands at column %d", pt, w, d.c)
+					}
 				}
 			}
 		}

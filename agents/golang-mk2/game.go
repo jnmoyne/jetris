@@ -122,19 +122,26 @@ type Game struct {
 	// The blackboard (blackboard.go, coord.go): our place on it, the claims
 	// of our board's seats as the watch last delivered them, the highest
 	// revision delivered and the channel closed on every delivery (awaitRev
-	// waits on it), the watch's epoch (bumped when the bucket was recreated
-	// underneath us), and our own claim in force. Guarded by mu.
+	// waits on it), and our own claim in force. Guarded by mu.
 	coord         *coordinator
 	claims        map[int]claim
 	bbRev         uint64
 	bbNotify      chan struct{}
-	bbEpoch       int
+	planHoles     int  // the covered cells the plan in play expected its landing to add, on the board it was made on (spoils, and the stats)
+	blockedReplan bool // the next plan is for a piece blocked where it stands: only placements it can walk to right now (replanBlocked)
+	blockedPlans  int  // such re-plans the piece in play has had (execute bounds them)
+	holeReplans   int  // re-plans of the piece in play because its landing would have covered more than planned (spoils)
 	myClaim       *claim
 	myRev         uint64
+	myPrio        uint64         // our claim's place in the right of way (claim.prio): the revision this placement was first claimed at
+	hurry         chan struct{}  // closed when a teammate's claim says it waits on our piece while we think (pause)
+	postTail      chan struct{}  // closed when the last claim written without waiting (postAsync) is out: the writes keep their order
+	myNext        []nextClaim    // the tentative placements our last claim said for the pieces in our NEXT well (claim.Next)
+	myIntent      *nextClaim     // the one of them for the piece now in play, or about to be: kept, mostly (projection.intent)
 	bbLogOnce     sync.Once      // the once-only log of a blackboard failure
 	deps          []depWait      // the claims the piece in play must let land first (coord.go)
 	depSince      time.Time      // since when the drop has been held for them (stats)
-	ignoredClaims map[int]uint64 // seat → the revision of a claim waited on past its time: planned without until the seat claims anew
+	ignoredClaims map[int]uint64 // seat → the place (claim.prio) of a claim waited on past its time: planned without until the seat claims anew
 
 	metaSeed    uint64
 	playerCount int
@@ -858,7 +865,8 @@ func (g *Game) spawn(ctx context.Context) (spawnT time.Time, placed, topped bool
 	g.trace("spawned %s at col %d", string("IOTSZJL"[pt]), g.spawnC)
 	g.nextGravity, g.gravityDebt = spawnT.Add(g.gravityNow()), 0
 	g.softDropped, g.restingSince, g.replan, g.planShift = 0, time.Time{}, replanNone, 0
-	g.myClaim, g.myRev, g.deps, g.depSince, g.ignoredClaims = nil, 0, nil, time.Time{}, nil
+	g.holeReplans, g.planHoles, g.blockedReplan, g.blockedPlans = 0, 0, false, 0
+	g.myClaim, g.myRev, g.myPrio, g.deps, g.depSince, g.ignoredClaims = nil, 0, 0, nil, time.Time{}, nil
 	return spawnT, true, false
 }
 
@@ -938,15 +946,34 @@ func (g *Game) lockPiece(ctx context.Context, dest active) bool {
 		// A short, seat-staggered pause before the retry, as the GUI's.
 		time.Sleep(min(time.Duration(attempt+1+g.idx)*200*time.Microsecond, 2*time.Millisecond))
 	}
+	holesBefore := g.toGridProjected().holes()
 	for _, c := range destCells {
 		g.locked[c] = lp
 	}
-	g.trace("locked at rot %d col %d row %d after %d attempt(s)", dest.orient, dest.col, dest.row, g.st.lockRetries)
+	made := g.toGridProjected().holes() - holesBefore
+	g.st.holesMade += max(made, 0)
+	g.st.holesPlanned += max(g.planHoles, 0)
+	g.trace("locked at rot %d col %d row %d after %d attempt(s): holes %+d (the plan expected %+d)", dest.orient, dest.col, dest.row, g.st.lockRetries, made, g.planHoles)
+	g.planHoles = 0
+	g.st.reachCols += max(dest.col-g.spawnC, g.spawnC-dest.col)
 	g.piece = nil
 	if g.coord != nil {
 		// Tell the board: the claim is fulfilled, at these cells (the
 		// teammates project them until the lock's echo reaches them).
-		g.postLockedAsync(g.claimFor(dest, placement{orient: dest.orient, col: dest.col, dest: destCells}, phaseLocked, 0))
+		lc := g.claimFor(dest, placement{orient: dest.orient, col: dest.col, dest: destCells}, phaseLocked, 0)
+		lc.Next = g.myNext // still where the next ones are meant to go, the first of them the piece about to spawn
+		g.postLockedAsync(lc)
+		if g.myIntent != nil && g.myIntent.Piece == g.pieceIdx {
+			g.st.intentsMade++
+			if g.myIntent.Rot == dest.orient && g.myIntent.Col == dest.col {
+				g.st.intentsKept++
+			}
+		}
+		g.myIntent = nil
+		if len(g.myNext) > 0 && g.myNext[0].Piece == g.pieceIdx+1 {
+			n := g.myNext[0]
+			g.myIntent = &n
+		}
 		g.myClaim, g.deps = nil, nil
 		g.endDepWait(time.Now())
 	}
@@ -1041,6 +1068,7 @@ func (g *Game) clearRows(ctx context.Context, rows []int, fell int) {
 						}
 					}
 				}
+				diff = mergeCells(diff) // a piece shifted into a cell the stack held: one write a cell
 				txn := txnReg{Applied: g.txnApplied, Op: "clear", By: g.idx}
 				if err := g.publishGatedBatch(ctx, txn, diff); err != nil {
 					if errors.Is(err, errCAS) {
@@ -1410,6 +1438,7 @@ func (g *Game) applyOwedGarbage(ctx context.Context) {
 				}
 			}
 		}
+		diff = mergeCells(diff) // a piece lifted into a cell another left, or the stack did: one write a cell
 		txn := txnReg{Applied: g.garbageOwed, Op: "shrink", By: g.idx}
 		txn.Topped = toppedOwners
 		if boardFull {
@@ -1684,6 +1713,12 @@ func (g *Game) run(ctx context.Context) bool {
 	default:
 		g.pieceIdx = meta.int("piece_idx")
 	}
+	if g.w > maxGridWidth {
+		// joinGame turns such a game down off its listing; this is the
+		// meta's word on it, for a listing that said otherwise.
+		log.Printf("a board of %d columns is wider than golang-mk2 plays (%d) — not playing", g.w, maxGridWidth)
+		return false
+	}
 	// The blackboard (guide §1.4): a team to coordinate with — the crew of
 	// a board scored together, or our team — and a bucket to do it on.
 	if g.a.coordinate && g.a.blackboard() != nil {
@@ -1864,7 +1899,7 @@ func (g *Game) playPieces(ctx context.Context) bool {
 		if !ok {
 			return g.topOut(ctx)
 		}
-		if !g.wait(ctx, delay) {
+		if !g.pause(ctx, delay) {
 			break
 		}
 		plan = g.confirmPlan(ctx, *piece, plan, pending)
@@ -1903,6 +1938,14 @@ func (g *Game) plan(ctx context.Context, p active, pause time.Duration) (placeme
 	var proj *projection
 	if g.coord != nil {
 		gr, proj = g.buildProjection()
+		if g.blockedReplan {
+			// Blocked where it stood: only what the piece can walk to
+			// this instant is an answer (replanBlocked).
+			proj.route, proj.routeNow = g.routeCostsNow(p), true
+			g.blockedReplan = false
+		} else {
+			proj.route = g.routeCosts(p, time.Now(), pause)
+		}
 	} else {
 		gr = g.toGrid()
 	}
@@ -1922,19 +1965,58 @@ func (g *Game) plan(ctx context.Context, p active, pause time.Duration) (placeme
 		pl, ok = choose(ranked, g.a.tn, g.a.rng)
 		proj = nil
 	}
+	if ok {
+		g.notePlanHoles(gr, pl)
+	}
 	if !ok || g.coord == nil || proj == nil {
 		g.trace("planned rot %d col %d row %d (score %.1f, %d candidates)", pl.orient, pl.col, pl.dropRow, pl.score, len(ranked))
 		return pl, nil, ok
 	}
-	g.trace("planned rot %d col %d row %d (score %.1f, %d candidates, wait on %v)", pl.orient, pl.col, pl.dropRow, pl.score, len(ranked), pl.waitOn)
+	g.trace("planned rot %d col %d row %d (score %.1f, %d candidates, wait on %v, well %d on %v high %v ready %d, lines %d)", pl.orient, pl.col, pl.dropRow, pl.score, len(ranked), pl.waitOn, proj.well, proj.wellOn, proj.wellHigh, wellReady(gr, proj.well), pl.lines)
 	eta := pause + g.a.tn.moveDelay + 50*time.Millisecond
 	c := g.claimFor(p, pl, phasePlanned, eta)
+	// Where the pieces in our NEXT well go from here, as the lookahead has
+	// it (guide §1.4: our own preview, and no further than the game shows).
+	// The search that ranked the placement found the line already, when the
+	// placement was in its beam.
+	if len(upcoming) > 0 {
+		line := pl.pv
+		if line == nil {
+			after, _, _ := simulateLock(gr, pl.dest)
+			line = principalVariation(after, spawnC, upcoming, proj.wellSpec())
+		}
+		for i, x := range line {
+			if i >= maxNextClaims {
+				break
+			}
+			c.Next = append(c.Next, nextClaim{Piece: pieceIdx + 1 + i, Type: upcoming[i], Rot: x.orient, Col: x.col})
+		}
+	}
+	g.mu.Lock()
+	g.myNext = c.Next
+	g.mu.Unlock()
 	rev, err := g.postClaim(ctx, c)
 	if err != nil {
 		g.bbLogOnce.Do(func() { log.Printf("blackboard: %v (repeats not logged)", err) })
 		return pl, nil, true // uncoordinated for this piece
 	}
-	return pl, &pendingClaim{c: c, rev: rev, ranked: ranked, proj: proj, eta: eta}, true
+	return pl, &pendingClaim{c: c, rev: rev, ranked: ranked, proj: proj, gr: gr, eta: eta}, true
+}
+
+// notePlanHoles records what the plan expects its landing to cover on the
+// board it was made on — the stats' measure of the holes a plan chose,
+// against the ones its lock then made (lockPiece).
+func (g *Game) notePlanHoles(gr *grid, pl placement) {
+	sim := gr.clone()
+	for _, c := range pl.dest {
+		if c.r >= 0 && c.r < sim.h && c.c >= 0 && c.c < sim.w {
+			sim.set(c.r, c.c, 1)
+		}
+	}
+	n := sim.holes() - gr.holes()
+	g.mu.Lock()
+	g.planHoles = n
+	g.mu.Unlock()
 }
 
 // pendingClaim is a claim posted and not yet confirmed: the placement's
@@ -1944,6 +2026,7 @@ type pendingClaim struct {
 	rev    uint64
 	ranked []placement
 	proj   *projection
+	gr     *grid
 	eta    time.Duration
 }
 
@@ -1970,9 +2053,13 @@ func (g *Game) confirmPlan(ctx context.Context, p active, pl placement, pc *pend
 	}
 	for attempt := 0; ; attempt++ {
 		g.mu.Lock()
-		kind, more, taken := g.classify(p, pl, rev)
+		prio := rev
+		if mine, ok := g.claims[g.idx]; ok && mine.rev == rev {
+			prio = mine.order() // the same placement claimed again keeps its place
+		}
+		kind, more, taken := g.classify(p, pl, prio)
 		if kind != conflictOverlap || attempt >= 2 {
-			g.myClaim, g.myRev = &c, rev
+			g.myClaim, g.myRev, g.myPrio = &c, rev, prio
 			g.deps = g.mergeDeps(pl, pc.proj, more)
 			g.trace("claimed at rev %d: %v, %d dep(s)", rev, kind, len(g.deps))
 			g.mu.Unlock()
@@ -1987,7 +2074,11 @@ func (g *Game) confirmPlan(ctx context.Context, p active, pl placement, pc *pend
 			return pl // nothing clear of them: the wire decides
 		}
 		pl = next
+		g.notePlanHoles(pc.gr, pl)
 		c = g.claimFor(p, pl, phasePlanned, g.a.tn.moveDelay+50*time.Millisecond)
+		g.mu.Lock()
+		g.myNext = nil // said for another landing of this piece: not for this one
+		g.mu.Unlock()
 		var err error
 		if rev, err = g.postClaim(ctx, c); err != nil {
 			return pl
@@ -2072,11 +2163,34 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			g.st.walkWaits++
 		}
 	}
+	// blocked accounts a turn spent behind the seats' falling pieces: the
+	// wait is announced on the blackboard when it starts (announceWait),
+	// and past our patience with them (blockPatience) the piece is planned
+	// again among what it can reach — true, and the caller returns.
+	var blockedSince time.Time
+	blocked := func(now time.Time, seats []int) bool {
+		noteWait(now)
+		if len(seats) == 0 {
+			return false
+		}
+		if blockedSince.IsZero() {
+			blockedSince = now
+			g.announceWait(seats)
+		}
+		if g.blockedPlans < maxBlockedPlans && now.Sub(blockedSince) > g.blockPatience(seats, now) {
+			g.blockedPlans++
+			g.blockedReplan = true
+			g.requestReplan(replanBlocked)
+			return true
+		}
+		return false
+	}
 	endWait := func(now time.Time) {
 		if !waitingSince.IsZero() {
 			g.st.walkWaitMs += now.Sub(waitingSince).Milliseconds()
 			waitingSince = time.Time{}
 		}
+		blockedSince = time.Time{}
 	}
 	// leave ends the turn with mu held: the wait's account closed, mu released.
 	leave := func(now time.Time) {
@@ -2094,12 +2208,21 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			// A crewmate's clear collapsed rows under the piece and it was
 			// re-adopted lower (adoptOwnPiece): the plan keeps its column
 			// and orientation, and its landing is derived again on the
-			// board as it stands (relandPlan) — no re-plan needed; the
-			// checks below say if that was wrong.
-			was := plan.dropRow
+			// board as it stands (relandPlan). A clear alone moves the
+			// landing down by the rows it moved the piece — the cleared
+			// rows were full, so they lay under both. Any other landing
+			// means the stack in those columns changed as well (the lock
+			// that made the clear left cells there, or another one landed):
+			// the plan was made for a board that is gone, and is made again.
+			was, shift := plan.dropRow, g.planShift
 			plan = g.relandPlan(*g.piece, plan)
-			g.trace("collapse: the piece moved %d row(s), the landing %d → %d", g.planShift, was, plan.dropRow)
 			g.planShift = 0
+			g.trace("collapse: the piece moved %d row(s), the landing %d → %d", shift, was, plan.dropRow)
+			if plan.dropRow != was+shift {
+				g.requestReplan(replanCollapse)
+				leave(now)
+				return
+			}
 		}
 		if g.pipeBroken {
 			// A pipelined batch was lost: drain, repair, re-plan.
@@ -2180,7 +2303,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			case transient:
 				// Blocked only by another falling piece: wait, don't lock —
 				// the lock delay never starts on one (gameplays §3).
-				noteWait(now)
+				if blocked(now, g.ownersUnder(p)) {
+					leave(now)
+					return
+				}
 			default:
 				// Resting on the stack or the floor. Where it meant to be,
 				// the piece locks now; elsewhere, on a shared board, it
@@ -2190,7 +2316,24 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					g.restingSince = now
 				}
 				if atTarget || !g.shared() || now.Sub(g.restingSince) >= lockDelay {
+					if !atTarget && g.blockedPlans < maxBlockedPlans {
+						// On the stack, away from its column, and the
+						// grace is spent: the plan is out of reach. Rather
+						// than lock where it stands (golang-mk1 did, and
+						// so did this agent), it is planned again among
+						// what it can reach from here.
+						g.blockedPlans++
+						g.blockedReplan = true
+						g.requestReplan(replanBlocked)
+						leave(now)
+						return
+					}
 					if g.settleForLock(ctx, p) {
+						leave(now)
+						return
+					}
+					if atTarget && g.spoils(p) {
+						g.requestReplan(replanHoles)
 						leave(now)
 						return
 					}
@@ -2200,12 +2343,15 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 						return
 					}
 					locked = true
+					if !atTarget {
+						g.st.standLocks++
+					}
 				}
 			}
 		}
 		if !locked && g.piece != nil && *g.piece == p {
 			if !atTarget {
-				res := g.findPath(p, plan, g.teammateBoxes())
+				res := g.findPathKeep(p, plan, g.teammateBoxes(), g.keepOut())
 				g.trace("path to rot %d col %d: reached %v, %d move(s) to rot %d col %d row %d, transient %v, deps pending %v", plan.orient, plan.col, res.reached, len(res.moves), res.end.orient, res.end.col, res.end.row, res.blockedByTransient, g.depsPending())
 				switch {
 				case res.reached:
@@ -2222,6 +2368,11 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 						// The walk, the hard drop and the lock as ONE batch:
 						// the piece is on the board one round trip less.
 						if g.settleForLock(ctx, p) {
+							leave(now)
+							return
+						}
+						if g.spoils(active{p.pt, plan.orient, dr, plan.col}) {
+							g.requestReplan(replanHoles)
 							leave(now)
 							return
 						}
@@ -2261,18 +2412,28 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 							g.softDropped += res.downs
 							g.restingSince = time.Time{}
 						}
-						noteWait(now)
+						if blocked(now, g.ownersUnder(res.end)) {
+							leave(now)
+							return
+						}
 					}
 				case res.end != p:
 					// A partial walk, to the waiting spot the search picked.
 					g.publishPieceMove(ctx, res.end)
 					g.softDropped += res.downs
 					g.restingSince = time.Time{}
-					if res.blockedByTransient {
-						noteWait(now)
+					if res.blockedByTransient && blocked(now, res.blockers) {
+						leave(now)
+						return
 					}
 				case res.blockedByTransient:
-					noteWait(now) // a crossing piece is in the way, and we are as close as we get: wait it out
+					// A crossing piece is in the way, and we are as close
+					// as we get: wait it out — for as long as the right
+					// of way says (blocked).
+					if blocked(now, res.blockers) {
+						leave(now)
+						return
+					}
 				default:
 					// Walled off by the stack with nowhere better to stand:
 					// the plan is not the thing to do any more. (golang-mk1
@@ -2298,7 +2459,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					// gravity resumes once it falls.
 					switch {
 					case dr == p.row:
-						noteWait(now)
+						if blocked(now, g.ownersUnder(p)) {
+							leave(now)
+							return
+						}
 					case g.a.softDrop:
 						if g.publishPieceMove(ctx, active{p.pt, p.orient, p.row + 1, p.col}) {
 							g.softDropped++
@@ -2307,7 +2471,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					default:
 						g.publishPieceMove(ctx, active{p.pt, p.orient, dr, p.col})
 						g.restingSince = time.Time{}
-						noteWait(now)
+						if blocked(now, g.ownersUnder(active{p.pt, p.orient, dr, p.col})) {
+							leave(now)
+							return
+						}
 					}
 				case dr < plan.dropRow:
 					// The board stops the piece short of its landing —
@@ -2349,6 +2516,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					}
 					g.restingSince = time.Time{}
 					endWait(now)
+				case g.spoils(active{p.pt, p.orient, dr, p.col}):
+					g.requestReplan(replanHoles)
+					leave(now)
+					return
 				default:
 					if !g.lockPiece(ctx, active{p.pt, p.orient, dr, p.col}) {
 						g.requestReplan(replanLockDropped)
@@ -2368,6 +2539,36 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return
 		}
 	}
+}
+
+// maxHoleReplans bounds the re-plans a piece gets because its landing
+// would cover more than its plan expected (spoils): past it, the landing is
+// taken as it is.
+const maxHoleReplans = 3
+
+// spoils reports whether locking the piece at dest, on the board as it
+// stands, would cover more empty cells than the plan expected to — the
+// plan was made on a projection (a teammate's claim that then went
+// elsewhere, a clear, a lock in between), and the board it lands on is not
+// that one. The landing is then planned again, on the board that is there,
+// rather than locked into a hole nobody chose; maxHoleReplans times a
+// piece at most, each one counted. Shared boards only. Call with g.mu held.
+func (g *Game) spoils(dest active) bool {
+	if !g.shared() || g.holeReplans >= maxHoleReplans {
+		return false
+	}
+	gr := g.toGridProjected()
+	before := gr.holes()
+	for _, c := range pieceCells(dest.pt, dest.orient, dest.row, dest.col) {
+		if c.r >= 0 && c.r < gr.h && c.c >= 0 && c.c < gr.w {
+			gr.set(c.r, c.c, 1)
+		}
+	}
+	if gr.holes()-before <= max(g.planHoles, 0) {
+		return false
+	}
+	g.holeReplans++
+	return true
 }
 
 // dropClearAt is the hard-drop row of a piece standing at a, and whether it

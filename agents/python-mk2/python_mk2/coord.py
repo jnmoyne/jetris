@@ -7,12 +7,12 @@ blackboard.py; the planner's projection is planner.py's.
 
 from dataclasses import dataclass, field
 
-from .blackboard import PHASE_LOCKED, PHASE_PLANNED
-from .consts import MODE_TEAMS
+from .blackboard import DROP_SOFT, PHASE_LOCKED, PHASE_PLANNED
+from .consts import HEADROOM, MODE_TEAMS
 from .engine import GRID_CLAIMED, Grid
-from .path import Active, SpawnBox, find_path
+from .path import Active, SpawnBox, find_path, flood
 from .pieces import SPAWN_ROW, piece_cells
-from .planner import Projection
+from .planner import DEP_PENALTY, ROUTE_MOVE, SILENT_LEAVE, Projection
 
 # Why the piece in play is re-planned from where it stands (play_pieces
 # re-plans after a RETHINK_DELAY instead of the full think pause).
@@ -24,11 +24,12 @@ from .planner import Projection
  REPLAN_STALE,          # no progress for three seconds
  REPLAN_UNREACHABLE,    # no path to the plan, and nowhere better to wait (the stack moved)
  REPLAN_LOCK_DROPPED,   # the CAS lock was dropped after its merge-retry
- REPLAN_BB_RESET,       # the blackboard watch was re-established on a recreated bucket
- ) = range(9)
+ REPLAN_BLOCKED,        # a crewmate's piece has stood in the way past our patience: planned again among what the piece can walk to now
+ REPLAN_HOLES,          # the landing would cover more than the plan expected: the board is not the one it was planned on (spoils)
+ ) = range(10)
 
 _REPLAN_NAMES = ("none", "overlap", "droprow", "deptimeout", "collapse", "stale", "unreachable", "lockdropped",
-                 "bbreset")
+                 "blocked", "holes")
 
 
 def replan_name(r):
@@ -47,6 +48,19 @@ RETHINK_DELAY = 0.0
 # a shared board before it locks where it stands: a crewmate's piece across
 # its path falls away within it, and the walk resumes.
 LOCK_DELAY = 0.5
+
+# How long a piece waits on a piece nobody has claimed (a human's, a
+# golang-mk1's) before it plans again among what it can reach.
+BLOCK_PATIENCE_SILENT = 0.6
+# The re-plans a piece gets for being blocked, at most.
+MAX_BLOCKED_PLANS = 4
+# The re-plans a piece gets because its landing would cover more than its
+# plan expected (spoils): past it, the landing is taken as it is.
+MAX_HOLE_REPLANS = 3
+# How many of its NEXT pieces a claim says a placement for (Claim.next), and
+# how many of a teammate's a reader takes into account: past the second, a
+# tentative placement is a guess about a board nobody has seen.
+MAX_NEXT_CLAIMS = 2
 
 # What check_plan says of the plan on the live board.
 (PLAN_OK,
@@ -86,6 +100,55 @@ def columns_meet(p, cols):
     return any(c in cols for _, c in p.cells())
 
 
+@dataclass
+class ForecastPiece:
+    """A teammate's falling piece as it is expected to stand when ours moves:
+    the cells it holds until then (where it is, and the rows gravity takes it
+    through meanwhile) and when it is expected to be gone from them (landed,
+    by its claim; a guess, without one)."""
+
+    seat: int
+    cells: list
+    leave_at: float
+
+
+def well_open(gr, w):
+    """Whether nothing sits over an empty cell of the column."""
+    covered = False
+    for r in range(gr.h):
+        if gr.filled(r, w):
+            covered = True
+        elif covered:
+            return False
+    return True
+
+
+def well_high(gr, w):
+    """Whether the stack beside the column stands higher than half the
+    playing rows."""
+    bit = 1 << w
+    for r in range(gr.h):
+        if gr.rows[r] & ~bit:
+            return gr.h - r > (gr.h - HEADROOM) // 2
+    return False
+
+
+def well_ready(gr, well):
+    """How many rows stand full but for the well's column, from the well's
+    floor up: what an I piece dropped down it would clear."""
+    if well < 0 or well >= gr.w:
+        return 0
+    bit = 1 << well
+    n = 0
+    for r in range(gr.h - 1, -1, -1):
+        if gr.rows[r] & bit:
+            continue  # the well's floor, or below it
+        if gr.rows[r] | bit != gr.full:
+            break
+        n += 1
+    return n
+
+
 class CoordMixin:
     def request_replan(self, r):
         """Ask play_pieces to re-plan the piece from where it stands, the
@@ -114,11 +177,12 @@ class CoordMixin:
 
     def ordered_claims(self):
         """The teammates' claims on our board (every seat the listing still
-        holds but ours) by revision, the order everyone sees. Caller holds
-        mu."""
+        holds but ours) in the right of way: by the revision each placement
+        was first claimed at (Claim.prio), the order everyone sees. Caller
+        holds mu."""
         out = [c for seat, c in self.claims.items()
                if seat != self.idx and c.seat == seat and self.seat_present_locked(seat)]
-        out.sort(key=lambda c: c.rev)
+        out.sort(key=lambda c: (c.order(), c.rev))
         return out
 
     def to_grid_projected(self):
@@ -179,7 +243,7 @@ class CoordMixin:
                 op = self.others_piece.get(c.seat)
                 if op is not None and op.pt != c.type:
                     continue
-                if self.ignored_claims.get(c.seat) == c.rev:
+                if self.ignored_claims.get(c.seat) == c.order():
                     continue  # waited on past its time: whatever holds it up, we plan without it
                 cs = self.project_claim(gr, c)
                 if cs is None:
@@ -190,6 +254,10 @@ class CoordMixin:
                 proj.dep_eta[c.seat] = c.eta_ms
                 proj.pieces[c.seat] = c.piece
                 claimed.add(c.seat)
+        proj.well, proj.well_on, proj.well_high = self.well_for(gr)
+        if self.my_intent is not None and self.my_intent.piece == self.piece_idx:
+            proj.intent = (self.my_intent.rot, self.my_intent.col)
+        self.stamp_tentative(gr, proj)
         # Our own piece's cells stay ours: a claim whose landing passes
         # through where the piece stands right now (it has not landed, so
         # the grid has the cells empty) must not make its own position
@@ -208,9 +276,9 @@ class CoordMixin:
                 proj.soft[x] = pi
         return gr, proj
 
-    def classify(self, p, cand, my_rev):
+    def classify(self, p, cand, my_prio):
         """Check our placement (the piece p, planned at cand) against every
-        claim made before ours (rev < my_rev), in revision order, each
+        claim made before ours (prio < my_prio), in that order, each
         dropped onto the board the earlier ones made: an earlier landing that
         meets ours is an overlap, and we yield (taken is then every earlier
         landing's cells, for the next placement to keep clear of); one that
@@ -229,9 +297,9 @@ class CoordMixin:
         overlap = False
         mine_start = piece_cells(p.pt, cand.orient, p.row, cand.col)
         for c in self.ordered_claims():
-            if c.phase == PHASE_LOCKED or c.rev >= my_rev:
+            if c.phase == PHASE_LOCKED or c.order() >= my_prio:
                 continue
-            if self.ignored_claims.get(c.seat) == c.rev:
+            if self.ignored_claims.get(c.seat) == c.order():
                 continue
             their = self.project_claim(acc, c)
             if their is None:
@@ -358,7 +426,9 @@ class CoordMixin:
         if now - self.dep_since > self.dep_timeout():
             for d in self.deps:
                 if not self.dep_resolved(d):
-                    self.ignored_claims[d.seat] = d.rev
+                    c = self.claims.get(d.seat)
+                    if c is not None:
+                        self.ignored_claims[d.seat] = c.order()
             self.end_dep_wait(now)
             return True
         return False
@@ -419,17 +489,243 @@ class CoordMixin:
 
         for d in range(1, self.w):
             for col in (p.col - d, p.col + d):
-                res = find_path(self.can_move, self.can_place, p, col, p.orient, boxes)
+                res = find_path(self.can_place, self.others_act, p, col, p.orient, boxes)
                 if res.reached and res.end != p and clear(res.end):
                     return res.end, True
         return p, False
 
     # ---- the path (path.py) --------------------------------------------------
 
-    def find_path(self, p, pl, boxes):
+    def find_path(self, p, pl, boxes, keep=None):
         """The path from p to the plan's column and orientation on the live
-        board. Caller holds mu."""
-        return find_path(self.can_move, self.can_place, p, pl.col, pl.orient, boxes)
+        board, a wait chosen outside the cells to keep out of (keep: the drop
+        shafts of the claims with right of way over ours, keep_out). Caller
+        holds mu."""
+        return find_path(self.can_place, self.others_act, p, pl.col, pl.orient, boxes, keep)
+
+    # ---- routes: where the teammates' pieces will be, and what a walk costs ----
+
+    def forecast(self, now, exec_at):
+        """The teammates' pieces expected to be in the air at exec_at: the
+        "where is everyone going" the claims are there to answer. A piece
+        whose claim says it is planned, hard-dropped, not waiting on anyone,
+        and due to land by exec_at is GONE: it will have left, and its
+        landing is the projection's business. Every other piece (one that
+        soft-drops, one that waits, one of a seat that says nothing) is where
+        it is, plus the rows gravity carries it down until exec_at, and is
+        expected to leave when its claim says, or after SILENT_LEAVE. Sorted
+        by when they leave. Caller holds mu."""
+        if not self.shared():
+            return []
+        fall = 0
+        step = self.gravity_now()
+        if step > 0 and exec_at > now:
+            fall = int((exec_at - now) / step)
+        tn = self.a.tn
+        out = []
+        for pi in sorted(self.others_piece):
+            op = self.others_piece[pi]
+            leave = now + SILENT_LEAVE
+            c = self.claims.get(pi)
+            if c is not None and c.seat == pi:
+                if c.phase == PHASE_PLANNED and c.type == op.pt and c.drop != DROP_SOFT and not c.wait_on:
+                    leave = c.seen_at + c.eta_ms / 1000
+                    if leave <= exec_at:
+                        continue  # it will have landed by then
+                elif c.phase == PHASE_LOCKED or c.type != op.pt:
+                    # A seat that speaks, holding a piece it has not claimed
+                    # yet: it will plan it, think and go as we do.
+                    leave = now + tn.piece_delay + tn.move_delay + 0.05
+            cells = []
+            for d in range(fall + 1):
+                cs = piece_cells(op.pt, op.orient, op.row + d, op.col)
+                if d > 0 and not self.can_place(cs):
+                    break
+                cells.extend(cs)
+            out.append(ForecastPiece(seat=pi, cells=cells, leave_at=leave))
+        out.sort(key=lambda fp: fp.leave_at)
+        return out
+
+    def route_costs(self, p, now, pause):
+        """What the walk to every (orientation, column) costs the piece p,
+        planned now and moved after the pause: one flood over the board with
+        the forecast pieces on it prices everything the piece will reach at
+        once (ROUTE_MOVE a move); what it will not reach until a crewmate's
+        piece has gone is priced by the flood without that piece (the
+        earliest-leaving first, a layer at a time) plus the wait for it to go
+        (DEP_PENALTY a second). The planner adds the cost to the placement at
+        that column (Projection.penalty). Caller holds mu."""
+        exec_at = now + pause
+        fc = self.forecast(now, exec_at)
+        boxes = self.teammate_boxes()
+        out = {}
+        for layer in range(len(fc) + 1):
+            others = {}
+            for fp in fc[layer:]:
+                for c in fp.cells:
+                    others[c] = fp.seat
+            wait = 0.0
+            if layer > 0:
+                wait = max(fc[layer - 1].leave_at - exec_at, 0.0)
+            s = flood(self.can_place, p, boxes, others)
+            for k, d in s.reach().items():
+                if k not in out:
+                    out[k] = ROUTE_MOVE * d + DEP_PENALTY * wait
+            if not s.blockers:
+                break  # nothing of anyone's stood in the way: the rest is the stack's
+        return out
+
+    def route_costs_now(self, p):
+        """route_costs for a piece that is blocked and planned again
+        (REPLAN_BLOCKED): the board as it is this instant, every teammate's
+        piece a wall. A placement the piece cannot walk to right now is no
+        answer to being blocked, and ranks below every one it can
+        (ROUTE_BLOCKED, by penalty's default). Caller holds mu."""
+        s = flood(self.can_place, p, self.teammate_boxes(), self.others_act)
+        return {k: ROUTE_MOVE * d for k, d in s.reach().items()}
+
+    def keep_out(self):
+        """The cells our piece must not STOP in: the drop shafts (the
+        landing's columns, from the top of the board down to the landing) of
+        every planned claim with the right of way over ours. Their piece
+        comes down there; ours may cross a shaft in a batch, and a wait is
+        chosen outside them (waiting_spot). Generalises dep_columns, which
+        keeps out of the shafts of the claims our own landing depends on.
+        None when there is nothing to keep out of. Caller holds mu."""
+        if self.coord is None or self.my_claim is None or self.my_prio == 0:
+            return None
+        keep = None
+        gr = self.to_grid_projected()
+        for c in self.ordered_claims():
+            if c.phase != PHASE_PLANNED or c.order() >= self.my_prio:
+                continue
+            op = self.others_piece.get(c.seat)
+            if op is None or op.pt != c.type:
+                continue
+            their = self.project_claim(gr, c)
+            if their is None:
+                continue
+            stamp_claimed(gr, their)
+            if keep is None:
+                keep = set()
+            for xr, xc in their:
+                for r in range(xr):
+                    keep.add((r, xc))
+        return keep
+
+    # ---- blocked: who waits, who goes, and for how long ----------------------
+
+    def block_patience(self, seats, now):
+        """How long the piece in play waits for the seats' pieces to get out
+        of its way before it plans again among the placements it can walk to
+        right now (REPLAN_BLOCKED). The right of way decides: against pieces
+        whose claims were all made after ours, we hold our plan (they are the
+        ones to step aside or plan again) for as long as a claim is waited on
+        at all (DEP_WAIT_TIMEOUT). Against a claim made before ours we give
+        it twice what it says it still needs, and a piece nobody has claimed
+        gets BLOCK_PATIENCE_SILENT; within DEP_WAIT_MIN and DEP_WAIT_TIMEOUT.
+        Two pieces in each other's way are thus never both the one that
+        waits: the claims are in one order, and the later one moves. Caller
+        holds mu."""
+        pat = DEP_WAIT_MIN
+        ours = self.my_prio != 0
+        for seat in seats:
+            c = self.claims.get(seat)
+            op = self.others_piece.get(seat)
+            if c is None or c.phase != PHASE_PLANNED or op is None or op.pt != c.type:
+                ours = False
+                pat = max(pat, BLOCK_PATIENCE_SILENT)
+                continue
+            if c.order() < self.my_prio:
+                ours = False
+            left = c.seen_at + c.eta_ms / 1000 - now
+            pat = max(pat, 2 * left)
+        if ours and seats:
+            return DEP_WAIT_TIMEOUT
+        return min(pat, DEP_WAIT_TIMEOUT)
+
+    def owners_under(self, a):
+        """The seats whose falling pieces the piece a would come to rest on,
+        were it dropped where it stands: who a blocked drop waits on. Sorted.
+        Caller holds mu."""
+        dr = self.drop_row_shared(a)
+        others = self.others_act
+        return sorted({others[c] for c in piece_cells(a.pt, a.orient, dr + 1, a.col) if c in others})
+
+    # ---- the pieces to come, and the well -------------------------------------
+
+    def stamp_tentative(self, gr, proj):
+        """Put the teammates' tentative placements for their NEXT pieces
+        (Claim.next) on the projection's tent map: each dropped on the board
+        the firm claims made, a seat's second on its first, weighted 1 for
+        the piece up next and half for the one after. A nudge (TENT_PENALTY),
+        never a wall: nothing yields to a tentative placement, and nothing
+        waits for one. A seat whose claim is `locked` holds the first of them
+        in its hands by now: this is where its fresh piece is most likely
+        going, before it has said so. Caller holds mu."""
+        scratch = None
+        tent = proj.tent
+        for c in self.ordered_claims():
+            for i, n in enumerate(c.next[:MAX_NEXT_CLAIMS]):
+                if not 0 <= n.type <= 6 or not 0 <= n.rot <= 3 or n.piece <= c.piece:
+                    break
+                if scratch is None:
+                    scratch = gr.clone()
+                if not scratch.can_place(piece_cells(n.type, n.rot, SPAWN_ROW, n.col)):
+                    break
+                weight = 1 / float(i + 1)
+                dr = scratch.drop_row(n.type, n.rot, SPAWN_ROW, n.col)
+                for x in piece_cells(n.type, n.rot, dr, n.col):
+                    r, col = x
+                    if r < 0 or r >= scratch.h or col < 0 or col >= scratch.w:
+                        continue
+                    tent[x] = max(tent.get(x, 0.0), weight)
+                    scratch.set(r, col, GRID_CLAIMED)
+
+    def well_wanted(self):
+        """Whether this agent keeps a well on this board: a coordinated one,
+        by its --well setting: "on", or "auto" anywhere but a survival game,
+        whose rising floor leaves no room to bank rows."""
+        if self.coord is None or self.a is None or self.w < 8:
+            return False
+        well = getattr(self.a, "well", "auto")
+        if well == "on":
+            return True
+        if well == "auto":
+            return not self.survival
+        return False
+
+    def well_column(self):
+        """The column the crew keeps open: the board's last. Every seat
+        derives the same one from the board's width, and says it in its
+        claims (Claim.well), so a crew knows it agrees."""
+        return self.w - 1
+
+    def well_for(self, gr):
+        """Whether the plan made on gr keeps the well, where it is, and
+        whether the stack beside it stands high: kept when this agent wants
+        one (well_wanted); every teammate on the board has a claim up naming
+        the same column (a crew with a human, a golang-mk1 or an agent that
+        keeps no well plays as it always did); and the column is open to the
+        sky (with something over it there is no well to keep, and the board
+        is played plainly until it is dug out). High is a stack past half the
+        playing rows: the well is kept all the same (played plainly, a deep
+        well is the first thing Dellacherie's features cap) but an I piece
+        then takes what rows there are (evaluate_well). Returns (column, on,
+        high). Caller holds mu."""
+        if not self.well_wanted():
+            return 0, False, False
+        w = self.well_column()
+        if w < 0 or w >= gr.w:
+            return w, False, False
+        boxes = self.teammate_boxes()
+        if not boxes:
+            return w, False, False
+        for b in boxes:
+            c = self.claims.get(b.seat)
+            if c is None or c.well is None or c.well != w:
+                return w, False, False
+        return w, well_open(gr, w), well_high(gr, w)
 
     def teammate_boxes(self):
         """Every other seat's spawn box on our playfield, among the seats

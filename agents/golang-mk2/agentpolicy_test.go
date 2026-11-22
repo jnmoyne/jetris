@@ -114,3 +114,25 @@ func TestPauseWhileAlone(t *testing.T) {
 		t.Fatal("the agent stayed paused after the game ended")
 	}
 }
+
+// A game on a board wider than the grid holds is not one to join: a crew
+// of eight at four extra columns a seat (38) is, at ten (80) it is not.
+func TestAGameOnTooWideABoardIsNotJoinable(t *testing.T) {
+	g := obj{}
+	g.set("mode", modeCooperative)
+	g.set("status", "created")
+	g.set("player_count", 8)
+	g.set("max_agents", 8)
+	g.set("extra_columns", 4)
+	if w := listedBoardWidth(g); w != 38 || !joinable(g) {
+		t.Errorf("a crew of eight at four extra columns: width %d, joinable %v", w, joinable(g))
+	}
+	g.set("extra_columns", 10)
+	if w := listedBoardWidth(g); w != 80 || joinable(g) {
+		t.Errorf("a crew of eight at ten extra columns: width %d, joinable %v", w, joinable(g))
+	}
+	g.set("mode", modeCompetitive)
+	if w := listedBoardWidth(g); w != width || !joinable(g) {
+		t.Errorf("a competitive game: width %d, joinable %v", w, joinable(g))
+	}
+}

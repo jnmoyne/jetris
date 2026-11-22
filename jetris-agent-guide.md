@@ -167,14 +167,20 @@ agent to use it; an agent that does must keep to it:
   no team, so nothing is said. An agent reads only its **own board's** keys:
   reading another team's is tapping their voice room.
 - **What may be said.** A claim about the piece in play — its type, where the
-  agent means to put it, whether it has — and the agent's own spawn column.
-  **Never** a preview piece (a human cannot see a teammate's NEXT well),
-  anything derived from the seed beyond the piece in play, or anything read
-  off the protocol layer (a stream sequence number, a header).
+  agent means to put it, whether it has, whether it is waiting on a
+  teammate's piece — the agent's own spawn column, the column it is keeping
+  open, and where it means to put the pieces **its own NEXT well shows**: a
+  human cannot see a teammate's NEXT well, but may well say "my next is an
+  I, leave me the well" in the voice room. So: tentative placements for the
+  writer's own upcoming pieces, at most `next_count` of them (§1.1's
+  horizon — what the writer may not look at, it may not say). **Never** a
+  teammate's sequence worked out from the seed, anything of the writer's own
+  past its preview, or anything read off the protocol layer (a stream
+  sequence number, a header).
 - **The bucket** is `JETRIS_BLACKBOARD`: a KV bucket with memory storage and
   `LimitMarkerTTL` set (30 s), created idempotently by any agent that wants
-  it (`CreateOrUpdateKeyValue`), recreated by its watchers if it is deleted
-  underneath them. A server that cannot give keys a TTL means no blackboard.
+  it (`CreateOrUpdateKeyValue`). A server that cannot give keys a TTL means
+  no blackboard.
 - **The key** is `<gameID>.<board>.<seat>` — `board` is `crew` on the crew's
   board and `t<N>` on team N's, `seat` the seat's global index — and a
   watch on `<gameID>.<board>.*` follows a whole board.
@@ -201,8 +207,32 @@ agent to use it; an agent that does must keep to it:
   claim overwrites the key); `eta_ms` how long the writer expects to take
   to land; `spawn_col` the writer's spawn column, whose box its teammates
   keep out of while its spawn is imminent.
+
+  A claim may say more — every field below is **optional**, a reader that
+  does not know one ignores it, and `v` stays 1:
+
+  ```json
+  {"at":[2,7,0],"drop":"hard","wait_on":[2],"well":21,
+   "next":[{"piece":18,"type":0,"rot":1,"col":19},{"piece":19,"type":4,"rot":0,"col":3}]}
+  ```
+
+  `at` is where the piece stood when the claim was written (row, column,
+  orientation); `drop` how it goes down once at its column — `hard` (the
+  default: it is gone from where it stands the moment it moves) or `soft`
+  (it comes down its landing's columns a row at a time); `wait_on` the
+  seats whose falling pieces are in the writer's way, present only while
+  the writer waits for them — in its columns, falling with gravity; `next`
+  the writer's **tentative** placements for the pieces in its own NEXT well,
+  nearest first (their piece index, type, orientation and anchor column);
+  `well` a column the writer is keeping open, so that an I piece dropped
+  down it clears four rows at once.
 - **Order and conflicts.** The bucket is one ordered stream, so its
-  revisions order every claim the same way for everyone. An agent plans on
+  revisions order every claim the same way for everyone — the **right of
+  way**. A claim's place in it is the revision at which its seat *first*
+  claimed that placement (`type`, `rot`, `col`) of that piece: writing the
+  same claim again — to add or drop `wait_on`, to refresh `next` — keeps
+  the place, and only a claim for another landing takes a new one (a reader
+  compares each claim with the one it replaces). An agent plans on
   the projection of the claims it has seen (the teammates' landings as
   settled cells), posts its claim, and waits for its **own echo** on its
   watch — it has then seen every claim made before its — before it moves.
@@ -214,6 +244,44 @@ agent to use it; an agent that does must keep to it:
   claim is `locked` or its cells are settled on the board, and re-plan if
   that takes too long (1.5 s). Claims made after ours are theirs to yield
   to; nothing ever makes an earlier claim move, so the chain converges.
+- **Going round each other.** A piece cannot pass through another, but it
+  can pass above or below it, and the claims say where each is going: a
+  `planned`, hard-dropped piece that is not waiting will be gone from where
+  it stands within its `eta_ms`; a soft-dropped or a waiting one stays in
+  its columns and sinks. An agent prices a placement by the walk to it on
+  that forecast — a teammate's piece across the way costs the wait for it
+  to go, not the distance — so the whole board is every seat's to play on,
+  not just the columns under its spawn point. A piece that must wait does
+  it **outside the drop shafts** (the landing's columns, above the landing)
+  of the claims with the right of way over its own, and outside every
+  imminent spawn box.
+- **Who waits, who goes.** A piece blocked by a teammate's writes its claim
+  again with `wait_on` naming them. A seat named there **hurries**: it cuts
+  its think pause short and goes — it is the one in the way. And the right
+  of way settles two pieces in each other's way: the earlier claim holds
+  its plan; the later one gives way — it waits for as long as the earlier
+  claim says it needs (twice its remaining `eta_ms`, within 0.3-1.5 s; 0.6 s
+  for a piece nobody has claimed), then plans again among the placements it
+  can walk to as the board stands, and claims the one it picks. Exactly one
+  of the two moves, and neither locks where it happens to stand.
+- **The pieces to come.** A reader takes a teammate's `next` placements (the
+  first two) as a nudge — the cells they would land on cost a placement a
+  little, the nearer piece more — never as a wall: nothing yields to a
+  tentative placement, and nothing waits for one. A writer tends to keep
+  what it said, and says it again with each claim. A `locked` claim keeps
+  its `next`: the first of them is the piece its writer holds by then, and
+  where that piece is most likely going before it has been claimed.
+- **The well.** A crew whose members all name the same `well` keeps that
+  column empty — nothing is laid in it or across it — until an I piece can
+  be dropped down it to clear four rows (fewer when the stack stands past
+  half the board). The reference agents name the board's last column. A
+  seat that names no well, or another one, means there is none: the board
+  is played plainly.
+- **Plans meet the board.** A claim is a plan on a board that moves. Before
+  it locks, an agent checks its landing on the board as it stands: one that
+  would cover more empty cells than the plan expected — a teammate's claim
+  went elsewhere, a clear shifted the stack, something landed in between —
+  is planned again rather than locked.
 - **Teammates who say nothing** — humans, agents without the blackboard —
   are played around as before: their falling piece is a transient obstacle
   on the board, and its straight drop is where they are most likely going.
@@ -305,7 +373,11 @@ next generation, and the reference for the blackboard of §1.4: on a shared
 board its teammates claim their placements on the blackboard, plan on each
 other's claims, yield to the earlier ones and wait for the ones they depend
 on; a path search moves each piece around its teammates' pieces and out of
-their spawn boxes, and locks it in the same batch as the walk; it locks
+their spawn boxes, priced on a forecast of where the claims say those
+pieces are going, and locks it in the same batch as the walk; a blocked
+piece says whom it waits on, the one in the way hurries, and the later
+claim of two gives way; it says where its NEXT pieces are headed, and with
+a crew that agrees keeps a well for four-row clears (`--well`); it locks
 with CAS on a shared board, vacates a crewmate's stale piece (idle 10 s, or
 on its spawn box 3 s), and leaves a running open game cleanly. Its planner
 is `golang-mk1`'s Dellacherie evaluator, a row at a time and with a beam at
@@ -317,7 +389,9 @@ the details; everything below about `golang-mk1` holds for it too.
 **`python-mk2`** ([`agents/python-mk2/`](agents/python-mk2/)) is the same
 agent in Python, on `nats-py` alone: the same flags, the same planner (its
 answers are tested against `golang-mk2`'s), the same blackboard, so the two
-coordinate on one board. It is the reference for doing §4 from a client
+coordinate on one board — §1.4's optional fields included (`wait_on`, `next`,
+`well` and what is done with them): a crew of both kinds keeps a well and
+agrees its right of way as a crew of either does. It is the reference for doing §4 from a client
 library without atomic batches, a multi-subject direct get or a context
 loader of its own (`python_mk2/jsx.py`, `natsctx.py`).
 
@@ -443,6 +517,22 @@ must be "all settled AND some non-`g` cell", not "all settled AND no `g` cell".
   (`Nats-Expected-Last-Subject-Sequence` = the last sequence you have seen for
   each cell). Order cells within the batch by their new content: active first,
   locked second, empties last.
+- **One write a cell, in any batch.** Two messages for the same cell in one
+  atomic batch carry the same expected sequence, and the second can never
+  match: the server rejects the whole batch as a CAS conflict, every time it
+  is tried. A transform is where this bites: a collapse that also shifts the
+  teammates' falling pieces down with the stack (§5 step 4) writes a piece
+  INTO cells the stack held — emptied by the settled cells' diff, taken by
+  the shifted piece — whenever that piece hangs within the cleared rows'
+  count of the stack. Fold the batch by cell before you send it: a cell
+  written beats a cell vacated. A single row seldom shows the bug; four rows
+  at once, on a tall stack, show it every time, and rows that are full but
+  never clear are what it looks like. A raise has the same seam (a piece
+  lifted into the cells the piece right above it leaves), and so has any
+  transform behind the board's gate (§4.4) — where it is worse than a
+  refusal: the gated cells carry no expectation of their own, the batch
+  commits, and the empty write, ordered last, wins — the piece is on the
+  wire short of the cells it moved into, or gone from it.
 - **A batch can carry the whole walk.** Nothing limits a batch to one step:
   validate the path to your planned orientation and column step by step on your
   local board (each rotation in place, each shift one column), and publish the
@@ -862,4 +952,4 @@ each lock of yours:
 - [ ] Countdown run when your ready toggle completes the set
 - [ ] Archive performed when you trigger the finish
 - [ ] Presence deleted and seats freed on the way out
-- [ ] If you use the blackboard (§1.4): only your own board's keys read, only claims about the piece in play written — never a preview, the seed's future or a sequence number — each with its TTL, posted before you move and checked against the earlier claims once your echo is in
+- [ ] If you use the blackboard (§1.4): only your own board's keys read; only claims about the piece in play written, plus — if you like — tentative placements for the pieces your own NEXT well shows, never more of them than `next_count`, never a teammate's sequence, the seed's future or a sequence number; each claim with its TTL, posted before you move and checked against the earlier claims once your echo is in; a claim said again for the same placement keeps its place in the right of way; unknown fields ignored

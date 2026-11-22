@@ -220,6 +220,10 @@ type replayBuilder struct {
 	origin   time.Time // recorded time the timeline's clock starts at
 	started  bool      // an in_progress (or later) meta has been seen
 	n        int       // messages taken in
+	// cellMsg is, for each of tl.cells, the index in tl.msgs of the message
+	// it was decoded from: finish gives the cells of one transaction one
+	// time (snapCells).
+	cellMsg []int
 	// lastTotals is each seat's cumulative totals as its last event carried
 	// them — the fold's delta rule (engine.foldTotals): an event that moves
 	// nothing is one already tallied.
@@ -312,6 +316,7 @@ func (b *replayBuilder) decode(subject string, data []byte, ts time.Time) {
 		}
 		c.off = b.offset(ts)
 		b.tl.cells = append(b.tl.cells, c)
+		b.cellMsg = append(b.cellMsg, len(b.tl.msgs)) // add appends the message right after
 	}
 }
 
@@ -356,6 +361,8 @@ func (b *replayBuilder) offset(ts time.Time) time.Duration {
 // meta that started it.
 func (b *replayBuilder) finish() *replayTimeline {
 	t := &b.tl
+	t.txns = groupTxns(t.msgs)
+	b.snapCells()
 	if n := len(t.cells); n > 0 {
 		t.dur = t.cells[n-1].off
 	}
@@ -392,8 +399,30 @@ func (b *replayBuilder) finish() *replayTimeline {
 	sort.SliceStable(t.marks, func(i, j int) bool { return t.marks[i].off < t.marks[j].off })
 	sort.SliceStable(t.scores, func(i, j int) bool { return t.scores[i].off < t.scores[j].off })
 	t.origin = b.origin
-	t.txns = groupTxns(t.msgs)
 	return t
+}
+
+// snapCells gives every cell of one transaction — an atomic batch: a lock,
+// a clear's collapse, a garbage raise — the time of the transaction's first
+// message. The batch's messages were recorded microseconds apart, and seek
+// paints every cell at or before the playhead: left at their own times, a
+// frame whose playhead fell inside a batch painted it half applied — the
+// stack above a clear already dropped onto rows still standing full. With
+// one time a batch, a frame shows a board from before it or after it, as
+// every reader of the stream saw it. The cells stay sorted: a batch's
+// messages are consecutive, and none moves earlier than the batch's first.
+func (b *replayBuilder) snapCells() {
+	t := &b.tl
+	x := 0
+	for i := range t.cells {
+		m := b.cellMsg[i]
+		for x < len(t.txns) && t.txns[x].end <= m {
+			x++
+		}
+		if x < len(t.txns) && t.txns[x].start <= m {
+			t.cells[i].off = t.txns[x].off
+		}
+	}
 }
 
 // mergeClearMarks is a competitive recording's markers: a board that

@@ -164,6 +164,71 @@ func TestReplaySeek(t *testing.T) {
 	}
 }
 
+// An atomic batch is painted whole: its messages were recorded a little
+// apart, and a playhead that falls between them shows the board from before
+// the batch or after it, never a part of it — by the batch's id, and for a
+// recording copied without ids by the pace of its cell writes.
+func TestReplaySeekPaintsABatchWhole(t *testing.T) {
+	for _, ids := range []bool{true, false} {
+		const id = "g3"
+		rec := config.ArchiveRecord{GameID: id, Mode: config.ModeCooperative, PlayerCount: 2}
+		f := newReplayFeed(rec, time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC))
+		f.at(0, replayCountdownSubject(id), map[string]int{"seconds": 0})
+		cellSubj := func(r, c int) string { return config.ReplayCopySubject(id, config.CoopCellSubject(id, r, c)) }
+		batchID := func(name string) string {
+			if ids {
+				return name
+			}
+			return ""
+		}
+		// A lock of three cells at 1s, its messages 100 µs apart; then the
+		// clear a millisecond behind it: the row vacated, a cell written
+		// below, again 100 µs apart.
+		const step = 100 * time.Microsecond
+		for c := 0; c < 3; c++ {
+			f.batch(time.Second+time.Duration(c)*step, cellSubj(10, c), lockedCell(), batchID("lock"))
+		}
+		clear := time.Second + time.Millisecond
+		f.batch(clear, cellSubj(11, 0), lockedCell(), batchID("clear"))
+		for c := 0; c < 3; c++ {
+			f.batch(clear+time.Duration(c+1)*step, cellSubj(10, c), game.Cell{}, batchID("clear"))
+		}
+
+		rv := newReplayView(rec)
+		rv.tl = f.b.finish()
+		picture := func() string {
+			var s []byte
+			for _, at := range [][2]int{{10, 0}, {10, 1}, {10, 2}, {11, 0}} {
+				if rv.boards[0].rows[at[0]].Cells[at[1]].Occupied {
+					s = append(s, '#')
+				} else {
+					s = append(s, '.')
+				}
+			}
+			return string(s)
+		}
+		const before, locked, cleared = "....", "###.", "...#"
+		for head := time.Second - time.Millisecond; head <= clear+time.Millisecond; head += 50 * time.Microsecond {
+			rv.seek(head)
+			want := before
+			if head >= time.Second {
+				want = locked
+			}
+			if head >= clear {
+				want = cleared
+			}
+			if got := picture(); got != want {
+				t.Fatalf("batch ids %v: seek(%v) paints %q, want %q", ids, head, got, want)
+			}
+		}
+		for i := 1; i < len(rv.tl.cells); i++ {
+			if rv.tl.cells[i].off < rv.tl.cells[i-1].off {
+				t.Fatalf("batch ids %v: the cells are no longer sorted by time at %d", ids, i)
+			}
+		}
+	}
+}
+
 // The shared boards publish a line_clear event per clear, so their markers are
 // read straight off it: when, how many lines, and whose color.
 func TestReplayClearMarksFromEvents(t *testing.T) {

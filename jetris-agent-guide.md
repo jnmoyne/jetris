@@ -761,7 +761,7 @@ each lock of yours:
    per-message TTL of 5 minutes on each write (the `Nats-TTL` header on a
    publish to `$KV.JETRIS_LOBBY.players.<name>` — the bucket's
    `LimitMarkerTTL` enables it) so your entry self-deletes if you die without
-   the clean exit; stale entries (3× heartbeat) are also pruned by others.
+   the clean exit.
 2. **Join**: CAS-update the `games.<gameID>` listing (append your `PlayerSummary`
    with `"agent": true` and your `seat` — the LOWEST FREE seat, in teams the
    lowest free slot of your team (`seat = team × team_size + team_slot`) —

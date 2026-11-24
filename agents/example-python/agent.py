@@ -79,6 +79,7 @@ WIDTH = 10                    # competitive boards are always 10 wide
 HEADROOM = 4                  # rows 0..3 are the hidden spawn headroom
 GRAVITY_SECONDS = 1.0         # competitive gravity is fixed at level 0 (1000 ms, gameplays §7)
 PRESENCE_SECONDS = 5.0        # presence heartbeat interval
+PRESENCE_TTL = 300.0          # per-message TTL on presence writes, 5 minutes like every seat (config.PresenceTTL, guide §5)
 INVITE_TTL = 120.0            # invitations are stale after 2 minutes
 MODE_COMPETITIVE = 1          # GameMeta/GameListing "mode" (integer on the wire)
 
@@ -316,7 +317,8 @@ class Agent:
             self.kv = await self.js.key_value(LOBBY_BUCKET)
         except Exception:
             self.kv = await self.js.create_key_value(
-                config=jsapi.KeyValueConfig(bucket=LOBBY_BUCKET, storage=jsapi.StorageType.FILE))
+                config=jsapi.KeyValueConfig(bucket=LOBBY_BUCKET, storage=jsapi.StorageType.FILE,
+                                            limit_marker_ttl=PRESENCE_TTL))
         try:  # the archive stream normally exists; ensure it like Bootstrap does
             await self.js.stream_info(ARCHIVE_STREAM)
         except Exception:
@@ -329,7 +331,10 @@ class Agent:
              "agent": True, "last_seen": now_rfc3339()}
         if self.current_game:
             p["game_id"] = self.current_game
-        await self.kv.put(f"players.{self.name}", json.dumps(p).encode())
+        # A plain KV put carrying a per-message TTL (kv.put can't carry one),
+        # so a crashed agent's entry self-deletes instead of haunting the lobby.
+        await self.js.publish(f"$KV.{LOBBY_BUCKET}.players.{self.name}", json.dumps(p).encode(),
+                              msg_ttl=PRESENCE_TTL)
 
     async def presence_loop(self):
         while not self.stopping:

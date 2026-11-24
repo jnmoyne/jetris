@@ -186,21 +186,24 @@ def support_seats(g, proj, cand):
     return sorted(seats)
 
 
-def enumerate_placements(g, pt, s_row, s_col):
+def enumerate_placements(g, pt, s_row, s_col, s_orient=0):
     """Each reachable resting position: the orientations reached by
-    successive in-place rotations at spawn, each swept left and right across
-    every column it can occupy, dropped to rest. (The reference form of the
-    packed search's _expand: the two are pinned to each other by the tests.)"""
+    successive in-place rotations from the one the piece stands in (s_orient:
+    0 at its spawn; a piece planned again where it stands has turned since),
+    each swept left and right across every column it can occupy, dropped to
+    rest. (The reference form of the packed search's _expand: the two are
+    pinned to each other by the tests.)"""
     orients = []
     seen = set()
-    o = 0
+    i = 0
     while True:
-        if (o & 3) not in seen and g.can_place(piece_cells(pt, o & 3, s_row, s_col)):
-            seen.add(o & 3)
-            orients.append(o & 3)
-        if o >= 3 or not g.can_place(piece_cells(pt, (o + 1) & 3, s_row, s_col)):
+        o = (s_orient + i) & 3
+        if o not in seen and g.can_place(piece_cells(pt, o, s_row, s_col)):
+            seen.add(o)
+            orients.append(o)
+        if i >= 3 or not g.can_place(piece_cells(pt, (o + 1) & 3, s_row, s_col)):
             break
-        o += 1
+        i += 1
     out = []
 
     def record(o, col):
@@ -311,12 +314,13 @@ def _can_spawn(geo, b, pt, orient, row, col):
     return not b & (mask << (row * geo.stride + col))
 
 
-def _expand(geo, b, st, fo, pt, s_row, s_col, well=-1, high=False):
-    """Every placement of piece pt from (s_row, s_col) on the packed board
-    (b, st, fo), in enumerate_placements' order, each locked, cleared and
-    evaluated (as evaluate_well does, for a crew keeping the column `well`
-    open; -1: none): a list of (score, orient, col, drop row, lines, board
-    after, piece mask, cleared rows)."""
+def _expand(geo, b, st, fo, pt, s_row, s_col, well=-1, high=False, s_orient=0):
+    """Every placement of piece pt from (s_row, s_col), standing in the
+    orientation s_orient, on the packed board (b, st, fo), in
+    enumerate_placements' order, each locked, cleared and evaluated (as
+    evaluate_well does, for a crew keeping the column `well` open; -1: none):
+    a list of (score, orient, col, drop row, lines, board after, piece mask,
+    cleared rows)."""
     h, w, s = geo.h, geo.w, geo.stride
     if well < 0 or well >= w:
         well = -1
@@ -329,13 +333,14 @@ def _expand(geo, b, st, fo, pt, s_row, s_col, well=-1, high=False):
         return cmin <= s_col <= cmax and s_row + max_ro < h and not b & (mask << (base + s_col))
 
     orients = []
-    o = 0
+    i = 0
     while True:
-        if (o & 3) not in orients and placeable(o & 3):
-            orients.append(o & 3)
-        if o >= 3 or not placeable((o + 1) & 3):
+        o = (s_orient + i) & 3
+        if o not in orients and placeable(o):
+            orients.append(o)
+        if i >= 3 or not placeable((o + 1) & 3):
             break
-        o += 1
+        i += 1
     if not orients:
         return []
 
@@ -542,11 +547,12 @@ def principal_variation(g, spawn_c, upcoming, ws=NO_WELL):
     return _lookahead(geo, b, st, fo, spawn_c, list(upcoming), 0, ws[0], ws[1], True)[1] or []
 
 
-def plan_roots(g, pt, s_row, s_col, spawn_c, upcoming, proj=None):
+def plan_roots(g, pt, s_row, s_col, spawn_c, upcoming, proj=None, s_orient=0):
     """The first half of a plan: every placement reachable with kick-free
-    rotations at the piece's current position (s_row, s_col) plus sideways
-    slides plus a hard drop (a legal subset of the game's moves), each with
-    its one-ply Dellacherie score. Returns (placements, the indices of the
+    rotations at the piece's current position (s_row, s_col) and orientation
+    (s_orient: a piece planned again where it stands has turned since its
+    spawn) plus sideways slides plus a hard drop (a legal subset of the
+    game's moves), each with its one-ply Dellacherie score. Returns (placements, the indices of the
     PLAN_BEAM best of them, one lookahead job per such placement): a job is
     the arguments of lookahead_job, the search over `upcoming` (which spawn
     fresh at spawn_c: the caller's own section spawn on shared boards) from
@@ -554,7 +560,7 @@ def plan_roots(g, pt, s_row, s_col, spawn_c, upcoming, proj=None):
     geo = Geometry.of(g.h, g.w)
     b, st, fo = geo.pack(g)
     well, high = proj.well_spec() if proj is not None else NO_WELL
-    cands = _expand(geo, b, st, fo, pt, s_row, s_col, well, high)
+    cands = _expand(geo, b, st, fo, pt, s_row, s_col, well, high, s_orient)
     out = []
     for score, o, col, dr, lines, _, _, _ in cands:
         pl = Placement(orient=o, col=col, drop_row=dr, dest=piece_cells(pt, o, dr, col), lines=lines, score=score)
@@ -605,11 +611,12 @@ def plan_finish(out, order, totals, proj=None):
     return out
 
 
-def plan_placements(g, pt, s_row, s_col, spawn_c, upcoming, proj=None):
-    """A whole plan, here and now: every placement of the piece scored with
-    Dellacherie + the lookahead over `upcoming`, less, on a coordinated board
-    (proj), the placement's penalty; best first."""
-    out, order, jobs = plan_roots(g, pt, s_row, s_col, spawn_c, upcoming, proj)
+def plan_placements(g, pt, s_row, s_col, spawn_c, upcoming, proj=None, s_orient=0):
+    """A whole plan, here and now: every placement of the piece (standing in
+    the orientation s_orient) scored with Dellacherie + the lookahead over
+    `upcoming`, less, on a coordinated board (proj), the placement's penalty;
+    best first."""
+    out, order, jobs = plan_roots(g, pt, s_row, s_col, spawn_c, upcoming, proj, s_orient)
     return plan_finish(out, order, [lookahead_job(*job) for job in jobs], proj)
 
 

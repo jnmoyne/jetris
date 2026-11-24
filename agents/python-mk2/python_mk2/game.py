@@ -1502,11 +1502,11 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         the other in a thread: either way off the event loop, so the
         consumers and the heartbeats keep running under it."""
         if len(upcoming) < 2:
-            return plan_placements(gr, p.pt, p.row, p.col, spawn_c, upcoming, proj)
+            return plan_placements(gr, p.pt, p.row, p.col, spawn_c, upcoming, proj, p.orient)
         pool_owner = getattr(self.a, "plan_pool", None)
         pool = pool_owner.get() if pool_owner is not None else None
         if pool is not None:
-            out, order, jobs = plan_roots(gr, p.pt, p.row, p.col, spawn_c, upcoming, proj)
+            out, order, jobs = plan_roots(gr, p.pt, p.row, p.col, spawn_c, upcoming, proj, p.orient)
             loop = asyncio.get_running_loop()
             try:
                 totals = await asyncio.gather(*(loop.run_in_executor(pool, lookahead_job, *job) for job in jobs))
@@ -1515,7 +1515,7 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                 raise
             except Exception as e:
                 pool_owner.failed(e)
-        return await asyncio.to_thread(plan_placements, gr, p.pt, p.row, p.col, spawn_c, upcoming, proj)
+        return await asyncio.to_thread(plan_placements, gr, p.pt, p.row, p.col, spawn_c, upcoming, proj, p.orient)
 
     async def confirm_plan(self, p, pl, pc):
         """The second half of a coordinated plan: once the claim's own echo
@@ -1728,6 +1728,13 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                     # Lost on the wire (the board re-adopted from the
                     # stream): the rows are owed again, at once.
                     self.gravity_debt += fell
+                else:
+                    # The walk follows from where the piece fell to, in this
+                    # same turn: at a level whose rows come faster than the
+                    # turns do, every turn owes a fall, and a walk that
+                    # waited for a turn without one would wait until the
+                    # piece stood on the stack.
+                    p = to
                 self.resting_since = None
                 self._end_walk_wait(ex, now)
             elif transient:

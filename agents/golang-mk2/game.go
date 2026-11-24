@@ -1952,7 +1952,7 @@ func (g *Game) plan(ctx context.Context, p active, pause time.Duration) (placeme
 	pieceIdx, spawnC := g.pieceIdx, g.spawnC
 	g.mu.Unlock()
 	upcoming := revealedPieces(g.metaSeed, g.ration, g.bag, pieceIdx, g.nextCount, g.a.tn.lookahead)
-	ranked := planPlacements(gr, p.pt, p.row, p.col, spawnC, upcoming, proj)
+	ranked := planPlacementsFrom(gr, p.pt, p.orient, p.row, p.col, spawnC, upcoming, proj)
 	pl, ok := choose(ranked, g.a.tn, g.a.rng)
 	if !ok && proj != nil {
 		// Nothing on the projection — a claimed landing walls the piece in
@@ -1961,7 +1961,7 @@ func (g *Game) plan(ctx context.Context, p active, pause time.Duration) (placeme
 		g.mu.Lock()
 		gr = g.toGrid()
 		g.mu.Unlock()
-		ranked = planPlacements(gr, p.pt, p.row, p.col, spawnC, upcoming, nil)
+		ranked = planPlacementsFrom(gr, p.pt, p.orient, p.row, p.col, spawnC, upcoming, nil)
 		pl, ok = choose(ranked, g.a.tn, g.a.rng)
 		proj = nil
 	}
@@ -2297,6 +2297,13 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					// Lost on the wire (the board re-adopted from the
 					// stream): the rows are owed again, at once.
 					g.gravityDebt += fell
+				} else {
+					// The walk follows from where the piece fell to, in
+					// this same turn: at a level whose rows come faster
+					// than the turns do, every turn owes a fall, and a
+					// walk that waited for a turn without one would wait
+					// until the piece stood on the stack.
+					p = to
 				}
 				g.restingSince = time.Time{}
 				endWait(now)

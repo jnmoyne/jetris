@@ -183,7 +183,15 @@ func supportSeats(g *grid, proj *projection, cand placement) []int {
 // placement's penalty — and returns them best first. A nil proj is
 // golang-mk1's planner exactly.
 func planPlacements(g *grid, pt, sRow, sCol, spawnC int, upcoming []int, proj *projection) []placement {
-	cands := enumerate(g, pt, sRow, sCol)
+	return planPlacementsFrom(g, pt, 0, sRow, sCol, spawnC, upcoming, proj)
+}
+
+// planPlacementsFrom is planPlacements for a piece standing in the
+// orientation sOrient: a piece planned again where it stands (a re-plan) has
+// turned since its spawn, and the orientations it can reach are the ones a
+// rotation in place takes it to from THERE.
+func planPlacementsFrom(g *grid, pt, sOrient, sRow, sCol, spawnC int, upcoming []int, proj *projection) []placement {
+	cands := enumerateFrom(nil, g, pt, sOrient, sRow, sCol)
 	out := make([]placement, 0, len(cands))
 	afters := make([]*grid, 0, len(cands))
 	// Every placement by its one-ply evaluation first…
@@ -257,17 +265,25 @@ func enumerate(g *grid, pt, sRow, sCol int) []placement {
 // enumerateInto is enumerate appending to out, for a search that reuses one
 // buffer for every board it expands.
 func enumerateInto(out []placement, g *grid, pt, sRow, sCol int) []placement {
-	// Orientations reachable by repeated in-place rotation from spawn.
+	return enumerateFrom(out, g, pt, 0, sRow, sCol)
+}
+
+// enumerateFrom is enumerateInto for a piece standing in the orientation
+// sOrient (0 at its spawn).
+func enumerateFrom(out []placement, g *grid, pt, sOrient, sRow, sCol int) []placement {
+	// Orientations reachable by repeated in-place rotation from where the
+	// piece stands.
 	var orients [4]int
 	var seen [4]bool
 	n := 0
-	for o := 0; ; o++ {
-		if !seen[o&3] && g.canPlace(pieceCells(pt, o&3, sRow, sCol)) {
-			seen[o&3] = true
-			orients[n] = o & 3
+	for i := 0; ; i++ {
+		o := (sOrient + i) & 3
+		if !seen[o] && g.canPlace(pieceCells(pt, o, sRow, sCol)) {
+			seen[o] = true
+			orients[n] = o
 			n++
 		}
-		if o >= 3 || !g.canPlace(pieceCells(pt, (o+1)&3, sRow, sCol)) {
+		if i >= 3 || !g.canPlace(pieceCells(pt, (o+1)&3, sRow, sCol)) {
 			break
 		}
 	}

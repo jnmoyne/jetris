@@ -1724,7 +1724,7 @@ func (g *Game) plan(p active) (placement, bool) {
 	pieceIdx, spawnC := g.pieceIdx, g.spawnC
 	g.mu.Unlock()
 	upcoming := revealedPieces(g.metaSeed, g.ration, g.bag, pieceIdx, g.nextCount, g.a.tn.lookahead)
-	ranked := planPlacements(gr, p.pt, p.row, p.col, spawnC, upcoming)
+	ranked := planPlacementsFrom(gr, p.pt, p.orient, p.row, p.col, spawnC, upcoming)
 	return choose(ranked, g.a.tn, g.a.rng)
 }
 
@@ -1753,7 +1753,10 @@ func (g *Game) toGrid() *grid {
 }
 
 // execute drives the piece to (orient, col) honoring gravity, then hard-drops
-// — or, with --soft-drop, soft-drops a row per move step (softDropStep).
+// — or, with --soft-drop, soft-drops a row per move step (softDropStep). The
+// rows a deadline owes fall as one batch first, and the walk (or the drop)
+// follows in the same turn, so a level faster than the turns never keeps the
+// piece from walking.
 // On shared boards another player's falling piece is a TRANSIENT obstacle:
 // blocked by it we wait (it falls away), never lock against it, and never top
 // out on it (gameplays §3).
@@ -1795,6 +1798,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			return
 		}
 		locked := false
+		// Whether the piece stands where this turn knows it to (p): not
+		// once a gravity batch was lost, and the board adopted again from
+		// the stream — the walk is then the next turn's.
+		inPlace := true
 		now := time.Now()
 		if g.gravityDebt > 0 || !now.Before(g.nextGravity) {
 			// The rows gravity owes: the ones a lost batch did not deliver,
@@ -1818,6 +1825,15 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 					// Lost on the wire (the board re-adopted from the
 					// stream): the rows are owed again, at once.
 					g.gravityDebt += fell
+					inPlace = false
+				} else {
+					// The walk follows from where the piece fell to, in
+					// this same turn: at a level whose rows come faster
+					// than the turns do (level 12 on, at hard's move
+					// step) every turn owes a fall, and a walk left to a
+					// turn without one would never be made — the piece
+					// would come down its spawn columns and lock there.
+					p = to
 				}
 			case transient:
 				// blocked only by another falling piece: wait, don't lock
@@ -1829,6 +1845,9 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 				g.lockPiece(ctx, p)
 				locked = true
 			}
+		}
+		if locked || !inPlace {
+			// Nothing more this turn.
 		} else if p.orient != plan.orient || p.col != plan.col {
 			// The whole walk to the plan — the rotations, then the shifts —
 			// as ONE batch: every step is validated on the local board, and

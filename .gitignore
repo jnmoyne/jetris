@@ -4,6 +4,7 @@ jetstream-data/
 .idea/
 /jetris
 /headless-player
+/golang-*
 agents/golang-mk1/golang-mk1
 agents/golang-mk2/golang-mk2
 dist/

@@ -1797,7 +1797,7 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			g.mu.Unlock()
 			return
 		}
-		locked := false
+		locked, arrived := false, false
 		// Whether the piece stands where this turn knows it to (p): not
 		// once a gravity batch was lost, and the board adopted again from
 		// the stream — the walk is then the next turn's.
@@ -1858,7 +1858,10 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			to, transient := g.walk(p, plan)
 			switch {
 			case to != p:
-				g.publishPieceMove(ctx, to)
+				// A walk that reached the plan drops on the next turn at
+				// once, as a player presses the hard drop right after the
+				// last shift: the move step paces walks, not the drop.
+				arrived = g.publishPieceMove(ctx, to) && to.orient == plan.orient && to.col == plan.col
 			case transient:
 				// a crossing piece is in the way: wait it out
 			default:
@@ -1902,6 +1905,9 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 		g.mu.Unlock()
 		if locked {
 			return
+		}
+		if arrived {
+			continue
 		}
 		if !g.wait(ctx, g.a.tn.moveDelay) {
 			return

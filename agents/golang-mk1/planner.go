@@ -3,6 +3,7 @@ package main
 import (
 	"math/rand/v2"
 	"sort"
+	"sync"
 )
 
 // The brain: Pierre Dellacherie's six-feature one-ply heuristic with the
@@ -52,11 +53,32 @@ func planPlacements(g *grid, pt, sRow, sCol, spawnC int, upcoming []int) []place
 func planPlacementsFrom(g *grid, pt, sOrient, sRow, sCol, spawnC int, upcoming []int) []placement {
 	cands := enumerateFrom(g, pt, sOrient, sRow, sCol)
 	out := make([]placement, 0, len(cands))
+	afters := make([]*grid, 0, len(cands))
 	for _, cand := range cands {
 		after, lines, eroded := simulateLock(g, cand.dest)
 		cand.lines = lines
-		cand.score = evaluateBoard(after, cand.dest, lines, eroded) + lookahead(after, spawnC, upcoming)
+		cand.score = evaluateBoard(after, cand.dest, lines, eroded)
 		out = append(out, cand)
+		afters = append(afters, after)
+	}
+	// Every placement's lookahead is an independent search from its own
+	// board: they run side by side, one goroutine each, so a plan at the
+	// full preview fits the think pause instead of adding a third of a
+	// second to every piece. The answers are the sequential search's.
+	if len(upcoming) > 0 {
+		las := make([]float64, len(out))
+		var wg sync.WaitGroup
+		for i := range out {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				las[i] = lookahead(afters[i], spawnC, upcoming)
+			}()
+		}
+		wg.Wait()
+		for i := range out {
+			out[i].score += las[i]
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
 	return out
@@ -69,29 +91,41 @@ func enumerate(g *grid, pt, sRow, sCol int) []placement {
 	return enumerateFrom(g, pt, 0, sRow, sCol)
 }
 
+// enumerateInto is enumerate appending to out, for a search that reuses one
+// buffer for every board it expands.
+func enumerateInto(out []placement, g *grid, pt, sRow, sCol int) []placement {
+	return enumerateFromInto(out, g, pt, 0, sRow, sCol)
+}
+
 // enumerateFrom is enumerate for a piece standing in the orientation sOrient
 // (0 at its spawn).
 func enumerateFrom(g *grid, pt, sOrient, sRow, sCol int) []placement {
+	return enumerateFromInto(nil, g, pt, sOrient, sRow, sCol)
+}
+
+// enumerateFromInto is enumerateFrom appending to out.
+func enumerateFromInto(out []placement, g *grid, pt, sOrient, sRow, sCol int) []placement {
 	// Orientations reachable by repeated in-place rotation from where the
 	// piece stands.
-	var orients []int
-	seen := map[int]bool{}
+	var orients [4]int
+	var seen [4]bool
+	n := 0
 	for i := 0; ; i++ {
 		o := (sOrient + i) & 3
 		if !seen[o] && g.canPlace(pieceCells(pt, o, sRow, sCol)) {
 			seen[o] = true
-			orients = append(orients, o)
+			orients[n] = o
+			n++
 		}
 		if i >= 3 || !g.canPlace(pieceCells(pt, (o+1)&3, sRow, sCol)) {
 			break
 		}
 	}
-	var out []placement
 	record := func(o, col int) {
 		dr := g.dropRow(pt, o, sRow, col)
 		out = append(out, placement{orient: o, col: col, dropRow: dr, dest: pieceCells(pt, o, dr, col)})
 	}
-	for _, o := range orients {
+	for _, o := range orients[:n] {
 		record(o, sCol)
 		for col := sCol - 1; g.canPlace(pieceCells(pt, o, sRow, col)); col-- {
 			record(o, col)
@@ -128,6 +162,33 @@ func simulateLock(g *grid, dest [4]cell) (*grid, int, int) {
 		}
 	}
 	return sim.clearRows(rows), len(rows), pieceInCleared * len(rows)
+}
+
+// simulateOn is simulateLock for a board that is only looked at, never
+// kept: g's cells are copied over scratch (a grid of g's size) and dest
+// stamped there, so the search allocates no board for a placement it only
+// scores. Returns the board to evaluate: scratch itself, good until its
+// next use, or a new one when the lock clears rows.
+func simulateOn(scratch, g *grid, dest [4]cell) (*grid, int, int) {
+	copy(scratch.cells, g.cells)
+	for _, c := range dest {
+		if c.r >= 0 && c.r < scratch.h && c.c >= 0 && c.c < scratch.w {
+			scratch.set(c.r, c.c, 1)
+		}
+	}
+	rows := scratch.completedRows()
+	if len(rows) == 0 {
+		return scratch, 0, 0
+	}
+	pieceInCleared := 0
+	for _, c := range dest {
+		for _, r := range rows {
+			if c.r == r {
+				pieceInCleared++
+			}
+		}
+	}
+	return scratch.clearRows(rows), len(rows), pieceInCleared * len(rows)
 }
 
 // evaluateBoard scores one placement: the Dellacherie feature combination.
@@ -230,37 +291,61 @@ const (
 // lookaheadBeam best placements are expanded further. A piece that cannot spawn
 // is an imminent top-out and scores the penalty.
 func lookahead(g *grid, spawnC int, upcoming []int) float64 {
+	s := lookaheadSearch{scratch: newGrid(g.h, g.w), spawnC: spawnC}
+	return s.from(g, upcoming)
+}
+
+// lookaheadSearch is what one lookahead works with, from its first board to
+// its last: the board it scores every placement on (simulateOn) and the
+// buffers it lists and ranks a board's placements in, used again for every
+// board it expands. A board and two lists allocated for every one of them
+// is what a plan's time used to go on; only the lookaheadBeam placements a
+// level goes on from get a board of their own.
+type lookaheadSearch struct {
+	scratch *grid
+	cands   []placement
+	ranked  []scoredPlacement
+	spawnC  int
+}
+
+type scoredPlacement struct {
+	score float64
+	dest  [4]cell
+}
+
+func (s *lookaheadSearch) from(g *grid, upcoming []int) float64 {
 	if len(upcoming) == 0 {
 		return 0
 	}
 	pt := upcoming[0]
-	if !g.canPlace(pieceCells(pt, 0, spawnRow, spawnC)) {
+	if !g.canPlace(pieceCells(pt, 0, spawnRow, s.spawnC)) {
 		return lookaheadTopOutPenalty
 	}
-	cands := enumerate(g, pt, spawnRow, spawnC)
-	if len(cands) == 0 {
+	s.cands = enumerateInto(s.cands[:0], g, pt, spawnRow, s.spawnC)
+	if len(s.cands) == 0 {
 		return lookaheadTopOutPenalty
 	}
-	type exp struct {
-		board *grid
-		score float64
+	xs := s.ranked[:0]
+	for _, cand := range s.cands {
+		after, lines, eroded := simulateOn(s.scratch, g, cand.dest)
+		xs = append(xs, scoredPlacement{evaluateBoard(after, cand.dest, lines, eroded), cand.dest})
 	}
-	xs := make([]exp, 0, len(cands))
-	for _, cand := range cands {
-		after, lines, eroded := simulateLock(g, cand.dest)
-		xs = append(xs, exp{after, evaluateBoard(after, cand.dest, lines, eroded)})
-	}
+	s.ranked = xs
+	// sort.Slice, as the search always ranked: on equal scores it picks
+	// the same beam the allocating search did.
 	sort.Slice(xs, func(i, j int) bool { return xs[i].score > xs[j].score })
 	if len(upcoming) == 1 {
 		return xs[0].score
 	}
-	if len(xs) > lookaheadBeam {
-		xs = xs[:lookaheadBeam]
-	}
-	best := xs[0].score + lookahead(xs[0].board, spawnC, upcoming[1:])
-	for _, e := range xs[1:] {
-		if s := e.score + lookahead(e.board, spawnC, upcoming[1:]); s > best {
-			best = s
+	// The levels below use the buffers again: what this one goes on from
+	// is copied out of them first.
+	var beam [lookaheadBeam]scoredPlacement
+	n := copy(beam[:], xs)
+	best := 0.0
+	for i, e := range beam[:n] {
+		board, _, _ := simulateLock(g, e.dest)
+		if t := e.score + s.from(board, upcoming[1:]); i == 0 || t > best {
+			best = t
 		}
 	}
 	return best

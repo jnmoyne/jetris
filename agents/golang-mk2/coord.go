@@ -129,6 +129,94 @@ func (g *Game) fallenAt(p active, at time.Time) active {
 // thinkLagMax bounds what a plan is taken to cost beyond its pause.
 const thinkLagMax = 200 * time.Millisecond
 
+// pauseLeft is what is left of a fresh piece's think pause once its plan is
+// made (since: when the think began). Where the level caps the pause
+// (thinkPause) the cap is on the WHOLE think, the search included: three
+// rows are three rows, whatever they were spent on. Where it does not, the
+// pause follows the plan as it always did. Takes mu.
+func (g *Game) pauseLeft(delay time.Duration, since time.Time) time.Duration {
+	g.mu.Lock()
+	capped := pauseRows*g.gravityNow() < g.a.tn.pieceDelay
+	g.mu.Unlock()
+	if !capped {
+		return delay
+	}
+	return max(delay-time.Since(since), 0)
+}
+
+// turnStep is the pause between two turns of a piece that is not done (a
+// wait, a fall): the difficulty's move step, and no longer than a row of
+// the level being played takes — at level 15 a 30 ms step is four rows a
+// turn, and a piece that waits two turns has nowhere left to go. Takes mu.
+func (g *Game) turnStep() time.Duration {
+	g.mu.Lock()
+	step := g.gravityNow()
+	g.mu.Unlock()
+	return min(g.a.tn.moveDelay, max(step, minTurnStep))
+}
+
+const (
+	// minTurnStep is the shortest a turn's pause gets (turnStep).
+	minTurnStep = 5 * time.Millisecond
+	// planRows is the rows of gravity a search may take (lookaheadWithin):
+	// the preview is looked into as far as that leaves time for.
+	planRows = 1
+	// planGrowth is what one more piece of lookahead is taken to cost, as
+	// a factor, where that depth has not been timed yet.
+	planGrowth = 3
+)
+
+// lookaheadWithin is how many of the n upcoming pieces the search looks at:
+// all of them while the level leaves the time, and as many as fit planRows
+// rows of gravity once it does not — the six-piece search that takes 21 ms
+// on a four-seat board is three rows of level 15, the four-piece one 3 ms.
+// The costs are the ones this game has timed (notePlanCost), a depth not
+// timed yet taken from the nearest that was. Caller holds mu.
+func (g *Game) lookaheadWithin(n int) int {
+	budget := planRows * g.gravityNow()
+	for d := n; d > 0; d-- {
+		if c, ok := g.planCostAt(d); !ok || c <= budget {
+			return d
+		}
+	}
+	return 0
+}
+
+// planCostAt is what a search d pieces deep is expected to take: its own
+// timing, else the nearest timed depth's scaled by planGrowth a piece.
+// False with nothing timed at all. Caller holds mu.
+func (g *Game) planCostAt(d int) (time.Duration, bool) {
+	for off := 0; off < len(g.planCost); off++ {
+		for _, m := range [2]int{d + off, d - off} {
+			if m < 0 || m >= len(g.planCost) || g.planCost[m] == 0 {
+				continue
+			}
+			c := float64(g.planCost[m])
+			for i := m; i < d; i++ {
+				c *= planGrowth
+			}
+			for i := d; i < m; i++ {
+				c /= planGrowth
+			}
+			return time.Duration(c), true
+		}
+	}
+	return 0, false
+}
+
+// notePlanCost records what a search d pieces deep took, smoothed. Caller
+// holds mu.
+func (g *Game) notePlanCost(d int, took time.Duration) {
+	if d < 0 || d >= len(g.planCost) || took <= 0 {
+		return
+	}
+	if g.planCost[d] == 0 {
+		g.planCost[d] = took
+		return
+	}
+	g.planCost[d] = (3*g.planCost[d] + took) / 4
+}
+
 // noteThinkLag records what the last plan took beyond its think pause —
 // the search, the claim's round trip, its echo — smoothed: the rows gravity
 // takes meanwhile are part of where the walk starts (fallenAt). A pause cut

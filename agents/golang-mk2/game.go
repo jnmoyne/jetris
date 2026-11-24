@@ -105,6 +105,7 @@ type Game struct {
 	nextGravity time.Time
 	gravityDebt int
 	thinkLag    time.Duration // what a plan takes beyond its think pause, smoothed (noteThinkLag): gravity's rows meanwhile are where the walk starts
+	planCost    [maxNextCount + 1]time.Duration // what a search takes at each lookahead depth, as timed in this game (notePlanCost)
 
 	// The shared board's housekeeping (sweep.go): every foreign active cell's
 	// idle clock, the deferred spawn's account of its blockers, and when the
@@ -1901,7 +1902,7 @@ func (g *Game) playPieces(ctx context.Context) bool {
 		if !ok {
 			return g.topOut(ctx)
 		}
-		if !g.pause(ctx, delay) {
+		if !g.pause(ctx, g.pauseLeft(delay, thinkT)) {
 			break
 		}
 		plan = g.confirmPlan(ctx, *piece, plan, pending)
@@ -1962,7 +1963,15 @@ func (g *Game) plan(ctx context.Context, p active, pause time.Duration) (placeme
 	pieceIdx, spawnC := g.pieceIdx, g.spawnC
 	g.mu.Unlock()
 	upcoming := revealedPieces(g.metaSeed, g.ration, g.bag, pieceIdx, g.nextCount, g.a.tn.lookahead)
+	// As far into the preview as the level leaves time for.
+	g.mu.Lock()
+	upcoming = upcoming[:g.lookaheadWithin(len(upcoming))]
+	g.mu.Unlock()
+	searchT := time.Now()
 	ranked := planPlacementsFrom(gr, p.pt, p.orient, p.row, p.col, spawnC, upcoming, proj)
+	g.mu.Lock()
+	g.notePlanCost(len(upcoming), time.Since(searchT))
+	g.mu.Unlock()
 	pl, ok := choose(ranked, g.a.tn, g.a.rng)
 	if !ok && proj != nil {
 		// Nothing on the projection — a claimed landing walls the piece in
@@ -2276,7 +2285,7 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 			}
 			staleSince = now
 			g.mu.Unlock()
-			if !g.wait(ctx, g.a.tn.moveDelay) {
+			if !g.wait(ctx, g.turnStep()) {
 				return
 			}
 			continue
@@ -2552,7 +2561,7 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 		if locked {
 			return
 		}
-		if !g.wait(ctx, g.a.tn.moveDelay) {
+		if !g.wait(ctx, g.turnStep()) {
 			return
 		}
 	}

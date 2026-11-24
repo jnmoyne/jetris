@@ -387,14 +387,13 @@ All three are the same blackboard pattern with different subject schemes and col
 ### Build
 
 ```sh
-./scripts/build-wasm.sh                       # optional but first: the browser version, which the binary embeds and serves in LAN party mode
-go build -o jetris ./cmd/jetris
-(cd agents/golang-mk1 && go build .)          # optional: the headless computer player (its own module)
-(cd agents/golang-mk2 && go build .)          # optional: its next generation, whose teammates coordinate through a KV blackboard
+./scripts/build.sh                            # → ./jetris, ./golang-mk1, ./golang-mk2
 (cd agents/python-mk2 && uv sync)             # optional: golang-mk2 in Python (run it with `uv run python-mk2`)
 ```
 
-A `jetris` built without the first step still runs and still hosts LAN parties for desktop builds and agents; it just has no browser version to hand the phones (its lobby says so, and so does the page). `internal/webdist` embeds whatever `internal/webdist/dist/` holds when the binary is built — `scripts/build-wasm.sh` fills it — which is why the release workflow runs that script on every platform before `go build`.
+`scripts/build.sh` builds the browser version first (`scripts/build-wasm.sh`, which the `jetris` binary embeds and serves in LAN party mode), then `jetris`, then every Go agent: `golang-mk1`, the headless computer player, and `golang-mk2`, its next generation, whose teammates coordinate through a KV blackboard. Each agent is its own Go module. All three binaries land in the top directory. `jetris` is a `dev` build unless you set `VERSION` (e.g. `VERSION=v0.6.0 ./scripts/build.sh`).
+
+To build one piece on its own: `go build -o jetris ./cmd/jetris`, or `(cd agents/golang-mk1 && go build .)`. A `jetris` built without the browser version still runs and still hosts LAN parties for desktop builds and agents; it just has no browser version to hand the phones (its lobby says so, and so does the page). `internal/webdist` embeds whatever `internal/webdist/dist/` holds when the binary is built — `scripts/build-wasm.sh` fills it — which is why the release workflow runs that script on every platform before `go build`.
 
 Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are produced on tagged releases by `.github/workflows/release.yml`, which also builds the browser version, attaches it to the release as `jetris-<tag>-web.tar.gz` (for self-hosting) and deploys it to GitHub Pages at https://jetris.net/.
 

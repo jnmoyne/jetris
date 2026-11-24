@@ -104,6 +104,7 @@ type Game struct {
 	// put the piece back up), owed again at once. Guarded by mu.
 	nextGravity time.Time
 	gravityDebt int
+	thinkLag    time.Duration // what a plan takes beyond its think pause, smoothed (noteThinkLag): gravity's rows meanwhile are where the walk starts
 
 	// The shared board's housekeeping (sweep.go): every foreign active cell's
 	// idle clock, the deferred spawn's account of its blockers, and when the
@@ -1895,6 +1896,7 @@ func (g *Game) playPieces(ctx context.Context) bool {
 		if piece == nil {
 			continue // spawn was dropped by CAS; resynced, try again
 		}
+		thinkT := time.Now()
 		plan, pending, ok := g.plan(ctx, *piece, delay)
 		if !ok {
 			return g.topOut(ctx)
@@ -1903,6 +1905,9 @@ func (g *Game) playPieces(ctx context.Context) bool {
 			break
 		}
 		plan = g.confirmPlan(ctx, *piece, plan, pending)
+		g.mu.Lock()
+		g.noteThinkLag(time.Since(thinkT) - delay)
+		g.mu.Unlock()
 		g.execute(ctx, plan, spawnT)
 		g.mu.Lock()
 		dead = g.dead
@@ -1944,7 +1949,12 @@ func (g *Game) plan(ctx context.Context, p active, pause time.Duration) (placeme
 			proj.route, proj.routeNow = g.routeCostsNow(p), true
 			g.blockedReplan = false
 		} else {
-			proj.route = g.routeCosts(p, time.Now(), pause)
+			// The walk starts where gravity will have the piece by then,
+			// not where it stands: what the stack walls off from there is
+			// out of reach, however near it looks from the spawn row.
+			now := time.Now()
+			from := g.fallenAt(p, now.Add(pause+g.thinkLag))
+			proj.route, proj.routeNow = g.routeCosts(from, now, pause), from != p
 		}
 	} else {
 		gr = g.toGrid()
@@ -2322,7 +2332,7 @@ func (g *Game) execute(ctx context.Context, plan placement, spawnT time.Time) {
 				if g.restingSince.IsZero() {
 					g.restingSince = now
 				}
-				if atTarget || !g.shared() || now.Sub(g.restingSince) >= lockDelay {
+				if atTarget || !g.shared() || now.Sub(g.restingSince) >= g.lockDelayNow() {
 					if !atTarget && g.blockedPlans < maxBlockedPlans {
 						// On the stack, away from its column, and the
 						// grace is spent: the plan is out of reach. Rather

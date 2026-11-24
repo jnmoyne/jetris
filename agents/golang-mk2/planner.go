@@ -60,8 +60,9 @@ type projection struct {
 	boxes     []spawnBox
 	// route is what the walk to each (orientation, column) costs, wait
 	// for a crewmate's piece included (coord.go routeCosts); routeNow says
-	// it was made for a blocked piece, on the board as it is, so that what
-	// is not in it cannot be reached at all. nil: the flat costs below.
+	// that what is not in it cannot be reached at all: it was made for a
+	// blocked piece, on the board as it is, or for one gravity will have
+	// taken down among the stack before it moves. nil: the flat costs below.
 	route    map[[2]int]float64
 	routeNow bool
 	// tent is the cells of the teammates' tentative placements for their

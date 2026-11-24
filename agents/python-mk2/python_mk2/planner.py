@@ -99,9 +99,10 @@ class Projection:
     own_spawn_c: int = 0
     boxes: list = field(default_factory=list)
     # route is what the walk to each (orientation, column) costs, wait for a
-    # crewmate's piece included (coord.route_costs); route_now says it was
-    # made for a blocked piece, on the board as it is, so that what is not in
-    # it cannot be reached at all. None: the flat costs below.
+    # crewmate's piece included (coord.route_costs); route_now says that
+    # what is not in it cannot be reached at all: it was made for a blocked
+    # piece, on the board as it is, or for one gravity will have taken down
+    # among the stack before it moves. None: the flat costs below.
     route: dict = None
     route_now: bool = False
     # tent is the cells of the teammates' tentative placements for their NEXT

@@ -46,8 +46,16 @@ DEP_WAIT_TIMEOUT = 1.5
 RETHINK_DELAY = 0.0
 # The grace a piece resting on the stack AWAY from its planned column gets on
 # a shared board before it locks where it stands: a crewmate's piece across
-# its path falls away within it, and the walk resumes.
+# its path falls away within it, and the walk resumes. It is the most the
+# grace is: at a fast level a crewmate's piece is gone sooner than that
+# (lock_delay_now).
 LOCK_DELAY = 0.5
+# The most rows gravity may take a fresh piece down while its player thinks
+# (think_pause): the pause is what the difficulty says only while the level
+# leaves it that long.
+PAUSE_ROWS = 3
+# What a plan is taken to cost beyond its pause, at most (note_think_lag).
+THINK_LAG_MAX = 0.2
 
 # How long a piece waits on a piece nobody has claimed (a human's, a
 # golang-mk1's) before it plans again among what it can reach.
@@ -404,7 +412,8 @@ class CoordMixin:
     def dep_timeout(self):
         """How long the piece waits on the claims it depends on: twice what
         the slowest of them said it would take, within DEP_WAIT_MIN and
-        DEP_WAIT_TIMEOUT. Caller holds mu."""
+        DEP_WAIT_TIMEOUT, and no longer than the piece has air for
+        (cap_wait). Caller holds mu."""
         limit = DEP_WAIT_MIN
         for d in self.deps:
             if self.dep_resolved(d):
@@ -412,7 +421,62 @@ class CoordMixin:
             c = self.claims.get(d.seat)
             if c is not None:
                 limit = max(limit, 2 * c.eta_ms / 1000)
-        return min(limit, DEP_WAIT_TIMEOUT)
+        return self.cap_wait(min(limit, DEP_WAIT_TIMEOUT))
+
+    def lock_delay_now(self):
+        """The lock delay at the level being played: what a crewmate's piece
+        needs to fall the whole board and be out of the way. LOCK_DELAY at
+        most, four move steps at least: level 13 leaves 437 ms of it, level
+        15 170. Caller holds mu."""
+        return min(LOCK_DELAY, max(self.height() * self.gravity_now(), 4 * self.a.tn.move_delay))
+
+    def cap_wait(self, d):
+        """Bound a wait of the piece in play (on a claim it depends on, on a
+        crewmate's piece across its way) by the air the piece has left:
+        gravity goes on while it waits, and a wait that outlasts the fall
+        ends with the piece on the stack under where it waited, most
+        placements walled off. Asked every turn of the wait, it ends the wait
+        with about half the air gone, while the piece can still walk
+        somewhere else. A piece that stands on something (the stack: the lock
+        delay's business; a crewmate's piece: it is going nowhere) waits as
+        long as it did. Caller holds mu."""
+        if self.piece is None:
+            return d
+        _, fell, _ = self.fall_rows(self.piece, self.height())
+        if fell == 0:
+            return d
+        return min(d, max(fell * self.gravity_now(), self.a.tn.move_delay))
+
+    def fallen_at(self, p, at):
+        """The piece p as gravity will have it at the instant at: down the
+        rows the clock owes by then (execute pays them as one batch before
+        the walk), as far as the stack lets it. Where the walk STARTS, and at
+        a fast level that is a long way under the spawn: 10 rows after a
+        115 ms think at level 14. The crewmates' pieces are not in its way
+        here: they move. Caller holds mu."""
+        if not self.next_gravity:
+            return p
+        rows = self.gravity_debt
+        step = self.gravity_now()
+        if step > 0 and at >= self.next_gravity:
+            rows += 1 + int((at - self.next_gravity) / step)
+        while rows > 0:
+            down = Active(p.pt, p.orient, p.row + 1, p.col)
+            if not self.can_place(down.cells()):
+                break
+            p = down
+            rows -= 1
+        return p
+
+    def note_think_lag(self, lag):
+        """Record what the last plan took beyond its think pause (the search,
+        the claim's round trip, its echo), smoothed: the rows gravity takes
+        meanwhile are part of where the walk starts (fallen_at). A pause cut
+        short (a hurry) measures nothing. Caller holds mu."""
+        if lag < 0:
+            return
+        lag = min(lag, THINK_LAG_MAX)
+        self.think_lag = lag if self.think_lag == 0 else (3 * self.think_lag + lag) / 4
 
     def await_deps(self, now):
         """Account a turn of waiting on the claims the piece depends on and
@@ -438,8 +502,12 @@ class CoordMixin:
         a third on a coordinated board, so crewmates of one difficulty do not
         plan in lockstep: three agents planning at the same instant see none
         of each other's claims and all take the same spot, and the later two
-        yield every time."""
-        d = self.a.tn.piece_delay
+        yield every time. Gravity does not wait for the thought: the pause is
+        no longer than PAUSE_ROWS rows of the level being played take (all of
+        hard's 100 ms up to level 11, 55 ms at level 13, 21 ms at level 15),
+        else the piece is on the stack under its spawn before its first
+        move."""
+        d = min(self.a.tn.piece_delay, PAUSE_ROWS * self.gravity_now())
         if self.coord is None or self.a.rng is None or d <= 0:
             return d
         return d * (0.67 + self.a.rng.random() * 0.66)
@@ -547,8 +615,9 @@ class CoordMixin:
         return out
 
     def route_costs(self, p, now, pause):
-        """What the walk to every (orientation, column) costs the piece p,
-        planned now and moved after the pause: one flood over the board with
+        """What the walk to every (orientation, column) costs the piece p
+        (where it will stand when it moves: plan, fallen_at), planned now and
+        moved after the pause: one flood over the board with
         the forecast pieces on it prices everything the piece will reach at
         once (ROUTE_MOVE a move); what it will not reach until a crewmate's
         piece has gone is priced by the flood without that piece (the
@@ -625,7 +694,9 @@ class CoordMixin:
         it twice what it says it still needs, and a piece nobody has claimed
         gets BLOCK_PATIENCE_SILENT; within DEP_WAIT_MIN and DEP_WAIT_TIMEOUT.
         Two pieces in each other's way are thus never both the one that
-        waits: the claims are in one order, and the later one moves. Caller
+        waits: the claims are in one order, and the later one moves. Whoever
+        waits, it is for no longer than the piece has air for (cap_wait): the
+        right of way is no use to a piece that has sunk to the stack. Caller
         holds mu."""
         pat = DEP_WAIT_MIN
         ours = self.my_prio != 0
@@ -641,8 +712,8 @@ class CoordMixin:
             left = c.seen_at + c.eta_ms / 1000 - now
             pat = max(pat, 2 * left)
         if ours and seats:
-            return DEP_WAIT_TIMEOUT
-        return min(pat, DEP_WAIT_TIMEOUT)
+            return self.cap_wait(DEP_WAIT_TIMEOUT)
+        return self.cap_wait(min(pat, DEP_WAIT_TIMEOUT))
 
     def owners_under(self, a):
         """The seats whose falling pieces the piece a would come to rest on,

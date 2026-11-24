@@ -66,9 +66,84 @@ const (
 	// lockDelay is the grace a piece resting on the stack AWAY from its
 	// planned column gets on a shared board before it locks where it stands
 	// (the GUI's LockDelay): a crewmate's piece across its path falls away
-	// within it, and the walk resumes. golang-mk1 locked at once.
+	// within it, and the walk resumes. golang-mk1 locked at once. It is the
+	// most the grace is: at a fast level a crewmate's piece is gone sooner
+	// than that (lockDelayNow).
 	lockDelay = 500 * time.Millisecond
+	// pauseRows is the most rows gravity may take a fresh piece down while
+	// its player thinks (thinkPause): the pause is what the difficulty
+	// says only while the level leaves it that long.
+	pauseRows = 3
 )
+
+// lockDelayNow is the lock delay at the level being played: what a
+// crewmate's piece needs to fall the whole board and be out of the way —
+// lockDelay at most, four move steps at least. Level 13 leaves 437 ms of
+// it, level 15 170. Caller holds mu.
+func (g *Game) lockDelayNow() time.Duration {
+	return min(lockDelay, max(time.Duration(g.height())*g.gravityNow(), 4*g.a.tn.moveDelay))
+}
+
+// capWait bounds a wait of the piece in play — on a claim it depends on, on
+// a crewmate's piece across its way — by the air the piece has left: gravity
+// goes on while it waits, and a wait that outlasts the fall ends with the
+// piece on the stack under where it waited, most placements walled off.
+// Asked every turn of the wait, it ends the wait with about half the air
+// gone, while the piece can still walk somewhere else. A piece that stands
+// on something (the stack: the lock delay's business; a crewmate's piece:
+// it is going nowhere) waits as long as it did. Caller holds mu.
+func (g *Game) capWait(d time.Duration) time.Duration {
+	if g.piece == nil {
+		return d
+	}
+	_, fell, _ := g.fallRows(*g.piece, g.height())
+	if fell == 0 {
+		return d
+	}
+	return min(d, max(time.Duration(fell)*g.gravityNow(), g.a.tn.moveDelay))
+}
+
+// fallenAt is the piece p as gravity will have it at the instant at: down
+// the rows the clock owes by then (execute pays them as one batch before
+// the walk), as far as the stack lets it. Where the walk STARTS — and at a
+// fast level that is a long way under the spawn: 10 rows after a 115 ms
+// think at level 14. The crewmates' pieces are not in its way here: they
+// move. Caller holds mu.
+func (g *Game) fallenAt(p active, at time.Time) active {
+	if g.nextGravity.IsZero() {
+		return p
+	}
+	rows := g.gravityDebt
+	if step := g.gravityNow(); step > 0 && !at.Before(g.nextGravity) {
+		rows += 1 + int(at.Sub(g.nextGravity)/step)
+	}
+	for ; rows > 0; rows-- {
+		if !g.canPlace(pieceCells(p.pt, p.orient, p.row+1, p.col)) {
+			break
+		}
+		p.row++
+	}
+	return p
+}
+
+// thinkLagMax bounds what a plan is taken to cost beyond its pause.
+const thinkLagMax = 200 * time.Millisecond
+
+// noteThinkLag records what the last plan took beyond its think pause —
+// the search, the claim's round trip, its echo — smoothed: the rows gravity
+// takes meanwhile are part of where the walk starts (fallenAt). A pause cut
+// short (a hurry) measures nothing. Caller holds mu.
+func (g *Game) noteThinkLag(lag time.Duration) {
+	if lag < 0 {
+		return
+	}
+	lag = min(lag, thinkLagMax)
+	if g.thinkLag == 0 {
+		g.thinkLag = lag
+		return
+	}
+	g.thinkLag = (3*g.thinkLag + lag) / 4
+}
 
 // planStatus is what checkPlan says of the plan on the live board.
 type planStatus int
@@ -479,7 +554,8 @@ func (g *Game) depsPending() bool {
 
 // depTimeout is how long the piece waits on the claims it depends on: twice
 // what the slowest of them said it would take, within depWaitMin and
-// depWaitTimeout. Caller holds mu.
+// depWaitTimeout — and no longer than the piece has air for (capWait).
+// Caller holds mu.
 func (g *Game) depTimeout() time.Duration {
 	limit := depWaitMin
 	for i := range g.deps {
@@ -490,7 +566,7 @@ func (g *Game) depTimeout() time.Duration {
 			limit = max(limit, 2*time.Duration(c.ETAms)*time.Millisecond)
 		}
 	}
-	return min(limit, depWaitTimeout)
+	return g.capWait(min(limit, depWaitTimeout))
 }
 
 // awaitDeps accounts a turn of waiting on the claims the piece depends on
@@ -524,9 +600,16 @@ func (g *Game) awaitDeps(now time.Time) (timedOut bool) {
 // by up to a third on a coordinated board, so crewmates of one difficulty
 // do not plan in lockstep: three agents planning at the same instant see
 // none of each other's claims and all take the same spot, and the later
-// two yield every time.
+// two yield every time. Gravity does not wait for the thought: the pause is
+// no longer than pauseRows rows of the level being played take — all of
+// hard's 100 ms up to level 11, 55 ms at level 13, 21 ms at level 15 —
+// else the piece is on the stack under its spawn before its first move.
+// Takes mu.
 func (g *Game) thinkPause() time.Duration {
-	d := g.a.tn.pieceDelay
+	g.mu.Lock()
+	step := g.gravityNow()
+	g.mu.Unlock()
+	d := min(g.a.tn.pieceDelay, pauseRows*step)
 	if g.coord == nil || g.a.rng == nil || d <= 0 {
 		return d
 	}
@@ -693,7 +776,8 @@ func (g *Game) forecast(now, execAt time.Time) []forecastPiece {
 }
 
 // routeCosts is what the walk to every (orientation, column) costs the
-// piece p, planned now and moved after the pause: one flood over the board
+// piece p — where it will stand when it moves (plan: fallenAt) — planned
+// now and moved after the pause: one flood over the board
 // with the forecast pieces on it prices everything the piece will reach at
 // once (routeMove a move); what it will not reach until a crewmate's piece
 // has gone is priced by the flood without that piece — the earliest-leaving
@@ -798,7 +882,9 @@ const (
 // give it twice what it says it still needs, and a piece nobody has
 // claimed gets blockPatienceSilent; within depWaitMin and depWaitTimeout.
 // Two pieces in each other's way are thus never both the one that waits:
-// the claims are in one order, and the later one moves. Caller holds mu.
+// the claims are in one order, and the later one moves. Whoever waits, it
+// is for no longer than the piece has air for (capWait): the right of way
+// is no use to a piece that has sunk to the stack. Caller holds mu.
 func (g *Game) blockPatience(seats []int, now time.Time) time.Duration {
 	pat := depWaitMin
 	ours := g.myPrio != 0
@@ -817,9 +903,9 @@ func (g *Game) blockPatience(seats []int, now time.Time) time.Duration {
 		pat = max(pat, 2*left)
 	}
 	if ours && len(seats) > 0 {
-		return depWaitTimeout
+		return g.capWait(depWaitTimeout)
 	}
-	return min(pat, depWaitTimeout)
+	return g.capWait(min(pat, depWaitTimeout))
 }
 
 // ownersUnder is the seats whose falling pieces the piece a would come to

@@ -90,6 +90,17 @@ shared board, `golang-mk2` agents on one team **coordinate through a blackboard*
   never buries a crewmate's piece; a walk blocked by the stack no longer locks onto a
   teammate's falling piece; and a piece resting on the stack away from its column gets
   the lock delay's grace (500 ms) for the crewmate in its way to fall away.
+- **Time constants that follow gravity** (`coord.go`): from level 12 a row falls faster
+  than the agent's fixed delays run, and a piece that thinks or waits at the old pace
+  is on the stack under its spawn before it moves. So the think pause is no longer
+  than three rows of the level being played take (hard's 100 ms up to level 11, 55 ms
+  at level 13, 21 ms at level 15); a plan is priced from where gravity will have the
+  piece when it moves, not from the spawn row, and what the stack walls off from
+  there is out of reach; a wait on a crewmate (a claim depended on, a piece across the
+  way) ends with about half the piece's air gone; and the lock delay is the time a
+  piece takes to fall the board, 500 ms at most. Four hard seats on one seed: 125-140
+  lines before, 143-162 after, levels 13 and 14 played as cleanly as the ones below;
+  level 15 (7 ms a row) is where the game now ends.
 - **A collapse moves the plan, not the piece's mind**: a crewmate's clear that shifts
   our piece down shifts its planned landing with it — by the rows it cleared, and no
   others: a landing that moved differently, or a rising stack, re-plans.

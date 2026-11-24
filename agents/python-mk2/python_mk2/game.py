@@ -19,7 +19,7 @@ from .blackboard import (ECHO_TIMEOUT, PHASE_LOCKED, PHASE_PLANNED, BlackboardMi
                          board_name, claim_key)
 from .consts import (ARCHIVE_SUBJECT, CHAT_STREAM, HEADROOM, MODE_COMPETITIVE, MODE_COOPERATIVE, MODE_TEAMS, PUB_PESSIMISTIC,
                      game_stream_name, meta_subject)
-from .coord import (CONFLICT_OVERLAP, LOCK_DELAY, MAX_BLOCKED_PLANS, MAX_HOLE_REPLANS, MAX_NEXT_CLAIMS, PLAN_STALE,
+from .coord import (CONFLICT_OVERLAP, MAX_BLOCKED_PLANS, MAX_HOLE_REPLANS, MAX_NEXT_CLAIMS, PLAN_STALE,
                     REPLAN_BLOCKED, REPLAN_COLLAPSE, REPLAN_DEP_TIMEOUT, REPLAN_DROP_ROW, REPLAN_HOLES,
                     REPLAN_LOCK_DROPPED, REPLAN_NONE, REPLAN_STALE, REPLAN_UNREACHABLE, RETHINK_DELAY, CoordMixin,
                     replan_name, well_ready)
@@ -168,6 +168,9 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
         # at once.
         self.next_gravity = 0.0
         self.gravity_debt = 0
+        # What a plan takes beyond its think pause, smoothed (note_think_lag):
+        # gravity's rows meanwhile are where the walk starts.
+        self.think_lag = 0.0
 
         # The shared board's housekeeping (sweep.py).
         self.peer_cells = {}
@@ -1389,12 +1392,15 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                 piece = self.piece
             if piece is None:
                 continue  # spawn was dropped by CAS; resynced, try again
+            think_t = time.monotonic()
             plan, pending, ok = await self.plan(piece, delay)
             if not ok:
                 return await self.top_out()
             if not await self.pause(delay):
                 break
             plan = await self.confirm_plan(piece, plan, pending)
+            async with self.mu:
+                self.note_think_lag(time.monotonic() - think_t - delay)
             await self.execute(plan, spawn_t)
             async with self.mu:
                 dead = self.dead
@@ -1431,7 +1437,12 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                     proj.route, proj.route_now = self.route_costs_now(p), True
                     self.blocked_replan = False
                 else:
-                    proj.route = self.route_costs(p, began, pause)
+                    # The walk starts where gravity will have the piece by
+                    # then, not where it stands: what the stack walls off
+                    # from there is out of reach, however near it looks from
+                    # the spawn row.
+                    start = self.fallen_at(p, began + pause + self.think_lag)
+                    proj.route, proj.route_now = self.route_costs(start, began, pause), start != p
             else:
                 gr = self.to_grid()
             piece_idx, spawn_c = self.piece_idx, self.spawn_c
@@ -1749,7 +1760,7 @@ class Game(SharedMixin, PipelineMixin, BlackboardMixin, CoordMixin, SweepMixin, 
                 # it once the crewmate in its way falls away.
                 if self.resting_since is None:
                     self.resting_since = now
-                if at_target or not shared or now - self.resting_since >= LOCK_DELAY:
+                if at_target or not shared or now - self.resting_since >= self.lock_delay_now():
                     if not at_target and self.blocked_plans < MAX_BLOCKED_PLANS:
                         # On the stack, away from its column, and the grace
                         # is spent: the plan is out of reach. Rather than

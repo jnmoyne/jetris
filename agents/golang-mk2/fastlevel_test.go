@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	mrand "math/rand/v2"
 	"testing"
 	"time"
 )
@@ -139,4 +140,151 @@ func TestTheWalkFollowsGravityInTheSameTurn(t *testing.T) {
 		t.Errorf("%d lock(s) where the piece stood, away from its plan", g.st.standLocks)
 	}
 	assertConverged(t, ctx, g)
+}
+
+// atLevel sets a cooperative crew's level.
+func atLevel(g *Game, level int) {
+	g.mode = modeCooperative
+	g.totalLines = (level - 1) * linesPerLevel
+}
+
+// Gravity does not wait for the think pause: the pause is the difficulty's
+// while the level leaves it that long, and no longer than a few rows take
+// once it does not.
+func TestThinkPauseFollowsGravity(t *testing.T) {
+	g := coordTestGame()
+	g.a.tn = difficultyTuning("hard")
+	atLevel(g, 5)
+	if got := g.thinkPause(); got != g.a.tn.pieceDelay {
+		t.Errorf("level 5: pause %v, want the difficulty's %v", got, g.a.tn.pieceDelay)
+	}
+	atLevel(g, maxLevel)
+	want := pauseRows * gravityInterval(maxLevel)
+	if got := g.thinkPause(); got != want || got >= g.a.tn.pieceDelay/2 {
+		t.Errorf("level %d: pause %v, want %v (%d rows of gravity)", maxLevel, got, want, pauseRows)
+	}
+	g.a.rng = mrand.New(mrand.NewPCG(1, 2))
+	for i := 0; i < 50; i++ {
+		if got := g.thinkPause(); got < want*2/3 || got > want*4/3 {
+			t.Fatalf("level %d, jittered: pause %v outside a third of %v", maxLevel, got, want)
+		}
+	}
+}
+
+// The walk starts where gravity will have taken the piece by the time it
+// moves, and the plan is priced from there: a column the stack walls off
+// from that depth is out of reach, however open the spawn row is.
+func TestThePlanIsPricedFromWhereThePieceWillBe(t *testing.T) {
+	g := coordTestGame()
+	g.a.tn = difficultyTuning("hard")
+	atLevel(g, maxLevel)
+	now := time.Now()
+	p := active{1 /*O*/, 0, spawnRow, g.spawnC}
+	wall := g.spawnC + 4
+	lockColumn(g, wall, 8) // a wall from row 8 down, a column clear of the piece
+	far := [2]int{0, wall + 1}
+
+	if got := g.fallenAt(p, now); got != p {
+		t.Errorf("no gravity clock yet: the piece at %+v, want it where it stands", got)
+	}
+	g.nextGravity = now
+	step := g.gravityNow()
+	from := g.fallenAt(p, now.Add(9*step+step/2))
+	if from.row != p.row+10 || from.col != p.col || from.orient != p.orient {
+		t.Fatalf("ten rows owed: the piece at %+v, want ten rows under %+v", from, p)
+	}
+	g.gravityDebt = 2
+	if got := g.fallenAt(p, now.Add(-time.Second)); got.row != p.row+2 {
+		t.Errorf("two rows of debt, no deadline passed: the piece at row %d, want %d", got.row, p.row+2)
+	}
+	g.gravityDebt = 0
+	floor := g.fallenAt(p, now.Add(time.Minute))
+	if g.canPlace(pieceCells(floor.pt, floor.orient, floor.row+1, floor.col)) || !g.canPlace(pieceCells(floor.pt, floor.orient, floor.row, floor.col)) {
+		t.Errorf("a minute of gravity: the piece at row %d, not on the floor", floor.row)
+	}
+
+	if _, ok := g.routeCosts(p, now, 0)[far]; !ok {
+		t.Fatal("from the spawn row the column beyond the wall is not reached: the test's premise")
+	}
+	costs := g.routeCosts(from, now, 0)
+	if _, ok := costs[far]; ok {
+		t.Error("from under the wall's top the column beyond it is priced as a walk")
+	}
+	if _, ok := costs[[2]int{0, g.spawnC - 2}]; !ok {
+		t.Error("from under the wall's top a column on the piece's own side is not reached")
+	}
+	proj := &projection{route: costs, routeNow: from != p}
+	if got := proj.penalty(placement{orient: far[0], col: far[1]}); got < routeBlocked {
+		t.Errorf("the placement beyond the wall costs %.1f, want at least %.0f: it is out of reach", got, routeBlocked)
+	}
+}
+
+// A wait goes on while gravity does. It ends while the piece still has air
+// to walk in — a claim's estimate or the right of way is no use to a piece
+// on the stack — and is what it always was where the level leaves the time,
+// or the piece stands on something.
+func TestWaitsEndWhileThePieceHasAir(t *testing.T) {
+	g := coordTestGame()
+	g.a.tn = difficultyTuning("hard")
+	now := time.Now()
+	g.myPrio = 20
+	p := active{1 /*O*/, 0, spawnRow, g.spawnC}
+	g.piece = &p
+	peerPiece(g, 1, active{0 /*I*/, 0, spawnRow, 7})
+	g.claims[1] = claim{V: claimVersion, Seat: 1, Piece: 3, Type: 0, Rot: 0, Col: 9, Phase: phasePlanned, ETAms: 400, rev: 30}
+	g.deps = []depWait{{seat: 1, piece: 3, rev: 30, cells: cellsOf(pieceCells(0, 0, 22, 9))}}
+
+	atLevel(g, 5)
+	if got := g.depTimeout(); got != 800*time.Millisecond {
+		t.Errorf("level 5: dependency wait %v, want twice the 400 ms estimate", got)
+	}
+	if got := g.blockPatience([]int{1}, now); got != depWaitTimeout {
+		t.Errorf("level 5, a later claim: patience %v, want %v", got, depWaitTimeout)
+	}
+
+	atLevel(g, 14)
+	_, fell, _ := g.fallRows(p, g.height())
+	air := time.Duration(fell) * g.gravityNow()
+	if fell < 10 || air >= depWaitMin {
+		t.Fatalf("level 14: %d rows of air, %v: not shorter than the shortest wait (the test's premise)", fell, air)
+	}
+	if got := g.depTimeout(); got != air {
+		t.Errorf("level 14: dependency wait %v, want the %v of air", got, air)
+	}
+	if got := g.blockPatience([]int{1}, now); got != air {
+		t.Errorf("level 14, a later claim: patience %v, want the %v of air", got, air)
+	}
+	delete(g.claims, 1)
+	if got := g.blockPatience([]int{1}, now); got != air {
+		t.Errorf("level 14, a silent piece: patience %v, want the %v of air", got, air)
+	}
+
+	// Standing on the floor, the piece is not sinking: the wait is the claim's.
+	g.nextGravity = now
+	rest := g.fallenAt(p, now.Add(time.Minute))
+	g.piece = &rest
+	if got := g.blockPatience([]int{1}, now); got != blockPatienceSilent {
+		t.Errorf("level 14, at rest: patience %v, want %v", got, blockPatienceSilent)
+	}
+}
+
+// The lock delay is the time a crewmate's piece needs to fall out of the
+// way: half a second at most, and less at a level that drops it sooner.
+func TestLockDelayFollowsGravity(t *testing.T) {
+	g := coordTestGame()
+	g.a.tn = difficultyTuning("hard")
+	atLevel(g, 5)
+	if got := g.lockDelayNow(); got != lockDelay {
+		t.Errorf("level 5: lock delay %v, want %v", got, lockDelay)
+	}
+	atLevel(g, 13)
+	d13 := g.lockDelayNow()
+	atLevel(g, maxLevel)
+	d15 := g.lockDelayNow()
+	if want := time.Duration(g.height()) * gravityInterval(maxLevel); d15 != want {
+		t.Errorf("level %d: lock delay %v, want the %v of a fall down the board", maxLevel, d15, want)
+	}
+	if !(4*g.a.tn.moveDelay <= d15 && d15 < d13 && d13 < lockDelay) {
+		t.Errorf("lock delay %v at level 13, %v at level %d: want them falling from %v, never under four move steps", d13, d15, maxLevel, lockDelay)
+	}
 }
